@@ -39,3 +39,45 @@ real response uses. Every value is randomized per request, kept within sane boun
 | Variable | Default |
 |---|---|
 | `PORT` | `8082` |
+
+## Running it against ONIX
+
+`docker-compose.yml` here starts this mock alongside the adapter, so a Beckn
+`select` goes in and a Beckn contract comes back.
+
+```bash
+docker compose up --build
+curl -X POST localhost:8081/weather/select \
+  -H 'Content-Type: application/json' \
+  --data-binary @sample-select.json
+```
+
+**This needs all four open branches merged.** On its own, this branch has the
+mock but neither the mapper nor its mapping file, and the adapter will not
+start:
+
+| Branch | Provides |
+|---|---|
+| `feat/64-imd-mock-weather-api` | this mock (you are here) |
+| `feat/66-jsonata-transformation-plugin` | the `jsonmapper` plugin |
+| `feat/67-jsonata-mapping-files` | `config/mappings-weather.yaml` |
+| `feat/46-oanregistry-sender-auth` | registry lookup — built, not exercised |
+
+All four merge into `main` without conflicts.
+
+`config/` holds the adapter and routing config. The mapping file is mounted from
+the repo root rather than copied, so there is one copy of it rather than two
+that can disagree.
+
+### What this covers, and what it does not
+
+It exercises the transformation path: route to the provider, drop the request
+body the provider does not read, map its reply into Beckn.
+
+It does **not** cover signing, schema validation or the registry. Each needs a
+participant record and a running SunbirdRC, which is a far larger stack than
+this is meant to be — so `feat/46` is merged for the build but never called.
+
+The routing rule sends every `select` to one fixed URL. Choosing an endpoint per
+request, and carrying the caller's position through to it, is provider-plugin
+work tracked separately.
