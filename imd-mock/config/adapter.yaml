@@ -1,0 +1,59 @@
+# Smallest adapter config that exercises the mapper against the mock.
+#
+# One module, three steps: route to the mock, drop the request body it does not
+# read, and map its reply back into Beckn.
+#
+# Not included, and worth knowing why: no signing, no schema validation and no
+# registry. Each needs a participant record and a running SunbirdRC, which is a
+# far larger stack than this is meant to be. This proves the transformation
+# path, not the trust path.
+appName: "imd-mock-demo"
+
+log:
+  level: debug
+  destinations:
+    - type: stdout
+
+http:
+  port: 8081
+  timeout:
+    read: 30
+    write: 30
+    idle: 30
+
+pluginManager:
+  root: ./plugins
+
+modules:
+  - name: weatherCaller
+    path: /weather/
+    handler:
+      type: std
+      role: bpp
+      subscriberId: bpp.example.com
+      httpClientConfig:
+        maxIdleConns: 100
+        maxIdleConnsPerHost: 20
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 10s
+      plugins:
+        router:
+          id: router
+          config:
+            routingConfig: ./config/routing.yaml
+        payloadTransformer:
+          id: jsonmapper
+          config:
+            role: bpp
+            # Mounted separately from ./config -- see docker-compose.yml.
+            mappingsFile: ./mappings/mappings-weather.yaml
+            # fail rather than hand the caller the provider's own shape
+            # wearing a Beckn label.
+            onError: fail
+      steps:
+        - addRoute
+        # transformPayload applies the request-body policy: the mapping file
+        # declares bppRequestBody: none, because the mock reads nothing from
+        # the body.
+        - transformPayload
+        - transformResponse

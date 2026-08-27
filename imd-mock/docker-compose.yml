@@ -1,0 +1,47 @@
+# ONIX plus the mock provider, enough to send a Beckn select and get a Beckn
+# contract back.
+#
+# This needs all four branches merged. On its own, feat/64 has the mock but
+# neither the mapper plugin nor the mappings file, and the adapter will refuse
+# to start:
+#
+#   feat/46-oanregistry-sender-auth         registry lookup       (not used here)
+#   feat/64-imd-mock-weather-api            the mock              (this branch)
+#   feat/66-jsonata-transformation-plugin   the mapper plugin     required
+#   feat/67-jsonata-mapping-files           config/mappings-weather.yaml
+#
+# Run from this directory:
+#   docker compose up --build
+#   curl -X POST localhost:8081/weather/select -H 'Content-Type: application/json' -d @sample-select.json
+
+services:
+  imd-mock:
+    build:
+      context: .
+    environment:
+      - PORT=8082
+    ports:
+      - '${MOCK_PORT-8082}:8082'
+
+  adapter:
+    build:
+      # The repo root: the adapter image compiles the plugins, jsonmapper among
+      # them, so it has to be built from source rather than pulled.
+      context: ..
+      dockerfile: Dockerfile.adapter-with-plugins
+    environment:
+      - CONFIG_FILE=/app/config/adapter.yaml
+    volumes:
+      # This directory holds the adapter and routing config.
+      - ./config:/app/config:ro
+      # The mappings file lives with the other mapping files at the repo root,
+      # mounted as a single file so there is one copy rather than two that can
+      # disagree. Comes from feat/67.
+      #
+      # On its own path, not inside ./config: a file mount cannot create its
+      # mountpoint inside a directory that is itself mounted read-only.
+      - ../config/mappings-weather.yaml:/app/mappings/mappings-weather.yaml:ro
+    ports:
+      - '${ADAPTER_PORT-8081}:8081'
+    depends_on:
+      - imd-mock

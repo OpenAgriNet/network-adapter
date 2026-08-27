@@ -1,0 +1,38 @@
+{
+  "context": {
+    "version": "2.0.0",
+    "action": "select",
+    "bapId": "bap.example.com",
+    "bapUri": "https://bap.example.com",
+    "bppId": "bpp.example.com",
+    "bppUri": "https://bpp.example.com",
+    "transactionId": "5f8f1c2e-1d2a-4a1b-9c3d-7e8f9a0b1c2d",
+    "messageId": "9a0b1c2d-3e4f-5a6b-7c8d-9e0f1a2b3c4d",
+    "timestamp": "2026-08-27T00:00:00.000Z"
+  },
+  "message": {
+    "contract": {
+      "commitments": [
+        {
+          "status": { "descriptor": { "code": "DRAFT" } },
+          "offer": {
+            "id": "imd-weather-forecast",
+            "provider": { "id": "imd", "descriptor": { "name": "India Meteorological Department" } },
+            "resourceIds": ["imd-today"]
+          },
+          "resources": [
+            {
+              "id": "imd-today",
+              "quantity": 1,
+              "descriptor": { "name": "Weather forecast" },
+              "resourceAttributes": {
+                "@context": "https://oan.network/schemas/weather.jsonld",
+                "@type": "DailyForecast"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

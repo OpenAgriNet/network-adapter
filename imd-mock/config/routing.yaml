@@ -1,0 +1,16 @@
+# Routes a Beckn action straight at the mock provider.
+#
+# excludeAction keeps the action off the path. Without it the router appends
+# /select and the mock sees /IMD/daily-weather-forecast/select, which it does
+# not serve.
+#
+# domain is deliberately absent: the router ignores it for 2.x and warns when
+# it is set.
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://imd-mock:8082/IMD/daily-weather-forecast"
+      excludeAction: true
+    endpoints:
+      - select
