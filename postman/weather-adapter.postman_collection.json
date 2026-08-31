@@ -1,0 +1,1722 @@
+{
+  "info": {
+    "name": "ONIX \u00b7 weather:forecast adapter",
+    "description": "Tests the `weather:forecast` adapter end to end: signature enforcement, schema\nrejection, the full order lifecycle against the live OpenWeatherMap API, and the\nJSONata transform.\n\n## Bring the stack up\n\n```\ndocker ps | grep redis                                    # or start one on :6379\n(cd /tmp/mock-registry   && go run . &)                   # :8090\n(cd /tmp/bap-sink        && go run . &)                   # :7000\n(cd /tmp/weather-backend && OWM_API_KEY=... go run . &)   # :9000\n./server --config ./config/weather-bpp/adaptor-signed.yaml   # :8082\n```\n\n## Pick an environment\n\n| Environment | Adapter config | What it changes |\n|---|---|---|\n| `weather \u00b7 signed` | `adaptor-signed.yaml` | Full collection. Requests go through the stand-in BAP caller, which signs them. |\n| `weather \u00b7 local (unsigned)` | `adaptor.yaml` | Points `bap` at the receiver (that config has no BAP caller module) and sets `expect_signed=no`. **Skip folder 01** \u2014 there is no `validateSign` step to test. |\n\nVerified: 69/69 assertions on the signed config, 64/64 on the unsigned one with\nfolder 01 excluded.\n\n## Running it\n\nRun the whole collection in the Runner, in folder order. Folders 03 and 04 share\none transaction id. Folder 04 polls the buyer app until the asynchronous\ncallback lands, so no runner delay is needed.\n\n`transaction_id` is set once per lifecycle run and reused; `message_id` and\n`timestamp` are regenerated per request by the collection pre-request script.\n\n## Where the interesting assertions are\n\n- **01 / Forged request never reached the backend** \u2014 proves `validateSign` runs\n  before `addRoute`, so a forged payload never touches the provider.\n- **02 / Wrong version** \u2014 the failure code differs between the two configs\n  because their step orders differ. The clearest demonstration that step\n  ordering is semantic, not cosmetic.\n- **04 / every tag value is a string** \u2014 `Tag.value` is typed `string` in core. A\n  bare number builds fine in JSONata and fails one step later at\n  `validateSchema`, so the error blames the schema rather than the mapping.\n- **05 / main.temp read correctly** \u2014 `/data/2.5/forecast` nests its fields\n  (`main.temp`, `wind.speed`) where One Call 4.0 had them flat. A wrong path\n  yields `undefined`, JSONata silently drops the key, and the result still\n  validates because `Tag.value` is optional.\n\n## Fixture endpoints\n\n`{{backend}}/debug/order` and `{{sink}}/debug/last` are test scaffolding, not\nBeckn. They exist because Postman talks to the adapter, not to the buyer app, so\nwithout them the order id and the delivered payload are both invisible. The sink\ncarries a monotonic `seq` so a test can tell \"the callback for this run arrived\"\nfrom \"I am looking at the previous run's payload\". Do not ship either endpoint.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "adapter",
+      "value": "http://localhost:8082"
+    },
+    {
+      "key": "bap",
+      "value": "{{adapter}}/weather/bap/caller"
+    },
+    {
+      "key": "receiver",
+      "value": "{{adapter}}/weather/receiver"
+    },
+    {
+      "key": "caller",
+      "value": "{{adapter}}/weather/caller"
+    },
+    {
+      "key": "backend",
+      "value": "http://localhost:9000"
+    },
+    {
+      "key": "sink",
+      "value": "http://localhost:7000"
+    },
+    {
+      "key": "domain",
+      "value": "weather:forecast"
+    },
+    {
+      "key": "version",
+      "value": "2.0.0"
+    },
+    {
+      "key": "bap_id",
+      "value": "weather-bap-1"
+    },
+    {
+      "key": "bap_uri",
+      "value": "http://localhost:7000"
+    },
+    {
+      "key": "bpp_id",
+      "value": "weather-bpp-1"
+    },
+    {
+      "key": "gps",
+      "value": "12.9716,77.5946"
+    },
+    {
+      "key": "sku",
+      "value": "HOURLY_7D",
+      "description": "HOURLY_7D | HOURLY_14D | DAILY_7D | DAILY_14D"
+    },
+    {
+      "key": "txn",
+      "value": ""
+    },
+    {
+      "key": "order_id",
+      "value": ""
+    },
+    {
+      "key": "_tries",
+      "value": "0"
+    },
+    {
+      "key": "mid",
+      "value": ""
+    },
+    {
+      "key": "ts",
+      "value": ""
+    },
+    {
+      "key": "neg_txn",
+      "value": ""
+    },
+    {
+      "key": "forge_txn",
+      "value": ""
+    },
+    {
+      "key": "seq_before",
+      "value": ""
+    },
+    {
+      "key": "callback_arrived",
+      "value": ""
+    },
+    {
+      "key": "expect_signed",
+      "value": "yes",
+      "description": "yes on adaptor-signed.yaml, no on adaptor.yaml"
+    },
+    {
+      "key": "chosen_provider",
+      "value": ""
+    },
+    {
+      "key": "chosen_sku",
+      "value": ""
+    },
+    {
+      "key": "unsold_sku",
+      "value": ""
+    },
+    {
+      "key": "provider",
+      "value": "P-OWM",
+      "description": "Catalog provider used by folders 02-03. P-OWM sells all four SKUs."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Fresh message id and timestamp for every request. message_id must differ",
+          "// per message; transaction_id must NOT -- it is set once per lifecycle run.",
+          "const rand = () => Math.random().toString(36).slice(2, 10);",
+          "pm.collectionVariables.set(\"mid\", \"msg-\" + rand());",
+          "pm.collectionVariables.set(\"ts\", new Date().toISOString().replace(/\\.(\\d{3})Z$/, \".$1Z\"));",
+          "if (!pm.collectionVariables.get(\"txn\")) {",
+          "    pm.collectionVariables.set(\"txn\", \"txn-\" + Date.now());",
+          "}",
+          "// Throwaway transactions for the negative folders: nothing should ever be",
+          "// recorded against them, and folder 01 asserts exactly that.",
+          "pm.collectionVariables.set(\"neg_txn\", \"txn-neg-\" + rand());",
+          "pm.collectionVariables.set(\"forge_txn\", \"txn-forge-\" + rand());"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "01 \u00b7 Security",
+      "description": "Requires the signed config: ./server --config ./config/weather-bpp/adaptor-signed.yaml. On the local config (adaptor.yaml) there is no validateSign step, so these three will fail -- that is the point of them.",
+      "item": [
+        {
+          "name": "Unsigned request is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{adapter}}/weather/receiver/search",
+              "host": [
+                "{{adapter}}/weather/receiver/search"
+              ]
+            },
+            "description": "Posted straight at the receiver with no Authorization header.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{forge_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"{{gps}}\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"AUT_SIGNATURE_MISSING\", () =>",
+                  "    pm.expect(pm.response.json().message.error.code).to.eql(\"AUT_SIGNATURE_MISSING\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forged signature is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Signature keyId=\"weather-bap-1|weather-bap-1-key|ed25519\",algorithm=\"ed25519\",created=\"1788000000\",expires=\"1999999999\",headers=\"(created) (expires) digest\",signature=\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\""
+              }
+            ],
+            "url": {
+              "raw": "{{adapter}}/weather/receiver/search",
+              "host": [
+                "{{adapter}}/weather/receiver/search"
+              ]
+            },
+            "description": "Well-formed Authorization header, garbage signature.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{forge_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"{{gps}}\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"AUT_SIGNATURE_INVALID\", () =>",
+                  "    pm.expect(pm.response.json().message.error.code).to.eql(\"AUT_SIGNATURE_INVALID\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forged request never reached the backend",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{backend}}/debug/order?txn={{forge_txn}}",
+              "host": [
+                "{{backend}}/debug/order?txn={{forge_txn}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The invariant: validateSign runs BEFORE addRoute, so a forged",
+                  "// payload is dropped at the edge and the provider backend never sees it.",
+                  "pm.test(\"backend has no order for the forged transaction\", () =>",
+                  "    pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 \u00b7 Schema rejections",
+      "description": "Every one of these must be rejected at validateSchema and must never reach the provider backend. Sent through the BAP caller so they are correctly signed -- these test the schema, not the signature.",
+      "item": [
+        {
+          "name": "Missing gps",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {}\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});",
+                  "pm.test(\"error names the gps field\", () =>",
+                  "    pm.expect(pm.response.json().message.error.message).to.include(\"gps\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GPS out of range",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"200,300\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Empty stops array",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": []\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown SKU",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/select",
+              "host": [
+                "{{bap}}/select"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"select\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"NOPE\"\n        }\n      ],\n      \"fulfillments\": [\n        {\n          \"stops\": [\n            {\n              \"location\": {\n                \"gps\": \"{{gps}}\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});",
+                  "pm.test(\"error lists the allowed SKUs\", () =>",
+                  "    pm.expect(pm.response.json().message.error.message).to.include(\"HOURLY_7D\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Two items in one order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/select",
+              "host": [
+                "{{bap}}/select"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"select\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"HOURLY_7D\"\n        },\n        {\n          \"id\": \"DAILY_7D\"\n        }\n      ],\n      \"fulfillments\": [\n        {\n          \"stops\": [\n            {\n              \"location\": {\n                \"gps\": \"{{gps}}\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Select without gps",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/select",
+              "host": [
+                "{{bap}}/select"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"select\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{sku}}\"\n        }\n      ],\n      \"fulfillments\": [\n        {\n          \"stops\": [\n            {\n              \"location\": {}\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm without payments",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/confirm",
+              "host": [
+                "{{bap}}/confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"confirm\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{sku}}\"\n        }\n      ],\n      \"billing\": {\n        \"name\": \"Test Buyer\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Status without order_id",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/status",
+              "host": [
+                "{{bap}}/status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"status\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Wrong domain",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"retail:1.1.0\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"{{gps}}\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"schema lookup failed, not a validation failure\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const m = (j.message && j.message.error && j.message.error.message) || j.message;",
+                  "    pm.expect(String(m)).to.include(\"schema not found\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Wrong version",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"1.1.0\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"{{gps}}\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Where an unroutable version is caught depends entirely on step order, and",
+                  "// the two configs order the steps differently. This is the clearest available",
+                  "// demonstration that the ordering in adaptor.yaml is semantic, not cosmetic.",
+                  "//",
+                  "//   adaptor.yaml         validateSchema -> addRoute",
+                  "//                        version fails at the schema        -> 400 SCH_INVALID_FORMAT",
+                  "//",
+                  "//   adaptor-signed.yaml  validateSign -> addRoute -> validateSchema",
+                  "//                        no route for 1.1.0, schema never consulted",
+                  "//                                                           -> 500 NET_INTERNAL_ERROR",
+                  "//",
+                  "// The 500 is worth noticing on its own. \"No route for this version\" is a client",
+                  "// error, but the router surfaces it as NET_INTERNAL_ERROR, so a caller cannot",
+                  "// distinguish a bad version from a genuinely broken provider. Asserted as-is",
+                  "// because it is the real behaviour, not because it is the right behaviour.",
+                  "const code = pm.response.code;",
+                  "const j = pm.response.json();",
+                  "const err = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "",
+                  "pm.test(\"rejected\", () => pm.expect(code).to.be.oneOf([400, 500]));",
+                  "pm.test(\"failure point matches the configured step order\", () => {",
+                  "    if (code === 500) pm.expect(err).to.eql(\"NET_INTERNAL_ERROR\");   // addRoute first",
+                  "    else              pm.expect(err).to.include(\"SCH_\");             // validateSchema first",
+                  "});",
+                  "// Contrast with \"Wrong domain\", which gets a clean 400 on BOTH configs: at",
+                  "// version 2.x the router wildcards the domain, so routing succeeds either way",
+                  "// and validateSchema is always reached."
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Missing timestamp",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{neg_txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"{{gps}}\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"rejected with 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error code is SCH_INVALID_FORMAT\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const c = (j.message && j.message.error && j.message.error.code) || j.code;",
+                  "    pm.expect(c).to.eql(\"SCH_INVALID_FORMAT\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 \u00b7 Lifecycle (signed, real upstream)",
+      "description": "search -> select -> init -> confirm -> status. One transaction throughout.",
+      "item": [
+        {
+          "name": "1 \u00b7 search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"{{gps}}\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh transaction id for this run. Every later request in",
+                  "// this folder reuses it -- that is what ties them into one transaction.",
+                  "pm.collectionVariables.set(\"txn\", \"txn-\" + Date.now());",
+                  "pm.collectionVariables.set(\"order_id\", \"\");",
+                  "pm.collectionVariables.set(\"_tries\", 0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACK\", () => pm.expect(pm.response.json().message.ack.status).to.eql(\"ACK\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2 \u00b7 select",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/select",
+              "host": [
+                "{{bap}}/select"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"select\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{sku}}\"\n        }\n      ],\n      \"fulfillments\": [\n        {\n          \"stops\": [\n            {\n              \"location\": {\n                \"gps\": \"{{gps}}\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACK\", () => pm.expect(pm.response.json().message.ack.status).to.eql(\"ACK\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3 \u00b7 init",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/init",
+              "host": [
+                "{{bap}}/init"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"init\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{sku}}\"\n        }\n      ],\n      \"billing\": {\n        \"name\": \"Test Buyer\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACK\", () => pm.expect(pm.response.json().message.ack.status).to.eql(\"ACK\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4 \u00b7 confirm",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/confirm",
+              "host": [
+                "{{bap}}/confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"confirm\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{sku}}\"\n        }\n      ],\n      \"billing\": {\n        \"name\": \"Test Buyer\"\n      },\n      \"payments\": [\n        {\n          \"id\": \"P1\",\n          \"type\": \"PRE-ORDER\"\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACK\", () => pm.expect(pm.response.json().message.ack.status).to.eql(\"ACK\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5 \u00b7 Resolve the order id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{backend}}/debug/order?txn={{txn}}",
+              "host": [
+                "{{backend}}/debug/order?txn={{txn}}"
+              ]
+            },
+            "description": "Test fixture, not Beckn. A real BAP learns its order id from the on_confirm callback; this backend does not send one."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"backend recorded the coordinate\", () => pm.expect(j.gps).to.eql(pm.collectionVariables.get(\"gps\")));",
+                  "pm.test(\"backend recorded the SKU\", () => pm.expect(j.sku).to.eql(pm.collectionVariables.get(\"sku\")));",
+                  "pm.collectionVariables.set(\"order_id\", j.order_id);",
+                  "console.log(\"order id:\", j.order_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6 \u00b7 status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/status",
+              "host": [
+                "{{bap}}/status"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"status\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order_id\": \"{{order_id}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACK\", () => pm.expect(pm.response.json().message.ack.status).to.eql(\"ACK\"));",
+                  "// The forecast does NOT come back on this response. status ACKs immediately;",
+                  "// the payload arrives asynchronously on on_status. Next folder reads it."
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Snapshot the buyer app's callback counter. The next folder polls until it",
+                  "// increases, which is the only reliable way to tell \"the callback for THIS run",
+                  "// arrived\" from \"I am still looking at the previous run's payload\".",
+                  "const url = pm.collectionVariables.replaceIn(\"{{sink}}/debug/last\");",
+                  "pm.sendRequest(url, (err, res) => {",
+                  "    let n = 0;",
+                  "    if (!err && res.code === 200) { try { n = res.json().seq; } catch (e) {} }",
+                  "    pm.collectionVariables.set(\"seq_before\", n);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 \u00b7 Forecast delivery",
+      "description": "Reads what the buyer app actually received. Postman posts to the adapter, not to itself, so without this fixture endpoint the transform is invisible.",
+      "item": [
+        {
+          "name": "What the BAP received",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{sink}}/debug/last",
+              "host": [
+                "{{sink}}/debug/last"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a callback arrived within 15s\", () =>",
+                  "    pm.expect(pm.collectionVariables.get(\"callback_arrived\"),",
+                  "              \"no new callback -- is the backend running with a valid OWM_API_KEY?\"",
+                  "    ).to.eql(\"yes\"));",
+                  "",
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test(\"payload present\", () => pm.expect(r.body).to.not.be.null);",
+                  "",
+                  "const d = r.body;",
+                  "const o = d.message.order;",
+                  "const tags = o.fulfillments[0].tags;",
+                  "const group = c => tags.find(g => g.descriptor.code === c);",
+                  "const kv = g => Object.fromEntries(g.list.map(t => [t.descriptor.code, t.value]));",
+                  "",
+                  "pm.test(\"delivered to the right order\", () =>",
+                  "    pm.expect(o.id).to.eql(pm.collectionVariables.get(\"order_id\")));",
+                  "// Only the signed config puts a `sign` step on the caller module. Set",
+                  "// expect_signed=no in the environment when running against adaptor.yaml.",
+                  "if (pm.variables.get(\"expect_signed\") !== \"no\") {",
+                  "    pm.test(\"callback is signed by the provider\", () => {",
+                  "        pm.expect(r.signed, \"no Authorization header -- are you on the signed config?\").to.be.true;",
+                  "        pm.expect(r.authorization).to.include('keyId=\"weather-bpp-1');",
+                  "    });",
+                  "} else {",
+                  "    pm.test(\"callback is unsigned, as expected on the local config\", () =>",
+                  "        pm.expect(r.signed).to.be.false);",
+                  "}",
+                  "pm.test(\"action rewritten to on_status\", () => pm.expect(d.context.action).to.eql(\"on_status\"));",
+                  "pm.test(\"transaction id carried through\", () =>",
+                  "    pm.expect(d.context.transaction_id).to.eql(pm.collectionVariables.get(\"txn\")));",
+                  "pm.test(\"order is COMPLETE\", () => pm.expect(o.status).to.eql(\"COMPLETE\"));",
+                  "",
+                  "pm.test(\"units group is first\", () => pm.expect(tags[0].descriptor.code).to.eql(\"units\"));",
+                  "pm.test(\"coverage group is second\", () => pm.expect(tags[1].descriptor.code).to.eql(\"coverage\"));",
+                  "",
+                  "const cov = kv(group(\"coverage\"));",
+                  "pm.test(\"coverage names the SKU ordered\", () =>",
+                  "    pm.expect(cov.sku).to.eql(pm.collectionVariables.get(\"sku\")));",
+                  "pm.test(\"group count matches the declared step count\", () =>",
+                  "    pm.expect(tags.length).to.eql(Number(cov.steps) + 2));",
+                  "pm.test(\"forecast came from the real upstream\", () =>",
+                  "    pm.expect(cov.source).to.include(\"openweathermap\"));",
+                  "",
+                  "// Tag.value is typed string in core. A bare number builds fine in JSONata and",
+                  "// then fails at validateSchema -- one step later than the mistake.",
+                  "pm.test(\"every tag value is a string\", () => {",
+                  "    tags.forEach(g => g.list.forEach(t =>",
+                  "        pm.expect(t.value, g.descriptor.code + \"/\" + t.descriptor.code).to.be.a(\"string\")));",
+                  "});",
+                  "",
+                  "const first = kv(tags[2]);",
+                  "pm.test(\"forecast values are real numbers\", () => {",
+                  "    pm.expect(Number(first.temp)).to.be.a(\"number\").and.not.NaN;",
+                  "    pm.expect(Number(first.wind_speed)).to.be.a(\"number\").and.not.NaN;",
+                  "});",
+                  "pm.test(\"condition is present\", () =>",
+                  "    pm.expect(first.condition).to.be.a(\"string\").and.not.empty);",
+                  "",
+                  "if (cov.note) { console.log(\"COVERAGE SHORTFALL:\", cov.note); }",
+                  "console.log(\"groups:\", tags.length, \"| ordered\", cov.days_ordered + \"d\",",
+                  "            \"| served\", cov.days_served + \"d\", \"|\", cov.granularity);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Delivery is asynchronous: status ACKs immediately and the provider calls",
+                  "// back afterwards, behind a live upstream request. Poll rather than assume.",
+                  "const url    = pm.collectionVariables.replaceIn(\"{{sink}}/debug/last\");",
+                  "const before = Number(pm.collectionVariables.get(\"seq_before\") || 0);",
+                  "const deadline = Date.now() + 15000;",
+                  "",
+                  "function poll(done) {",
+                  "    pm.sendRequest(url, (err, res) => {",
+                  "        let seq = -1;",
+                  "        if (!err && res.code === 200) { try { seq = res.json().seq; } catch (e) {} }",
+                  "        if (seq > before || Date.now() > deadline) { return done(seq > before); }",
+                  "        setTimeout(() => poll(done), 250);",
+                  "    });",
+                  "}",
+                  "poll(ok => pm.collectionVariables.set(\"callback_arrived\", ok ? \"yes\" : \"no\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 \u00b7 Transform in isolation",
+      "description": "Drives the caller module directly with a canned upstream payload -- no OpenWeatherMap call, no order state. Use this when you are changing the JSONata and want a fast loop.",
+      "item": [
+        {
+          "name": "POST a canned upstream payload to the caller",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{caller}}/on_status",
+              "host": [
+                "{{caller}}/on_status"
+              ]
+            },
+            "description": "The envelope key is `context`, not `_context`: reqmapper selects the mapping by reading context.action and addRoute resolves the destination from context.bap_uri, both before the JSONata runs.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"on_status\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"_order_id\": \"{{order_id}}\",\n  \"_coverage\": {\n    \"sku\": \"{{sku}}\",\n    \"granularity\": \"3h\",\n    \"days_ordered\": 7,\n    \"days_served\": 0.13,\n    \"steps\": 2,\n    \"source\": \"postman/canned-fixture\"\n  },\n  \"list\": [\n    {\n      \"dt\": 1788123600,\n      \"dt_txt\": \"2026-08-30 21:00:00\",\n      \"main\": {\n        \"temp\": 20.82,\n        \"temp_min\": 20.82,\n        \"temp_max\": 21.23,\n        \"humidity\": 89\n      },\n      \"wind\": {\n        \"speed\": 4.84\n      },\n      \"pop\": 0,\n      \"weather\": [\n        {\n          \"main\": \"Clouds\",\n          \"description\": \"overcast clouds\"\n        }\n      ]\n    },\n    {\n      \"dt\": 1788134400,\n      \"dt_txt\": \"2026-08-31 00:00:00\",\n      \"main\": {\n        \"temp\": 19.9,\n        \"temp_min\": 19.61,\n        \"temp_max\": 20.1,\n        \"humidity\": 92\n      },\n      \"wind\": {\n        \"speed\": 3.2\n      },\n      \"pop\": 0.31,\n      \"weather\": [\n        {\n          \"main\": \"Rain\",\n          \"description\": \"light rain\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get(\"order_id\")) {",
+                  "    pm.collectionVariables.set(\"order_id\", \"ORDER-FIXTURE\");",
+                  "}",
+                  "// Snapshot the buyer app's callback counter. The next folder polls until it",
+                  "// increases, which is the only reliable way to tell \"the callback for THIS run",
+                  "// arrived\" from \"I am still looking at the previous run's payload\".",
+                  "const url = pm.collectionVariables.replaceIn(\"{{sink}}/debug/last\");",
+                  "pm.sendRequest(url, (err, res) => {",
+                  "    let n = 0;",
+                  "    if (!err && res.code === 200) { try { n = res.json().seq; } catch (e) {} }",
+                  "    pm.collectionVariables.set(\"seq_before\", n);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACK\", () => pm.expect(pm.response.json().message.ack.status).to.eql(\"ACK\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Transform produced 2 forecast groups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{sink}}/debug/last",
+              "host": [
+                "{{sink}}/debug/last"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"a callback arrived within 15s\", () =>",
+                  "    pm.expect(pm.collectionVariables.get(\"callback_arrived\")).to.eql(\"yes\"));",
+                  "",
+                  "const d = pm.response.json().body;",
+                  "const tags = d.message.order.fulfillments[0].tags;",
+                  "const kv = g => Object.fromEntries(g.list.map(t => [t.descriptor.code, t.value]));",
+                  "",
+                  "pm.test(\"this is the canned fixture, not a live forecast\", () =>",
+                  "    pm.expect(kv(tags[1]).source).to.eql(\"postman/canned-fixture\"));",
+                  "pm.test(\"units + coverage + 2 steps\", () => pm.expect(tags.length).to.eql(4));",
+                  "pm.test(\"timestep code is the unix dt\", () =>",
+                  "    pm.expect(tags[2].descriptor.code).to.eql(\"1788123600\"));",
+                  "pm.test(\"timestep name is the human timestamp\", () =>",
+                  "    pm.expect(tags[2].descriptor.name).to.eql(\"2026-08-30 21:00:00\"));",
+                  "",
+                  "// Nested source fields: /data/2.5/forecast gives main.temp and wind.speed, not",
+                  "// the flat temp / wind_speed of One Call 4.0. A wrong path yields undefined,",
+                  "// JSONata drops the key, and you get a descriptor with no value -- which still",
+                  "// validates, because Tag.value is not required.",
+                  "pm.test(\"main.temp read correctly\", () => pm.expect(kv(tags[2]).temp).to.eql(\"20.82\"));",
+                  "pm.test(\"wind.speed read correctly\", () => pm.expect(kv(tags[2]).wind_speed).to.eql(\"4.84\"));",
+                  "pm.test(\"weather[0].main read correctly\", () => pm.expect(kv(tags[3]).condition).to.eql(\"Rain\"));",
+                  "pm.test(\"all values are strings\", () =>",
+                  "    tags.forEach(g => g.list.forEach(t => pm.expect(t.value).to.be.a(\"string\"))));"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Delivery is asynchronous: status ACKs immediately and the provider calls",
+                  "// back afterwards, behind a live upstream request. Poll rather than assume.",
+                  "const url    = pm.collectionVariables.replaceIn(\"{{sink}}/debug/last\");",
+                  "const before = Number(pm.collectionVariables.get(\"seq_before\") || 0);",
+                  "const deadline = Date.now() + 15000;",
+                  "",
+                  "function poll(done) {",
+                  "    pm.sendRequest(url, (err, res) => {",
+                  "        let seq = -1;",
+                  "        if (!err && res.code === 200) { try { seq = res.json().seq; } catch (e) {} }",
+                  "        if (seq > before || Date.now() > deadline) { return done(seq > before); }",
+                  "        setTimeout(() => poll(done), 250);",
+                  "    });",
+                  "}",
+                  "poll(ok => pm.collectionVariables.set(\"callback_arrived\", ok ? \"yes\" : \"no\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 \u00b7 Catalog and provider selection",
+      "description": "The catalog holds three providers with overlapping but unequal SKU lists at different prices. Which provider was chosen is therefore load-bearing, and `order.provider.id` is required from select onward.",
+      "item": [
+        {
+          "name": "1 \u00b7 search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/search",
+              "host": [
+                "{{bap}}/search"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"search\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"intent\": {\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"gps\": \"{{gps}}\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"txn\", \"txn-cat-\" + Date.now());",
+                  "const url = pm.collectionVariables.replaceIn(\"{{sink}}/debug/last\");",
+                  "pm.sendRequest(url, (err, res) => {",
+                  "    let n = 0;",
+                  "    if (!err && res.code === 200) { try { n = res.json().seq; } catch (e) {} }",
+                  "    pm.collectionVariables.set(\"seq_before\", n);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ACK\", () => pm.expect(pm.response.json().message.ack.status).to.eql(\"ACK\"));",
+                  "// The catalog does NOT come back on this response. search ACKs immediately and",
+                  "// the catalog arrives asynchronously on on_search -- the same contract the",
+                  "// forecast follows on the status leg."
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2 \u00b7 The catalog the BAP received",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{sink}}/debug/last",
+              "host": [
+                "{{sink}}/debug/last"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const url    = pm.collectionVariables.replaceIn(\"{{sink}}/debug/last\");",
+                  "const before = Number(pm.collectionVariables.get(\"seq_before\") || 0);",
+                  "const deadline = Date.now() + 15000;",
+                  "function poll(done) {",
+                  "    pm.sendRequest(url, (err, res) => {",
+                  "        let seq = -1;",
+                  "        if (!err && res.code === 200) { try { seq = res.json().seq; } catch (e) {} }",
+                  "        if (seq > before || Date.now() > deadline) { return done(seq > before); }",
+                  "        setTimeout(() => poll(done), 250);",
+                  "    });",
+                  "}",
+                  "poll(ok => pm.collectionVariables.set(\"callback_arrived\", ok ? \"yes\" : \"no\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"catalog arrived within 15s\", () =>",
+                  "    pm.expect(pm.collectionVariables.get(\"callback_arrived\")).to.eql(\"yes\"));",
+                  "",
+                  "const r = pm.response.json();",
+                  "const d = r.body;",
+                  "pm.test(\"action is on_search\", () => pm.expect(d.context.action).to.eql(\"on_search\"));",
+                  "if (pm.variables.get(\"expect_signed\") !== \"no\") {",
+                  "    pm.test(\"catalog is signed\", () => pm.expect(r.signed).to.be.true);",
+                  "}",
+                  "",
+                  "const providers = d.message.catalog.providers;",
+                  "pm.test(\"three providers\", () => pm.expect(providers.length).to.eql(3));",
+                  "pm.test(\"every provider names itself\", () => providers.forEach(p => {",
+                  "    pm.expect(p.id).to.be.a(\"string\").and.not.empty;",
+                  "    pm.expect(p.descriptor.name).to.be.a(\"string\").and.not.empty;",
+                  "}));",
+                  "pm.test(\"provider ids are unique\", () => {",
+                  "    const ids = providers.map(p => p.id);",
+                  "    pm.expect(new Set(ids).size).to.eql(ids.length);",
+                  "});",
+                  "",
+                  "const SKUS = [\"HOURLY_7D\", \"HOURLY_14D\", \"DAILY_7D\", \"DAILY_14D\"];",
+                  "pm.test(\"every item is a known SKU with a price\", () => providers.forEach(p => {",
+                  "    pm.expect(p.items.length, p.id + \" sells nothing\").to.be.above(0);",
+                  "    p.items.forEach(i => {",
+                  "        pm.expect(SKUS, p.id).to.include(i.id);",
+                  "        pm.expect(i.price.value).to.be.a(\"string\").and.not.empty;",
+                  "        pm.expect(i.price.currency).to.be.a(\"string\").and.not.empty;",
+                  "    });",
+                  "}));",
+                  "",
+                  "// The point of more than one provider: they must differ. A catalog where every",
+                  "// provider offers the same SKUs at the same prices gives a buyer nothing to",
+                  "// choose between, and leaves the provider_id plumbing untested.",
+                  "const shapes = providers.map(p => p.items.map(i => i.id + \"@\" + i.price.value).sort().join(\",\"));",
+                  "pm.test(\"providers differ in SKUs or price\", () =>",
+                  "    pm.expect(new Set(shapes).size, \"all providers offer an identical list\").to.be.above(1));",
+                  "",
+                  "// Stash the cheapest offer for the next requests.",
+                  "let best = null;",
+                  "providers.forEach(p => p.items.forEach(i => {",
+                  "    const v = Number(i.price.value);",
+                  "    if (best === null || v < best.price) best = { provider: p.id, sku: i.id, price: v };",
+                  "}));",
+                  "pm.collectionVariables.set(\"chosen_provider\", best.provider);",
+                  "pm.collectionVariables.set(\"chosen_sku\", best.sku);",
+                  "console.log(\"cheapest offer:\", best.provider, best.sku, best.price);",
+                  "",
+                  "// Record a SKU this provider does NOT sell, for the catalog check below.",
+                  "const chosen = providers.find(p => p.id === best.provider);",
+                  "const sold = chosen.items.map(i => i.id);",
+                  "const unsold = SKUS.find(s => !sold.includes(s));",
+                  "pm.collectionVariables.set(\"unsold_sku\", unsold || \"\");",
+                  "pm.test(\"the cheapest provider does not sell every SKU\", () =>",
+                  "    pm.expect(unsold, \"no unsold SKU to test the catalog check with\").to.be.a(\"string\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3 \u00b7 select without a provider is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/select",
+              "host": [
+                "{{bap}}/select"
+              ]
+            },
+            "description": "With one provider the id could be inferred. With three it is the only thing that resolves which offer was accepted, so the schema requires it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"select\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"items\": [\n        {\n          \"id\": \"{{chosen_sku}}\"\n        }\n      ],\n      \"fulfillments\": [\n        {\n          \"stops\": [\n            {\n              \"location\": {\n                \"gps\": \"{{gps}}\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"schema names the missing provider\", () => {",
+                  "    const m = pm.response.json().message.error.message;",
+                  "    pm.expect(m).to.include(\"provider\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4 \u00b7 select with an empty provider id is rejected",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/select",
+              "host": [
+                "{{bap}}/select"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"select\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{chosen_sku}}\"\n        }\n      ],\n      \"fulfillments\": [\n        {\n          \"stops\": [\n            {\n              \"location\": {\n                \"gps\": \"{{gps}}\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// minLength 1, so a present-but-blank id fails like an absent one.",
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5 \u00b7 select the cheapest offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/select",
+              "host": [
+                "{{bap}}/select"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"select\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{chosen_provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{chosen_sku}}\"\n        }\n      ],\n      \"fulfillments\": [\n        {\n          \"stops\": [\n            {\n              \"location\": {\n                \"gps\": \"{{gps}}\"\n              }\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6 \u00b7 confirm a SKU this provider does not sell",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/confirm",
+              "host": [
+                "{{bap}}/confirm"
+              ]
+            },
+            "description": "The SKU is in the enum, so the schema passes it. Whether THIS provider sells THAT SKU is a fact only the catalog holds, so the rejection has to come from the backend.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"confirm\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{chosen_provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{unsold_sku}}\"\n        }\n      ],\n      \"billing\": {\n        \"name\": \"Test Buyer\"\n      },\n      \"payments\": [\n        {\n          \"id\": \"P1\",\n          \"type\": \"PRE-ORDER\"\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"rejected by the catalog, not the schema\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const code = j.error ? j.error.code : j.message.error.code;",
+                  "    pm.expect(code).to.eql(\"BIZ_ITEM_UNAVAILABLE\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7 \u00b7 confirm an unknown provider",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/confirm",
+              "host": [
+                "{{bap}}/confirm"
+              ]
+            },
+            "description": "The schema only requires a non-empty string, so an unknown provider looks identical to a real one until the catalog is consulted.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"confirm\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"P-DOES-NOT-EXIST\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{chosen_sku}}\"\n        }\n      ],\n      \"billing\": {\n        \"name\": \"Test Buyer\"\n      },\n      \"payments\": [\n        {\n          \"id\": \"P1\",\n          \"type\": \"PRE-ORDER\"\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"BIZ_ITEM_UNAVAILABLE\", () => {",
+                  "    const j = pm.response.json();",
+                  "    const code = j.error ? j.error.code : j.message.error.code;",
+                  "    pm.expect(code).to.eql(\"BIZ_ITEM_UNAVAILABLE\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "8 \u00b7 confirm the valid offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{bap}}/confirm",
+              "host": [
+                "{{bap}}/confirm"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"{{domain}}\",\n    \"version\": \"{{version}}\",\n    \"action\": \"confirm\",\n    \"bap_id\": \"{{bap_id}}\",\n    \"bap_uri\": \"{{bap_uri}}\",\n    \"bpp_id\": \"{{bpp_id}}\",\n    \"bpp_uri\": \"{{adapter}}/weather/receiver/\",\n    \"transaction_id\": \"{{txn}}\",\n    \"message_id\": \"{{mid}}\",\n    \"timestamp\": \"{{ts}}\",\n    \"ttl\": \"PT30S\"\n  },\n  \"message\": {\n    \"order\": {\n      \"provider\": {\n        \"id\": \"{{chosen_provider}}\"\n      },\n      \"items\": [\n        {\n          \"id\": \"{{chosen_sku}}\"\n        }\n      ],\n      \"billing\": {\n        \"name\": \"Test Buyer\"\n      },\n      \"payments\": [\n        {\n          \"id\": \"P1\",\n          \"type\": \"PRE-ORDER\"\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "9 \u00b7 the order records the chosen provider and its price",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{backend}}/debug/order?txn={{txn}}",
+              "host": [
+                "{{backend}}/debug/order?txn={{txn}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"provider recorded\", () =>",
+                  "    pm.expect(j.provider).to.eql(pm.collectionVariables.get(\"chosen_provider\")));",
+                  "pm.test(\"sku recorded\", () =>",
+                  "    pm.expect(j.sku).to.eql(pm.collectionVariables.get(\"chosen_sku\")));",
+                  "// The price is resolved from the catalog at confirm time, not taken from the",
+                  "// request -- a buyer cannot name their own price.",
+                  "pm.test(\"price resolved from the catalog\", () =>",
+                  "    pm.expect(Number(j.price)).to.be.above(0));",
+                  "pm.collectionVariables.set(\"order_id\", j.order_id);",
+                  "console.log(\"order\", j.order_id, j.provider, j.sku, \"@\", j.price);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

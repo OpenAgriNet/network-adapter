@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "on_select",
+  "type": "object",
+  "required": [
+    "context",
+    "message"
+  ],
+  "properties": {
+    "context": {
+      "allOf": [
+        {
+          "$ref": "./definitions.json#/$defs/Context"
+        }
+      ],
+      "required": [
+        "domain",
+        "action",
+        "version",
+        "bap_id",
+        "bap_uri",
+        "bpp_id",
+        "bpp_uri",
+        "transaction_id",
+        "message_id",
+        "timestamp"
+      ],
+      "properties": {
+        "domain": {
+          "const": "weather:forecast"
+        },
+        "version": {
+          "const": "2.0.0"
+        },
+        "action": {
+          "const": "on_select"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "order"
+      ],
+      "properties": {
+        "order": {
+          "allOf": [
+            {
+              "$ref": "./definitions.json#/$defs/Order"
+            }
+          ],
+          "required": [
+            "quote"
+          ],
+          "properties": {
+            "quote": {
+              "required": [
+                "price"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "$ref": "./definitions.json#/$defs/Error"
+    }
+  }
+}

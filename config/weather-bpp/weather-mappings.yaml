@@ -1,0 +1,145 @@
+mappings:
+  search:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  select:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  init:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  confirm:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  cancel:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  status:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+
+  # The catalog and order legs are served from the provider's own state and are
+  # already Beckn-shaped when they reach the adapter, so these are identity by
+  # design, not by omission -- see design section 7.3. Declared explicitly
+  # because reqmapper treats a MISSING action as a silent pass-through
+  # (reqmapper.go:256-259): without these entries, a typo in an action name is
+  # indistinguishable from a deliberate identity mapping.
+  on_search:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  on_select:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  on_init:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  on_confirm:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+  on_cancel:
+    bapMappings: |
+      $
+    bppMappings: |
+      $
+
+  # The only real transformation: OpenWeatherMap timeline -> Beckn tag groups.
+  #
+  # CONTRACT WITH THE BACKEND. The backend POSTs to /weather/caller/on_status:
+  #
+  #   context     a REAL top-level Beckn context, action "on_status", copied
+  #               from the original status request. It cannot be named
+  #               _context: reqmapper selects the mapping by reading
+  #               context.action (reqmapper.go:123-131) and addRoute resolves
+  #               the destination from context.bap_uri, both before this
+  #               expression runs.
+  #   list        forecast steps in OpenWeatherMap /data/2.5/forecast shape,
+  #               ALREADY uniform across SKUs. Daily SKUs are aggregated by the
+  #               backend into the same per-step shape, because reqmapper keys
+  #               its expression on action alone -- there is exactly one
+  #               on_status mapping and it cannot branch on SKU.
+  #   _order_id   the order being fulfilled.
+  #   _coverage   what was actually delivered vs ordered. The free upstream
+  #               tier caps at ~5 days, so 7D and 14D SKUs are short; saying so
+  #               in the payload beats silently short-changing the buyer.
+  #
+  # Rename _order_id or _coverage and this breaks at runtime, not at startup.
+  on_status:
+    bapMappings: |
+      $
+    bppMappings: |
+      (
+        $steps := $map(list, function($d) {
+          {
+            "descriptor": { "code": $string($d.dt), "name": $d.dt_txt },
+            "list": [
+              { "descriptor": { "code": "temp" },       "value": $string($d.main.temp) },
+              { "descriptor": { "code": "temp_min" },   "value": $string($d.main.temp_min) },
+              { "descriptor": { "code": "temp_max" },   "value": $string($d.main.temp_max) },
+              { "descriptor": { "code": "humidity" },   "value": $string($d.main.humidity) },
+              { "descriptor": { "code": "wind_speed" }, "value": $string($d.wind.speed) },
+              { "descriptor": { "code": "pop" },        "value": $string($d.pop) },
+              { "descriptor": { "code": "condition" },  "value": $d.weather[0].main }
+            ]
+          }
+        });
+        $units := {
+          "descriptor": { "code": "units", "name": "Measurement units" },
+          "list": [
+            { "descriptor": { "code": "temp" },       "value": "C" },
+            { "descriptor": { "code": "temp_min" },   "value": "C" },
+            { "descriptor": { "code": "temp_max" },   "value": "C" },
+            { "descriptor": { "code": "humidity" },   "value": "%" },
+            { "descriptor": { "code": "wind_speed" }, "value": "m/s" },
+            { "descriptor": { "code": "pop" },        "value": "fraction" },
+            { "descriptor": { "code": "time" },       "value": "unix" }
+          ]
+        };
+        $covList := [
+          { "descriptor": { "code": "sku" },          "value": $string(_coverage.sku) },
+          { "descriptor": { "code": "granularity" },  "value": $string(_coverage.granularity) },
+          { "descriptor": { "code": "days_ordered" }, "value": $string(_coverage.days_ordered) },
+          { "descriptor": { "code": "days_served" },  "value": $string(_coverage.days_served) },
+          { "descriptor": { "code": "steps" },        "value": $string(_coverage.steps) },
+          { "descriptor": { "code": "source" },       "value": $string(_coverage.source) },
+          { "descriptor": { "code": "note" },         "value": $string(_coverage.note) }
+        ];
+        $coverage := {
+          "descriptor": { "code": "coverage", "name": "Delivered coverage" },
+          /* `note` is only present when the delivered horizon fell short of the
+             SKU ordered. $string() of a missing field yields undefined, JSONata
+             then drops the "value" key, and the result is a tag carrying a
+             descriptor and nothing else -- which passes validateSchema, because
+             Tag.value is optional in core. Drop those rather than ship them. */
+          "list": $filter($covList, function($t) { $exists($t.value) })
+        };
+        {
+          "context": $merge([ context, { "action": "on_status", "timestamp": $now() } ]),
+          "message": {
+            "order": {
+              "id": _order_id,
+              "status": "COMPLETE",
+              "fulfillments": [ { "id": "F1", "tags": $append([$units, $coverage], $steps) } ]
+            }
+          }
+        }
+      )

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cancel",
+  "type": "object",
+  "required": [
+    "context",
+    "message"
+  ],
+  "properties": {
+    "context": {
+      "allOf": [
+        {
+          "$ref": "./definitions.json#/$defs/Context"
+        }
+      ],
+      "required": [
+        "domain",
+        "action",
+        "version",
+        "bap_id",
+        "bap_uri",
+        "transaction_id",
+        "message_id",
+        "timestamp"
+      ],
+      "properties": {
+        "domain": {
+          "const": "weather:forecast"
+        },
+        "version": {
+          "const": "2.0.0"
+        },
+        "action": {
+          "const": "cancel"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "order_id",
+        "cancellation_reason_id"
+      ],
+      "properties": {
+        "order_id": {
+          "type": "string"
+        },
+        "cancellation_reason_id": {
+          "type": "string"
+        },
+        "descriptor": {
+          "$ref": "./definitions.json#/$defs/Descriptor"
+        }
+      }
+    }
+  }
+}

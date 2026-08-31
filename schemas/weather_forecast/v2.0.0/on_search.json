@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "on_search",
+  "type": "object",
+  "required": [
+    "context",
+    "message"
+  ],
+  "properties": {
+    "context": {
+      "allOf": [
+        {
+          "$ref": "./definitions.json#/$defs/Context"
+        }
+      ],
+      "required": [
+        "domain",
+        "action",
+        "version",
+        "bap_id",
+        "bap_uri",
+        "bpp_id",
+        "bpp_uri",
+        "transaction_id",
+        "message_id",
+        "timestamp"
+      ],
+      "properties": {
+        "domain": {
+          "const": "weather:forecast"
+        },
+        "version": {
+          "const": "2.0.0"
+        },
+        "action": {
+          "const": "on_search"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog"
+      ],
+      "properties": {
+        "catalog": {
+          "allOf": [
+            {
+              "$ref": "./definitions.json#/$defs/Catalog"
+            }
+          ],
+          "required": [
+            "providers"
+          ],
+          "properties": {
+            "providers": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "required": [
+                  "id",
+                  "descriptor",
+                  "items"
+                ],
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "required": [
+                        "id",
+                        "descriptor",
+                        "price"
+                      ],
+                      "properties": {
+                        "id": {
+                          "enum": [
+                            "HOURLY_7D",
+                            "HOURLY_14D",
+                            "DAILY_7D",
+                            "DAILY_14D"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "descriptor": {
+                    "required": [
+                      "name"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "$ref": "./definitions.json#/$defs/Error"
+    }
+  }
+}

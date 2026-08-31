@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "init",
+  "type": "object",
+  "required": [
+    "context",
+    "message"
+  ],
+  "properties": {
+    "context": {
+      "allOf": [
+        {
+          "$ref": "./definitions.json#/$defs/Context"
+        }
+      ],
+      "required": [
+        "domain",
+        "action",
+        "version",
+        "bap_id",
+        "bap_uri",
+        "transaction_id",
+        "message_id",
+        "timestamp"
+      ],
+      "properties": {
+        "domain": {
+          "const": "weather:forecast"
+        },
+        "version": {
+          "const": "2.0.0"
+        },
+        "action": {
+          "const": "init"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "order"
+      ],
+      "properties": {
+        "order": {
+          "allOf": [
+            {
+              "$ref": "./definitions.json#/$defs/Order"
+            }
+          ],
+          "required": [
+            "items",
+            "billing",
+            "provider"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "enum": [
+                      "HOURLY_7D",
+                      "HOURLY_14D",
+                      "DAILY_7D",
+                      "DAILY_14D"
+                    ]
+                  }
+                }
+              }
+            },
+            "provider": {
+              "required": [
+                "id"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

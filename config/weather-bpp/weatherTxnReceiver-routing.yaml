@@ -1,0 +1,18 @@
+# NOTE: no `domain` key. For version 2.x the router normalizes domain to the
+# wildcard "*" on both sides -- config load (router.go:100-105) and request
+# lookup (router.go:249-252) -- so a domain here is ignored and only prints a
+# startup warning. Routing at v2 keys on version + endpoint alone; schema
+# selection still uses context.domain, which is a separate mechanism.
+routingRules:
+  - # domain intentionally omitted, see note above
+    version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://localhost:9000/beckn"
+    endpoints:
+      - search
+      - select
+      - init
+      - confirm
+      - status
+      - cancel

@@ -1,0 +1,96 @@
+appName: "onix-weather-bpp"
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys:
+    - transaction_id
+    - message_id
+    - subscriber_id
+    - module_id
+
+http:
+  port: 8082
+  timeout:
+    read: 30
+    write: 30      # must fit the largest forecast payload
+    idle: 30
+
+pluginManager:
+  root: ./plugins
+
+modules:
+  # ---------- Inbound: BAP -> this provider ----------
+  - name: weatherTxnReceiver
+    path: /weather/receiver/
+    handler:
+      type: std
+      role: bpp
+      subscriberId: weather-bpp-1
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s   # the upstream forecast call sits behind this
+      plugins:
+        cache:
+          id: cache
+          config:
+            addr: localhost:6379
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: ./schemas
+        router:
+          id: router
+          config:
+            routingConfig: ./config/weather-bpp/weatherTxnReceiver-routing.yaml
+        payloadTransformer:
+          id: reqmapper
+          config:
+            role: bpp
+            mappingsFile: ./config/weather-bpp/weather-mappings.yaml
+        middleware:
+          - id: reqpreprocessor
+            config:
+              contextKeys: transaction_id,message_id
+              role: bpp
+      # LOCAL / POSTMAN ONLY. See §7 before deploying this anywhere shared.
+      steps:
+        - validateSchema
+        - addRoute
+
+  # ---------- Outbound: this provider -> BAP ----------
+  - name: weatherTxnCaller
+    path: /weather/caller/
+    handler:
+      type: std
+      role: bpp
+      subscriberId: weather-bpp-1
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        cache:
+          id: cache
+          config:
+            addr: localhost:6379
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: ./schemas
+        router:
+          id: router
+          config:
+            routingConfig: ./config/weather-bpp/weatherTxnCaller-routing.yaml
+        payloadTransformer:
+          id: reqmapper
+          config:
+            role: bpp
+            mappingsFile: ./config/weather-bpp/weather-mappings.yaml
+      steps:
+        - transformPayload
+        - validateSchema
+        - addRoute

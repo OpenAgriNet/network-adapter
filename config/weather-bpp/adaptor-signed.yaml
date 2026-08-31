@@ -1,0 +1,192 @@
+appName: "onix-weather-bpp-signed"
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys:
+    - transaction_id
+    - message_id
+    - subscriber_id
+    - module_id
+
+http:
+  port: 8082
+  timeout:
+    read: 30
+    write: 30      # must fit the largest forecast payload
+    idle: 30
+
+pluginManager:
+  root: ./plugins
+
+modules:
+  # ---------- A stand-in BAP: signs, then forwards to the receiver ----------
+  # This exists so a signed request can be produced without hand-rolling an
+  # Ed25519 Authorization header in Postman. Point Postman at THIS module and
+  # it becomes the buyer app.
+  - name: weatherBapCaller
+    path: /weather/bap/caller/
+    handler:
+      type: std
+      role: bap
+      subscriberId: weather-bap-1
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        cache:
+          id: cache
+          config:
+            addr: localhost:6379
+        registry:
+          id: registry
+          config:
+            url: http://localhost:8090/reg
+            retry_max: 3
+            retry_wait_min: 100ms
+            retry_wait_max: 500ms
+        keyManager:
+          id: simplekeymanager
+          config:
+            subscriberId: weather-bap-1
+            keyId: weather-bap-1-key
+            signingPrivateKey: pARrBfYVX7s7Uody0k6Pemi4JcxmfnuUK1N6qSlkKT8=
+            signingPublicKey: Z8CySY8+410YYoMa+ozQHs/I0PRVB7qmc9RLI4zXllk=
+            encrPrivateKey: pARrBfYVX7s7Uody0k6Pemi4JcxmfnuUK1N6qSlkKT8=
+            encrPublicKey: Z8CySY8+410YYoMa+ozQHs/I0PRVB7qmc9RLI4zXllk=
+        signer:
+          id: signer
+        router:
+          id: router
+          config:
+            routingConfig: ./config/weather-bpp/weatherBapCaller-routing.yaml
+        middleware:
+          - id: reqpreprocessor
+            config:
+              contextKeys: transaction_id,message_id
+              role: bap
+      steps:
+        - addRoute
+        - sign
+
+  # ---------- Inbound: BAP -> this provider (production step order) ----------
+  - name: weatherTxnReceiver
+    path: /weather/receiver/
+    handler:
+      type: std
+      role: bpp
+      subscriberId: weather-bpp-1
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        cache:
+          id: cache
+          config:
+            addr: localhost:6379
+        registry:
+          id: registry
+          config:
+            url: http://localhost:8090/reg
+            retry_max: 3
+            retry_wait_min: 100ms
+            retry_wait_max: 500ms
+        keyManager:
+          id: simplekeymanager
+          config:
+            subscriberId: weather-bpp-1
+            keyId: weather-bpp-1-key
+            signingPrivateKey: NQqkoioeOpKO9kRQJvbv18nhQ9KCMg6AbLgBSZ1cMlA=
+            signingPublicKey: HSY4v7yiC+JeUzanhJ+3f8cRcL34mnfn69GnoRTNlHk=
+            encrPrivateKey: NQqkoioeOpKO9kRQJvbv18nhQ9KCMg6AbLgBSZ1cMlA=
+            encrPublicKey: HSY4v7yiC+JeUzanhJ+3f8cRcL34mnfn69GnoRTNlHk=
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: ./schemas
+        signValidator:
+          id: signvalidator
+        signer:
+          id: signer
+        router:
+          id: router
+          config:
+            routingConfig: ./config/weather-bpp/weatherTxnReceiver-routing.yaml
+        payloadTransformer:
+          id: reqmapper
+          config:
+            role: bpp
+            mappingsFile: ./config/weather-bpp/weather-mappings.yaml
+        middleware:
+          - id: reqpreprocessor
+            config:
+              contextKeys: transaction_id,message_id
+              role: bpp
+      # Signature first, so a forged payload is dropped at minimum cost.
+      # Schema before any transform, so JSONata can assume a well-formed
+      # Beckn message.
+      steps:
+        - validateSign
+        - addRoute
+        - validateSchema
+        - signAck
+
+  # ---------- Outbound: this provider -> BAP ----------
+  - name: weatherTxnCaller
+    path: /weather/caller/
+    handler:
+      type: std
+      role: bpp
+      subscriberId: weather-bpp-1
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        cache:
+          id: cache
+          config:
+            addr: localhost:6379
+        registry:
+          id: registry
+          config:
+            url: http://localhost:8090/reg
+            retry_max: 3
+            retry_wait_min: 100ms
+            retry_wait_max: 500ms
+        keyManager:
+          id: simplekeymanager
+          config:
+            subscriberId: weather-bpp-1
+            keyId: weather-bpp-1-key
+            signingPrivateKey: NQqkoioeOpKO9kRQJvbv18nhQ9KCMg6AbLgBSZ1cMlA=
+            signingPublicKey: HSY4v7yiC+JeUzanhJ+3f8cRcL34mnfn69GnoRTNlHk=
+            encrPrivateKey: NQqkoioeOpKO9kRQJvbv18nhQ9KCMg6AbLgBSZ1cMlA=
+            encrPublicKey: HSY4v7yiC+JeUzanhJ+3f8cRcL34mnfn69GnoRTNlHk=
+        schemaValidator:
+          id: schemavalidator
+          config:
+            schemaDir: ./schemas
+        signer:
+          id: signer
+        router:
+          id: router
+          config:
+            routingConfig: ./config/weather-bpp/weatherTxnCaller-routing.yaml
+        payloadTransformer:
+          id: reqmapper
+          config:
+            role: bpp
+            mappingsFile: ./config/weather-bpp/weather-mappings.yaml
+      # Inverted: the payload arrives in OpenWeatherMap's shape, so it must
+      # become Beckn before it can be validated as Beckn.
+      steps:
+        - transformPayload
+        - validateSchema
+        - addRoute
+        - sign

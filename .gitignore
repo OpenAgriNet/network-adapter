@@ -145,7 +145,7 @@ coverage.out
 coverage.html
 
 # Ignore the schema directory used for testing
-/schemas/
+# /schemas/
 # Generated files
 .env.vault
 server
@@ -162,3 +162,20 @@ test_request.json
 
 # catalogPublish handler's local output root (config/local-beckn-one-bap.yaml)
 /catalog/
+
+# Local docs, design notes and scratch files (not part of the project)
+docs/
+*_DESIGN.md
+*_NOTES.md
+*_PLAN.md
+scratch/
+tmp/
+*.bak
+
+# macOS archive/metadata junk
+__MACOSX/
+__MACOSX/**
+._*
+.AppleDouble
+.LSOverride
+open-weather
