@@ -1,0 +1,10 @@
+# Boundary-layer download cache: ~500 MB and fully re-downloadable by re-running
+# join_geometry.py. Never commit this.
+data/areas/.cache/
+
+# Optional polygon export, written only with --with-geometry: 335 MB.
+boundaries.geojsonl
+
+# Bytecode from importing the modules directly, e.g. when spot-checking a
+# geometry helper in a REPL.
+__pycache__/
