@@ -11,11 +11,15 @@
 #     -t network-adapter:dev .
 #
 # Tags verified against github.com/docker-hardened-images/catalog
-# image/golang/debian-12/1.26-dev.yaml and image/debian-base/debian-12/12.yaml.
-# No cgo here, but the -dev variant's gcc/g++/make come bundled regardless —
-# nothing extra to install for either the default or the public override.
+# image/golang/debian-12/1.26-dev.yaml and image/static/debian-12/static-glibc.yaml.
+# No cgo *required* for the plain build, but the adapter loads plugin .so
+# files at runtime via Go's `plugin` package, which needs cgo and a real
+# glibc dynamic linker regardless — so this stays a normal dynamic build, not
+# -extldflags '-static'. The -dev variant's gcc/g++/make come bundled
+# regardless — nothing extra to install for either the default or the public
+# override.
 ARG BUILD_IMAGE=dhi.io/golang:1.26-debian12-dev
-ARG RUNTIME_IMAGE=dhi.io/debian-base:bookworm
+ARG RUNTIME_IMAGE=dhi.io/static:20250419-glibc-debian12
 
 FROM ${BUILD_IMAGE} AS builder
 
@@ -34,10 +38,11 @@ ARG BUILD_DATE=unknown
 
 RUN go build -ldflags "-X github.com/beckn-one/beckn-onix/pkg/version.Version=${ONIX_VERSION} -X github.com/beckn-one/beckn-onix/pkg/version.GitCommit=${GIT_COMMIT} -X github.com/beckn-one/beckn-onix/pkg/version.GitTreeState=${GIT_TREE_STATE} -X github.com/beckn-one/beckn-onix/pkg/version.BuildDate=${BUILD_DATE}" -o server cmd/adapter/main.go
 
-# Debian-based hardened runtime, run-as nonroot by default — kept explicit
+# glibc-only runtime — no shell, no perl/ncurses/util-linux (the packages
+# that were carrying unpatched CVEs on the fuller debian-base image), but
+# keeps libc6 so plugin.Open's dynamic linking still works. Explicit USER
 # below since RUNTIME_IMAGE can be overridden to wolfi-base, which uses the
-# same uid 65532 convention. A shell is required here: CMD below needs
-# `sh -c` to expand $CONFIG_FILE.
+# same uid 65532 convention.
 FROM ${RUNTIME_IMAGE}
 WORKDIR /app
 
@@ -45,4 +50,6 @@ COPY --from=builder /workspace/app/server .
 
 EXPOSE 8080
 USER 65532:65532
-CMD ["sh", "-c", "./server --config=${CONFIG_FILE}"]
+# Exec form, not `sh -c` — this base has no shell. main.go reads CONFIG_FILE
+# itself as the --config default, so no shell expansion is needed here.
+ENTRYPOINT ["/app/server"]
