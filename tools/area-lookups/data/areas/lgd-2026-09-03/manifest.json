@@ -1,18 +1,18 @@
 {
-  "snapshot_date": "2026-09-02",
-  "lgd_snapshot": "02Sep2026",
+  "snapshot_date": "2026-09-03",
+  "lgd_snapshot": "03Sep2026",
   "generated_by": "build_areas.py",
   "provenance": "https://lgdirectory.gov.in/ (via https://github.com/ramSeraph/opendata, GODL-India)",
   "components": {
-    "states": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/states.02Sep2026.csv.7z",
-    "districts": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/districts.02Sep2026.csv.7z",
-    "subdistricts": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/subdistricts.02Sep2026.csv.7z",
-    "pincode_villages": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/pincode_villages.02Sep2026.csv.7z"
+    "states": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/states.03Sep2026.csv.7z",
+    "districts": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/districts.03Sep2026.csv.7z",
+    "subdistricts": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/subdistricts.03Sep2026.csv.7z",
+    "pincode_villages": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/pincode_villages.03Sep2026.csv.7z"
   },
-  "row_count": 25097,
+  "row_count": 25140,
   "rows_by_level": {
     "Country": 1,
-    "State": 36,
+    "State": 79,
     "District": 784,
     "Block": 7092,
     "PostalCode": 17184
@@ -44,43 +44,48 @@
         "total": 1,
         "matched": 1,
         "inherited": 0,
+        "alias": 0,
         "empty": 0
       },
       "State": {
-        "total": 36,
+        "total": 79,
         "matched": 36,
         "inherited": 0,
+        "alias": 43,
         "empty": 0
       },
       "District": {
         "total": 784,
         "matched": 728,
         "inherited": 56,
+        "alias": 0,
         "empty": 0
       },
       "Block": {
         "total": 7092,
         "matched": 0,
         "inherited": 7092,
+        "alias": 0,
         "empty": 0
       },
       "PostalCode": {
         "total": 17184,
         "matched": 0,
         "inherited": 17184,
+        "alias": 0,
         "empty": 0
       }
     },
     "name_drift_count": 117,
     "parent_containment_check": {
-      "checked": 764,
+      "checked": 807,
       "violations": 0,
       "outliers": []
     },
     "polygons": {
       "file": "areas.geojsonl",
-      "features": 764,
-      "size_bytes": 11352745,
+      "features": 807,
+      "size_bytes": 14289483,
       "simplify_tolerance_deg": 0.001,
       "join_key": [
         "code_scheme",
@@ -96,6 +101,12 @@
       "max_area_error_fraction": 0.002323,
       "max_bbox_shift_deg": 0.000921,
       "note": "Simplified outlines. Use --with-geometry for full fidelity."
+    },
+    "aliases": {
+      "rows": 43,
+      "outlines_repeated": 43,
+      "broken_targets": [],
+      "cyclic_chains": []
     }
   }
 }

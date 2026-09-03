@@ -31,7 +31,7 @@ EXPECTED_COLUMNS = [
     "snapshot_date", "source_url",
     "latitude", "longitude", "point_method",
     "bbox_west", "bbox_south", "bbox_east", "bbox_north",
-    "geometry_source", "boundary_vintage", "has_polygon",
+    "geometry_source", "boundary_vintage", "has_polygon", "same_as",
 ]
 
 LEVELS = {"Country", "State", "District", "Block", "Village", "PostalCode"}
@@ -231,6 +231,96 @@ def check_parents(rows, keys, rep):
               sample(mismatched))
 
 
+def check_aliases(rows, areas_dir, rep):
+    """Judge the alias rows, whose whole promise is that they need no follow-up.
+
+    An ISO-3166-2 row exists so a publisher using ISO codes resolves to the
+    same geometry as one using LGD. That promise is only kept if the alias row
+    carries the geometry itself, so the test that matters is not "does same_as
+    point somewhere" but "would a consumer that ignores same_as entirely still
+    get the right answer". Everything below is written from that angle.
+    """
+    by_key = {}
+    for r in rows:
+        by_key[f'{r["code_scheme"]}/{r["area_code"]}/{r["area_level"]}'] = r
+    aliases = [r for r in rows if r.get("same_as")]
+    if not aliases:
+        rep.warn("no alias rows present",
+                 "an ISO-3166-2 reference will not resolve")
+        return 0
+
+    geo = ["latitude", "longitude", "bbox_west", "bbox_south",
+           "bbox_east", "bbox_north", "has_polygon"]
+    unresolved, cyclic, mismatch, empty, selfref = [], [], [], [], []
+
+    for r in aliases:
+        tag = f'{r["code_scheme"]}/{r["area_code"]}/{r["area_level"]}'
+        if r["same_as"] == tag:
+            selfref.append(tag)
+            continue
+
+        # A cycle and a dangling target are different faults and are reported
+        # separately: every row in a cycle exists, so calling it unresolved
+        # would send a reader looking for a missing row that is not missing.
+        seen, cur, looped = set(), r, False
+        while cur is not None and cur.get("same_as"):
+            key = cur["same_as"]
+            if key in seen or len(seen) > 4:
+                looped = True
+                break
+            seen.add(key)
+            cur = by_key.get(key)
+        if looped:
+            cyclic.append(tag)
+            continue
+        if cur is None:
+            unresolved.append(f'{tag} -> {r["same_as"]}')
+            continue
+
+        # The substantive check: an alias must already hold what its target
+        # holds, because the plugin is not going to walk the chain.
+        diff = [c for c in geo if r[c] != cur[c]]
+        if diff:
+            mismatch.append(f'{tag} differs from {r["same_as"]} in '
+                            f'{",".join(diff)}')
+        if not r["latitude"]:
+            empty.append(tag)
+
+    rep.check(not selfref, "no alias points at itself", sample(selfref))
+    rep.check(not unresolved, "every same_as resolves to a real row",
+              sample(unresolved))
+    rep.check(not cyclic, "no same_as chain cycles or runs too deep",
+              sample(cyclic))
+    rep.check(not mismatch,
+              "alias geometry is copied, not referenced", sample(mismatch))
+    rep.check(not empty, "no alias row was left without a coordinate",
+              sample(empty))
+
+    # And the outline has to be reachable under the alias's own key too, or
+    # has_polygon=true is a promise areas.geojsonl does not keep.
+    path = areas_dir / "areas.geojsonl"
+    if path.exists():
+        present = set()
+        for line in open(path, encoding="utf-8"):
+            if not line.strip():
+                continue
+            try:
+                pr = json.loads(line).get("properties", {})
+            except json.JSONDecodeError:
+                continue
+            present.add(f'{pr.get("code_scheme")}/{pr.get("area_code")}/'
+                        f'{pr.get("area_level")}')
+        absent = [f'{r["code_scheme"]}/{r["area_code"]}/{r["area_level"]}'
+                  for r in aliases if r["has_polygon"] == "true"
+                  and f'{r["code_scheme"]}/{r["area_code"]}/'
+                      f'{r["area_level"]}' not in present]
+        rep.check(not absent,
+                  "every alias claiming a polygon has one under its own key",
+                  sample(absent))
+
+    return len(aliases)
+
+
 def check_polygons(rows, areas_dir, rep):
     path = areas_dir / "areas.geojsonl"
     flags = {r["has_polygon"] for r in rows}
@@ -338,10 +428,12 @@ def main():
     check_coordinates(rows, rep)
     check_parents(rows, keys, rep)
     polys = check_polygons(rows, areas_dir, rep)
+    nalias = check_aliases(rows, areas_dir, rep)
 
     print(f"{areas_csv}")
     print(f"  {len(rows):,} rows, {len(columns)} columns"
-          + (f", {polys:,} polygons" if polys else ""))
+          + (f", {polys:,} polygons" if polys else "")
+          + (f", {nalias:,} alias rows" if nalias else ""))
     print(f"  {rep.checks} checks run")
 
     if rep.warnings:

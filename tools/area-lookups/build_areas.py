@@ -72,6 +72,7 @@ OUT_COLUMNS = [
     "geometry_source",   # which boundary layer supplied the point
     "boundary_vintage",
     "has_polygon",       # is a real outline present in areas.geojsonl?
+    "same_as",           # provenance only: canonical key an alias row mirrors
 ]
 
 
@@ -209,8 +210,53 @@ PARENT_LEVEL = {"State": "Country", "District": "State", "Block": "District",
                 "PostalCode": "District", "Village": "Block"}
 
 
+# ISO-3166-2:IN -> LGD state code.
+#
+# Publishers reach for ISO codes because they are short and internationally
+# recognised: every example in the OpenAgriNet schema packs that names a State
+# uses ISO-3166-2, never LGD. The lookup matches on
+# (code_scheme, area_code, area_level), so without these rows an ISO reference
+# matches nothing at all and the plugin publishes no geometry for it.
+#
+# ISO assigns codes to States and Union Territories only, so this is the entire
+# crosswalk. There is nothing below State to translate.
+#
+# Verified against ISO 3166-2:IN as of 2023-11-23, the most recent amendment.
+# 28 states + 8 union territories = 36.
+ISO_3166_2 = {
+    "IN-AN": "35", "IN-AP": "28", "IN-AR": "12", "IN-AS": "18",
+    "IN-BR": "10", "IN-CG": "22", "IN-CH": "4",  "IN-DH": "38",
+    "IN-DL": "7",  "IN-GA": "30", "IN-GJ": "24", "IN-HP": "2",
+    "IN-HR": "6",  "IN-JH": "20", "IN-JK": "1",  "IN-KA": "29",
+    "IN-KL": "32", "IN-LA": "37", "IN-LD": "31", "IN-MH": "27",
+    "IN-ML": "17", "IN-MN": "14", "IN-MP": "23", "IN-MZ": "15",
+    "IN-NL": "13", "IN-OD": "21", "IN-PB": "3",  "IN-PY": "34",
+    "IN-RJ": "8",  "IN-SK": "11", "IN-TN": "33", "IN-TR": "16",
+    "IN-TS": "36", "IN-UK": "5",  "IN-UP": "9",  "IN-WB": "19",
+}
+
+# Codes ISO has withdrawn, carried because publishers still send them. This
+# repository is itself an example: two of its files use IN-TG, retired in
+# favour of IN-TS in November 2023, and one uses IN-TS, so a snapshot that
+# accepted only current codes would fail on the specs' own examples.
+#
+# Each points at its current code rather than straight at LGD. That extra hop
+# is what records the row as superseded rather than merely an alternative
+# spelling, and it costs the plugin nothing, because stage 2 copies geometry
+# onto every one of these rows.
+ISO_3166_2_WITHDRAWN = {
+    "IN-TG": "IN-TS",   # Telangana, withdrawn 2023-11-23
+    "IN-UT": "IN-UK",   # Uttarakhand, withdrawn 2023-11-23
+    "IN-UL": "IN-UK",   # Uttarakhand as Uttaranchal, withdrawn 2011-12-13
+    "IN-OR": "IN-OD",   # Odisha as Orissa, withdrawn 2014-10-30
+    "IN-CT": "IN-CG",   # Chhattisgarh, withdrawn 2002-08-20
+    "IN-DN": "IN-DH",   # Dadra and Nagar Haveli, merged 2020-11-11
+    "IN-DD": "IN-DH",   # Daman and Diu, merged 2020-11-11
+}
+
+
 def row_out(scheme, code, level, name, parent_scheme="", parent_code="",
-            census="", date="", url=""):
+            census="", date="", url="", same_as=""):
     return {
         "code_scheme": scheme,
         "area_code": code,
@@ -232,6 +278,7 @@ def row_out(scheme, code, level, name, parent_scheme="", parent_code="",
         "geometry_source": "",
         "boundary_vintage": "",
         "has_polygon": "",
+        "same_as": same_as,
     }
 
 
@@ -252,15 +299,47 @@ def build(date, outdir, with_villages):
                             date=date, url="static"))
 
         # --- states ---
+        state_names = {}
         for r in read_csv(files["states"]):
             code = pick(r, "State Code")
             if not code:
                 continue
+            name = pick(r, "State Name (In English)", "State Name")
+            state_names[code] = name
             rows.append(row_out(
-                "LGD", code, "State",
-                pick(r, "State Name (In English)", "State Name"),
+                "LGD", code, "State", name,
                 "ISO-3166-1", "IN",
                 pick(r, "Census 2011 Code"), date, sources["states"]))
+
+        # --- ISO-3166-2 alias rows ---
+        #
+        # Names come from LGD rather than from ISO so that both spellings of a
+        # state agree with the rest of the file. Where the mapped state is
+        # missing from the snapshot the row is dropped and reported, because a
+        # code pointing at nothing is worse than a code that is absent.
+        missing = []
+        for iso, lgd in sorted(ISO_3166_2.items()):
+            if lgd not in state_names:
+                missing.append(f"{iso}->LGD/{lgd}")
+                continue
+            rows.append(row_out(
+                "ISO-3166-2", iso, "State", state_names[lgd],
+                "ISO-3166-1", "IN", "", date, "static",
+                same_as=f"LGD/{lgd}/State"))
+        for old_code, cur in sorted(ISO_3166_2_WITHDRAWN.items()):
+            lgd = ISO_3166_2.get(cur, "")
+            if lgd not in state_names:
+                missing.append(f"{old_code}->{cur}")
+                continue
+            rows.append(row_out(
+                "ISO-3166-2", old_code, "State", state_names[lgd],
+                "ISO-3166-1", "IN", "", date, "static",
+                same_as=f"ISO-3166-2/{cur}/State"))
+        log(f"ISO-3166-2           {len(ISO_3166_2)} current + "
+            f"{len(ISO_3166_2_WITHDRAWN)} withdrawn codes")
+        if missing:
+            log(f"  WARNING: {len(missing)} ISO codes map to states absent "
+                f"from this snapshot: {', '.join(missing)}")
 
         # --- districts ---
         for r in read_csv(files["districts"]):

@@ -725,7 +725,8 @@ def run(source, gazdir, cache, with_geometry, inherit, simplify):
     stats = {}
     for r in rows:
         stats.setdefault(r["area_level"],
-                         {"total": 0, "matched": 0, "inherited": 0, "empty": 0})
+                         {"total": 0, "matched": 0, "inherited": 0,
+                          "alias": 0, "empty": 0})
         stats[r["area_level"]]["total"] += 1
 
     # Pass 1: direct joins on the LGD code carried in the boundary layer.
@@ -764,6 +765,14 @@ def run(source, gazdir, cache, with_geometry, inherit, simplify):
     # descendants copy that point.
     polygons = write_polygons(conf, gazdir, cache, rows, simplify, resolved)
 
+    # Alias rows are filled from their canonical row here, for the ordering
+    # reasons in fill_aliases: after the points are final, before inheritance
+    # would hand an ISO-3166-2 state a country-level coordinate.
+    aliases = fill_aliases(gazdir, rows)
+    for r in rows:
+        if r.get("same_as") and r["latitude"]:
+            stats[r["area_level"]]["alias"] += 1
+
     # Pass 3: inherit downward for anything still unresolved.
     #
     # This walks parent-to-child in level order so it completes in one sweep. A
@@ -800,11 +809,18 @@ def run(source, gazdir, cache, with_geometry, inherit, simplify):
         w.writeheader()
         w.writerows(rows)
 
+    # Restated after the alias pass: write_polygons measures the file before
+    # the alias outlines are appended, so its figure would understate it.
+    geojsonl = gazdir / "areas.geojsonl"
+    if geojsonl.exists() and polygons.get("features"):
+        polygons["size_bytes"] = geojsonl.stat().st_size
+        polygons["features"] += aliases.get("outlines_repeated", 0)
+
     containment = check_containment(rows)
     if with_geometry:
         write_geometry(conf, gazdir, cache, rows)
     update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
-                    inherit, containment, polygons)
+                    inherit, containment, polygons, aliases)
     report(areas_csv, stats, drift, conf, containment, polygons)
     return stats
 
@@ -868,6 +884,120 @@ def check_containment(rows):
         })
     outliers.sort(key=lambda o: -o["km_outside_parent_bbox"])
     return {"checked": checked, "violations": len(outliers), "outliers": outliers}
+
+
+def fill_aliases(gazdir, rows):
+    """Copy geometry onto alias rows, and repeat their outline under their key.
+
+    The whole point of an alias row is that a publisher sending ISO-3166-2 gets
+    the same answer as one sending LGD. Doing that by reference would push
+    same_as resolution into every consumer; doing it by copy keeps the lookup a
+    single exact match on (code_scheme, area_code, area_level), which is all
+    the ONIX plugin should have to implement. same_as survives in the CSV for
+    provenance and for validation, not because anything needs to follow it.
+
+    Runs after write_polygons, so the point it copies is the corrected one, and
+    before inheritance, so an ISO row takes its state's real geometry instead
+    of inheriting a country-level point from ISO-3166-1/IN.
+    """
+    aliases = [r for r in rows if r.get("same_as")]
+    if not aliases:
+        return {"rows": 0}
+
+    by_key = {}
+    for r in rows:
+        by_key[f'{r["code_scheme"]}/{r["area_code"]}/{r["area_level"]}'] = r
+
+    # Resolve each chain to the row that actually owns geometry. A withdrawn ISO
+    # code points at a current one, which points at LGD, so two hops is the
+    # legitimate maximum; more than that is a build error, not a hierarchy.
+    resolved_to, broken, cyclic = {}, [], []
+    for r in aliases:
+        seen, cur = set(), r
+        while cur is not None and cur.get("same_as"):
+            key = cur["same_as"]
+            if key in seen or len(seen) > 4:
+                cyclic.append(f'{r["code_scheme"]}/{r["area_code"]}')
+                cur = None
+                break
+            seen.add(key)
+            nxt = by_key.get(key)
+            if nxt is None:
+                broken.append(f'{r["code_scheme"]}/{r["area_code"]} -> {key}')
+                cur = None
+                break
+            cur = nxt
+        if cur is not None and cur is not r:
+            resolved_to[id(r)] = cur
+
+    # One pass over the outlines, keeping only the geometries an alias needs.
+    # 43 state polygons is a few MB; holding the whole file would not be.
+    wanted = set()
+    for r in aliases:
+        tgt = resolved_to.get(id(r))
+        if tgt is not None and tgt.get("has_polygon") == "true":
+            wanted.add(f'{tgt["code_scheme"]}/{tgt["area_code"]}/'
+                       f'{tgt["area_level"]}')
+
+    geoms = {}
+    out = gazdir / "areas.geojsonl"
+    if wanted and out.exists():
+        for line in open(out, encoding="utf-8"):
+            if not line.strip():
+                continue
+            feat = json.loads(line)
+            pr = feat.get("properties", {})
+            key = f'{pr.get("code_scheme")}/{pr.get("area_code")}/' \
+                  f'{pr.get("area_level")}'
+            if key in wanted:
+                geoms[key] = feat
+
+    filled = with_poly = 0
+    with open(out, "a", encoding="utf-8") as fout:
+        for r in aliases:
+            tgt = resolved_to.get(id(r))
+            if tgt is None:
+                continue
+            for col in GEO_COLUMNS:
+                r[col] = tgt[col]
+            filled += 1
+
+            key = f'{tgt["code_scheme"]}/{tgt["area_code"]}/' \
+                  f'{tgt["area_level"]}'
+            feat = geoms.get(key)
+            if feat is None:
+                # No outline to copy, so the flag has to come back down or the
+                # CSV would promise a feature this file does not contain.
+                r["has_polygon"] = "false"
+                continue
+            fout.write(json.dumps({
+                "type": "Feature",
+                "properties": {"code_scheme": r["code_scheme"],
+                               "area_code": r["area_code"],
+                               "area_level": r["area_level"],
+                               "area_name": r["area_name"],
+                               "geometry_source":
+                                   feat["properties"].get("geometry_source",
+                                                          ""),
+                               "same_as": r["same_as"]},
+                "geometry": feat["geometry"],
+            }, separators=(",", ":")) + "\n")
+            with_poly += 1
+
+    log(f"aliases              {filled:,} rows given geometry, "
+        f"{with_poly:,} outlines repeated")
+    if broken:
+        log(f"  {len(broken):,} same_as targets do not exist: "
+            f"{', '.join(broken[:5])}" + (" ..." if len(broken) > 5 else ""))
+    if cyclic:
+        log(f"  {len(cyclic):,} same_as chains cycle or run too deep: "
+            f"{', '.join(cyclic[:5])}" + (" ..." if len(cyclic) > 5 else ""))
+    return {
+        "rows": filled,
+        "outlines_repeated": with_poly,
+        "broken_targets": broken,
+        "cyclic_chains": cyclic,
+    }
 
 
 def write_polygons(conf, gazdir, cache, rows, tolerance, resolved):
@@ -1065,7 +1195,7 @@ def write_geometry(conf, gazdir, cache, rows):
 
 
 def update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
-                    inherit, containment, polygons):
+                    inherit, containment, polygons, aliases):
     path = gazdir / "manifest.json"
     m = json.loads(path.read_text()) if path.exists() else {}
     m["geometry_populated"] = True
@@ -1090,21 +1220,24 @@ def update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
         "name_drift_count": len(drift),
         "parent_containment_check": containment,
         "polygons": polygons,
+        "aliases": aliases,
     }
     path.write_text(json.dumps(m, indent=2) + "\n")
 
 
 def report(areas_csv, stats, drift, conf, containment, polygons):
     print(f"\n{areas_csv}")
-    print(f"\n{'level':<12}{'rows':>8}{'joined':>9}{'inherited':>11}"
-          f"{'empty':>8}{'joined %':>10}")
+    print(f"\n{'level':<12}{'rows':>8}{'joined':>9}{'alias':>8}"
+          f"{'inherited':>11}{'empty':>8}{'joined %':>10}")
     for level in LEVEL_ORDER + [k for k in stats if k not in LEVEL_ORDER]:
         s = stats.get(level)
         if not s:
             continue
-        pct = 100.0 * s["matched"] / s["total"] if s["total"] else 0.0
+        own = s["total"] - s.get("alias", 0)
+        pct = 100.0 * s["matched"] / own if own else 0.0
         print(f"{level:<12}{s['total']:>8,}{s['matched']:>9,}"
-              f"{s['inherited']:>11,}{s['empty']:>8,}{pct:>9.1f}%")
+              f"{s.get('alias', 0):>8,}{s['inherited']:>11,}"
+              f"{s['empty']:>8,}{pct:>9.1f}%")
 
     c = containment
     if c["checked"]:
