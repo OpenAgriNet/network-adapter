@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -131,15 +132,37 @@ def extract(archive, dest):
     sys.exit("need bsdtar or 7z to extract .7z archives")
 
 
+def fetch_to_file(url, dest, what, attempts=3):
+    """Download url to dest, retrying transient network failures.
+
+    A refresh pulls several large archives from a CDN, and a single dropped
+    TLS connection would otherwise abort the whole run. HTTP status errors are
+    not retried: a 404 means the asset genuinely is not published, and asking
+    again will not change that.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "oan-gazetteer"})
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            return
+        except urllib.error.HTTPError as e:
+            sys.exit(f"{what} not available ({e.code}): {url}")
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            dest.unlink(missing_ok=True)   # never leave a partial file behind
+            if attempt == attempts:
+                sys.exit(f"{what}: download failed after {attempts} attempts "
+                         f"({e}): {url}")
+            wait = 2 ** attempt
+            log(f"{what}: {e} - retrying in {wait}s "
+                f"({attempt}/{attempts - 1} retries used)")
+            time.sleep(wait)
+
+
 def download_component(component, date, workdir):
     url = f"{BASE}/{component}.{date}.csv.7z"
     archive = workdir / f"{component}.7z"
-    req = urllib.request.Request(url, headers={"User-Agent": "oan-gazetteer"})
-    try:
-        with urllib.request.urlopen(req, timeout=300) as r, open(archive, "wb") as f:
-            shutil.copyfileobj(r, f)
-    except urllib.error.HTTPError as e:
-        sys.exit(f"{component} {date} not available ({e.code}): {url}")
+    fetch_to_file(url, archive, f"{component} {date}")
 
     extract(archive, workdir)
     csvs = list(workdir.glob(f"{component}.{date}.csv"))

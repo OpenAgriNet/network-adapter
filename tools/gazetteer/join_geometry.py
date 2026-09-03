@@ -42,6 +42,7 @@ import math
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -375,13 +376,24 @@ def ensure_layer(tag, stem, cache):
     if not archive.exists():
         url = f"{BASE}/{tag}/{stem}.geojsonl.7z"
         req = urllib.request.Request(url, headers={"User-Agent": "oan-gazetteer"})
-        try:
-            with urllib.request.urlopen(req, timeout=900) as r, open(archive, "wb") as f:
-                shutil.copyfileobj(r, f)
-        except urllib.error.HTTPError as e:
-            sys.exit(f"{stem} not available ({e.code}): {url}")
-        except urllib.error.URLError as e:
-            sys.exit(f"{stem} download failed: {e}")
+        # Retry transient failures. These layers are up to 263 MB, so a dropped
+        # connection part-way through is likely enough to be worth handling
+        # rather than aborting a refresh that has already done real work.
+        for attempt in range(1, 4):
+            try:
+                with urllib.request.urlopen(req, timeout=900) as r, \
+                        open(archive, "wb") as f:
+                    shutil.copyfileobj(r, f)
+                break
+            except urllib.error.HTTPError as e:
+                sys.exit(f"{stem} not available ({e.code}): {url}")
+            except (urllib.error.URLError, TimeoutError, OSError) as e:
+                archive.unlink(missing_ok=True)
+                if attempt == 3:
+                    sys.exit(f"{stem}: download failed after 3 attempts ({e})")
+                wait = 2 ** attempt
+                log(f"{stem}: {e} - retrying in {wait}s")
+                time.sleep(wait)
         log(f"{stem:<20} downloaded {archive.stat().st_size / 1e6:,.1f} MB")
 
     extract(archive, cache)
