@@ -1,0 +1,81 @@
+{
+  "snapshot_date": "2026-09-02",
+  "lgd_snapshot": "02Sep2026",
+  "generated_by": "build_gazetteer.py",
+  "provenance": "https://lgdirectory.gov.in/ (via https://github.com/ramSeraph/opendata, GODL-India)",
+  "components": {
+    "states": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/states.02Sep2026.csv.7z",
+    "districts": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/districts.02Sep2026.csv.7z",
+    "subdistricts": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/subdistricts.02Sep2026.csv.7z",
+    "pincode_villages": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/pincode_villages.02Sep2026.csv.7z"
+  },
+  "row_count": 25097,
+  "rows_by_level": {
+    "Country": 1,
+    "State": 36,
+    "District": 784,
+    "Block": 7092,
+    "PostalCode": 17184
+  },
+  "geometry_populated": true,
+  "notes": "Codes only. Geometry columns are filled by join_geometry.py, which adds a `geometry` block to this manifest recording the boundary source, its licence and the coverage achieved.",
+  "geometry": {
+    "source": "soi",
+    "source_label": "Survey of India",
+    "licence": "open",
+    "upstream": "https://onlinemaps.surveyofindia.gov.in/Digital_Product_Show.aspx",
+    "note": "SOI_Subdistricts carries no LGD code, so Block cannot be joined from this source.",
+    "mirror": "https://github.com/ramSeraph/indian_admin_boundaries/releases",
+    "layers": {
+      "State": {
+        "asset": "SOI_States",
+        "vintage": "2023-12-11"
+      },
+      "District": {
+        "asset": "SOI_Districts",
+        "vintage": "2023-12-11"
+      }
+    },
+    "join_key": "LGD code carried in the boundary layer; names are never used to join",
+    "point_definition": "Area-weighted centroid computed on lon/lat as a plane, holes subtracted. If that point falls outside the shape, an interior point near the largest part's centroid is substituted. See point_method per row.",
+    "parent_inheritance": true,
+    "coverage": {
+      "Country": {
+        "total": 1,
+        "matched": 1,
+        "inherited": 0,
+        "empty": 0
+      },
+      "State": {
+        "total": 36,
+        "matched": 36,
+        "inherited": 0,
+        "empty": 0
+      },
+      "District": {
+        "total": 784,
+        "matched": 728,
+        "inherited": 56,
+        "empty": 0
+      },
+      "Block": {
+        "total": 7092,
+        "matched": 0,
+        "inherited": 7092,
+        "empty": 0
+      },
+      "PostalCode": {
+        "total": 17184,
+        "matched": 0,
+        "inherited": 17184,
+        "empty": 0
+      }
+    },
+    "name_drift_count": 117,
+    "parent_containment_check": {
+      "checked": 764,
+      "violations": 0,
+      "outliers": []
+    }
+  }
+}
