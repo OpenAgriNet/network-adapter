@@ -18,6 +18,34 @@ output is not usable, so the refresh is gated on it.
 Add `--source lgd` to `join_geometry.py` for Block coordinates and 6,967
 polygons.
 
+## Integrate
+
+Cache both files at startup as maps keyed on
+`(code_scheme, area_code, area_level)`. Then per `AdministrativeAreaReference`:
+
+1. **Key on those three fields only.** Ignore `areaName` — 117 areas are
+   spelled differently upstream. A missing `areaLevel` is safe to infer for
+   `ISO-3166-1` (Country), `ISO-3166-2` (State) and `IN-PIN` (PostalCode);
+   never for `LGD`, whose codes repeat across levels.
+2. Look the key up in `areas.csv`.
+3. If `has_polygon` is `true`, return `areas.geojsonl[key]` — already a valid
+   Beckn `GeoJSONGeometry`, no conversion needed.
+4. Otherwise fall back to the point, but only if `point_method` is not
+   `inherited:*`, which is an ancestor's coordinate rather than this area's.
+   GeoJSON order is `[longitude, latitude]`.
+5. Append the geometry as a new `coverageAreas` item; keep the coded one, since
+   each item is a `oneOf`.
+
+```python
+key = (ref["codeScheme"], ref["areaCode"], ref["areaLevel"])
+row = areas[key]                                    # areas.csv
+geom = shapes[key] if row["has_polygon"] == "true" else None
+```
+
+`same_as` needs no handling: alias rows carry their own copy of the geometry.
+Skip them only if you scan every feature instead of looking up a key, or a
+state will match twice.
+
 ---
 
 # Appendix — sources and columns
@@ -40,27 +68,15 @@ Two files, joined on the same `(code_scheme, area_code, area_level)` key:
 unique within a level, not across levels, and 765 codes in this file name a
 State, a District and a Block at once.
 
-## Resolving an ISO-3166-2 code
+Every state is present under both schemes — `ISO-3166-2/IN-KA/State` alongside
+`LGD/29/State` — because every OpenAgriNet example that names a State uses ISO
+codes. The 7 codes ISO has withdrawn are carried too, as publishers still send
+them. ISO codes States and Union Territories only, so District and Block stay
+LGD-only.
 
-Every OpenAgriNet example that names a State uses `ISO-3166-2` rather than
-`LGD`, so the file carries a row per state under both schemes: `IN-KA/State`
-alongside `LGD/29/State`. The 7 codes ISO has withdrawn are present too, since
-publishers still send them — `IN-TG` was retired in favour of `IN-TS` in
-November 2023, and this repository's own examples used it.
-
-An alias row holds its **own copy** of the point, box and outline, identical to
-the row it mirrors. That is deliberate: a consumer resolving an ISO code does
-one exact-match lookup on `(code_scheme, area_code, area_level)` and is done.
-Nothing has to follow `same_as`, which exists to record where the geometry came
-from and to let `validate.py` prove the copy has not drifted.
-
-The cost is that the 43 state outlines appear twice in `areas.geojsonl`, which
-is 2.9 MB of its 14.3 MB. Code scanning every feature for containment should
-therefore skip rows with a non-empty `same_as`, or it will report the same
-state twice.
-
-ISO assigns codes to States and Union Territories only, so District and Block
-remain LGD-only. There is nothing below State to translate.
+Those alias rows duplicate their state's outline, 2.9 MB of the 14.3 MB file.
+`same_as` records which row an alias mirrors, and `validate.py` proves the copy
+has not drifted.
 
 `has_polygon` says whether an outline exists, so a consumer can tell from the
 CSV alone without opening the second file. It is `false` for PostalCode at every
