@@ -1,4 +1,23 @@
-FROM golang:1.26.1-bookworm AS builder
+# syntax=docker/dockerfile:1
+
+# DHI (Docker Hardened Images) requires `docker login dhi.io` first — a Docker
+# subscription credential this build cannot supply. Both stages default to it
+# because it's what CI and every shipped image use, but a local build without
+# that subscription can override both build-args with public equivalents:
+#
+#   docker build -f Dockerfile.adapter \
+#     --build-arg BUILD_IMAGE=golang:1.26.1-bookworm \
+#     --build-arg RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base:latest \
+#     -t network-adapter:dev .
+#
+# Tags verified against github.com/docker-hardened-images/catalog
+# image/golang/debian-12/1.26-dev.yaml and image/debian-base/debian-12/12.yaml.
+# No cgo here, but the -dev variant's gcc/g++/make come bundled regardless —
+# nothing extra to install for either the default or the public override.
+ARG BUILD_IMAGE=dhi.io/golang:1.26-debian12-dev
+ARG RUNTIME_IMAGE=dhi.io/debian-base:bookworm
+
+FROM ${BUILD_IMAGE} AS builder
 
 WORKDIR /workspace/app
 COPY cmd/adapter  ./cmd/adapter
@@ -15,16 +34,15 @@ ARG BUILD_DATE=unknown
 
 RUN go build -ldflags "-X github.com/beckn-one/beckn-onix/pkg/version.Version=${ONIX_VERSION} -X github.com/beckn-one/beckn-onix/pkg/version.GitCommit=${GIT_COMMIT} -X github.com/beckn-one/beckn-onix/pkg/version.GitTreeState=${GIT_TREE_STATE} -X github.com/beckn-one/beckn-onix/pkg/version.BuildDate=${BUILD_DATE}" -o server cmd/adapter/main.go
 
-# Create a minimal runtime image
-FROM cgr.dev/chainguard/wolfi-base:latest
-# ✅ Alpine is removed; using minimal Debian
+# Debian-based hardened runtime, run-as nonroot by default — kept explicit
+# below since RUNTIME_IMAGE can be overridden to wolfi-base, which uses the
+# same uid 65532 convention. A shell is required here: CMD below needs
+# `sh -c` to expand $CONFIG_FILE.
+FROM ${RUNTIME_IMAGE}
 WORKDIR /app
 
-# Copy only the built binary and plugin
 COPY --from=builder /workspace/app/server .
 
-# Expose port 8080
 EXPOSE 8080
-
-# Run the Go server with the config flag from environment variable.
+USER 65532:65532
 CMD ["sh", "-c", "./server --config=${CONFIG_FILE}"]

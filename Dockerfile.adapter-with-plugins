@@ -1,11 +1,30 @@
-FROM golang:1.26.1-bookworm AS builder
+# syntax=docker/dockerfile:1
+
+# DHI (Docker Hardened Images) requires `docker login dhi.io` first — a Docker
+# subscription credential this build cannot supply. Both stages default to it
+# because it's what CI and every shipped image use, but a local build without
+# that subscription can override both build-args with public equivalents:
+#
+#   docker build -f Dockerfile.adapter-with-plugins \
+#     --build-arg BUILD_IMAGE=golang:1.26.1-bookworm \
+#     --build-arg RUNTIME_IMAGE=cgr.dev/chainguard/wolfi-base:latest \
+#     -t network-adapter-plugins:dev .
+#
+# Tags verified against github.com/docker-hardened-images/catalog
+# image/golang/debian-12/1.26-dev.yaml and image/debian-base/debian-12/12.yaml.
+# -buildmode=plugin needs a C toolchain regardless of base — the -dev
+# variant's gcc/g++/make come bundled, same as the public bookworm override.
+ARG BUILD_IMAGE=dhi.io/golang:1.26-debian12-dev
+ARG RUNTIME_IMAGE=dhi.io/debian-base:bookworm
+
+FROM ${BUILD_IMAGE} AS builder
 
 WORKDIR /workspace/app
 
 # Specifically copy only the necessary files and directories
 COPY cmd/adapter/ ./cmd/adapter/
-COPY core/ ./core/
-COPY pkg/ ./pkg/
+COPY core/ ./core
+COPY pkg/ ./pkg
 COPY install/build-plugins.sh ./install/build-plugins.sh
 COPY install/scripts/version-vars.sh ./install/scripts/version-vars.sh
 COPY go.mod .
@@ -30,8 +49,11 @@ RUN chmod +x install/build-plugins.sh && \
     ONIX_VERSION="${ONIX_VERSION}" GIT_COMMIT="${GIT_COMMIT}" GIT_TREE_STATE="${GIT_TREE_STATE}" BUILD_DATE="${BUILD_DATE}" \
     ./install/build-plugins.sh
 
-# Create minimal runtime image
-FROM cgr.dev/chainguard/wolfi-base:latest
+# Debian-based hardened runtime, run-as nonroot by default — kept explicit
+# below since RUNTIME_IMAGE can be overridden to wolfi-base, which uses the
+# same uid 65532 convention. A shell is required here: CMD below needs
+# `sh -c` to expand $CONFIG_FILE.
+FROM ${RUNTIME_IMAGE}
 WORKDIR /app
 
 # Copy binary and plugins built with same Go version
@@ -39,5 +61,5 @@ COPY --from=builder /workspace/app/server .
 COPY --from=builder /workspace/app/plugins ./plugins
 
 EXPOSE 8081
-
+USER 65532:65532
 CMD ["sh", "-c", "./server --config=${CONFIG_FILE}"]
