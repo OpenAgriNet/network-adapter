@@ -64,6 +64,9 @@ COPY --from=builder /workspace/app/plugins ./plugins
 
 EXPOSE 8081
 USER 65532:65532
-# Exec form, not `sh -c` — this base has no shell. main.go reads CONFIG_FILE
-# itself as the --config default, so no shell expansion is needed here.
+# Exec form, not `sh -c` — this base has no shell, and no Go code reads
+# CONFIG_FILE either. The deployment layer resolves it instead: Kubernetes
+# expands $(CONFIG_FILE) in args itself before exec'ing the container (see
+# Deployment/deployment.yaml) -- no shell involved on either side. A plain
+# `docker run` without that substitution needs an explicit --config flag.
 ENTRYPOINT ["/app/server"]
