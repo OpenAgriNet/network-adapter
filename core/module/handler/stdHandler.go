@@ -55,11 +55,16 @@ type stdHandler struct {
 	transportWrapper   definition.TransportWrapper
 	payloadTransformer definition.Step
 	payloadStore       definition.PayloadStore
+	mapper             definition.Mapper
 	// ackSigner is non-nil only when the "signAck" step is configured (Receiver
 	// modules). It is also used to sign pipeline-NACK responses so that ALL
 	// synchronous responses carry a Signature header per NFH-007 CON-004-02.
-	ackSigner    *ackSignerStep
-	SubscriberID string
+	ackSigner *ackSignerStep
+	// hasProviderSteps records whether this module serves capabilities itself.
+	// Such a module has no proxy behind it, which is what makes an unanswered
+	// request a dead end rather than work in flight -- see ServeHTTP.
+	hasProviderSteps bool
+	SubscriberID     string
 	role         model.Role
 	basePath     string
 	httpClient   *http.Client
@@ -215,6 +220,33 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Restore request body and metadata before forwarding or publishing.
 		syncRequestBody(r, stepCtx.Body)
 		if stepCtx.Route == nil {
+			// A module that serves capabilities itself has no proxy behind it, so
+			// an unanswered request here is a dead end: no route to forward it, and
+			// nobody to send a callback. An ACK would tell the caller "accepted,
+			// answer follows" and leave it waiting for a message nobody will send,
+			// which is how a stale binding key hides as a healthy response.
+			//
+			// 404 rather than AckNoCallbackErr, which exists for this shape and
+			// would be the obvious pick: it maps to 202 Accepted, and a 2xx is what
+			// let this hide in the first place. It is also for a business outcome
+			// -- no inventory, provider closed -- where this is "nothing here
+			// serves that", which is what a 404 says.
+			//
+			// Checked before the response steps rather than after, because
+			// ackSigner signs the body it expects to be written; NACKing later
+			// would ship a signature over the ACK with a NACK body.
+			//
+			// Only for modules with provider steps. Elsewhere an unanswered
+			// request is the publisher path doing exactly what it should.
+			if h.hasProviderSteps && len(stepCtx.ResponseBody) == 0 {
+				err = model.NewNotFoundErr("", fmt.Errorf(
+					"this module serves no capability matching the request"))
+				log.Errorf(stepCtx, err, "No step answered and no route was set: %v", err)
+				h.signNackResponse(stepCtx, err)
+				responseBody = sendNack(stepCtx, wrapped, err)
+				return
+			}
+
 			// No routing — ONIX writes the ACK directly. Run response steps here
 			// with resp=nil (publisher path semantics).
 			for _, step := range h.responseSteps {
@@ -227,7 +259,7 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			responseBody = sendAck(stepCtx, wrapped)
+			responseBody = sendResponse(stepCtx, wrapped)
 			return
 		}
 		// Handle routing based on the defined route type.
@@ -596,9 +628,37 @@ func (h *stdHandler) initPlugins(ctx context.Context, mgr PluginManager, cfg *Pl
 	if h.payloadTransformer, err = loadPayloadTransformerStep(ctx, mgr, cfg.PayloadTransformer); err != nil {
 		return err
 	}
+	if h.mapper, err = LoadPlugin(ctx, "Mapper", cfg.Mapper, mgr.Mapper); err != nil {
+		return err
+	}
 
 	log.Debugf(ctx, "All required plugins successfully loaded for stdHandler")
 	return nil
+}
+
+// loadProviderStep loads one provider step, checking up front for the
+// dependencies it cannot be built without. Each produces a clear startup
+// failure rather than a nil dereference on the first request to reach the step.
+func (h *stdHandler) loadProviderStep(ctx context.Context, mgr PluginManager, cfg *plugin.Config) (definition.Step, error) {
+	if h.mapper == nil {
+		return nil, fmt.Errorf("failed to load ProviderStep plugin (%s): Mapper plugin not configured", cfg.ID)
+	}
+	if h.registry == nil {
+		return nil, fmt.Errorf("failed to load ProviderStep plugin (%s): Registry plugin not configured", cfg.ID)
+	}
+	// A registry serving signing keys need not also serve call plans -- they are
+	// separate interfaces for that reason -- so this narrowing is checked rather
+	// than assumed.
+	recordLookup, ok := h.registry.(definition.ProviderRecordLookup)
+	if !ok {
+		return nil, fmt.Errorf("failed to load ProviderStep plugin (%s): Registry plugin does not implement ProviderRecordLookup", cfg.ID)
+	}
+	step, err := mgr.ProviderStep(ctx, recordLookup, h.mapper, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load ProviderStep plugin (%s): %w", cfg.ID, err)
+	}
+	log.Debugf(ctx, "Loaded ProviderStep plugin: %s", cfg.ID)
+	return step, nil
 }
 
 // initSteps initializes and validates processing steps for the processor.
@@ -613,6 +673,26 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 		}
 		steps[c.ID] = step
 	}
+
+	// Load provider steps, which are handed the registry and mapper that plain
+	// plugin steps cannot receive. They land in the same id-keyed map, so a step
+	// list names them exactly like any other plugin step.
+	for _, c := range cfg.Plugins.ProviderSteps {
+		// The same map as plain steps, so a repeated id would leave one entry
+		// silently overwritten -- a capability lost with no error anywhere. A
+		// provider step serving several capabilities says so in its own config
+		// rather than by appearing twice.
+		if _, taken := steps[c.ID]; taken {
+			return fmt.Errorf("provider step %q is configured more than once; "+
+				"a step serving several capabilities lists them in its own config", c.ID)
+		}
+		step, err := h.loadProviderStep(ctx, mgr, &c)
+		if err != nil {
+			return err
+		}
+		steps[c.ID] = step
+	}
+	h.hasProviderSteps = len(cfg.Plugins.ProviderSteps) > 0
 
 	// Register processing steps
 	for _, step := range cfg.Steps {
