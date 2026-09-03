@@ -57,6 +57,7 @@ OUT_COLUMNS = [
     "area_name",         # matches .areaName
     "parent_scheme",     # fallback chain for unresolvable children
     "parent_code",
+    "parent_level",      # required: LGD codes repeat across levels
     "census_2011_code",  # crosswalk to census-coded boundary files
     "snapshot_date",
     "source_url",
@@ -70,6 +71,7 @@ OUT_COLUMNS = [
     "bbox_north",
     "geometry_source",   # which boundary layer supplied the point
     "boundary_vintage",
+    "has_polygon",       # is a real outline present in areas.geojsonl?
 ]
 
 
@@ -198,6 +200,15 @@ def pick(row, *candidates):
     return ""
 
 
+# Child level -> parent level. Recorded per row because an LGD code is only
+# unique within its level: code 35 is simultaneously the State Andaman And
+# Nicobar Islands, the District Kapurthala and the Block Baramulla. Without
+# this column a consumer walking parent_code cannot tell which one is meant,
+# and 765 of the codes in this file are ambiguous that way.
+PARENT_LEVEL = {"State": "Country", "District": "State", "Block": "District",
+                "PostalCode": "District", "Village": "Block"}
+
+
 def row_out(scheme, code, level, name, parent_scheme="", parent_code="",
             census="", date="", url=""):
     return {
@@ -207,6 +218,7 @@ def row_out(scheme, code, level, name, parent_scheme="", parent_code="",
         "area_name": name,
         "parent_scheme": parent_scheme,
         "parent_code": parent_code,
+        "parent_level": PARENT_LEVEL.get(level, ""),
         "census_2011_code": census,
         "snapshot_date": date,
         "source_url": url,
@@ -219,6 +231,7 @@ def row_out(scheme, code, level, name, parent_scheme="", parent_code="",
         "bbox_north": "",
         "geometry_source": "",
         "boundary_vintage": "",
+        "has_polygon": "",
     }
 
 

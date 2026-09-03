@@ -76,6 +76,26 @@
       "checked": 764,
       "violations": 0,
       "outliers": []
+    },
+    "polygons": {
+      "file": "areas.geojsonl",
+      "features": 764,
+      "size_bytes": 11352745,
+      "simplify_tolerance_deg": 0.001,
+      "join_key": [
+        "code_scheme",
+        "area_code",
+        "area_level"
+      ],
+      "winding": "RFC 7946: exterior counterclockwise, holes clockwise",
+      "collapsed_below_tolerance": [],
+      "points_rederived_from_simplified_outline": [
+        "District/373"
+      ],
+      "point_outside_simplified_outline": [],
+      "max_area_error_fraction": 0.002323,
+      "max_bbox_shift_deg": 0.000921,
+      "note": "Simplified outlines. Use --with-geometry for full fidelity."
     }
   }
 }

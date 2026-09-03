@@ -30,6 +30,7 @@ Usage
     python3 join_geometry.py --source lgd
     python3 join_geometry.py --areas data/areas/latest
     python3 join_geometry.py --source lgd --with-geometry
+    python3 join_geometry.py --simplify 0.005   # coarser, smaller outlines
 
 Stdlib only. Requires bsdtar (default `tar` on macOS) or 7z to extract .7z.
 """
@@ -85,7 +86,30 @@ SOURCES = {
 # build_areas.py OUT_COLUMNS.
 GEO_COLUMNS = ["latitude", "longitude", "point_method",
                "bbox_west", "bbox_south", "bbox_east", "bbox_north",
-               "geometry_source", "boundary_vintage"]
+               "geometry_source", "boundary_vintage", "has_polygon"]
+
+# Simplification tolerance for areas.geojsonl, in degrees. At Indian latitudes
+# 0.001 deg is roughly 110 m, which is far below the precision any coded
+# administrative area implies and cuts the district layer from ~460 MB to ~9 MB.
+# Full-fidelity polygons remain available via --with-geometry.
+SIMPLIFY_DEG = 0.001
+
+# Smallest polygon part treated as a real place, in square degrees, which is
+# about 116 m2 at Indian latitudes.
+#
+# Published boundaries carry hairline slivers: positive-area, but spikes rather
+# than places. Two show why a plain ">0" test is not enough. Hailakandi
+# (LGD 289) ships a four-vertex, 0.1 m2 splinter 41 km south of the district,
+# which stretches its bbox 41 km into a neighbour. Kancheepuram (LGD 574) has a
+# 1 m2 spike whose bounding box still measures 141 x 184 m, pulling the western
+# edge 16 km out. Either one makes a consumer using the box as a prefilter match
+# points far outside the area.
+#
+# The floor is checked against area, not extent, because that is what separates
+# a spike from an islet. Measured on SOI_Districts it cuts 25 parts: the largest
+# dropped is 110 m2 and the smallest kept is 130 m2, both Andaman islets, so
+# nothing of consequence sits near the boundary.
+MIN_PART_AREA_SQ_DEG = 1e-8
 
 # Child level -> parent level, used when a level has no geometry of its own.
 # Ordered parent-first so the inheritance pass can walk down in one sweep.
@@ -247,7 +271,8 @@ class Accumulator:
     """
 
     __slots__ = ("area", "sx", "sy", "bbox", "best_area", "best_rings",
-                 "best_centroid", "features")
+                 "best_centroid", "features", "degenerate", "dbbox",
+                 "drings", "dcentroid")
 
     def __init__(self):
         self.area = self.sx = self.sy = 0.0
@@ -256,33 +281,58 @@ class Accumulator:
         self.best_rings = None
         self.best_centroid = None
         self.features = 0
+        # Zero-area parts, tracked apart from the real ones. See add().
+        self.degenerate = 0
+        self.dbbox = None
+        self.drings = None
+        self.dcentroid = None
+
+    @staticmethod
+    def _extend(box, rings):
+        xs = [p[0] for p in rings[0]]
+        ys = [p[1] for p in rings[0]]
+        got = (min(xs), min(ys), max(xs), max(ys))
+        if box is None:
+            return got
+        w, s, e, n = box
+        return (min(w, got[0]), min(s, got[1]), max(e, got[2]), max(n, got[3]))
 
     def add(self, geom):
+        """Fold one feature in, quarantining its negligible parts.
+
+        Parts below MIN_PART_AREA_SQ_DEG are digitising artifacts rather than
+        places, so they are kept out of both the point and the bbox. They are
+        still counted, and used only if an area turns out to have nothing else,
+        so no area is silently dropped.
+        """
         parts = shape_parts(geom)
         if not parts:
             return False
         self.features += 1
         for area, (cx, cy), rings in parts:
+            if area < MIN_PART_AREA_SQ_DEG:
+                self.degenerate += 1
+                self.dbbox = self._extend(self.dbbox, rings)
+                if self.drings is None:
+                    self.drings, self.dcentroid = rings, (cx, cy)
+                continue
             self.area += area
             self.sx += cx * area
             self.sy += cy * area
             if area > self.best_area:
                 self.best_area, self.best_rings, self.best_centroid = area, rings, (cx, cy)
-            xs = [p[0] for p in rings[0]]
-            ys = [p[1] for p in rings[0]]
-            box = (min(xs), min(ys), max(xs), max(ys))
-            if self.bbox is None:
-                self.bbox = box
-            else:
-                w, s, e, n = self.bbox
-                self.bbox = (min(w, box[0]), min(s, box[1]),
-                             max(e, box[2]), max(n, box[3]))
+            self.bbox = self._extend(self.bbox, rings)
         return True
 
     def result(self, check_interior=True):
         """(lon, lat, bbox, method) or None if nothing usable was added."""
         if self.bbox is None or self.best_rings is None:
-            return None
+            # Every part was degenerate. Fall back to them rather than dropping
+            # the area, which would leave a blank row instead of a coarse point.
+            if self.dbbox is None or self.drings is None:
+                return None
+            return (self.dcentroid[0], self.dcentroid[1], self.dbbox,
+                    "degenerate_geometry")
         if self.area > 0.0:
             lon, lat = self.sx / self.area, self.sy / self.area
         else:
@@ -302,6 +352,137 @@ class Accumulator:
                     lon, lat = alt
                     method = "interior_grid"
         return lon, lat, self.bbox, method
+
+
+# --- simplification ---------------------------------------------------------
+
+def _rdp(pts, eps):
+    """Ramer-Douglas-Peucker on an open lon/lat polyline.
+
+    Iterative rather than recursive: a district ring can carry 24k vertices and
+    the recursive form overflows Python's stack on the worst of them.
+    """
+    if len(pts) < 3:
+        return list(pts)
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        ax, ay = pts[lo]
+        bx, by = pts[hi]
+        dx, dy = bx - ax, by - ay
+        n = math.hypot(dx, dy)
+        far, fi = -1.0, lo
+        for i in range(lo + 1, hi):
+            px, py = pts[i]
+            if n:
+                d = abs(dy * (px - ax) - dx * (py - ay)) / n
+            else:
+                d = math.hypot(px - ax, py - ay)
+            if d > far:
+                far, fi = d, i
+        if far > eps:
+            keep[fi] = True
+            stack.append((lo, fi))
+            stack.append((fi, hi))
+    return [pts[i] for i, k in enumerate(keep) if k]
+
+
+def simplify_ring(ring, eps):
+    """Simplify a closed ring, returning a closed ring or None if it collapses.
+
+    The ring is split at the vertex farthest from its first point and each half
+    is simplified as an open chain. Running RDP straight down a closed ring
+    would anchor it on a zero-length segment, since the first and last vertex
+    coincide, and the perpendicular distance test degenerates there.
+    """
+    q = [tuple(p[:2]) for p in ring]
+    if len(q) > 1 and q[0] == q[-1]:
+        q = q[:-1]
+    if len(q) < 3:
+        return None
+
+    ax, ay = q[0]
+    j = max(range(1, len(q)), key=lambda i: math.hypot(q[i][0] - ax, q[i][1] - ay))
+    head = _rdp(q[:j + 1], eps)
+    tail = _rdp(q[j:] + [q[0]], eps)
+    out = head[:-1] + tail
+
+    # Drop consecutive duplicates that rounding can introduce, then require a
+    # ring with real extent: 3 distinct vertices plus the closing repeat.
+    ded = [out[0]]
+    for pt in out[1:]:
+        if pt != ded[-1]:
+            ded.append(pt)
+    if ded[0] == ded[-1]:
+        ded = ded[:-1]
+    if len(ded) < 3:
+        return None
+    return [[round(x, 5), round(y, 5)] for x, y in ded] + \
+           [[round(ded[0][0], 5), round(ded[0][1], 5)]]
+
+
+def _signed_area(ring):
+    a = 0.0
+    for i in range(len(ring) - 1):
+        x1, y1 = ring[i][0], ring[i][1]
+        x2, y2 = ring[i + 1][0], ring[i + 1][1]
+        a += x1 * y2 - x2 * y1
+    return a / 2.0
+
+
+def _wind(ring, ccw):
+    """Force ring orientation. RFC 7946 wants exterior CCW, holes CW."""
+    if (_signed_area(ring) > 0) != ccw:
+        return list(reversed(ring))
+    return ring
+
+
+def simplify_geometry(parts, tolerance):
+    """Simplify accumulated (rings) parts into one GeoJSON geometry.
+
+    parts is a list of polygons, each a list of rings with the exterior first.
+    Returns (geometry, kept_area) or (None, 0.0) if everything collapsed.
+    """
+    out = []
+    for rings in parts:
+        # Scale the tolerance to the part. A flat 110 m is negligible on a
+        # 7,000 km2 district but costs 2% of Lakshadweep's 30 km2, so a tiny
+        # island would ship visibly the wrong size. Tying the tolerance to the
+        # part's own diagonal keeps the relative error roughly constant, and
+        # small parts are cheap to keep detailed.
+        xs = [pt[0] for pt in rings[0]]
+        ys = [pt[1] for pt in rings[0]]
+        diag = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+        eps = min(tolerance, diag / 300.0) if diag else tolerance
+
+        # Back off the tolerance rather than losing the part. Kancheepuram
+        # (LGD 574) has a genuine 130x180 m enclave that vanishes at 110 m and
+        # would silently cut 16 km off the district's western extent. A small
+        # part carries few vertices, so keeping it whole costs nothing.
+        ext = None
+        for attempt in (eps, eps / 4.0, eps / 16.0, 0.0):
+            ext = simplify_ring(rings[0], attempt)
+            if ext is not None:
+                break
+        if ext is None:
+            continue          # under three distinct vertices even untouched
+        keep = [_wind(ext, True)]
+        for hole in rings[1:]:
+            h = simplify_ring(hole, eps)
+            if h is not None:
+                keep.append(_wind(h, False))
+        out.append(keep)
+    if not out:
+        return None, 0.0
+    area = sum(abs(_signed_area(r[0])) - sum(abs(_signed_area(h)) for h in r[1:])
+               for r in out)
+    if len(out) == 1:
+        return {"type": "Polygon", "coordinates": out[0]}, area
+    return {"type": "MultiPolygon", "coordinates": out}, area
 
 
 # --- fetching ---------------------------------------------------------------
@@ -423,6 +604,7 @@ def load_points(path, code_field, name_field):
     accs = {}
     names = {}
     skipped = 0
+    degenerate = 0
     for line in open(path, encoding="utf-8", errors="replace"):
         if not line.strip():
             continue
@@ -448,8 +630,9 @@ def load_points(path, code_field, name_field):
             skipped += 1
             continue
         lon, lat, bbox, method = res
+        degenerate += acc.degenerate
         out[code] = (lon, lat, bbox, method, names.get(code, ""))
-    return out, skipped
+    return out, skipped, degenerate
 
 
 def country_point(path):
@@ -475,6 +658,8 @@ def country_point(path):
 # --- join -------------------------------------------------------------------
 
 def set_point(row, lat, lon, bbox, method, source_layer, vintage):
+    # has_polygon is deliberately not touched: write_polygons owns it, and an
+    # inheriting row keeps the false it was given.
     row.update({
         "latitude": f"{lat:.6f}",
         "longitude": f"{lon:.6f}",
@@ -488,7 +673,7 @@ def set_point(row, lat, lon, bbox, method, source_layer, vintage):
     })
 
 
-def run(source, gazdir, cache, with_geometry, inherit):
+def run(source, gazdir, cache, with_geometry, inherit, simplify):
     conf = SOURCES[source]
     gazdir = Path(gazdir).resolve()
     cache = Path(cache)
@@ -520,7 +705,7 @@ def run(source, gazdir, cache, with_geometry, inherit):
     points, vintages, layer_paths = {}, {}, {}
     for level, (tag, stem, code_field, name_field) in conf["layers"].items():
         path = ensure_layer(tag, stem, cache)
-        pts, skipped = load_points(path, code_field, name_field)
+        pts, skipped, degenerate = load_points(path, code_field, name_field)
         # Zero coded areas means the upstream renamed its code column, not that
         # the level is genuinely empty. Fail rather than silently publish a
         # area lookup table where a whole level fell back to its parent.
@@ -532,7 +717,9 @@ def run(source, gazdir, cache, with_geometry, inherit):
         layer_paths[level] = path
         log(f"{stem:<20} {len(pts):,} coded areas, vintage {layer_vintage(path)}"
             + (f", {skipped:,} features without a usable code or geometry"
-               if skipped else ""))
+               if skipped else "")
+            + (f", {degenerate:,} sub-{MIN_PART_AREA_SQ_DEG:g}-sq-deg parts "
+               f"excluded as artifacts" if degenerate else ""))
 
     dates = {lvl: layer_vintage(p) for lvl, p in layer_paths.items()}
     stats = {}
@@ -571,6 +758,11 @@ def run(source, gazdir, cache, with_geometry, inherit):
                 stats["Country"]["matched"] += 1
                 resolved[(r["code_scheme"], r["area_code"], "Country")] = \
                     (lat, lon, bbox, "Country")
+
+    # Polygons are written here, between joining and inheriting, because
+    # re-deriving a point against its simplified outline has to happen before
+    # descendants copy that point.
+    polygons = write_polygons(conf, gazdir, cache, rows, simplify, resolved)
 
     # Pass 3: inherit downward for anything still unresolved.
     #
@@ -612,8 +804,8 @@ def run(source, gazdir, cache, with_geometry, inherit):
     if with_geometry:
         write_geometry(conf, gazdir, cache, rows)
     update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
-                    inherit, containment)
-    report(areas_csv, stats, drift, conf, containment)
+                    inherit, containment, polygons)
+    report(areas_csv, stats, drift, conf, containment, polygons)
     return stats
 
 
@@ -678,6 +870,160 @@ def check_containment(rows):
     return {"checked": checked, "violations": len(outliers), "outliers": outliers}
 
 
+def write_polygons(conf, gazdir, cache, rows, tolerance, resolved):
+    """Emit areas.geojsonl: one simplified polygon per directly-joined area.
+
+    A coded area is an area, not a point, so a consumer resolving
+    coverageAreas needs the outline to answer containment questions. The CSV
+    keeps the point and box for cheap prefiltering; the real shape lives here,
+    keyed identically on (code_scheme, area_code, area_level).
+
+    Also sets has_polygon on every row, so a consumer can tell from the CSV
+    alone whether a real outline exists without opening this file. That flag
+    cannot be inferred from point_method: a row can carry its own centroid and
+    still have no polygon here, if simplification collapsed the shape.
+    """
+    wanted = {}
+    for r in rows:
+        r["has_polygon"] = "false"
+        if (r["latitude"] and not r["point_method"].startswith("inherited")
+                and r["area_level"] in conf["layers"]):
+            wanted.setdefault(r["area_level"], {})[r["area_code"]] = r
+    if not wanted:
+        return {"features": 0, "note": "no level in this source has geometry"}
+
+    out = gazdir / "areas.geojsonl"
+    written = 0
+    collapsed, outside, repointed = [], [], []
+    worst_area = worst_bbox = 0.0
+    with open(out, "w", encoding="utf-8") as fout:
+        for level, (_tag, stem, code_field, _name) in conf["layers"].items():
+            keep = wanted.get(level) or {}
+            if not keep:
+                continue
+            path = cache / f"{stem}.geojsonl"
+
+            # Collect every feature carrying a code before simplifying: an area
+            # published as several polygons has to stay one multipart feature,
+            # or a point-in-polygon test against an outlying island fails.
+            acc = {}
+            for line in open(path, encoding="utf-8", errors="replace"):
+                if not line.strip():
+                    continue
+                feat = json.loads(line)
+                code = feat.get("properties", {}).get(code_field)
+                if code in (None, "", " ", 0, "0"):
+                    continue
+                code = str(code).strip()
+                if code in keep:
+                    acc.setdefault(code, []).extend(
+                        shape_parts(feat.get("geometry")))
+
+            for code, parts in sorted(acc.items()):
+                row = keep[code]
+                # Mirror the bbox rule in Accumulator.add. Shipping an
+                # artifact as an outline would put back exactly the extent the
+                # bbox excluded, leaving the two artifacts inconsistent.
+                real = [r for a, _c, r in parts if a >= MIN_PART_AREA_SQ_DEG]
+                if not real:
+                    real = [r for _a, _c, r in parts]
+                    full = sum(a for a, _c, _r in parts)
+                else:
+                    full = sum(a for a, _c, _r in parts
+                               if a >= MIN_PART_AREA_SQ_DEG)
+                geom, kept = simplify_geometry(real, tolerance)
+                if geom is None:
+                    collapsed.append(f"{level}/{code}")
+                    continue
+
+                # The point in the CSV must land inside the shape shipped
+                # beside it, or the two artifacts disagree about the same area.
+                # Sundaragada (LGD 373) is the case that matters: its point is
+                # grid-derived against a concave outline, and simplification
+                # moves the edge past it. Re-derive from the simplified shape
+                # so the two agree by construction rather than by luck.
+                polys = ([geom["coordinates"]] if geom["type"] == "Polygon"
+                         else geom["coordinates"])
+                pt = (float(row["longitude"]), float(row["latitude"]))
+                if not any(point_in_polygon(pt, rings) for rings in polys):
+                    acc = Accumulator()
+                    acc.add(geom)
+                    res = acc.result()
+                    if res is None:
+                        outside.append(f"{level}/{code}")
+                    else:
+                        nlon, nlat, _box, nmethod = res
+                        row["latitude"] = f"{nlat:.6f}"
+                        row["longitude"] = f"{nlon:.6f}"
+                        row["point_method"] = f"{nmethod}:simplified"
+                        # Keep the inheritance source in step. Descendants copy
+                        # their ancestor's point verbatim, so a correction made
+                        # here has to reach them or the file contradicts itself:
+                        # 62 Blocks under Sundaragada (LGD 373) kept the
+                        # pre-correction coordinate when this was missed.
+                        rk = (row["code_scheme"], code, level)
+                        if rk in resolved:
+                            _la, _lo, rbox, rorigin = resolved[rk]
+                            resolved[rk] = (nlat, nlon, rbox, rorigin)
+                        repointed.append(f"{level}/{code}")
+                        if not any(point_in_polygon((nlon, nlat), rings)
+                                   for rings in polys):
+                            outside.append(f"{level}/{code}")
+
+                if full > 0:
+                    worst_area = max(worst_area, abs(kept - full) / full)
+                xs = [c[0] for rings in polys for r in rings for c in r]
+                ys = [c[1] for rings in polys for r in rings for c in r]
+                worst_bbox = max(
+                    worst_bbox,
+                    abs(min(xs) - float(row["bbox_west"])),
+                    abs(min(ys) - float(row["bbox_south"])),
+                    abs(max(xs) - float(row["bbox_east"])),
+                    abs(max(ys) - float(row["bbox_north"])))
+
+                fout.write(json.dumps({
+                    "type": "Feature",
+                    "properties": {"code_scheme": row["code_scheme"],
+                                   "area_code": code,
+                                   "area_level": level,
+                                   "area_name": row["area_name"],
+                                   "geometry_source": stem},
+                    "geometry": geom,
+                }, separators=(",", ":")) + "\n")
+                row["has_polygon"] = "true"
+                written += 1
+
+    size_mb = out.stat().st_size / 1e6
+    log(f"areas.geojsonl       {written:,} polygons, {size_mb:,.1f} MB, "
+        f"tolerance {tolerance} deg")
+    if collapsed:
+        log(f"  {len(collapsed):,} areas collapsed below tolerance: "
+            f"{', '.join(collapsed[:5])}"
+            + (" ..." if len(collapsed) > 5 else ""))
+    if repointed:
+        log(f"  {len(repointed):,} points re-derived from the simplified "
+            f"outline: {', '.join(repointed[:5])}"
+            + (" ..." if len(repointed) > 5 else ""))
+    if outside:
+        log(f"  {len(outside):,} stored points STILL fall outside their "
+            f"outline: {', '.join(outside[:5])}"
+            + (" ..." if len(outside) > 5 else ""))
+    return {
+        "file": "areas.geojsonl",
+        "features": written,
+        "size_bytes": out.stat().st_size,
+        "simplify_tolerance_deg": tolerance,
+        "join_key": ["code_scheme", "area_code", "area_level"],
+        "winding": "RFC 7946: exterior counterclockwise, holes clockwise",
+        "collapsed_below_tolerance": collapsed,
+        "points_rederived_from_simplified_outline": repointed,
+        "point_outside_simplified_outline": outside,
+        "max_area_error_fraction": round(worst_area, 6),
+        "max_bbox_shift_deg": round(worst_bbox, 6),
+        "note": "Simplified outlines. Use --with-geometry for full fidelity.",
+    }
+
+
 def write_geometry(conf, gazdir, cache, rows):
     """Emit boundaries.geojsonl for areas that joined to a real polygon."""
     wanted = {}
@@ -719,7 +1065,7 @@ def write_geometry(conf, gazdir, cache, rows):
 
 
 def update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
-                    inherit, containment):
+                    inherit, containment, polygons):
     path = gazdir / "manifest.json"
     m = json.loads(path.read_text()) if path.exists() else {}
     m["geometry_populated"] = True
@@ -743,11 +1089,12 @@ def update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
         "coverage": stats,
         "name_drift_count": len(drift),
         "parent_containment_check": containment,
+        "polygons": polygons,
     }
     path.write_text(json.dumps(m, indent=2) + "\n")
 
 
-def report(areas_csv, stats, drift, conf, containment):
+def report(areas_csv, stats, drift, conf, containment, polygons):
     print(f"\n{areas_csv}")
     print(f"\n{'level':<12}{'rows':>8}{'joined':>9}{'inherited':>11}"
           f"{'empty':>8}{'joined %':>10}")
@@ -782,6 +1129,22 @@ def report(areas_csv, stats, drift, conf, containment):
             print(f"  ... and {len(drift) - 8} more")
         print("  These are why the join uses codes, not names.")
 
+    if polygons.get("features"):
+        print(f"\nareas.geojsonl: {polygons['features']:,} simplified outlines, "
+              f"{polygons['size_bytes'] / 1e6:,.1f} MB")
+        print(f"  tolerance {polygons['simplify_tolerance_deg']} deg "
+              f"(~{polygons['simplify_tolerance_deg'] * 111000:,.0f} m), "
+              f"max area error {polygons['max_area_error_fraction'] * 100:.3f}%, "
+              f"max box shift {polygons['max_bbox_shift_deg'] * 111000:,.0f} m")
+        if polygons["points_rederived_from_simplified_outline"]:
+            print(f"  {len(polygons['points_rederived_from_simplified_outline'])} "
+                  f"point(s) re-derived so the CSV agrees with the outline")
+        bad = (len(polygons["collapsed_below_tolerance"])
+               + len(polygons["point_outside_simplified_outline"]))
+        print(f"  has_polygon=true on {polygons['features']:,} rows; "
+              + ("no point/outline disagreements" if not bad
+                 else f"{bad} anomalies, see manifest.json"))
+
     empty_levels = [lvl for lvl, s in stats.items()
                     if s["total"] and not s["matched"] and lvl != "Country"]
     if empty_levels:
@@ -799,12 +1162,19 @@ def main():
                    help="directory holding areas.csv from stage 1")
     p.add_argument("--cache", default="data/areas/.cache",
                    help="where boundary downloads are kept between runs")
+    p.add_argument("--simplify", type=float, default=SIMPLIFY_DEG,
+                   metavar="DEG",
+                   help=f"areas.geojsonl simplification tolerance in degrees "
+                        f"(default: {SIMPLIFY_DEG}, ~110 m); 0 keeps every vertex")
     p.add_argument("--with-geometry", action="store_true",
-                   help="also write boundaries.geojsonl for point-in-polygon use")
+                   help="also write boundaries.geojsonl at full fidelity")
     p.add_argument("--no-inherit", action="store_true",
                    help="leave unjoinable levels empty instead of using a parent point")
     a = p.parse_args()
-    run(a.source, a.areas, a.cache, a.with_geometry, not a.no_inherit)
+    if a.simplify < 0:
+        sys.exit("--simplify must be >= 0")
+    run(a.source, a.areas, a.cache, a.with_geometry, not a.no_inherit,
+        a.simplify)
 
 
 if __name__ == "__main__":
