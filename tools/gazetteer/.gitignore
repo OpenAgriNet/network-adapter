@@ -1,0 +1,4 @@
+# Generated snapshots and the boundary-layer download cache. Both are
+# reproducible by re-running build_gazetteer.py and join_geometry.py, and the
+# cache alone is ~500 MB.
+data/
