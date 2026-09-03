@@ -1,6 +1,6 @@
 # Boundary-layer download cache: ~500 MB and fully re-downloadable by re-running
 # join_geometry.py. Never commit this.
-data/gazetteer/.cache/
+data/areas/.cache/
 
 # Optional polygon export, written only with --with-geometry: 335 MB.
 boundaries.geojsonl

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a dated LGD gazetteer CSV for OpenAgriNet coverageAreas resolution.
+"""Build a dated LGD area lookup table CSV for OpenAgriNet coverageAreas resolution.
 
 Pulls LGD (Local Government Directory) snapshots and flattens them into one CSV
 shaped like AdministrativeAreaReference, so a coded coverageAreas entry can be
@@ -16,10 +16,10 @@ layers onto these codes. Splitting the stages keeps the code snapshot (refreshed
 daily) independent of the boundary layers (refreshed every year or two).
 
 Usage:
-    python3 build_gazetteer.py                    # latest available snapshot
-    python3 build_gazetteer.py --date 02Sep2026   # a specific snapshot
-    python3 build_gazetteer.py --out data/gazetteer
-    python3 build_gazetteer.py --with-villages    # adds ~670k village rows
+    python3 build_areas.py                    # latest available snapshot
+    python3 build_areas.py --date 02Sep2026   # a specific snapshot
+    python3 build_areas.py --out data/areas
+    python3 build_areas.py --with-villages    # adds ~670k village rows
 
 Stdlib only. Requires bsdtar (default `tar` on macOS) or 7z for .7z extraction.
 """
@@ -78,7 +78,7 @@ def log(msg):
 
 
 def fetch_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "oan-gazetteer"})
+    req = urllib.request.Request(url, headers={"User-Agent": "oan-area-lookup"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.load(r)
 
@@ -88,7 +88,7 @@ def latest_snapshot_date():
 
     Components are not always published in lockstep, so take the newest date
     that every core component actually has. A half-published day would
-    otherwise produce a gazetteer with a stale districts file silently mixed in.
+    otherwise produce a area lookup table with a stale districts file silently mixed in.
     """
     try:
         assets = [a["name"] for a in fetch_json(API)["assets"]]
@@ -140,7 +140,7 @@ def fetch_to_file(url, dest, what, attempts=3):
     not retried: a 404 means the asset genuinely is not published, and asking
     again will not change that.
     """
-    req = urllib.request.Request(url, headers={"User-Agent": "oan-gazetteer"})
+    req = urllib.request.Request(url, headers={"User-Agent": "oan-area-lookup"})
     for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen(req, timeout=300) as r, open(dest, "wb") as f:
@@ -301,7 +301,7 @@ def build(date, outdir, with_villages):
         log(f"{'pincodes (unique)':<18} {len(pins):>7,} rows")
 
     # A component that parsed to zero rows means LGD renamed a column, not that
-    # the level is genuinely empty. Fail rather than publish a gazetteer with a
+    # the level is genuinely empty. Fail rather than publish a area lookup table with a
     # silently missing level.
     by_level = {}
     for r in rows:
@@ -319,7 +319,7 @@ def build(date, outdir, with_villages):
     stamp = dt.datetime.strptime(date, "%d%b%Y").date().isoformat()
     target = Path(outdir) / f"lgd-{stamp}"
     target.mkdir(parents=True, exist_ok=True)
-    out = target / "gazetteer.csv"
+    out = target / "areas.csv"
 
     with open(out, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=OUT_COLUMNS)
@@ -329,7 +329,7 @@ def build(date, outdir, with_villages):
     manifest = {
         "snapshot_date": stamp,
         "lgd_snapshot": date,
-        "generated_by": "build_gazetteer.py",
+        "generated_by": "build_areas.py",
         "provenance": PROVENANCE,
         "components": sources,
         "row_count": len(rows),
@@ -358,7 +358,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--date", help="LGD snapshot, e.g. 02Sep2026 (default: latest)")
-    p.add_argument("--out", default="data/gazetteer", help="output directory")
+    p.add_argument("--out", default="data/areas", help="output directory")
     p.add_argument("--with-villages", action="store_true",
                    help="include ~670k village rows")
     a = p.parse_args()

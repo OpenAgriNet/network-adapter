@@ -1,17 +1,17 @@
-# Administrative area gazetteer
+# Administrative area lookup
 
-Builds `gazetteer.csv`, which resolves an OpenAgriNet `AdministrativeAreaReference`
+Builds `areas.csv`, which resolves an OpenAgriNet `AdministrativeAreaReference`
 (`codeScheme`, `areaCode`, `areaLevel`) to a name, parent and coordinate.
 
 ## Refresh
 
 ```bash
-cd tools/gazetteer
-python3 build_gazetteer.py && python3 join_geometry.py
+cd tools/area-lookups
+python3 build_areas.py && python3 join_geometry.py
 ```
 
-Writes `data/gazetteer/latest/gazetteer.csv` — 25,097 rows covering Country,
-State, District, Block and PostalCode.
+Writes `data/areas/latest/areas.csv` — 25,097 rows covering Country, State,
+District, Block and PostalCode.
 
 Add `--source lgd` to `join_geometry.py` for Block-level coordinates.
 

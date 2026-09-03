@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 2: attach coordinates to a gazetteer built by build_gazetteer.py.
+"""Stage 2: attach coordinates to a area lookup table built by build_areas.py.
 
 Stage 1 produces codes without geometry, because LGD's directory dumps carry no
 boundaries. This stage joins boundary layers onto those codes and fills in
@@ -28,7 +28,7 @@ every row resolves to something and the provenance stays visible. Pass
 Usage
     python3 join_geometry.py
     python3 join_geometry.py --source lgd
-    python3 join_geometry.py --gazetteer data/gazetteer/latest
+    python3 join_geometry.py --areas data/areas/latest
     python3 join_geometry.py --source lgd --with-geometry
 
 Stdlib only. Requires bsdtar (default `tar` on macOS) or 7z to extract .7z.
@@ -82,7 +82,7 @@ SOURCES = {
 }
 
 # Written by stage 1 as empty strings and filled here. Kept in sync with
-# build_gazetteer.py OUT_COLUMNS.
+# build_areas.py OUT_COLUMNS.
 GEO_COLUMNS = ["latitude", "longitude", "point_method",
                "bbox_west", "bbox_south", "bbox_east", "bbox_north",
                "geometry_source", "boundary_vintage"]
@@ -375,7 +375,7 @@ def ensure_layer(tag, stem, cache):
     archive = cache / f"{stem}.geojsonl.7z"
     if not archive.exists():
         url = f"{BASE}/{tag}/{stem}.geojsonl.7z"
-        req = urllib.request.Request(url, headers={"User-Agent": "oan-gazetteer"})
+        req = urllib.request.Request(url, headers={"User-Agent": "oan-area-lookup"})
         # Retry transient failures. These layers are up to 263 MB, so a dropped
         # connection part-way through is likely enough to be worth handling
         # rather than aborting a refresh that has already done real work.
@@ -492,16 +492,16 @@ def run(source, gazdir, cache, with_geometry, inherit):
     conf = SOURCES[source]
     gazdir = Path(gazdir).resolve()
     cache = Path(cache)
-    gaz_csv = gazdir / "gazetteer.csv"
-    if not gaz_csv.exists():
-        sys.exit(f"no gazetteer at {gaz_csv} - run build_gazetteer.py first")
+    areas_csv = gazdir / "areas.csv"
+    if not areas_csv.exists():
+        sys.exit(f"no area lookup table at {areas_csv} - run build_areas.py first")
 
-    with open(gaz_csv, encoding="utf-8", newline="") as f:
+    with open(areas_csv, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
         columns = list(reader.fieldnames or [])
     if not rows:
-        sys.exit(f"{gaz_csv} has no rows")
+        sys.exit(f"{areas_csv} has no rows")
     for c in GEO_COLUMNS:
         if c not in columns:
             columns.append(c)
@@ -515,7 +515,7 @@ def run(source, gazdir, cache, with_geometry, inherit):
             r[c] = ""
 
     log(f"source {conf['label']} ({conf['licence']})")
-    log(f"{len(rows):,} gazetteer rows from {gaz_csv}")
+    log(f"{len(rows):,} rows from {areas_csv}")
 
     points, vintages, layer_paths = {}, {}, {}
     for level, (tag, stem, code_field, name_field) in conf["layers"].items():
@@ -523,7 +523,7 @@ def run(source, gazdir, cache, with_geometry, inherit):
         pts, skipped = load_points(path, code_field, name_field)
         # Zero coded areas means the upstream renamed its code column, not that
         # the level is genuinely empty. Fail rather than silently publish a
-        # gazetteer where a whole level fell back to its parent.
+        # area lookup table where a whole level fell back to its parent.
         if not pts:
             sys.exit(f"{stem}: no areas carried field {code_field!r} - the "
                      f"upstream schema likely changed; check SOURCES[{source!r}]")
@@ -603,7 +603,7 @@ def run(source, gazdir, cache, with_geometry, inherit):
         if not r["latitude"]:
             stats[r["area_level"]]["empty"] += 1
 
-    with open(gaz_csv, "w", encoding="utf-8", newline="") as f:
+    with open(areas_csv, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=columns)
         w.writeheader()
         w.writerows(rows)
@@ -613,7 +613,7 @@ def run(source, gazdir, cache, with_geometry, inherit):
         write_geometry(conf, gazdir, cache, rows)
     update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
                     inherit, containment)
-    report(gaz_csv, stats, drift, conf, containment)
+    report(areas_csv, stats, drift, conf, containment)
     return stats
 
 
@@ -747,8 +747,8 @@ def update_manifest(source, conf, gazdir, stats, vintages, dates, drift,
     path.write_text(json.dumps(m, indent=2) + "\n")
 
 
-def report(gaz_csv, stats, drift, conf, containment):
-    print(f"\n{gaz_csv}")
+def report(areas_csv, stats, drift, conf, containment):
+    print(f"\n{areas_csv}")
     print(f"\n{'level':<12}{'rows':>8}{'joined':>9}{'inherited':>11}"
           f"{'empty':>8}{'joined %':>10}")
     for level in LEVEL_ORDER + [k for k in stats if k not in LEVEL_ORDER]:
@@ -777,7 +777,7 @@ def report(gaz_csv, stats, drift, conf, containment):
         print(f"\n{len(drift)} areas joined on a stable code but carry a "
               f"different name upstream:")
         for level, code, ours, theirs in drift[:8]:
-            print(f"  {level:<9} LGD {code:<6} gazetteer={ours!r} boundary={theirs!r}")
+            print(f"  {level:<9} LGD {code:<6} ours={ours!r} boundary={theirs!r}")
         if len(drift) > 8:
             print(f"  ... and {len(drift) - 8} more")
         print("  These are why the join uses codes, not names.")
@@ -795,16 +795,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--source", choices=sorted(SOURCES), default="soi",
                    help="boundary source (default: soi, the openly licensed one)")
-    p.add_argument("--gazetteer", default="data/gazetteer/latest",
-                   help="directory holding gazetteer.csv from stage 1")
-    p.add_argument("--cache", default="data/gazetteer/.cache",
+    p.add_argument("--areas", default="data/areas/latest",
+                   help="directory holding areas.csv from stage 1")
+    p.add_argument("--cache", default="data/areas/.cache",
                    help="where boundary downloads are kept between runs")
     p.add_argument("--with-geometry", action="store_true",
                    help="also write boundaries.geojsonl for point-in-polygon use")
     p.add_argument("--no-inherit", action="store_true",
                    help="leave unjoinable levels empty instead of using a parent point")
     a = p.parse_args()
-    run(a.source, a.gazetteer, a.cache, a.with_geometry, not a.no_inherit)
+    run(a.source, a.areas, a.cache, a.with_geometry, not a.no_inherit)
 
 
 if __name__ == "__main__":
