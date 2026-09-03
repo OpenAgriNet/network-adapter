@@ -63,15 +63,8 @@ var configPath string
 var runFunc = run
 
 func main() {
-	// Define and parse command-line flags. CONFIG_FILE seeds the default so
-	// a shell-less container entrypoint (no `sh -c` to expand it into
-	// --config) can still select a config file via env var; --config still
-	// overrides it explicitly when passed.
-	defaultConfig := "../../config/onix/adapter.yaml"
-	if v := os.Getenv("CONFIG_FILE"); v != "" {
-		defaultConfig = v
-	}
-	flag.StringVar(&configPath, "config", defaultConfig, "Path to the configuration file")
+	// Define and parse command-line flags.
+	flag.StringVar(&configPath, "config", "../../config/onix/adapter.yaml", "Path to the configuration file")
 	flag.Parse()
 
 	// Use custom log for initial setup messages.
