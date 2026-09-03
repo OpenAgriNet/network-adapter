@@ -1,7 +1,7 @@
 {
   "snapshot_date": "2026-09-02",
   "lgd_snapshot": "02Sep2026",
-  "generated_by": "build_gazetteer.py",
+  "generated_by": "build_areas.py",
   "provenance": "https://lgdirectory.gov.in/ (via https://github.com/ramSeraph/opendata, GODL-India)",
   "components": {
     "states": "https://github.com/ramSeraph/opendata/releases/download/lgd-latest-extra1/states.02Sep2026.csv.7z",
