@@ -1,7 +1,9 @@
 name: Terraform Deploy to GCP
 
 on:
-  push:
+  # push trigger disabled — this always fails (missing Gerrit credentials in
+  # this repo) and ran on every push, including unrelated branches. Kept as
+  # manual-only until it's confirmed dead or folded into build-and-push.yml.
   workflow_dispatch: # Manual triggerr
 
 jobs:
