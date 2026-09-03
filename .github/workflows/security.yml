@@ -139,7 +139,7 @@ jobs:
       - name: Build image
         run: |
           source install/scripts/version-vars.sh
-          docker build -f Dockerfile.adapter \
+          docker build -f Dockerfile.adapter-with-plugins \
             --build-arg ONIX_VERSION="$ONIX_VERSION" \
             --build-arg GIT_COMMIT="$GIT_COMMIT" \
             --build-arg GIT_TREE_STATE="$GIT_TREE_STATE" \
