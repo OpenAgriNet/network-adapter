@@ -153,7 +153,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.adapter
+          file: Dockerfile.adapter-with-plugins
           platforms: ${{ matrix.platform }}
           build-args: |
             ONIX_VERSION=${{ env.ONIX_VERSION }}
