@@ -143,6 +143,14 @@ create_benchmark_issues.sh
 # Ignore coverage output files
 coverage.out
 coverage.html
+coverage-report.md
+
+# Makefile tool/build artifacts (golangci-lint, gotestsum, trivy binaries)
+/bin/
+trivy-deps.sarif
+trivy-image.sarif
+trivy-deps-comment.md
+trivy-image-comment.md
 
 # Ignore the schema directory used for testing
 /schemas/
