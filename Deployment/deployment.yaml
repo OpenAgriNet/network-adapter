@@ -19,6 +19,11 @@ spec:
       containers:
         - name: onix-adapter
           image: "asia-south1-docker.pkg.dev/trusty-relic-370809/onix-adapter-cicd/beckn-onix:latest"    #------
+          # $(CONFIG_FILE) is expanded by the kubelet against the env below
+          # before the container starts -- the image's shell-less DHI base
+          # has no `sh -c` to do that substitution itself.
+          args:
+            - "--config=$(CONFIG_FILE)"
           ports:
             - containerPort: 8080
           env:

@@ -1,0 +1,107 @@
+name: Run Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # continue-on-error rather than dropping the job: CLAUDE.md keeps CI
+      # lint as the safety net behind the pre-commit hook, which is bypassable
+      # (--no-verify). Advisory here, not a gate — a red lint check must never
+      # be the reason a PR can't merge, only a reason someone looks.
+      - run: make lint
+        continue-on-error: true
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 — cover-diff below needs the base branch's history
+      # locally to compute the PR's changed files; a PR checkout otherwise
+      # holds only the head commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make build
+      - run: make test-ci
+
+      # continue-on-error so a coverage miss still posts its report; the last
+      # step in the job turns that outcome back into a failure. Always
+      # diff-scoped, never whole-repo — main only ever moves by PR merge
+      # (CLAUDE.md: never commit directly to main), so a PR's own diff is
+      # already the gate that matters. On a pull_request event that's the PR
+      # branch vs its target; on a push to main (the merge landing) it's
+      # github.event.before, the commit main pointed to right before this one.
+      - name: Check coverage
+        id: coverage
+        continue-on-error: true
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            make cover-diff BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+          else
+            make cover-diff BASE_REF="${{ github.event.before }}"
+          fi
+
+      # Marker goes into the file itself, not just the step summary — it's
+      # what body-path feeds the PR comment below, and find-comment matches
+      # on this exact string to update rather than duplicate that comment.
+      - name: Publish coverage summary
+        run: |
+          printf '<!-- coverage-report -->\n%s\n' "$(cat coverage-report.md)" > coverage-report.md
+          cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Always posted, pass or fail or not-applicable — a comment that only
+      # shows up on failure is ambiguous from the PR itself: did coverage
+      # run at all, pass, or just never trigger? Always-visible with an
+      # explicit ✅/❌ (cover-diff's own output) answers that without a
+      # reviewer having to open the job. Updated in place across runs, not
+      # reposted, via find-comment below.
+      #
+      # continue-on-error on both: a fork PR's default GITHUB_TOKEN is
+      # read-only, so create-or-update-comment 403s there even with
+      # pull-requests: write declared. A comment that can't post must never
+      # fail the job — coverage already gated above, this step is cosmetic.
+      - name: Find existing coverage comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/find-comment@v3
+        id: find-coverage-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- coverage-report -->"
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-coverage-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: coverage-report.md
+          edit-mode: replace
+
+      - name: Gate on minimum coverage
+        if: steps.coverage.outcome == 'failure'
+        run: |
+          echo "::error::coverage is below the minimum — see the summary above"
+          exit 1

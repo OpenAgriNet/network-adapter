@@ -1,0 +1,276 @@
+name: Build and Push
+
+# Annotated tags only, per OAN convention: v{SemVer} (e.g. v0.0.1), with an
+# optional -rcN pre-release suffix (e.g. v0.1.1-rc3). Anything else (-test,
+# -beta, ...) does not match, on purpose.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: network-adapter
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            arch: arm64
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 — version-vars.sh needs full history and tags to
+          # resolve ONIX_VERSION via `git describe --tags`, not just the
+          # tag's own commit (the default shallow checkout fetches no tag
+          # refs at all).
+          fetch-depth: 0
+
+      # Each matrix leg is a separate runner (amd64, arm64), so this is keyed
+      # per-arch too — otherwise one leg would restore the other's wrong-arch
+      # binary. See security.yml's identical cache step for why: the
+      # trivy-action this replaced cached both the binary and its
+      # vulnerability DB across runs; a bare `make trivy-release-gate` alone
+      # re-downloads both every run.
+      - name: Trivy cache date
+        id: trivy-date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy binary and vulnerability DB
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin/trivy
+            ~/.cache/trivy
+          key: trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.trivy-date.outputs.date }}
+          restore-keys: |
+            trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-
+
+      - uses: docker/setup-buildx-action@v3
+
+      # One flag per registry, read from repo variables (Settings > Secrets
+      # and variables > Actions > Variables), so a registry is switched on
+      # without a workflow edit. GHCR is the only one we use today, so it
+      # defaults on; everything else defaults off until its secrets exist.
+      # Adding a registry later is: a flag here, a login step below, and one
+      # more branch in "Tag and push" and the manifest job's create_manifest
+      # calls — the build/scan steps never change.
+      - name: Set registry flags
+        run: |
+          echo "GHCR_ENABLED=${{ vars.GHCR_ENABLED != 'false' }}" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_ENABLED=${{ vars.DOCKERHUB_ENABLED == 'true' }}" >> "$GITHUB_ENV"
+          echo "AZURE_CONTAINER_REGISTRY_ENABLED=${{ vars.AZURE_CONTAINER_REGISTRY_ENABLED == 'true' }}" >> "$GITHUB_ENV"
+          echo "GOOGLE_ARTIFACT_REGISTRY_ENABLED=${{ vars.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true' }}" >> "$GITHUB_ENV"
+
+      - name: Log in to dhi.io
+        uses: ./.github/actions/dhi-login
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          token: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # GITHUB_TOKEN can be denied write_package when creating a brand-new
+      # package under a personal (non-org) namespace, even with this
+      # workflow's `packages: write` and the repo's default token permissions
+      # both set to write — a documented GHCR quirk. GHCR_PAT (classic PAT,
+      # write:packages) is the standard workaround; falls back to
+      # GITHUB_TOKEN when no such secret is set, which is enough once the
+      # package exists or for an org-owned repo.
+      - name: Log in to GHCR
+        if: env.GHCR_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Log in to Azure Container Registry
+        if: env.AZURE_CONTAINER_REGISTRY_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_NAME }}
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Authenticate to Google Cloud
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Configure Docker for Google Artifact Registry
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      # GHCR image refs must be lowercase; github.repository_owner preserves
+      # the owner's real case, so it can't be used as-is. This resolves to
+      # whichever account or org owns the repo the tag was pushed to — a
+      # fork pushes under the fork owner, no per-person edit needed.
+      - name: Set image owner
+        run: echo "OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      # Single source of truth for the build-time identity vars (see
+      # pkg/version) — written to $GITHUB_ENV so the build-push-action step
+      # below can reference them as build-args the same way a local
+      # `source install/scripts/version-vars.sh` would.
+      - name: Resolve version vars
+        run: |
+          source install/scripts/version-vars.sh
+          {
+            echo "ONIX_VERSION=$ONIX_VERSION"
+            echo "GIT_COMMIT=$GIT_COMMIT"
+            echo "GIT_TREE_STATE=$GIT_TREE_STATE"
+            echo "BUILD_DATE=$BUILD_DATE"
+          } >> "$GITHUB_ENV"
+
+      # One local, unpushed tag per arch — the manifest job below stitches
+      # amd64 and arm64 into the single tag users actually pull.
+      #
+      # load: true instead of push: true — the image lands in this runner's
+      # local Docker daemon first so Trivy can scan the exact bytes about to
+      # ship, before it is tagged for or pushed to any registry.
+      - name: Build (local, unpushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.adapter-with-plugins
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            ONIX_VERSION=${{ env.ONIX_VERSION }}
+            GIT_COMMIT=${{ env.GIT_COMMIT }}
+            GIT_TREE_STATE=${{ env.GIT_TREE_STATE }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}-${{ matrix.arch }}
+
+      # trivy-release-gate exits 1 on a finding — the release gate, not just
+      # a report — before any push below runs. One scan covers every registry.
+      - name: Trivy image scan (gate)
+        run: make trivy-release-gate IMAGE=${{ env.IMAGE_NAME }}:${{ github.ref_name }}-${{ matrix.arch }}
+
+      # Re-tag the already-scanned local image for each enabled registry and
+      # push it there. No rebuild, no re-scan.
+      - name: Tag and push
+        run: |
+          LOCAL="${{ env.IMAGE_NAME }}:${{ github.ref_name }}-${{ matrix.arch }}"
+          TAG="${{ github.ref_name }}-${{ matrix.arch }}"
+
+          if [ "$GHCR_ENABLED" = "true" ]; then
+            DEST="ghcr.io/${OWNER}/${{ env.IMAGE_NAME }}:${TAG}"
+            docker tag "$LOCAL" "$DEST"
+            docker push "$DEST"
+          fi
+          if [ "$DOCKERHUB_ENABLED" = "true" ]; then
+            DEST="${{ secrets.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}:${TAG}"
+            docker tag "$LOCAL" "$DEST"
+            docker push "$DEST"
+          fi
+          if [ "$AZURE_CONTAINER_REGISTRY_ENABLED" = "true" ]; then
+            DEST="${{ secrets.AZURE_REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:${TAG}"
+            docker tag "$LOCAL" "$DEST"
+            docker push "$DEST"
+          fi
+          if [ "$GOOGLE_ARTIFACT_REGISTRY_ENABLED" = "true" ]; then
+            DEST="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GOOGLE_ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}:${TAG}"
+            docker tag "$LOCAL" "$DEST"
+            docker push "$DEST"
+          fi
+
+  manifest:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Set registry flags
+        run: |
+          echo "GHCR_ENABLED=${{ vars.GHCR_ENABLED != 'false' }}" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_ENABLED=${{ vars.DOCKERHUB_ENABLED == 'true' }}" >> "$GITHUB_ENV"
+          echo "AZURE_CONTAINER_REGISTRY_ENABLED=${{ vars.AZURE_CONTAINER_REGISTRY_ENABLED == 'true' }}" >> "$GITHUB_ENV"
+          echo "GOOGLE_ARTIFACT_REGISTRY_ENABLED=${{ vars.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true' }}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        if: env.GHCR_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Log in to Azure Container Registry
+        if: env.AZURE_CONTAINER_REGISTRY_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.AZURE_REGISTRY_NAME }}
+          username: ${{ secrets.AZURE_REGISTRY_USERNAME }}
+          password: ${{ secrets.AZURE_REGISTRY_PASSWORD }}
+
+      - name: Authenticate to Google Cloud
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: "access_token"
+          workload_identity_provider: ${{ secrets.GOOGLE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Configure Docker for Google Artifact Registry
+        if: env.GOOGLE_ARTIFACT_REGISTRY_ENABLED == 'true'
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Set image owner
+        run: echo "OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      # imagetools create makes one manifest list from the two arch-specific
+      # images the build job just pushed to that registry — this is what
+      # lets `docker pull` resolve the right arch automatically on either
+      # amd64 or arm64. One create_manifest call per enabled registry.
+      - name: Create multi-arch manifests
+        run: |
+          create_manifest() {
+            local BASE="$1"
+            docker buildx imagetools create \
+              -t "${BASE}:${{ github.ref_name }}" \
+              -t "${BASE}:latest" \
+              "${BASE}:${{ github.ref_name }}-amd64" \
+              "${BASE}:${{ github.ref_name }}-arm64"
+          }
+
+          if [ "$GHCR_ENABLED" = "true" ]; then
+            create_manifest "ghcr.io/${OWNER}/${{ env.IMAGE_NAME }}"
+          fi
+          if [ "$DOCKERHUB_ENABLED" = "true" ]; then
+            create_manifest "${{ secrets.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}"
+          fi
+          if [ "$AZURE_CONTAINER_REGISTRY_ENABLED" = "true" ]; then
+            create_manifest "${{ secrets.AZURE_REGISTRY_NAME }}/${{ env.IMAGE_NAME }}"
+          fi
+          if [ "$GOOGLE_ARTIFACT_REGISTRY_ENABLED" = "true" ]; then
+            create_manifest "${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GOOGLE_ARTIFACT_REPO }}/${{ env.IMAGE_NAME }}"
+          fi
