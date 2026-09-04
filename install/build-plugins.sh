@@ -33,6 +33,8 @@ plugins=(
     "oanregistry"
     "jsonmapper"
     "weather"
+    "mandi"
+    "agrifacility"
     "manifestloader"
     "reqpreprocessor"
     "otelsetup"
