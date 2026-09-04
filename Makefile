@@ -1,10 +1,9 @@
 # OAN Network Adapter — build, test and toolchain targets.
 #
-# Mirrors discovery-service's Makefile shape (same target names, same
-# run-tests/security/build-and-push workflows call these, not raw commands),
-# adapted to this module: no DB, no sqlc/migrate, no separate tools/ module —
-# golangci-lint, gotestsum and trivy install straight into bin/ via `go
-# install`/curl, same as discovery-service does for gotestsum and trivy.
+# Single source of truth for the run-tests/security/build-and-push workflows,
+# which call these targets rather than raw commands. No DB, no sqlc/migrate,
+# no separate tools/ module — golangci-lint, gotestsum and trivy install
+# straight into bin/ via `go install`/curl.
 
 GO      ?= go
 BIN_DIR := bin
