@@ -47,9 +47,25 @@ cover:
 ## test-ci: run the suites through gotestsum — one line per package, coverage
 ##          profile written alongside. What run-tests.yml calls; `make test`
 ##          stays the plain everyday entrypoint.
+#
+# pkg/plugin and benchmarks/e2e each build a real .so with a plain `go build
+# -buildmode=plugin` subprocess, then load it with plugin.Open in the same
+# test run. Instrumenting the *whole* module's coverage in one `./...` build
+# gives shared packages (e.g. pkg/plugin/definition) a build identity that
+# subprocess build doesn't share, so plugin.Open rejects the .so as built
+# with a different version of that package. Splitting them into their own
+# `go test` invocation keeps their build graph small enough to match.
 test-ci: $(GOTESTSUM)
 	$(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
-		-race -coverprofile=coverage.out -covermode=atomic ./...
+		-race -coverprofile=coverage.out -covermode=atomic \
+		$$(go list ./... | grep -vE '/pkg/plugin$$|/benchmarks/e2e$$')
+	# No -race here: these two packages build a plugin .so in a subprocess
+	# `go build` with no -race flag of its own, so a race-instrumented test
+	# binary and a non-race .so mismatch and plugin.Open refuses to load it.
+	$(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
+		-coverprofile=coverage-plugin.out -covermode=atomic \
+		./pkg/plugin ./benchmarks/e2e/...
+	@tail -n +2 coverage-plugin.out >> coverage.out && rm -f coverage-plugin.out
 
 ## cover-diff: coverage restricted to files changed vs BASE_REF — a PR review
 ##             needs the diff's number, not the whole repo's. On failure,
