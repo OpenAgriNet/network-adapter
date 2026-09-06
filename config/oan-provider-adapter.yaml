@@ -1,13 +1,19 @@
 # OAN provider adapter.
 #
-# Serves /select synchronously: verifies the sender, resolves the capability's
-# call plan from the registry, calls the provider, and answers with the mapped
-# result. There is no callback -- the answer is the HTTP response.
+# Serves the Beckn actions synchronously: verifies the sender, resolves the
+# capability's call plan from the registry, calls the provider, and answers with
+# the mapped result. There is no callback -- the answer is the HTTP response.
 #
-# Adding a provider is three things and no Go changes to this file's shape:
+# Adding a provider is three things, and none of them is a Go change here:
 #   1. a registry row binding "<participantId>|<capabilityCode>" to a call plan
-#   2. two mapping files, published at the URLs that row names
-#   3. one more entry under providerSteps
+#   2. one mapping file per action, published at the URL that row names
+#   3. one more entry under providerSteps, and its id added to steps
+#
+# WHAT IS CONFIGURED HERE AND WHAT IS NOT. This file holds how to reach the
+# registry, how to present credentials, and which capabilities this module
+# serves. It does NOT hold where a provider lives or how long to wait for it --
+# that is the registry's ProviderSchema row, read per request. Repointing a
+# provider is a registry write, not an edit here and a restart.
 appName: "oan-provider-adapter"
 
 log:
@@ -29,37 +35,72 @@ pluginManager:
 modules:
   - name: oanProvider
     # A subtree, not one action. The trailing slash matters: Go's ServeMux
-    # treats a path without one as an exact match, so /beckn/select would mount
-    # that action and 404 every other. Every action lands here, and which one it
-    # is comes from the payload's context.action, never from the URL.
-    path: /beckn/
+    # treats a path without one as an exact match, so "/select" would mount
+    # that one action and 404 every other. At "/" every action lands here.
+    #
+    # WHICH ACTION IT IS COMES FROM THE URL, not the payload. The mount path is
+    # stripped off the request path and what remains -- "select", "discover" --
+    # is what the routing config matches on. The schema validator is the one
+    # exception: it is handed that same stripped path, ignores it, and reads
+    # context.action out of the body instead. Nothing reconciles the two, though
+    # a mismatch usually fails validation anyway, since two actions rarely
+    # accept the same body.
+    #
+    # A consequence worth knowing before mounting anything on an exact path:
+    # stripping "/publish" off "/publish" leaves the empty string, so a module
+    # mounted there sees an empty endpoint and the router rejects it unless its
+    # routing rule keys on "" with excludeAction set.
+    path: /
     handler:
       type: std
       role: bpp
       subscriberId: provider-network-vistaar.da.gov.in
 
       plugins:
-        # Serves both halves: the sender's signing key for validateSign, and the
-        # capability call plans the provider steps resolve against.
+        # ------------------------------------------------------------------
+        # oanregistry -- the OAN Registry (SunbirdRC) client.
+        #
+        # Serves both halves of the lookup: the sender's signing key for
+        # validateSign, and the capability call plans the provider steps
+        # resolve against. Two interfaces, deliberately kept apart -- they
+        # answer different questions, and a failure of one does not mean the
+        # other.
+        # ------------------------------------------------------------------
         registry:
           id: oanregistry
           config:
+            # REQUIRED, and the only key with no default. Include the API
+            # version prefix; the plugin appends /{entity}/search. Use the
+            # service name rather than localhost -- inside a container
+            # localhost is the adapter itself.
             url: http://registry:8081/api/v1
-            entity: Participant
-            providerEntity: ProviderSchema
-            # cacheTTL is deliberately unset. It needs a cache plugin alongside
-            # it -- this client caches nothing without one -- and this sample
-            # runs no redis, so a TTL here would look like caching while every
-            # message still made its three registry calls: key lookup, binding
-            # search, participant search, each inside signature validation's
-            # budget. The plugin now says so at startup if the two are not
-            # configured together.
+
+            # The two entity names, both defaulted. Only worth setting if a
+            # deployment renamed the schemas.
+            entity: Participant               # default: Participant
+            providerEntity: ProviderSchema    # default: ProviderSchema
+
+            # Tighter than a general-purpose HTTP client on purpose. This runs
+            # INSIDE signature validation on every inbound message, so
+            # timeout x (retry_max + 1) is how long a request can wait before
+            # it is even allowed to be rejected.
+            timeout: 2                        # default: 2 (seconds)
+            retry_max: 1                      # default: 1
+            retry_wait_min: 100ms             # default: 100ms
+            retry_wait_max: 500ms             # default: 500ms
+
+            # cacheTTL is deliberately unset. It needs a cache plugin
+            # alongside it -- this client caches nothing without one -- and
+            # this sample runs no redis, so a TTL here would look like
+            # caching while every message still made its registry calls
+            # inside signature validation's budget. The plugin logs a warning
+            # at startup if the two are not configured together.
             #
-            # Adding a cache plugin? Read the number carefully. It is exactly
-            # how long a suspended participant keeps verifying, and a withdrawn
+            # Read the number carefully before setting it. It is exactly how
+            # long a suspended participant keeps verifying, and a withdrawn
             # capability keeps being called.
             #
-            #   cacheTTL: 60s
+            #   cacheTTL: 60s                 # default: unset, meaning off
 
         keyManager:
           id: simplekeymanager
@@ -71,28 +112,156 @@ modules:
         signValidator:
           id: signvalidator
 
-        # Generic. Knows nothing about any provider; fetches, compiles and
-        # caches whatever the registry's mapping URLs point at.
+        # Base Beckn v2 schema validation against the pinned LTS spec. The
+        # extended layer fetches each resource's own @context and validates
+        # against that -- a network call per payload and a second thing that
+        # can fail -- so it is off, and the extendedSchema_* keys below only
+        # take effect if it is switched on.
+        schemaValidator:
+          id: schemav2validator
+          config:
+            type: url
+            location: "https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml"
+            cacheTTL: "3600"
+            extendedSchema_enabled: "false"
+            extendedSchema_cacheTTL: "86400"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "beckn.org,raw.githubusercontent.com"
+
+        # ------------------------------------------------------------------
+        # jsonmapper -- the JSONata mapper.
+        #
+        # Generic, and named for what it is rather than for OAN: it knows
+        # nothing about any provider. It fetches whatever URL the registry's
+        # mappings field names, compiles the JSONata, caches the compiled
+        # form, and runs it in both directions.
+        #
+        # Every key here is optional.
+        # ------------------------------------------------------------------
         mapper:
           id: jsonmapper
           config:
-            fetchTimeout: 5s
-            cacheTTL: 1h
-            negativeTTL: 1m
+            # How long to wait for the mapping itself. This is on the request
+            # path on a cache miss, so it is a ceiling on a select's latency
+            # the first time a mapping is used.
+            fetchTimeout: 5s                  # default: 5s
 
-        # One entry per provider capability. Each recognises its own binding key
-        # and passes through anything else, which is the whole dispatch
-        # mechanism. Credentials are named, never held: authScheme says how to
-        # present them, and the *Env keys name environment variables.
+            # How long a compiled mapping is reused. The practical effect is
+            # how long an edit to a published mapping takes to appear.
+            cacheTTL: 1h                      # default: 1h
+
+            # How long a FAILED fetch is remembered. Without it, a mapping
+            # URL that 404s is re-fetched on every single request.
+            negativeTTL: 1m                   # default: 1m
+
+            # A ceiling on the mapping document, not the payload. 256 KiB is
+            # far above any realistic mapping; it is here so a wrong URL
+            # pointing at something enormous fails fast instead of buffering.
+            maxMappingBytes: 262144           # default: 262144 (256 KiB)
+
+            # How many compiled mappings to keep. One entry per
+            # binding-key-and-action, so the useful floor is the number of
+            # capabilities times the actions each serves.
+            maxCacheEntries: 200              # default: 200
+
+        # ------------------------------------------------------------------
+        # providerSteps -- one entry per provider capability.
+        #
+        # DISPATCH NEEDS NO MECHANISM. Each step builds a binding key out of
+        # the incoming payload -- the provider id and the capability @type it
+        # carries -- serves the request if that key is one of its own, and
+        # returns nil untouched if it is not. So several sit in one pipeline
+        # and each recognises its own work, with no routing table to keep in
+        # step with the registry.
+        #
+        # If NO step claims a payload the answer is 404 NET_ENTITY_NOT_FOUND
+        # -- deliberately not an ACK, which would tell the caller an answer is
+        # coming and leave it waiting for a callback nobody will send.
+        #
+        # CREDENTIALS ARE NAMED, NEVER HELD. authScheme says how to present
+        # one; the *Env keys name an ENVIRONMENT VARIABLE to read it from. No
+        # secret is in this file, and none is in the registry either. A
+        # configured credential whose variable is absent fails the request
+        # rather than calling the provider unauthenticated.
+        # ------------------------------------------------------------------
         providerSteps:
           - id: weather
             config:
+              # REQUIRED. Comma-separated, because a plugin config value is a
+              # string and one provider may serve several capabilities. A
+              # binding key contains "|" and ":", so a comma is unambiguous.
               bindingKeys: "mausamgram|openagrinet:WeatherObservation"
+
+              # Where in the payload to read the two halves of the key. Both
+              # default to where core-v2.0.0-lts puts them, so they are only
+              # worth setting for a payload that differs. Note "[]": it flattens
+              # an array at that segment and is the ONLY operator the walk
+              # understands -- the same path without it matches nothing.
+              #
+              # Set both or neither; one alone is refused at startup rather
+              # than left to fail as every request quietly going unserved.
+              #
+              #   providerIdAt: "message.contract.commitments[].offer.provider.id"
+              #   capabilityCodeAt: "message.contract.commitments[].resources[].resourceAttributes.@type"
+
+              # none | basic | header | query
+              #
+              #   none    the upstream needs no credential
+              #   basic   HTTP basic; usernameEnv + passwordEnv
+              #   header  a named header; headerName + headerValueEnv
+              #   query   a named query parameter; queryName + queryValueEnv.
+              #           Redacted from the URL the step logs.
               authScheme: basic
               usernameEnv: MAUSAMGRAM_USER
               passwordEnv: MAUSAMGRAM_X_API_KEY
 
+              # The other two schemes, for reference:
+              #
+              #   authScheme: header
+              #   headerName: X-API-Key
+              #   headerValueEnv: MAUSAMGRAM_X_API_KEY
+              #
+              #   authScheme: query
+              #   queryName: token
+              #   queryValueEnv: MAUSAMGRAM_TOKEN
+
+              # A ceiling on the provider's RESPONSE, so one that streams or
+              # misbehaves cannot exhaust memory. The body is rejected past
+              # this rather than truncated -- truncated JSON would fail
+              # mapping with a parse error that says nothing about the cause.
+              #
+              #   maxResponseBytes: 4194304   # default: 4194304 (4 MiB)
+
+      # Declaring a step above is not enough: THIS list is what runs. A step
+      # that appears under providerSteps but not here never executes, and the
+      # request falls through to the 404 above -- which looks like a registry
+      # problem and is not.
       steps:
-        - validateSign   # the sender's key, from the registry
-        - weather        # resolve, map out, call, map back
-        - signAck        # signs whatever the step answered with
+        - validateSign     # the sender's key, from the registry
+        - validateSchema   # the pinned Beckn v2 spec
+        - weather          # resolve, map out, call, map back
+        - signAck          # signs whatever the step answered with
+
+# ----------------------------------------------------------------------------
+# NOT CONFIGURED HERE: the call plan.
+#
+# Everything about how to reach a provider lives in its registry
+# ProviderSchema row, read per request, one entry per Beckn action:
+#
+#   method       GET or POST
+#   path         appended to the participant's baseUrl
+#   mappings     the URL of the mapping file for this action
+#   timeoutMs    per-call timeout.                Omitted: 15000
+#   retryMax     retries after the first attempt. Omitted: 0
+#
+# So a provider moving host, a slow one needing longer, or a flaky one needing
+# retries are all registry writes. Nothing here changes and nothing restarts.
+#
+# Retry classification is not configurable at all: 4xx is permanent and is not
+# retried, 5xx and transport errors are, and the backoff rises from 50ms to a
+# 800ms ceiling. A non-2xx reaches the caller as an error with the provider's
+# own response included, and the mapping never runs on it -- which is why an
+# upstream that signals "no data" with a 4xx surfaces as a failure rather than
+# an empty result.
+# ----------------------------------------------------------------------------
