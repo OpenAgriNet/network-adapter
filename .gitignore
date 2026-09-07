@@ -148,10 +148,16 @@ coverage-report.md
 
 # Makefile tool/build artifacts (golangci-lint, gotestsum, trivy binaries)
 /bin/
+
+# Scan output: the two SARIF reports trivy-deps/trivy-image write and the
+# single comment trivy-report renders from them.
 trivy-deps.sarif
 trivy-image.sarif
-trivy-deps-comment.md
-trivy-image-comment.md
+trivy-report.md
+
+# Release output: image-build writes one of each per architecture.
+image-metadata-*.json
+digest-*.txt
 
 # Ignore the schema directory used for testing
 /schemas/
