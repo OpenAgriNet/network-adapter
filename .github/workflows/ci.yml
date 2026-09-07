@@ -1,9 +1,14 @@
 name: CI
 
-# Four checks and no more. On a PR or a trunk push: "End to End verification"
-# and "Security Scan". On a version tag: "Build Artifact" and
-# "Publish Artifact". Nothing runs on both event kinds, so a PR never shows a
-# publish check and a tag never re-runs the tests the PR already gated on.
+# Two checks and no more: "End to End verification" and "Security Scan".
+#
+# The two tag-time checks live in ci-release.yml, not here behind an `if:`. A
+# job whose `if:` is false still posts a skipped check, and its `name:` is
+# reported with `${{ matrix.* }}` unexpanded because the matrix leg never
+# materialised — so gating tag jobs inside this file put two permanently
+# skipped checks on every PR. A separate workflow with a tag-only trigger
+# simply does not exist on a PR. That file is also named `CI`, so the check
+# names still read "CI / Build Artifact (amd64)" and "CI / Publish Artifact".
 #
 # Every step below is either a one-line `make` call or GitHub plumbing
 # (`${{ }}` expressions, $GITHUB_STEP_SUMMARY). The build, test, scan and
@@ -12,22 +17,13 @@ name: CI
 on:
   push:
     # development as well as main: this is the branch PRs target and merge
-    # into, so a merge landing there runs the same gates the PR did.
+    # into, so a merge landing there runs the same gates the PR did. No tags —
+    # a tag re-running the tests its PR already gated on proves nothing.
     branches: [main, development]
-    # Both spellings on purpose. Every tag in this repo so far is v-prefixed
-    # (v1.8.2, v2.0.1-rc1), but a release cut as 1.0.0 or 1.0.0-RC1 should
-    # publish too rather than silently do nothing. These are GitHub filter
-    # patterns, not regexes: + and [] work, so the digits are real digits and
-    # a branch-shaped tag like `release/foo` cannot match.
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+-*"
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "v[0-9]+.[0-9]+.[0-9]+-*"
   pull_request:
 
-# Least privilege at the workflow level; the three jobs that need more declare
-# it for themselves.
+# Least privilege at the workflow level; the jobs that need more declare it for
+# themselves.
 permissions:
   contents: read
 
@@ -37,22 +33,14 @@ permissions:
 # group and supersedes the run before it.
 concurrency:
   group: ci-${{ github.ref }}
-  # PRs only. On main, development and tags every commit keeps its own recorded
+  # PRs only. On main and development every commit keeps its own recorded
   # verdict — cancelling there would leave a trunk commit with a grey check and
-  # no way to tell afterwards whether it was ever green, and would abort a
-  # half-finished publish.
+  # no way to tell afterwards whether it was ever green.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
     name: End to End verification
-    # Everything except a tag push, i.e. PRs and trunk pushes. Tested on
-    # github.ref rather than github.ref_type: on a pull_request the ref is
-    # refs/pull/<n>/merge, which is neither refs/heads/ nor refs/tags/, and
-    # ref_type is not documented to be 'branch' there. Guessing wrong would
-    # skip this job on every PR and show a green check for a run that did
-    # nothing, so the condition names the one case it means to exclude.
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     # pull-requests: write is for the coverage comment below.
     permissions:
@@ -135,8 +123,6 @@ jobs:
 
   security-scan:
     name: Security Scan
-    # Same condition as End to End verification above — see the note there.
-    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     # Both scans in one job, one check. They were two jobs plus a gate job, and
     # three red-or-green checks to say one thing — "is this branch shippable" —
@@ -216,88 +202,3 @@ jobs:
       # finding or on a report that never got written, so the report is on the
       # PR before the check goes red.
       - run: make trivy-gate
-
-  build-artifact:
-    # One leg per architecture, on a runner of that architecture. Not one check
-    # with QEMU: the image compiles every plugin with `go build
-    # -buildmode=plugin`, and emulating an arm64 Go toolchain build turns a
-    # few minutes into tens of them. Both runner labels are free for public
-    # repos, so the only cost of the second leg is that it is a second check.
-    name: Build Artifact (${{ matrix.arch }})
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      # A tag that can only ship one architecture should not ship at all, and
-      # stopping the other leg early keeps a doomed release from occupying a
-      # runner for another ten minutes.
-      fail-fast: true
-      matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    permissions:
-      contents: read
-      # The push to ghcr.io. Read is not enough even for a push by digest.
-      packages: write
-    steps:
-      # fetch-depth: 0 — version-vars.sh derives ONIX_VERSION from
-      # `git describe --tags`, which needs the tag objects, not just the commit.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # The default builder uses the `docker` driver, which supports neither
-      # push-by-digest nor --metadata-file. This switches to docker-container.
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Pushes untagged, by digest, and writes digest-<arch>.txt. Nothing is
-      # visible under a version tag until Publish Artifact below has both.
-      - run: make image-build ARCH=${{ matrix.arch }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: digest-${{ matrix.arch }}
-          path: digest-${{ matrix.arch }}.txt
-          if-no-files-found: error
-
-  publish-artifact:
-    name: Publish Artifact
-    if: startsWith(github.ref, 'refs/tags/')
-    # No always() and no if-failure handling: needs alone means a failed or
-    # cancelled build leg skips this job, which is the point — a version tag
-    # must never resolve to one architecture.
-    needs: build-artifact
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      # Checkout is for the Makefile and for the tag objects version-vars.sh
-      # reads; this job builds nothing.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: digest-*
-          merge-multiple: true
-
-      # Binds the tag — and :latest, for a plain vX.Y.Z — to the digests the
-      # build legs pushed, then inspects the result so the log shows which
-      # platforms the published tag actually resolves to.
-      - run: make image-publish
