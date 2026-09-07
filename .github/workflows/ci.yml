@@ -16,9 +16,17 @@ on:
 permissions:
   contents: read
 
+# A new commit on a PR makes the previous commit's runs worthless, so they are
+# cancelled rather than left to finish. github.ref is refs/pull/<n>/merge for a
+# pull_request event, so every push to the PR's head branch lands in the same
+# group and supersedes the run before it; a push to main or development gets
+# its own group and never collides with a PR's.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # PRs only. On main and development every commit keeps its own recorded
+  # verdict — cancelling there would leave trunk commits with a grey check and
+  # no way to tell afterwards whether that commit was ever green.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:

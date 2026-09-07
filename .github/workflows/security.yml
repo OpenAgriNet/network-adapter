@@ -20,9 +20,14 @@ on:
 permissions:
   contents: read
 
+# Same rule as ci.yml: a new commit on a PR supersedes the scans of the one
+# before it. Its own group, not shared with ci.yml, so cancelling a superseded
+# CI run does not take the Security run for that commit down with it.
 concurrency:
   group: security-${{ github.ref }}
-  cancel-in-progress: true
+  # PRs only — see ci.yml. A scan verdict on a trunk commit is a record worth
+  # keeping.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   dependency-scan:
