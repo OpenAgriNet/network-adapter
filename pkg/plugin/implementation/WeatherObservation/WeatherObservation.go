@@ -1,15 +1,18 @@
-// Package weather serves the network's weather capabilities.
+// Package WeatherObservation serves the network's weather capabilities.
 //
-// One package per schema pack family, so which plugin owns a capability is
-// readable from its binding key: openagrinet:WeatherObservation and
-// openagrinet:WeatherAdvisory are weather's, openagrinet:MandiPrice is not.
+// One package per capability, named for the capability it serves, so which
+// plugin owns a payload is readable from its binding key without a lookup:
+// openagrinet:WeatherObservation is this one's, openagrinet:MandiPrice is not.
+// Which keys it answers to is still configuration -- a deployment can point it
+// at a related pack such as openagrinet:WeatherAdvisory -- but the name says
+// what it was built against.
 //
 // Almost nothing lives here. Recognising a capability, resolving the call plan,
 // authenticating, calling with the registry's budget and translating in both
 // directions are all internal/upstream's, because none of them differ by domain.
 // What this package owns is its name, and prerequisites -- the work a mapping
 // cannot express, which is domain knowledge by definition.
-package weather
+package WeatherObservation
 
 import (
 	"context"
