@@ -137,6 +137,14 @@ SARIF_REPORTS := trivy-deps.sarif trivy-image.sarif
 # the changed files dragging it down, worst first. Always writes
 # coverage-report.md — the workflow reads that file unconditionally, so every
 # exit path here has to produce it.
+# Three verdicts, not two. "✅ Passed" and "❌ Failed" both mean a percentage was
+# computed and compared against MIN_COVERAGE. The two not-applicable paths below
+# compute nothing — no changed non-test .go files means no denominator, and
+# changed files with no coverable statements means 0/0 — so they report
+# "➖ Not applicable" and say why. They used to say "✅ Passed", which read as
+# though the diff had been measured and cleared the bar; a CI-only PR looked
+# indistinguishable from a well-tested one. Still exit 0: a PR that changes no
+# Go code must not be blocked on Go coverage.
 cover-diff: coverage.out
 	@if ! git rev-parse --verify --quiet "$(BASE_REF)^{commit}" >/dev/null; then \
 		echo "::error::BASE_REF '$(BASE_REF)' does not resolve to a commit — cannot compute the changed-file set"; \
@@ -150,7 +158,7 @@ cover-diff: coverage.out
 	fi; \
 	CHANGED=$$(printf '%s\n' "$$DIFF" | grep -v '_test\.go$$'); \
 	if [ -z "$$CHANGED" ]; then \
-		printf '%s\n' "$(COVER_MARKER)" "📊 **Test Coverage: ✅ Passed** — not applicable, no changed Go files vs $(BASE_REF)" | tee coverage-report.md; \
+		printf '%s\n' "$(COVER_MARKER)" "📊 **Test Coverage: ➖ Not applicable** — no non-test Go files changed vs \`$(BASE_REF)\`, so there are no lines to measure and no percentage to report." | tee coverage-report.md; \
 		exit 0; \
 	fi; \
 	MODULE=$$($(GO) list -m); \
@@ -170,7 +178,7 @@ cover-diff: coverage.out
 			print "TOTAL\t" int(C * 100 / T) \
 		}' - coverage.out); \
 	if echo "$$RESULT" | grep -q '^EMPTY$$'; then \
-		printf '%s\n' "$(COVER_MARKER)" "📊 **Test Coverage: ✅ Passed** — not applicable, changed files carry no coverable statements" | tee coverage-report.md; \
+		printf '%s\n' "$(COVER_MARKER)" "📊 **Test Coverage: ➖ Not applicable** — the changed Go files carry no coverable statements (declarations, types or constants only), so there is no percentage to compute." | tee coverage-report.md; \
 		exit 0; \
 	fi; \
 	PCT=$$(echo "$$RESULT" | awk -F'\t' '$$1=="TOTAL"{print $$2}'); \
