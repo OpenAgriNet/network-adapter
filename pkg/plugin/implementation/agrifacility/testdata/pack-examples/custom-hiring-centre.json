@@ -1,0 +1,30 @@
+{
+  "@context": "https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/context.jsonld",
+  "@type": "openagrinet:AgricultureFacility",
+  "informationMode": "Direct",
+  "languages": [
+    "en",
+    "mr"
+  ],
+  "facilityType": "CustomHiringCentre",
+  "address": {
+    "streetAddress": "Krushisafalya Farmer Producer Company Limited",
+    "addressLocality": "Gogalgaon",
+    "addressRegion": "Maharashtra",
+    "postalCode": "423107",
+    "addressCountry": "IN",
+    "extendedAddress": "Rahta, Ahmednagar district"
+  },
+  "services": [
+    {
+      "code": "FARM_MACHINERY_HIRE",
+      "name": "Farm machinery hire",
+      "shortDesc": "Access to agricultural machinery and implements."
+    }
+  ],
+  "source": {
+    "sourceId": "provider:agriculture-common-services",
+    "sourceName": "Agriculture Common Services Provider"
+  },
+  "lastUpdatedAt": "2026-08-29T00:00:00Z"
+}
