@@ -595,3 +595,60 @@ func TestProviderRecordCacheKeyIsDistinctFromTheKeyLookupCacheKey(t *testing.T) 
 		t.Errorf("provider plan cache key %q shares the signing-key namespace", cache.setKey)
 	}
 }
+
+// searchRecords serves the signing-key lookup as well as the two provider
+// lookups, and the signing-key one runs inside validateSign on every inbound
+// message -- so an unbounded read here is an unbounded allocation on the
+// request path. The other two reads this deployment makes, in upstream and in
+// jsonmapper, have always been bounded; this one was not.
+func TestSearchRefusesAResponsePastTheLimit(t *testing.T) {
+	const limit = 512
+
+	// Valid JSON, and far too much of it: the size is what is refused, not the
+	// shape, which is what makes the error worth reading.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `[{"osid":"1","bindingKey":"k","padding":%q}]`, strings.Repeat("x", limit*4))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL, nil, func(c *Config) { c.MaxResponseBytes = limit })
+	_, err := client.ProviderRecord(context.Background(), "imd-mock|openagrinet:WeatherObservation")
+	if err == nil {
+		t.Fatal("expected an oversized search response to be refused")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %v, want it to name the limit rather than a decode failure", err)
+	}
+	// Refused, not truncated. A truncated body fails to decode with an error
+	// about JSON syntax, which says nothing about the cause.
+	if strings.Contains(err.Error(), "unexpected end of JSON") {
+		t.Errorf("error = %v; the body was truncated and then decoded, not refused", err)
+	}
+}
+
+// A response inside the limit is unaffected -- the cap must not cost a byte of
+// headroom to the ordinary case.
+func TestSearchAcceptsAResponseInsideTheLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL, nil, func(c *Config) { c.MaxResponseBytes = 512 })
+	_, err := client.ProviderRecord(context.Background(), "imd-mock|openagrinet:WeatherObservation")
+	// An empty result is its own not-found error, not a size complaint.
+	if err != nil && strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("a small response was refused for size: %v", err)
+	}
+}
+
+// An unset limit must not mean an unbounded one.
+func TestNewAppliesTheDefaultResponseLimit(t *testing.T) {
+	client := newTestClient(t, "http://127.0.0.1:1/api/v1", nil)
+	if client.maxResponseBytes != DefaultMaxResponseBytes {
+		t.Errorf("maxResponseBytes = %d, want the %d default rather than unbounded",
+			client.maxResponseBytes, DefaultMaxResponseBytes)
+	}
+}

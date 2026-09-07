@@ -325,9 +325,22 @@ func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, u
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	// Bounded, like every other response this deployment reads. searchRecords
+	// serves the signing-key lookup as well as the two provider lookups, and
+	// the signing-key one runs inside validateSign on EVERY inbound message --
+	// so an unbounded read here is an unbounded allocation on the request path,
+	// against a URL that a sample config points at plain http.
+	//
+	// One byte past the limit is read so exceeding it can be told from meeting
+	// it exactly, and the response is then refused rather than truncated:
+	// half a JSON document fails to decode with an error about syntax, which
+	// says nothing about the cause.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read search response: %w", err)
+	}
+	if int64(len(respBody)) > c.maxResponseBytes {
+		return nil, fmt.Errorf("search response exceeds the %d byte limit", c.maxResponseBytes)
 	}
 	if resp.StatusCode != http.StatusOK {
 		// The body can carry registry internals, so it is logged but never

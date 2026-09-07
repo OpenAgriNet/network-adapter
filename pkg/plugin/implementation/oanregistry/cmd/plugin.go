@@ -92,6 +92,18 @@ func (o oanRegistryProvider) parseConfig(config map[string]string) (*oanregistry
 		cfg.RetryMax = retryMax
 	}
 
+	// Parse maxResponseBytes
+	if maxBytesStr, exists := config["maxResponseBytes"]; exists && maxBytesStr != "" {
+		maxBytes, err := strconv.ParseInt(maxBytesStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid maxResponseBytes value '%s': %w", maxBytesStr, err)
+		}
+		if maxBytes <= 0 {
+			return nil, fmt.Errorf("maxResponseBytes must be positive, got %d", maxBytes)
+		}
+		cfg.MaxResponseBytes = maxBytes
+	}
+
 	// Parse retry_wait_min
 	if retryWaitMinStr, exists := config["retry_wait_min"]; exists && retryWaitMinStr != "" {
 		retryWaitMin, err := time.ParseDuration(retryWaitMinStr)
