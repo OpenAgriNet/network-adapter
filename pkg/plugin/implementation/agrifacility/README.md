@@ -104,8 +104,14 @@ Distance, which POCRA does supply, is used to order the resources nearest-first
 and then dropped: the pack states that query-relative distance is not an
 intrinsic facility attribute and belongs in result metadata.
 
-`"Unknown"`, `"N/A"` and `"000000"` are treated as absent wherever POCRA sends
-them, so a field is omitted rather than published as a placeholder.
+`"Unknown"`, `"N/A"`, `"000000"` and `"-"` are treated as absent wherever POCRA
+sends them, so a field is omitted rather than published as a placeholder. The
+warehouse BPP uses `"-"` for a phone it does not have; the other three use
+`"N/A"`.
+
+`@context` is echoed from the request rather than restated here, so this mapping
+does not have to know which pack identifier is current and cannot contradict
+what the caller declared.
 
 ## Testing
 
@@ -113,6 +119,19 @@ them, so a field is omitted rather than published as a placeholder.
 go test ./pkg/plugin/implementation/agrifacility/...
 ```
 
+25 pass, 2 skip. The two skips are live tests against the real POCRA API, opted
+into with `POCRA_LIVE=1`.
+
 `mappings_test.go` runs the shipped mapping through the real mapper and the real
 step against a fake POCRA. It reads from `config/mappings/pocra/` rather than
 from a fixture, so it breaks when what is deployed breaks.
+
+`conformance_test.go` validates the answer against
+`openagrinet:AgricultureFacility v0.1` with a real JSON Schema validator, using
+the schemas vendored in `testdata/schemas.yaml`. It also validates the pack's
+own published examples — if those fail, the compilation is wrong and nothing
+else in that file means anything — and covers the two things the schema is
+silent on: fields the pack does not declare, and the README's prose mapping
+rules.
+
+Full runbook: `docs/agrifacility-testing.md`.
