@@ -1442,25 +1442,243 @@ func TestValidateReferencedObject_PackStyleKeepsAtType(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// The same pack must still reject a payload whose @type is not the one the
-// capability declares -- keeping the key means its const is now checked, which
-// stripping it silently skipped.
-func TestValidateReferencedObject_PackStyleWrongAtTypeRejected(t *testing.T) {
-	cache := newSchemaCache(10)
-	path := serveTempSchema(t, packStyleSchema)
+// packStyleTypeListSchema mirrors how the packs really declare @type: a oneOf
+// whose first branch is the canonical string and whose second is a list
+// carrying that type alongside provider-defined ones, which must not take the
+// openagrinet: prefix.
+const packStyleTypeListSchema = `openapi: 3.1.0
+info:
+  title: Pack Style With Type List
+  version: 1.0.0
+components:
+  schemas:
+    WeatherObservation:
+      type: object
+      x-jsonld:
+        "@context": https://schemas.example.org/schema/WeatherObservation/v0.1/context.jsonld
+        "@type": openagrinet:WeatherObservation
+      allOf:
+        - type: object
+          required:
+            - informationMode
+          properties:
+            informationMode:
+              type: string
+              enum: [OnDemand, Direct]
+        - type: object
+          required:
+            - "@type"
+          properties:
+            "@type":
+              oneOf:
+                - type: string
+                  const: openagrinet:WeatherObservation
+                - type: array
+                  minItems: 2
+                  uniqueItems: true
+                  contains:
+                    const: openagrinet:WeatherObservation
+                  items:
+                    oneOf:
+                      - const: openagrinet:WeatherObservation
+                      - type: string
+                        minLength: 1
+                        not:
+                          pattern: "^openagrinet:"`
 
-	obj := referencedObject{
-		Path:    "message.catalogs[0].resources[0].resourceAttributes",
-		Context: path,
-		Type:    "openagrinet:WeatherObservation",
-		Data: map[string]interface{}{
-			"@type":           "openagrinet:MandiPrice",
-			"informationMode": "OnDemand",
+// resourceBody wraps resourceAttributes the way a payload carries them, so
+// discovery runs over the same shape production sees.
+func resourceBody(ctxURL string, atType interface{}, informationMode string) map[string]interface{} {
+	attrs := map[string]interface{}{"@context": ctxURL, "@type": atType}
+	if informationMode != "" {
+		attrs["informationMode"] = informationMode
+	}
+	return map[string]interface{}{
+		"message": map[string]interface{}{
+			"catalogs": []interface{}{
+				map[string]interface{}{"resources": []interface{}{
+					map[string]interface{}{"resourceAttributes": attrs},
+				}},
+			},
 		},
 	}
+}
 
-	err := cache.validateReferencedObject(context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
-	assert.Error(t, err)
+// theObjectIn runs the production discovery over a body and returns the single
+// domain object in it. Tests go through this rather than building a
+// referencedObject by hand: Context, Type and Data all come off one map there,
+// so a hand-built object can assert a state the real path cannot produce.
+func theObjectIn(t *testing.T, body map[string]interface{}) referencedObject {
+	t.Helper()
+	objects := findReferencedObjects(body["message"], "message")
+	if len(objects) != 1 {
+		t.Fatalf("expected exactly one domain object from discovery, got %d", len(objects))
+	}
+	return objects[0]
+}
+
+// The pack allows @type to be a list, and reading only the string form meant
+// such an object matched nothing, was dropped before validation, and the layer
+// reported a pass over a payload it had not looked at.
+func TestValidateReferencedObject_AcceptsAndChecksATypeList(t *testing.T) {
+	ctxURL := serveTempSchema(t, packStyleTypeListSchema)
+	const canonical = "openagrinet:WeatherObservation"
+
+	for _, tt := range []struct {
+		name       string
+		atType     interface{}
+		wantErr    bool
+		wantErrHas string
+	}{
+		{
+			name:   "the canonical type alone, as a string",
+			atType: canonical,
+		},
+		{
+			name:   "the canonical type beside a provider type",
+			atType: []interface{}{canonical, "vendor:GriddedForecast"},
+		},
+		{
+			name:   "provider type first -- the document decides which entry names the capability",
+			atType: []interface{}{"vendor:GriddedForecast", canonical},
+		},
+		{
+			// A real payload-level rejection, and one that only bites because
+			// @type is kept in the data rather than stripped: the list branch
+			// forbids a second openagrinet: type.
+			name:    "a second openagrinet type, which the pack forbids",
+			atType:  []interface{}{canonical, "openagrinet:MandiPrice"},
+			wantErr: true,
+		},
+		{
+			// The string branch does not match a list and the list branch
+			// requires two entries, so neither is satisfied.
+			name:    "a single-entry list, which satisfies neither branch",
+			atType:  []interface{}{canonical},
+			wantErr: true,
+		},
+		{
+			name:       "a list naming no type the document declares",
+			atType:     []interface{}{"vendor:One", "vendor:Two"},
+			wantErr:    true,
+			wantErrHas: "no schema found",
+		},
+		{
+			name:       "@type present but not a type name",
+			atType:     42,
+			wantErr:    true,
+			wantErrHas: "not a type name",
+		},
+		{
+			name:       "@type an empty list",
+			atType:     []interface{}{},
+			wantErr:    true,
+			wantErrHas: "not a type name",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := theObjectIn(t, resourceBody(ctxURL, tt.atType, "OnDemand"))
+			err := newSchemaCache(10).validateReferencedObject(
+				context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+
+			if !tt.wantErr {
+				assert.NoError(t, err)
+				return
+			}
+			if err == nil {
+				t.Fatal("expected a rejection; a skipped object is reported as valid")
+			}
+			if tt.wantErrHas != "" {
+				assert.Contains(t, err.Error(), tt.wantErrHas)
+			}
+		})
+	}
+}
+
+// An object claiming a type this validator cannot read must be rejected, not
+// passed over. Skipping is what let unvalidated resourceAttributes through.
+func TestFindReferencedObjects_TypeShapes(t *testing.T) {
+	const ctxURL = "https://schemas.example.org/schema/WeatherObservation/v0.1/context.jsonld"
+
+	for _, tt := range []struct {
+		name      string
+		attrs     map[string]interface{}
+		wantFound bool
+		wantTypes []string
+		wantCode  string
+	}{
+		{
+			name:      "string @type",
+			attrs:     map[string]interface{}{"@context": ctxURL, "@type": "openagrinet:WeatherObservation"},
+			wantFound: true,
+			wantTypes: []string{"openagrinet:WeatherObservation"},
+		},
+		{
+			name:      "list @type keeps every entry, in payload order",
+			attrs:     map[string]interface{}{"@context": ctxURL, "@type": []interface{}{"a", "b"}},
+			wantFound: true,
+			wantTypes: []string{"a", "b"},
+		},
+		{
+			name:      "list @context takes the first string, since only a URL locates a schema",
+			attrs:     map[string]interface{}{"@context": []interface{}{ctxURL, map[string]interface{}{"inline": "term"}}, "@type": "T"},
+			wantFound: true,
+			wantTypes: []string{"T"},
+		},
+		{
+			name:      "inline-object @context names no document to fetch",
+			attrs:     map[string]interface{}{"@context": map[string]interface{}{"inline": "term"}, "@type": "T"},
+			wantFound: true,
+			wantCode:  "SCH_INVALID_JSONLD_CONTEXT",
+		},
+		{
+			name:      "@type a number",
+			attrs:     map[string]interface{}{"@context": ctxURL, "@type": 42},
+			wantFound: true,
+			wantCode:  "SCH_INVALID_ENTITY_TYPE",
+		},
+		{
+			// No claim about which schema applies, so there is nothing to
+			// validate against. Passed over, as before.
+			name:      "@context with no @type at all",
+			attrs:     map[string]interface{}{"@context": ctxURL, "field": "value"},
+			wantFound: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			objects := findReferencedObjects(map[string]interface{}{"resourceAttributes": tt.attrs}, "message")
+			if !tt.wantFound {
+				assert.Empty(t, objects)
+				return
+			}
+			if len(objects) != 1 {
+				t.Fatalf("expected one object, got %d", len(objects))
+			}
+			obj := objects[0]
+
+			if tt.wantCode != "" {
+				if obj.Unusable == nil {
+					t.Fatal("expected the object to be marked unusable, so it is rejected rather than skipped")
+				}
+				becknErr, ok := obj.Unusable.(*model.Error)
+				if !ok {
+					t.Fatalf("Unusable = %T, want *model.Error", obj.Unusable)
+				}
+				assert.Equal(t, tt.wantCode, becknErr.Code)
+
+				// and it must actually reject when validated
+				err := newSchemaCache(10).validateReferencedObject(
+					context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+				assert.Error(t, err)
+				return
+			}
+
+			assert.Nil(t, obj.Unusable)
+			assert.Equal(t, tt.wantTypes, obj.Types)
+			assert.Equal(t, tt.wantTypes[0], obj.Type)
+			assert.Equal(t, ctxURL, obj.Context)
+		})
+	}
 }
 
 func TestStripUnaccountedJSONLDKeys(t *testing.T) {
