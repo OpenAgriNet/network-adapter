@@ -44,12 +44,24 @@
 # the id that was asked for, and leaving it would point the offer at something
 # that appears nowhere in the answer.
 #
-# ONE FIELD HERE IS NOT IN THE PACK, deliberately. The pack sets no
-# additionalProperties, so it validates; it is simply not governed.
+# ONE FIELD HERE IS NOT IN THE PACK, and this does NOT validate against it.
+# An earlier version of this comment said the pack set no additionalProperties.
+# It does: WeatherObservation v0.1 closes parameters.items with
+# `additionalProperties: false`, so the field below is refused, not merely
+# ungoverned.
 #
-#   aggregation    The pack's parameter entry is parameter/value/unit only. This
+#   aggregation    The pack's parameter entry is parameter/value/unit only, and
+#                  its `parameter` enum has no minimum or maximum variants. This
 #                  provider reports a minimum AND a maximum for temperature and
-#                  humidity, which are indistinguishable without it.
+#                  humidity every day, so without this field the two arrive as
+#                  two identical Temperature readings and a consumer cannot tell
+#                  which is which.
+#
+# It is kept because dropping it loses information the pack cannot express any
+# other way -- removing it would make the answer conformant and useless. The
+# resolution is a pack change, an aggregation field or enum variants, and this
+# mapping follows once that lands. Nothing validates a response today, so it
+# does not bite until a consumer checks.
 #
 # Fields that are the same for every day -- the point, the source, the
 # observation type -- sit once at the top. Only what varies per day repeats.
@@ -83,6 +95,23 @@ required:
         $exists($ra.location) and $ra.location.type = "Point"
       )
     message: "this capability needs a Point location; the provider forecasts one point at a time"
+
+  # NOTE, and it is not a small one: the pack and this check disagree today.
+  # WeatherObservation v0.1's OnDemand branch does not leave `location`
+  # optional -- it EXCLUDES it, alongside observationType, source, generatedAt,
+  # observedAt, modelRunAt, validity and parameters. So a request conforming to
+  # the pack carries no location and this check refuses it, while a request
+  # satisfying this check does not conform.
+  #
+  # Nothing breaks in practice: the exclusion sits under if/then, which the
+  # validator parses and never evaluates. That is an accident to rely on rather
+  # than a design.
+  #
+  # The pack has no third mode for a question -- OnDemand describes what a
+  # provider can obtain, Direct describes an obtained reading, and a request is
+  # neither. Resolving it is a pack change. `coverageAreas` is inherited from
+  # AgricultureResource, is NOT excluded in OnDemand, and accepts a GeoJSON
+  # geometry, so it is the likely home for the point once that is settled.
 
 # The request half decides what the provider is asked for. Whatever it produces
 # IS the request: query parameters for a method with no body, a body for one that
