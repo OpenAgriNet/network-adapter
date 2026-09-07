@@ -1,56 +1,60 @@
 name: CI
 
+# Four checks and no more. On a PR or a trunk push: "End to End verification"
+# and "Security Scan". On a version tag: "Build Artifact" and
+# "Publish Artifact". Nothing runs on both event kinds, so a PR never shows a
+# publish check and a tag never re-runs the tests the PR already gated on.
+#
 # Every step below is either a one-line `make` call or GitHub plumbing
-# (`${{ }}` expressions, $GITHUB_STEP_SUMMARY). The build/test/coverage logic
-# lives in the Makefile, so a red check here reproduces locally by running the
-# exact command the log shows.
+# (`${{ }}` expressions, $GITHUB_STEP_SUMMARY). The build, test, scan and
+# publish logic lives in the Makefile, so a red check reproduces locally by
+# running the exact command the log shows.
 on:
   push:
     # development as well as main: this is the branch PRs target and merge
-    # into, so a merge landing there has to run the same gates the PR did.
+    # into, so a merge landing there runs the same gates the PR did.
     branches: [main, development]
+    # Both spellings on purpose. Every tag in this repo so far is v-prefixed
+    # (v1.8.2, v2.0.1-rc1), but a release cut as 1.0.0 or 1.0.0-RC1 should
+    # publish too rather than silently do nothing. These are GitHub filter
+    # patterns, not regexes: + and [] work, so the digits are real digits and
+    # a branch-shaped tag like `release/foo` cannot match.
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
   pull_request:
 
-# Least privilege at the workflow level; the one job that needs more declares
-# it for itself.
+# Least privilege at the workflow level; the three jobs that need more declare
+# it for themselves.
 permissions:
   contents: read
 
 # A new commit on a PR makes the previous commit's runs worthless, so they are
 # cancelled rather than left to finish. github.ref is refs/pull/<n>/merge for a
 # pull_request event, so every push to the PR's head branch lands in the same
-# group and supersedes the run before it; a push to main or development gets
-# its own group and never collides with a PR's.
+# group and supersedes the run before it.
 concurrency:
   group: ci-${{ github.ref }}
-  # PRs only. On main and development every commit keeps its own recorded
-  # verdict — cancelling there would leave trunk commits with a grey check and
-  # no way to tell afterwards whether that commit was ever green.
+  # PRs only. On main, development and tags every commit keeps its own recorded
+  # verdict — cancelling there would leave a trunk commit with a grey check and
+  # no way to tell afterwards whether it was ever green, and would abort a
+  # half-finished publish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  lint:
-    name: Lint
+  verify:
+    name: End to End verification
+    # Everything except a tag push, i.e. PRs and trunk pushes. Tested on
+    # github.ref rather than github.ref_type: on a pull_request the ref is
+    # refs/pull/<n>/merge, which is neither refs/heads/ nor refs/tags/, and
+    # ref_type is not documented to be 'branch' there. Guessing wrong would
+    # skip this job on every PR and show a green check for a run that did
+    # nothing, so the condition names the one case it means to exclude.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      # Advisory, not a gate. There is no .golangci.yml in this repo yet, so
-      # `run ./...` uses the tool's defaults against a codebase that has never
-      # been linted — enough pre-existing findings to block every PR on day
-      # one. This surfaces them; turn continue-on-error off once the baseline
-      # is clean and the config is pinned.
-      - run: make lint
-        continue-on-error: true
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    # pull-requests: write is for the coverage comment below — only this job
-    # writes to the PR, so the lint job above stays read-only.
+    # pull-requests: write is for the coverage comment below.
     permissions:
       contents: read
       pull-requests: write
@@ -90,7 +94,7 @@ jobs:
 
       # cover-diff writes coverage-report.md on every exit path, including its
       # own error paths, so this needs no existence guard.
-      - name: Publish coverage to the job summary
+      - name: Post the result to the job summary
         run: cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
       # Always posted — pass, fail or not-applicable. A comment that only shows
@@ -102,7 +106,7 @@ jobs:
       # read-only, so create-or-update-comment 403s there even with
       # pull-requests: write declared. Coverage is already gated below; a
       # comment that can't post must never fail the job over that.
-      - name: Find existing coverage comment
+      - name: Find the existing result comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: peter-evans/find-comment@v4
@@ -112,7 +116,7 @@ jobs:
           comment-author: "github-actions[bot]"
           body-includes: "<!-- coverage-report -->"
 
-      - name: Comment coverage on the PR
+      - name: Post the result to the PR
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: peter-evans/create-or-update-comment@v5
@@ -128,3 +132,172 @@ jobs:
       - name: Gate on minimum coverage
         if: steps.coverage.outcome == 'failure'
         run: exit 1
+
+  security-scan:
+    name: Security Scan
+    # Same condition as End to End verification above — see the note there.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    # Both scans in one job, one check. They were two jobs plus a gate job, and
+    # three red-or-green checks to say one thing — "is this branch shippable" —
+    # was more to read than it was worth. The dependency scan needs only a
+    # checkout, so it runs first and its findings are in the log before the
+    # image finishes building.
+    #
+    # pull-requests: write is the PR comment, security-events: write is the
+    # SARIF upload to the Security tab.
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/trivy-cache
+
+      # Catches what the image scan structurally cannot: a vulnerable module
+      # only the test suite imports, so it is never linked into the binary and
+      # never appears in a layer.
+      - run: make trivy-deps
+
+      # And the reverse — Trivy reads the image's base layers plus the Go build
+      # info embedded in the binary, including `stdlib`, so a Go toolchain CVE
+      # shows up here and nowhere the dependency scan can see. Hence both.
+      - run: make docker IMAGE=network-adapter:${{ github.sha }}
+      - run: make trivy-image IMAGE=network-adapter:${{ github.sha }}
+
+      # continue-on-error: a fork PR's GITHUB_TOKEN has no security-events
+      # write, so these 403 there. make trivy-gate below is what decides
+      # pass/fail; an upload that can't happen must not fail the job over it.
+      #
+      # A category per scan — GitHub keys an analysis on (ref, category), so
+      # without them the second upload would replace the first.
+      - name: Upload dependency findings to code scanning
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-deps.sarif
+          category: trivy-dependencies
+
+      - name: Upload image findings to code scanning
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # One comment covering both scans, rendered from the SARIF already
+      # written — no third and fourth scan.
+      - name: Assemble the PR comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: make trivy-report
+
+      - name: Find the existing scan comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/find-comment@v4
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- sec-scan -->"
+
+      - name: Post the scan report to the PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: trivy-report.md
+          edit-mode: replace
+
+      # The gate, last: it reads both reports and fails on a HIGH/CRITICAL
+      # finding or on a report that never got written, so the report is on the
+      # PR before the check goes red.
+      - run: make trivy-gate
+
+  build-artifact:
+    # One leg per architecture, on a runner of that architecture. Not one check
+    # with QEMU: the image compiles every plugin with `go build
+    # -buildmode=plugin`, and emulating an arm64 Go toolchain build turns a
+    # few minutes into tens of them. Both runner labels are free for public
+    # repos, so the only cost of the second leg is that it is a second check.
+    name: Build Artifact (${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # A tag that can only ship one architecture should not ship at all, and
+      # stopping the other leg early keeps a doomed release from occupying a
+      # runner for another ten minutes.
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      # The push to ghcr.io. Read is not enough even for a push by digest.
+      packages: write
+    steps:
+      # fetch-depth: 0 — version-vars.sh derives ONIX_VERSION from
+      # `git describe --tags`, which needs the tag objects, not just the commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The default builder uses the `docker` driver, which supports neither
+      # push-by-digest nor --metadata-file. This switches to docker-container.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushes untagged, by digest, and writes digest-<arch>.txt. Nothing is
+      # visible under a version tag until Publish Artifact below has both.
+      - run: make image-build ARCH=${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  publish-artifact:
+    name: Publish Artifact
+    if: startsWith(github.ref, 'refs/tags/')
+    # No always() and no if-failure handling: needs alone means a failed or
+    # cancelled build leg skips this job, which is the point — a version tag
+    # must never resolve to one architecture.
+    needs: build-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Checkout is for the Makefile and for the tag objects version-vars.sh
+      # reads; this job builds nothing.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+
+      # Binds the tag — and :latest, for a plain vX.Y.Z — to the digests the
+      # build legs pushed, then inspects the result so the log shows which
+      # platforms the published tag actually resolves to.
+      - run: make image-publish
