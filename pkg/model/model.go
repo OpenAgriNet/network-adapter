@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +92,22 @@ type ProviderRecord struct {
 	//
 	// An action absent here is one this capability does not serve.
 	Actions map[string]ActionPlan
+}
+
+// ServedActions lists the actions this record serves, sorted.
+//
+// A method on the type rather than a helper beside each caller: its whole
+// purpose is that the same record reads the same way wherever it is reported,
+// and two copies of it would have had to agree on sort order across two
+// packages. Sorted because it goes into log lines and error messages, and map
+// iteration would make the same record read differently on each request.
+func (r *ProviderRecord) ServedActions() []string {
+	names := make([]string, 0, len(r.Actions))
+	for action := range r.Actions {
+		names = append(names, action)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ActionPlan is how to make one action's upstream call.

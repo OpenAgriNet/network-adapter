@@ -24,7 +24,6 @@ import (
 	"net/url"
 	"os"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -357,7 +356,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		// registry mistake into a one-line fix.
 		return model.NewBadReqErr("", fmt.Errorf(
 			"upstream: %s does not serve action %q; it serves %s",
-			plan.BindingKey, action, strings.Join(servedActions(plan), ", ")))
+			plan.BindingKey, action, strings.Join(plan.ServedActions(), ", ")))
 	}
 
 	beckn, err := decodeBody(ctx.Body)
@@ -423,14 +422,6 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 // servedActions lists the actions a capability covers, sorted so the same
 // record reads the same way twice.
-func servedActions(plan *model.ProviderRecord) []string {
-	names := make([]string, 0, len(plan.Actions))
-	for action := range plan.Actions {
-		names = append(names, action)
-	}
-	sort.Strings(names)
-	return names
-}
 
 // buildRequest produces what the provider is sent.
 //
