@@ -45,6 +45,11 @@ jobs:
     # repos, so the only cost of the second leg is that it is a second check.
     name: Build Artifact (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    # Runs in ~2 min per arch. Both legs build every plugin and now pull the
+    # pushed digest back for the scan, so a stalled registry is the realistic
+    # hang here — and a release leg that hangs also blocks Publish Artifact
+    # behind `needs`, so the tag just never appears with no failure to point at.
+    timeout-minutes: 45
     strategy:
       # A tag that can only ship one architecture should not ship at all, and
       # stopping the other leg early keeps a doomed release from occupying a
@@ -67,6 +72,8 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: ./.github/actions/trivy-cache
+
       # The default builder uses the `docker` driver, which supports neither
       # push-by-digest nor --metadata-file. This switches to docker-container.
       - uses: docker/setup-buildx-action@v3
@@ -81,6 +88,18 @@ jobs:
       # visible under a version tag until Publish Artifact below has both.
       - run: make image-build ARCH=${{ matrix.arch }}
 
+      # The release image gets its own scan; the PR check does not cover it.
+      # Security Scan graded an image built from the PR's tree on the day the
+      # PR ran, and this is a fresh build off a rolling base image weeks later.
+      # Scanned per arch on its own native runner, so the arm64 artifact is
+      # scanned as arm64 rather than assumed to match amd64.
+      #
+      # Placed before upload-artifact and therefore before Publish Artifact,
+      # which needs both legs: a finding on either arch means no digest is
+      # handed on and no version tag is ever bound. fail-fast: true cancels
+      # the sibling leg rather than letting it finish a build nothing will use.
+      - run: make trivy-release-gate ARCH=${{ matrix.arch }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.arch }}
@@ -94,6 +113,8 @@ jobs:
     # must never resolve to one architecture.
     needs: build-artifact
     runs-on: ubuntu-latest
+    # Runs in ~20s: two registry API calls and no build.
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write

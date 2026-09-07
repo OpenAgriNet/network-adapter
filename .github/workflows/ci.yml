@@ -42,6 +42,12 @@ jobs:
   verify:
     name: End to End verification
     runs-on: ubuntu-latest
+    # Runs in ~1 min. The default is 360, so a hung `go test` or a wedged
+    # module download would hold a runner for six hours and burn the whole
+    # concurrency allowance before anyone noticed. Generous multiples of the
+    # real duration, not tight budgets — this is a hang detector, not a
+    # performance gate that goes red when the suite legitimately grows.
+    timeout-minutes: 15
     # pull-requests: write is for the coverage comment below.
     permissions:
       contents: read
@@ -124,6 +130,9 @@ jobs:
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
+    # Runs in ~3 min. Higher than verify: this one builds the image and pulls
+    # trivy's DB, so it has two network dependencies that can stall.
+    timeout-minutes: 30
     # Both scans in one job, one check. They were two jobs plus a gate job, and
     # three red-or-green checks to say one thing — "is this branch shippable" —
     # was more to read than it was worth. The dependency scan needs only a
