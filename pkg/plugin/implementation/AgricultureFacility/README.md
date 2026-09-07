@@ -22,7 +22,7 @@ another package.
 
 ```yaml
 providerSteps:
-  - id: agrifacility
+  - id: AgricultureFacility
     config:
       bindingKeys: "pocra|openagrinet:AgricultureFacility"
       authScheme: none
@@ -116,7 +116,7 @@ what the caller declared.
 ## Testing
 
 ```sh
-go test ./pkg/plugin/implementation/agrifacility/...
+go test ./pkg/plugin/implementation/AgricultureFacility/...
 ```
 
 25 pass, 2 skip. The two skips are live tests against the real POCRA API, opted
@@ -134,4 +134,4 @@ else in that file means anything — and covers the two things the schema is
 silent on: fields the pack does not declare, and the README's prose mapping
 rules.
 
-Full runbook: `docs/agrifacility-testing.md`.
+Full runbook: `docs/agriculture-facility-testing.md`.

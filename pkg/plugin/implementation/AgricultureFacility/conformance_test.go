@@ -1,4 +1,4 @@
-package agrifacility_test
+package AgricultureFacility_test
 
 // conformance_test.go validates what the mapping produces against the
 // openagrinet:AgricultureFacility v0.1 schema pack, with a real JSON Schema

@@ -9,7 +9,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/agrifacility"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/AgricultureFacility"
 )
 
 type stubRegistry struct{}
@@ -32,15 +32,15 @@ func TestParseConfig(t *testing.T) {
 	testCases := []struct {
 		name        string
 		config      map[string]string
-		expected    *agrifacility.Config
+		expected    *AgricultureFacility.Config
 		expectedErr string
 	}{
 		{
-			// Everything absent is left zero: agrifacility.New defaults it, so
+			// Everything absent is left zero: AgricultureFacility.New defaults it, so
 			// the rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &agrifacility.Config{},
+			expected: &AgricultureFacility.Config{},
 		},
 		{
 			// Every key upstream.Config accepts, including the query scheme
@@ -59,7 +59,7 @@ func TestParseConfig(t *testing.T) {
 				"queryValueEnv":    "Q",
 				"maxResponseBytes": "2048",
 			},
-			expected: &agrifacility.Config{
+			expected: &AgricultureFacility.Config{
 				BindingKeys:      []string{"pocra|openagrinet:AgricultureFacility"},
 				AuthScheme:       "none",
 				UsernameEnv:      "U",
@@ -76,7 +76,7 @@ func TestParseConfig(t *testing.T) {
 			config: map[string]string{
 				"bindingKeys": "pocra|openagrinet:AgricultureFacility, other|openagrinet:Thing ,",
 			},
-			expected: &agrifacility.Config{
+			expected: &AgricultureFacility.Config{
 				BindingKeys: []string{
 					"pocra|openagrinet:AgricultureFacility",
 					"other|openagrinet:Thing",
@@ -89,7 +89,7 @@ func TestParseConfig(t *testing.T) {
 				"providerIdAt":     "who.provider",
 				"capabilityCodeAt": "what[].type",
 			},
-			expected: &agrifacility.Config{
+			expected: &AgricultureFacility.Config{
 				ProviderIDAt:     "who.provider",
 				CapabilityCodeAt: "what[].type",
 			},
@@ -143,7 +143,7 @@ func TestNewPropagatesAConstructionFailure(t *testing.T) {
 	original := newStepFunc
 	defer func() { newStepFunc = original }()
 	newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper,
-		*agrifacility.Config) (definition.Step, func() error, error) {
+		*AgricultureFacility.Config) (definition.Step, func() error, error) {
 		return nil, nil, errors.New("boom")
 	}
 

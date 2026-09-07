@@ -354,7 +354,7 @@ modules:
               # learning which variables this deployment reads. The variable name
               # is in the adapter's own log at error level.
 
-          - id: agrifacility
+          - id: AgricultureFacility
             config:
               # One capability for all four governed facility types. Which one a
               # request wants is a value in its payload -- supportedFacilityTypes
@@ -375,7 +375,7 @@ modules:
         - validateSchema   # the pinned Beckn v2 spec
         - WeatherObservation  # its binding key, or pass through
         - MandiPrice          # its binding key, or pass through
-        - agrifacility        # its binding key, or pass through
+        - AgricultureFacility # its binding key, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------

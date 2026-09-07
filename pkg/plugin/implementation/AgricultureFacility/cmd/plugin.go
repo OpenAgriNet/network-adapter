@@ -2,8 +2,8 @@
 // plugin.
 //
 // The filename of the built .so is the id a deployment names in providerSteps,
-// so this package is agrifacility's whole public surface: a config map in, a
-// step out.
+// so this package is AgricultureFacility's whole public surface: a config map
+// in, a step out.
 package main
 
 import (
@@ -15,20 +15,20 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/agrifacility"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/AgricultureFacility"
 )
 
 // agriFacilityProvider implements definition.ProviderStepProvider.
 type agriFacilityProvider struct{}
 
 // newStepFunc creates a new step. Indirected for tests.
-var newStepFunc = agrifacility.New
+var newStepFunc = AgricultureFacility.New
 
 // parseConfig turns the plugin config map into a typed Config. Anything absent
-// is left zero: agrifacility.New applies the defaults and validates the auth
+// is left zero: AgricultureFacility.New applies the defaults and validates the auth
 // scheme, so those rules live in one place.
-func (p agriFacilityProvider) parseConfig(config map[string]string) (*agrifacility.Config, error) {
-	cfg := &agrifacility.Config{
+func (p agriFacilityProvider) parseConfig(config map[string]string) (*AgricultureFacility.Config, error) {
+	cfg := &AgricultureFacility.Config{
 		BindingKeys: splitList(config["bindingKeys"]),
 		// Absent means the Beckn v2 convention. See upstream.Config for why
 		// this is a default rather than something to set.

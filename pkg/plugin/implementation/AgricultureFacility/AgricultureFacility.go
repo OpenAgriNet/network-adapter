@@ -1,10 +1,10 @@
-// Package agrifacility serves the network's agriculture facility capabilities.
+// Package AgricultureFacility serves the openagrinet:AgricultureFacility
+// capability.
 //
-// One package per schema pack family, so which plugin owns a capability is
-// readable from its binding key: openagrinet:AgricultureFacility is
-// agrifacility's, openagrinet:MandiPrice is mandi's.
+// One package per capability, named for the capability it serves, so which
+// plugin owns one is readable from its binding key.
 //
-// Named for the family and not for POCRA, deliberately. A provider is a
+// Named for the capability and not for POCRA, deliberately. A provider is a
 // registry row, and more than one could serve this same capability -- a second
 // state aggregator would be another row and another mapping, not another
 // package.
@@ -20,7 +20,7 @@
 // takes a category code and a point, both of which an AgricultureFacility
 // payload carries. So the package is a name and nothing else: see
 // prerequisites.go for why that is worth stating.
-package agrifacility
+package AgricultureFacility
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-package agrifacility_test
+package AgricultureFacility_test
 
 // live_test.go runs the shipped mapping against the REAL POCRA API.
 //
@@ -8,7 +8,7 @@ package agrifacility_test
 // this can prove is that the request this mapping builds is one POCRA actually
 // accepts, and that the answer it actually returns still maps.
 //
-//	POCRA_LIVE=1 go test ./pkg/plugin/implementation/agrifacility/ -run TestLive -v
+//	POCRA_LIVE=1 go test ./pkg/plugin/implementation/AgricultureFacility/ -run TestLive -v
 //
 // It was worth writing. The captured sample in the design notes covered kvk
 // alone, and running it against all four types is what found that a warehouse
@@ -29,7 +29,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/agrifacility"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/AgricultureFacility"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
@@ -185,8 +185,8 @@ func TestLiveAgainstPocra(t *testing.T) {
 		},
 	}}
 
-	step, closeStep, err := agrifacility.New(context.Background(), registry, mapper,
-		&agrifacility.Config{BindingKeys: []string{shippedBindingKey}})
+	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+		&AgricultureFacility.Config{BindingKeys: []string{shippedBindingKey}})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}
@@ -319,8 +319,8 @@ func TestLiveCategoryLeakIsFiltered(t *testing.T) {
 		},
 	}}
 
-	step, closeStep, err := agrifacility.New(context.Background(), registry, mapper,
-		&agrifacility.Config{BindingKeys: []string{shippedBindingKey}})
+	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+		&AgricultureFacility.Config{BindingKeys: []string{shippedBindingKey}})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}

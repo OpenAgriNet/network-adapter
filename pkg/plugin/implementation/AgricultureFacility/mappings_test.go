@@ -1,4 +1,4 @@
-package agrifacility_test
+package AgricultureFacility_test
 
 // mappings_test.go runs the shipped agriculture facility mapping through the
 // real mapper and the real provider step. It is the only test that proves the
@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/agrifacility"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/AgricultureFacility"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
@@ -234,8 +234,8 @@ func runSelect(t *testing.T, request string) (sent map[string]any, answer map[st
 		},
 	}}
 
-	step, closeStep, err := agrifacility.New(context.Background(), registry, mapper,
-		&agrifacility.Config{BindingKeys: []string{shippedBindingKey}})
+	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+		&AgricultureFacility.Config{BindingKeys: []string{shippedBindingKey}})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}
@@ -822,8 +822,8 @@ func runAgainst(t *testing.T, request, providerBody string) map[string]any {
 		},
 	}}
 
-	step, closeStep, err := agrifacility.New(context.Background(), registry, mapper,
-		&agrifacility.Config{BindingKeys: []string{shippedBindingKey}})
+	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+		&AgricultureFacility.Config{BindingKeys: []string{shippedBindingKey}})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}

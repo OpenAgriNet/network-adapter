@@ -1,4 +1,4 @@
-package agrifacility
+package AgricultureFacility
 
 import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 
