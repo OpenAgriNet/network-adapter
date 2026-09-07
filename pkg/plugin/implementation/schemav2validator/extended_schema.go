@@ -323,6 +323,15 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 
 	loader := newFreshLoader()
 	loader.Context = ctx
+	if !localSchema {
+		// The schema location on this path is derived from a payload's
+		// @context, so every read it causes is network-directed. Installed
+		// here rather than at the one @context check because that check runs
+		// once, on the entry document: the $refs inside whatever comes back
+		// are resolved by the loader and meet no check at all. One pack pulls
+		// 15 documents across 3 hosts, so this is the majority of the reads.
+		loader.ReadFromURIFunc = payloadDirectedReader
+	}
 
 	var doc *openapi3.T
 	var err error
@@ -407,6 +416,27 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 	log.Debugf(ctx, "Loaded and cached schema from: %s", schemaPath)
 
 	return doc, nil
+}
+
+// payloadDirectedReader reads a schema document for a location that a payload
+// chose, refusing any scheme but http and https.
+//
+// freshReadFromURI falls through to os.ReadFile for every other scheme, so
+// without this a $ref of "file:///etc/passwd" -- or a bare path, which parses
+// with no scheme at all -- is an instruction from the network to read this
+// container's disk and parse it as a schema. The base spec loader keeps that
+// fallthrough deliberately: its location is operator-configured, where a local
+// file is the point. Here it never is.
+//
+// This does NOT restrict which hosts may be reached; isAllowedDomain still
+// guards only the entry @context. Enforcing the allowlist here as well is the
+// right shape, but the packs $ref two external spec hosts, so it needs those
+// named in the allowlist or no pack loads at all.
+func payloadDirectedReader(loader *openapi3.Loader, u *url.URL) ([]byte, error) {
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("refusing to read schema from %q: only http and https are read for a location a payload chose", u.String())
+	}
+	return freshReadFromURI(loader, u)
 }
 
 // findReferencedObjects recursively finds domain-specific objects with @context.

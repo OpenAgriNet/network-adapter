@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -156,10 +157,10 @@ func TestHashURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			hash1 := hashURL(tt.url)
 			hash2 := hashURL(tt.url)
-			
+
 			// Same URL should produce same hash
 			assert.Equal(t, hash1, hash2)
-			
+
 			// Hash should be 64 characters (SHA256 hex)
 			assert.Equal(t, 64, len(hash1))
 		})
@@ -247,23 +248,23 @@ func TestNewSchemaCache(t *testing.T) {
 
 func TestSchemaCache_GetSet(t *testing.T) {
 	cache := newSchemaCache(10)
-	
+
 	// Create a simple schema doc
 	doc := &openapi3.T{
 		OpenAPI: "3.1.0",
 	}
-	
+
 	urlHash := hashURL("https://example.com/schema.yaml")
 	ttl := 1 * time.Hour
-	
+
 	// Test Set
 	cache.set(urlHash, doc, ttl)
-	
+
 	// Test Get - should find it
 	retrieved, found := cache.get(urlHash)
 	assert.True(t, found)
 	assert.Equal(t, doc, retrieved)
-	
+
 	// Test Get - non-existent key
 	_, found = cache.get("non-existent-hash")
 	assert.False(t, found)
@@ -271,28 +272,28 @@ func TestSchemaCache_GetSet(t *testing.T) {
 
 func TestSchemaCache_LRUEviction(t *testing.T) {
 	cache := newSchemaCache(2) // Small cache for testing
-	
+
 	doc1 := &openapi3.T{OpenAPI: "3.1.0"}
 	doc2 := &openapi3.T{OpenAPI: "3.1.1"}
 	doc3 := &openapi3.T{OpenAPI: "3.1.2"}
-	
+
 	ttl := 1 * time.Hour
-	
+
 	// Add first two items
 	cache.set("hash1", doc1, ttl)
 	cache.set("hash2", doc2, ttl)
-	
+
 	// Access first item to make it more recent
 	cache.get("hash1")
-	
+
 	// Add third item - should evict hash2 (least recently used)
 	cache.set("hash3", doc3, ttl)
-	
+
 	// Verify hash1 and hash3 exist, hash2 was evicted
 	_, found1 := cache.get("hash1")
 	_, found2 := cache.get("hash2")
 	_, found3 := cache.get("hash3")
-	
+
 	assert.True(t, found1, "hash1 should exist (recently accessed)")
 	assert.False(t, found2, "hash2 should be evicted (LRU)")
 	assert.True(t, found3, "hash3 should exist (just added)")
@@ -300,20 +301,20 @@ func TestSchemaCache_LRUEviction(t *testing.T) {
 
 func TestSchemaCache_TTLExpiry(t *testing.T) {
 	cache := newSchemaCache(10)
-	
+
 	doc := &openapi3.T{OpenAPI: "3.1.0"}
 	urlHash := "test-hash"
-	
+
 	// Set with very short TTL
 	cache.set(urlHash, doc, 1*time.Millisecond)
-	
+
 	// Should be found immediately
 	_, found := cache.get(urlHash)
 	assert.True(t, found)
-	
+
 	// Wait for expiry
 	time.Sleep(10 * time.Millisecond)
-	
+
 	// Should not be found after expiry
 	_, found = cache.get(urlHash)
 	assert.False(t, found)
@@ -321,23 +322,23 @@ func TestSchemaCache_TTLExpiry(t *testing.T) {
 
 func TestSchemaCache_CleanupExpired(t *testing.T) {
 	cache := newSchemaCache(10)
-	
+
 	doc := &openapi3.T{OpenAPI: "3.1.0"}
-	
+
 	// Add items with short TTL
 	cache.set("hash1", doc, 1*time.Millisecond)
 	cache.set("hash2", doc, 1*time.Millisecond)
 	cache.set("hash3", doc, 1*time.Hour) // This one won't expire
-	
+
 	// Wait for expiry
 	time.Sleep(10 * time.Millisecond)
-	
+
 	// Cleanup expired
 	count := cache.cleanupExpired()
-	
+
 	// Should have cleaned up 2 expired items
 	assert.Equal(t, 2, count)
-	
+
 	// Verify only hash3 remains
 	cache.mu.RLock()
 	assert.Equal(t, 1, len(cache.schemas))
@@ -448,7 +449,7 @@ func TestFindReferencedObjects_PathBuilding(t *testing.T) {
 	}
 
 	objects := findReferencedObjects(data, "message")
-	
+
 	assert.Equal(t, 1, len(objects))
 	assert.Equal(t, "message.order.beckn:orderItems[0].beckn:acceptedOffer.beckn:offerAttributes", objects[0].Path)
 	assert.Equal(t, "ChargingOffer", objects[0].Type)
@@ -459,11 +460,11 @@ func TestFindReferencedObjects_PathBuilding(t *testing.T) {
 func TestLoadSchemaFromPath_LocalFile(t *testing.T) {
 	cache := newSchemaCache(10)
 	ctx := context.Background()
-	
+
 	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
 	assert.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	schemaContent := `openapi: 3.1.0
 info:
   title: Test Schema
@@ -475,58 +476,74 @@ components:
       properties:
         field1:
           type: string`
-	
+
 	_, err = tmpFile.Write([]byte(schemaContent))
 	assert.NoError(t, err)
 	tmpFile.Close()
-	
+
+	// localSchema=false means the location came from a payload's @context --
+	// the only way the production caller passes it. A local file is not
+	// something the network may ask this process to open, so it is refused.
 	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, false)
+	if err == nil {
+		t.Fatal("a payload-directed load opened a local file")
+	}
+	assert.Contains(t, err.Error(), "only http and https are read")
+	assert.Nil(t, doc)
+
+	// localSchema=true is an operator naming a path in the adapter's own
+	// config, which is the one case where opening a file is the intent.
+	doc, err = cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
 	assert.NoError(t, err)
 	assert.NotNil(t, doc)
 	assert.Equal(t, "3.1.0", doc.OpenAPI)
 }
 
 func TestLoadSchemaFromPath_CacheHit(t *testing.T) {
+	// A temp file is just the fixture here, so this loads in operator mode:
+	// a payload-directed load refuses local files by design.
 	cache := newSchemaCache(10)
 	ctx := context.Background()
-	
+
 	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
 	assert.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	schemaContent := `openapi: 3.1.0
 info:
   title: Test Schema
   version: 1.0.0`
-	
+
 	tmpFile.Write([]byte(schemaContent))
 	tmpFile.Close()
-	
-	doc1, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, false)
+
+	doc1, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
 	assert.NoError(t, err)
 
-	doc2, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, false)
+	doc2, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
 	assert.NoError(t, err)
-	
+
 	assert.Equal(t, doc1, doc2)
 }
 
 func TestLoadSchemaFromPath_InvalidPath(t *testing.T) {
 	cache := newSchemaCache(10)
 	ctx := context.Background()
-	
+
 	_, err := cache.loadSchemaFromPath(ctx, "/nonexistent/schema.yaml", 1*time.Hour, 30*time.Second, false)
 	assert.Error(t, err)
 }
 
 func TestFindSchemaByType_DirectMatch(t *testing.T) {
+	// A temp file is just the fixture here, so this loads in operator mode:
+	// a payload-directed load refuses local files by design.
 	cache := newSchemaCache(10)
 	ctx := context.Background()
-	
+
 	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
 	assert.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	schemaContent := `openapi: 3.1.0
 info:
   title: Test Schema
@@ -538,11 +555,11 @@ components:
       properties:
         field1:
           type: string`
-	
+
 	tmpFile.Write([]byte(schemaContent))
 	tmpFile.Close()
-	
-	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, false)
+
+	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
 	assert.NoError(t, err)
 
 	schema, err := findSchemaByType(ctx, doc, "TestType")
@@ -551,13 +568,15 @@ components:
 }
 
 func TestFindSchemaByType_NotFound(t *testing.T) {
+	// A temp file is just the fixture here, so this loads in operator mode:
+	// a payload-directed load refuses local files by design.
 	cache := newSchemaCache(10)
 	ctx := context.Background()
-	
+
 	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
 	assert.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
-	
+
 	schemaContent := `openapi: 3.1.0
 info:
   title: Test Schema
@@ -566,11 +585,11 @@ components:
   schemas:
     TestType:
       type: object`
-	
+
 	tmpFile.Write([]byte(schemaContent))
 	tmpFile.Close()
-	
-	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, false)
+
+	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
 	assert.NoError(t, err)
 
 	_, err = findSchemaByType(ctx, doc, "NonExistentType")
@@ -581,11 +600,7 @@ components:
 func TestValidateReferencedObject_Valid(t *testing.T) {
 	cache := newSchemaCache(10)
 	ctx := context.Background()
-	
-	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
-	assert.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	
+
 	schemaContent := `openapi: 3.1.0
 info:
   title: Test Schema
@@ -603,33 +618,28 @@ components:
           type: string
       required:
         - field1`
-	
-	tmpFile.Write([]byte(schemaContent))
-	tmpFile.Close()
-	
+
+	ctxURL := serveTempSchema(t, schemaContent)
+
 	obj := referencedObject{
 		Path:    "message.test",
-		Context: tmpFile.Name(),
+		Context: ctxURL,
 		Type:    "TestType",
 		Data: map[string]interface{}{
-			"@context": tmpFile.Name(),
+			"@context": ctxURL,
 			"@type":    "TestType",
 			"field1":   "value1",
 		},
 	}
-	
-	err = cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+
+	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 }
 
 func TestValidateReferencedObject_Invalid(t *testing.T) {
 	cache := newSchemaCache(10)
 	ctx := context.Background()
-	
-	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
-	assert.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-	
+
 	schemaContent := `openapi: 3.1.0
 info:
   title: Test Schema
@@ -647,21 +657,20 @@ components:
           type: string
       required:
         - field1`
-	
-	tmpFile.Write([]byte(schemaContent))
-	tmpFile.Close()
-	
+
+	ctxURL := serveTempSchema(t, schemaContent)
+
 	obj := referencedObject{
 		Path:    "message.test",
-		Context: tmpFile.Name(),
+		Context: ctxURL,
 		Type:    "TestType",
 		Data: map[string]interface{}{
-			"@context": tmpFile.Name(),
+			"@context": ctxURL,
 			"@type":    "TestType",
 		},
 	}
-	
-	err = cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+
+	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	schemaErrors := []model.Error{}
@@ -698,10 +707,6 @@ func TestValidateReferencedObject_EntityTypeNotFound(t *testing.T) {
 	cache := newSchemaCache(10)
 	ctx := context.Background()
 
-	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
-	assert.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-
 	schemaContent := `openapi: 3.1.0
 info:
   title: Test Schema
@@ -711,20 +716,19 @@ components:
     TestType:
       type: object`
 
-	tmpFile.Write([]byte(schemaContent))
-	tmpFile.Close()
+	ctxURL := serveTempSchema(t, schemaContent)
 
 	obj := referencedObject{
 		Path:    "message.test",
-		Context: tmpFile.Name(),
+		Context: ctxURL,
 		Type:    "NonExistentType",
 		Data: map[string]interface{}{
-			"@context": tmpFile.Name(),
+			"@context": ctxURL,
 			"@type":    "NonExistentType",
 		},
 	}
 
-	err = cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	becknErr, ok := err.(*model.Error)
@@ -831,7 +835,7 @@ components:
         - field1`
 
 	tests := []struct {
-		name          string
+		name           string
 		allowedDomains []string
 	}{
 		{name: "file scheme allowed when no allowlist (nil)", allowedDomains: nil},
@@ -850,6 +854,8 @@ components:
 			ctx := context.Background()
 
 			// Use file:// scheme — would be rejected by scheme check if allowlist were set.
+			// It is still refused, one layer down: the reader takes http and
+			// https only. What an empty allowlist skips is the HOST check.
 			obj := referencedObject{
 				Path:    "message.test",
 				Context: "file://" + tmpFile.Name(),
@@ -858,7 +864,8 @@ components:
 			}
 
 			err = cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, tt.allowedDomains, false)
-			// No domain or scheme error — allowlist check was skipped entirely.
+			// So: no domain error and no @context scheme error, which is what
+			// an empty allowlist means. Not "anything is readable".
 			if err != nil {
 				assert.NotContains(t, err.Error(), "domain not allowed")
 				assert.NotContains(t, err.Error(), "invalid scheme in @context")
@@ -875,14 +882,14 @@ func TestValidateExtendedSchemas_NoObjects(t *testing.T) {
 		},
 		schemaCache: newSchemaCache(10),
 	}
-	
+
 	ctx := context.Background()
 	body := map[string]interface{}{
 		"message": map[string]interface{}{
 			"field": "value",
 		},
 	}
-	
+
 	err := v.validateExtendedSchemas(ctx, body)
 	assert.NoError(t, err)
 }
@@ -894,12 +901,12 @@ func TestValidateExtendedSchemas_MissingMessage(t *testing.T) {
 		},
 		schemaCache: newSchemaCache(10),
 	}
-	
+
 	ctx := context.Background()
 	body := map[string]interface{}{
 		"context": map[string]interface{}{},
 	}
-	
+
 	err := v.validateExtendedSchemas(ctx, body)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "missing 'message' field")
@@ -1055,9 +1062,9 @@ func TestIsSchemaVersionSegment(t *testing.T) {
 
 func TestExtractRelativeSchemaPath(t *testing.T) {
 	tests := []struct {
-		name string
+		name   string
 		rawURL string
-		want string
+		want   string
 	}{
 		{
 			name:   "URL with /schema/ marker and version",
@@ -1275,11 +1282,7 @@ func TestValidateReferencedObject_LocalMissFallsBackToContext(t *testing.T) {
 	cache := newSchemaCache(10)
 	ctx := context.Background()
 
-	tmpFile, err := os.CreateTemp("", "test-schema-*.yaml")
-	assert.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
-
-	tmpFile.Write([]byte(`openapi: 3.1.0
+	ctxURL := serveTempSchema(t, `openapi: 3.1.0
 info:
   title: Test Schema
   version: 1.0.0
@@ -1289,22 +1292,21 @@ components:
       type: object
       properties:
         field1:
-          type: string`))
-	tmpFile.Close()
+          type: string`)
 
 	obj := referencedObject{
 		Path:    "message.test",
-		Context: tmpFile.Name(),
+		Context: ctxURL,
 		Type:    "TestType",
 		Data: map[string]interface{}{
-			"@context": tmpFile.Name(),
+			"@context": ctxURL,
 			"@type":    "TestType",
 			"field1":   "value1",
 		},
 	}
 
-	// rawSchemas empty, localSchema=true — local miss, falls back to @context file path
-	err = cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, true)
+	// rawSchemas empty, localSchema=true — local miss, falls back to fetching the @context
+	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 }
 
@@ -1409,15 +1411,12 @@ components:
               type: string
               const: openagrinet:WeatherObservation`
 
-func writeTempSchema(t *testing.T, content string) string {
+// serveTempSchema serves content over http and returns a URL usable as an
+// @context. Served rather than written to disk because a payload-directed load
+// reads http and https only -- and because fetching is what production does.
+func serveTempSchema(t *testing.T, content string) string {
 	t.Helper()
-	f, err := os.CreateTemp("", "test-schema-*.yaml")
-	assert.NoError(t, err)
-	t.Cleanup(func() { os.Remove(f.Name()) })
-	_, err = f.Write([]byte(content))
-	assert.NoError(t, err)
-	assert.NoError(t, f.Close())
-	return f.Name()
+	return serveSchema(t, content).URL + "/context.jsonld"
 }
 
 // A pack that requires @type must receive it. This is the case that could not
@@ -1426,7 +1425,7 @@ func writeTempSchema(t *testing.T, content string) string {
 // "@type is required".
 func TestValidateReferencedObject_PackStyleKeepsAtType(t *testing.T) {
 	cache := newSchemaCache(10)
-	path := writeTempSchema(t, packStyleSchema)
+	path := serveTempSchema(t, packStyleSchema)
 
 	obj := referencedObject{
 		Path:    "message.catalogs[0].resources[0].resourceAttributes",
@@ -1448,7 +1447,7 @@ func TestValidateReferencedObject_PackStyleKeepsAtType(t *testing.T) {
 // stripping it silently skipped.
 func TestValidateReferencedObject_PackStyleWrongAtTypeRejected(t *testing.T) {
 	cache := newSchemaCache(10)
-	path := writeTempSchema(t, packStyleSchema)
+	path := serveTempSchema(t, packStyleSchema)
 
 	obj := referencedObject{
 		Path:    "message.catalogs[0].resources[0].resourceAttributes",
@@ -1567,6 +1566,168 @@ func TestSchemaDeclaresProperty(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := schemaDeclaresProperty(tt.schema, "@type", map[*openapi3.Schema]bool{})
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// A payload chooses the @context, so it chooses every document the loader then
+// reads to resolve that document's $refs. The allowlist is consulted once, on
+// the entry URL; these tests cover what happens after it.
+
+const entrySchemaRefTemplate = `openapi: 3.1.0
+info:
+  title: entry
+  version: "1"
+paths: {}
+components:
+  schemas:
+    TestType:
+      type: object
+      properties:
+        field1:
+          $ref: "REF_TARGET#/components/schemas/Borrowed"
+`
+
+const borrowedSchema = `openapi: 3.1.0
+info:
+  title: borrowed
+  version: "1"
+paths: {}
+components:
+  schemas:
+    Borrowed:
+      type: string
+`
+
+// serveSchema returns an https-less test server answering every path with body.
+func serveSchema(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestValidateReferencedObject_RefusesARefThatWouldReadTheDisk(t *testing.T) {
+	// A real file, so a successful read would be indistinguishable from a
+	// legitimate schema and the test could not tell the two apart.
+	onDisk := filepath.Join(t.TempDir(), "borrowed.yaml")
+	if err := os.WriteFile(onDisk, []byte(borrowedSchema), 0o600); err != nil {
+		t.Fatalf("failed to write the file under test: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		ref  string
+	}{
+		{name: "file scheme", ref: "file://" + onDisk},
+		{name: "bare path, which parses with no scheme at all", ref: onDisk},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := serveSchema(t, strings.Replace(entrySchemaRefTemplate, "REF_TARGET", tt.ref, 1))
+			host, err := url.Parse(entry.URL)
+			if err != nil {
+				t.Fatalf("failed to parse the test server URL: %v", err)
+			}
+
+			cache := newSchemaCache(10)
+			obj := referencedObject{
+				Path:    "message.test",
+				Context: entry.URL + "/context.jsonld",
+				Type:    "TestType",
+				Data:    map[string]interface{}{"field1": "value1"},
+			}
+
+			err = cache.validateReferencedObject(context.Background(), obj,
+				1*time.Hour, 30*time.Second, []string{host.Host}, false)
+
+			// The entry document is allowlisted and https, so nothing before
+			// the $ref refuses this. Only the reader can.
+			if err == nil {
+				t.Fatal("the $ref was read, so a payload can name any file on disk")
+			}
+			assert.Contains(t, err.Error(), "refusing to read schema from")
+		})
+	}
+}
+
+// The packs pull 15 documents across 3 hosts -- the one the allowlist names
+// plus two external spec hosts the packs $ref into -- so a $ref to a host
+// outside the allowlist is the normal case, not the attack. This pins that:
+// applying isAllowedDomain to $refs as well would need all three hosts named
+// in the allowlist first, and would otherwise stop every pack loading.
+// Deliberate, not missed.
+func TestValidateReferencedObject_AllowsARefToAHostOutsideTheAllowlist(t *testing.T) {
+	borrowed := serveSchema(t, borrowedSchema)
+	entry := serveSchema(t, strings.Replace(entrySchemaRefTemplate, "REF_TARGET", borrowed.URL+"/borrowed.yaml", 1))
+
+	entryHost, err := url.Parse(entry.URL)
+	if err != nil {
+		t.Fatalf("failed to parse the test server URL: %v", err)
+	}
+	borrowedHost, err := url.Parse(borrowed.URL)
+	if err != nil {
+		t.Fatalf("failed to parse the test server URL: %v", err)
+	}
+	if entryHost.Port() == borrowedHost.Port() {
+		t.Fatal("the two servers must differ, or this proves nothing")
+	}
+
+	cache := newSchemaCache(10)
+	obj := referencedObject{
+		Path:    "message.test",
+		Context: entry.URL + "/context.jsonld",
+		Type:    "TestType",
+		Data:    map[string]interface{}{"field1": "value1"},
+	}
+
+	// Only the entry host is allowlisted; the $ref host is not.
+	if err := cache.validateReferencedObject(context.Background(), obj,
+		1*time.Hour, 30*time.Second, []string{entryHost.Host}, false); err != nil {
+		t.Fatalf("a cross-host $ref must still resolve, or no pack can load: %v", err)
+	}
+}
+
+func TestPayloadDirectedReader(t *testing.T) {
+	onDisk := filepath.Join(t.TempDir(), "schema.yaml")
+	if err := os.WriteFile(onDisk, []byte(borrowedSchema), 0o600); err != nil {
+		t.Fatalf("failed to write the file under test: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		raw     string
+		refused bool
+	}{
+		{name: "file scheme", raw: "file://" + onDisk, refused: true},
+		{name: "bare path", raw: onDisk, refused: true},
+		{name: "a scheme nobody serves schemas over", raw: "gopher://example.test/schema.yaml", refused: true},
+		{name: "http is read", raw: "", refused: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := tt.raw
+			if raw == "" {
+				raw = serveSchema(t, borrowedSchema).URL + "/schema.yaml"
+			}
+			u, err := url.Parse(raw)
+			if err != nil {
+				t.Fatalf("failed to parse %q: %v", raw, err)
+			}
+
+			data, err := payloadDirectedReader(openapi3.NewLoader(), u)
+			if tt.refused {
+				if err == nil {
+					t.Fatalf("%q was read, and must not have been", raw)
+				}
+				assert.Contains(t, err.Error(), "only http and https are read")
+				// The point is that nothing was read, not merely that it errored.
+				assert.Empty(t, data)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Contains(t, string(data), "Borrowed")
 		})
 	}
 }
