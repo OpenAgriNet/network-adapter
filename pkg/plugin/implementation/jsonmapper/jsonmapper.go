@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -167,6 +169,11 @@ type Mapper struct {
 
 	mu      sync.RWMutex
 	entries map[string]cacheEntry
+
+	// inflight collapses concurrent misses for the same reference into one
+	// fetch. Not part of the cache: it holds work in progress, and an entry
+	// that has been stored is served by entries above without reaching it.
+	inflight singleflight.Group
 }
 
 // New creates a Mapper, applying defaults for anything left unset.
@@ -314,8 +321,30 @@ func (m *Mapper) compiled(ctx context.Context, mappingRef string) (cacheEntry, e
 		return entry, entry.err
 	}
 
-	directions, checks, err := m.fetchAndCompile(ctx, mappingRef)
-	return m.remember(mappingRef, directions, checks, err), err
+	// One fetch per reference, however many requests miss at once.
+	//
+	// Without this, a cold start sends every concurrent request for the same
+	// capability to fetch the mapping over HTTP and then compile it. The
+	// compile is the cheaper half: the round trip is bounded by fetchTimeout,
+	// so fifty requests arriving together waited fifty times for the same
+	// document instead of once, and the publisher saw fifty identical reads.
+	//
+	// The shared call inherits the FIRST caller's context, which is
+	// singleflight's known trade: if that caller goes away the work is
+	// cancelled for everyone waiting on it. Bounded here by fetchTimeout, and
+	// the losers see a cancellation they can retry rather than a wrong answer.
+	shared, err, _ := m.inflight.Do(mappingRef, func() (any, error) {
+		// Re-checked inside the group: a concurrent store may have landed
+		// between the miss above and the turn to run, and reusing it is both
+		// cheaper and more consistent than fetching a second copy.
+		if entry, found := m.cached(mappingRef); found {
+			return entry, entry.err
+		}
+		directions, checks, err := m.fetchAndCompile(ctx, mappingRef)
+		return m.remember(mappingRef, directions, checks, err), err
+	})
+	entry, _ := shared.(cacheEntry)
+	return entry, err
 }
 
 // cached returns a live cache entry, if there is one.

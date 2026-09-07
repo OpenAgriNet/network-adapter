@@ -880,3 +880,76 @@ func TestTransformIsSafeUnderConcurrentUse(t *testing.T) {
 		}
 	}
 }
+
+// A cold cache used to send every concurrent miss for the same reference to
+// fetch the mapping and compile it. The compile is the cheaper half -- the
+// round trip is bounded by fetchTimeout, so N requests arriving together
+// waited N times for the same document, and the publisher saw N identical
+// reads for one capability coming up.
+func TestCompiledFetchesOnceForConcurrentMisses(t *testing.T) {
+	t.Parallel()
+
+	var fetches atomic.Int32
+	// Slow enough that the callers genuinely overlap; without single-flight
+	// they all get past the miss check before the first store lands.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetches.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, bothDirections)
+	}))
+	defer srv.Close()
+
+	mapper := newTestMapper(t)
+
+	const callers = 25
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = mapper.compiled(context.Background(), srv.URL)
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("caller %d got an error: %v", i, err)
+		}
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("the mapping was fetched %d times for %d concurrent misses, want 1", got, callers)
+	}
+}
+
+// Single-flight must not turn a second, later request into a second fetch --
+// that is what the cache is for -- nor make a different reference wait behind
+// an unrelated one.
+func TestCompiledStillCachesAndKeepsReferencesIndependent(t *testing.T) {
+	t.Parallel()
+
+	var fetchesA, fetchesB atomic.Int32
+	srvA := newMappingServer(t, bothDirections, &fetchesA)
+	defer srvA.Close()
+	srvB := newMappingServer(t, bothDirections, &fetchesB)
+	defer srvB.Close()
+
+	mapper := newTestMapper(t)
+
+	for range 3 {
+		if _, err := mapper.compiled(context.Background(), srvA.URL); err != nil {
+			t.Fatalf("unexpected error for A: %v", err)
+		}
+	}
+	if _, err := mapper.compiled(context.Background(), srvB.URL); err != nil {
+		t.Fatalf("unexpected error for B: %v", err)
+	}
+
+	if got := fetchesA.Load(); got != 1 {
+		t.Errorf("reference A was fetched %d times across three sequential calls, want 1", got)
+	}
+	if got := fetchesB.Load(); got != 1 {
+		t.Errorf("reference B was fetched %d times, want 1 -- it must not share A's result", got)
+	}
+}
