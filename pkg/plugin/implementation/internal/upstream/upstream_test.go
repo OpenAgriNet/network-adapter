@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -1635,5 +1636,87 @@ func TestAsQueryHandlesAnEmptyMapping(t *testing.T) {
 	got, err := asQuery([]byte(`{}`))
 	if err != nil || got != "" {
 		t.Errorf("asQuery({}) = (%q, %v), want an empty query and no error", got, err)
+	}
+}
+
+// Both bounds come from a registry row, so both are data. An attempt holds a
+// goroutine and the inbound connection for its whole timeout, and the server's
+// write timeout does not cancel the request context -- so retryMax 1000 with
+// timeoutMs 60000 is one row deciding this process is busy for seventeen hours.
+func TestBudgetClampsWhatTheRegistryAsksFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		timeoutMs   int
+		retryMax    int
+		wantTimeout time.Duration
+		wantRetries int
+	}{
+		{"absent uses the contract's defaults", 0, 0, DefaultTimeout, DefaultRetryMax},
+		{"within the ceilings is honoured", 2000, 3, 2 * time.Second, 3},
+		{"exactly at the ceilings is honoured", int(MaxTimeout / time.Millisecond), MaxRetryMax, MaxTimeout, MaxRetryMax},
+		{"a timeout past the ceiling is clamped", 600000, 0, MaxTimeout, DefaultRetryMax},
+		{"retries past the ceiling are clamped", 0, 1000, DefaultTimeout, MaxRetryMax},
+		{"both past the ceiling are clamped", 600000, 1000, MaxTimeout, MaxRetryMax},
+		{"negative values fall back to the defaults", -1, -1, DefaultTimeout, DefaultRetryMax},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotTimeout, gotRetries := budget(model.ActionPlan{
+				TimeoutMs: tt.timeoutMs, RetryMax: tt.retryMax,
+			})
+			if gotTimeout != tt.wantTimeout {
+				t.Errorf("timeout = %v, want %v", gotTimeout, tt.wantTimeout)
+			}
+			if gotRetries != tt.wantRetries {
+				t.Errorf("retries = %d, want %d", gotRetries, tt.wantRetries)
+			}
+		})
+	}
+}
+
+// The shift this replaced overflowed int64 once it reached 38 at a 50ms base.
+// The wrapped value is NEGATIVE, so it passed the ceiling check and was
+// returned, and a sleep on a negative duration returns immediately -- the
+// retry loop then spun as fast as the provider could refuse. Past 64 it
+// yielded 0, with the same effect. Worse, it was not monotonic: attempt 40
+// wrapped back to a sane 800ms, so the symptom came and went by attempt count.
+//
+// The clamp on retryMax now keeps attempts to MaxRetryMax+1, which puts the
+// overflow out of reach through call(). This is asserted anyway, because
+// backoff is a package function and a ceiling somewhere else is not a
+// property of this one.
+func TestBackoffNeverReturnsANonPositiveDuration(t *testing.T) {
+	t.Parallel()
+
+	for _, attempt := range []int{0, 1, 2, 3, 4, 5, 6, 37, 38, 39, 40, 63, 64, 65, 100, 1000} {
+		got := backoff(attempt)
+		if got <= 0 {
+			t.Errorf("backoff(%d) = %v; a non-positive wait makes the retry loop spin", attempt, got)
+		}
+		if got > RetryBackoffMax {
+			t.Errorf("backoff(%d) = %v, above the %v ceiling", attempt, got, RetryBackoffMax)
+		}
+	}
+}
+
+// The doubling itself, which the overflow fix must not have changed.
+func TestBackoffDoublesToTheCeiling(t *testing.T) {
+	t.Parallel()
+
+	want := []time.Duration{
+		50 * time.Millisecond,  // attempt 1
+		100 * time.Millisecond, // 2
+		200 * time.Millisecond, // 3
+		400 * time.Millisecond, // 4
+		800 * time.Millisecond, // 5, at the ceiling
+		800 * time.Millisecond, // 6, held there
+	}
+	for i, w := range want {
+		if got := backoff(i + 1); got != w {
+			t.Errorf("backoff(%d) = %v, want %v", i+1, got, w)
+		}
 	}
 }
