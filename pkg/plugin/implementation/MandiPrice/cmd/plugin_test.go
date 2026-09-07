@@ -9,7 +9,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/mandi"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice"
 )
 
 type stubRegistry struct{}
@@ -32,15 +32,15 @@ func TestParseConfig(t *testing.T) {
 	testCases := []struct {
 		name        string
 		config      map[string]string
-		expected    *mandi.Config
+		expected    *MandiPrice.Config
 		expectedErr string
 	}{
 		{
-			// Everything absent is left zero: mandi.New defaults it, so the
+			// Everything absent is left zero: MandiPrice.New defaults it, so the
 			// rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &mandi.Config{},
+			expected: &MandiPrice.Config{},
 		},
 		{
 			// Query auth is why this capability has its own entry rather than
@@ -54,7 +54,7 @@ func TestParseConfig(t *testing.T) {
 				"queryName":     "api-key",
 				"queryValueEnv": "MANDI_TOKEN",
 			},
-			expected: &mandi.Config{
+			expected: &MandiPrice.Config{
 				BindingKeys:   []string{"agmarknet|openagrinet:MandiPrice"},
 				AuthScheme:    "query",
 				QueryName:     "api-key",
@@ -74,7 +74,7 @@ func TestParseConfig(t *testing.T) {
 				"queryValueEnv":    "Q",
 				"maxResponseBytes": "2048",
 			},
-			expected: &mandi.Config{
+			expected: &MandiPrice.Config{
 				BindingKeys:      []string{"other|capability"},
 				AuthScheme:       "basic",
 				UsernameEnv:      "U",
@@ -102,7 +102,7 @@ func TestParseConfig(t *testing.T) {
 			// as "unset" rather than failing startup.
 			name:     "treats an empty response cap as unset",
 			config:   map[string]string{"maxResponseBytes": ""},
-			expected: &mandi.Config{},
+			expected: &MandiPrice.Config{},
 		},
 	}
 
@@ -243,7 +243,7 @@ func TestNew(t *testing.T) {
 		closed := false
 		original := newStepFunc
 		newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper,
-			*mandi.Config) (definition.Step, func() error, error) {
+			*MandiPrice.Config) (definition.Step, func() error, error) {
 			return nil, func() error { closed = true; return nil }, nil
 		}
 		defer func() { newStepFunc = original }()
@@ -268,7 +268,7 @@ func TestNew(t *testing.T) {
 		original := newStepFunc
 		wanted := errors.New("upstream refused the config")
 		newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper,
-			*mandi.Config) (definition.Step, func() error, error) {
+			*MandiPrice.Config) (definition.Step, func() error, error) {
 			return nil, nil, wanted
 		}
 		defer func() { newStepFunc = original }()
