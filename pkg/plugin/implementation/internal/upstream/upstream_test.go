@@ -295,8 +295,15 @@ func TestRunDoesNotRetryAMissingCredential(t *testing.T) {
 	if called != 0 {
 		t.Errorf("the provider was called %d times; a credential this step cannot read never reaches it", called)
 	}
-	if !strings.Contains(err.Error(), "TEST_ABSENT_USER_FOR_RETRY") {
-		t.Errorf("error %q should name the variable that is unset", err)
+	// The variable name is deployment configuration and this error is signed
+	// and returned to a network peer, so the name belongs in the log and not
+	// on the wire. The scheme stays, which is what makes it diagnosable.
+	if strings.Contains(err.Error(), "TEST_ABSENT_USER_FOR_RETRY") ||
+		strings.Contains(err.Error(), "TEST_ABSENT_PASS_FOR_RETRY") {
+		t.Errorf("error %q must not name the environment variable", err)
+	}
+	if !strings.Contains(err.Error(), "basic") {
+		t.Errorf("error %q should say which auth scheme could not be presented", err)
 	}
 }
 
@@ -418,7 +425,7 @@ func TestRunReportsAnEmptyBodyRatherThanTheStatus(t *testing.T) {
 // then thrown away, so a 400 carrying {"message":"no data"} reached an operator
 // as "provider returned 400 Bad Request" and nothing else -- which is the first
 // thing anyone needs and the thing that makes a real provider observable.
-func TestRunQuotesTheProvidersExplanation(t *testing.T) {
+func TestRunKeepsTheProvidersBodyOffTheWire(t *testing.T) {
 	t.Parallel()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -434,13 +441,30 @@ func TestRunQuotesTheProvidersExplanation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the failure to be reported")
 	}
-	if !strings.Contains(err.Error(), "no data available") {
-		t.Errorf("error %q should carry the provider's own message", err)
+	// The status is the caller's business and stays. The body is not: this
+	// error is signed and sent to a network peer, and what a provider puts in
+	// a failure body -- a stack trace, an internal hostname, a database
+	// error -- is nobody else's. It goes to the log instead.
+	if strings.Contains(err.Error(), "no data available") {
+		t.Errorf("error %q must not carry the provider's response body", err)
 	}
-	// Whitespace collapsed, so an indented body does not spread one failure
-	// over several log lines.
-	if strings.Contains(err.Error(), "\n") {
-		t.Errorf("error %q should have its whitespace collapsed", err)
+	if !strings.Contains(err.Error(), "400 Bad Request") {
+		t.Errorf("error %q should still name the status the provider returned", err)
+	}
+}
+
+// explain still collapses whitespace, because the body it prepares now goes to
+// a log line rather than an error -- an indented body would spread one failure
+// over several lines either way.
+func TestExplainCollapsesWhitespace(t *testing.T) {
+	t.Parallel()
+
+	got := explain([]byte("{\n  \"message\": \"no data available\"\n}"))
+	if strings.Contains(got, "\n") {
+		t.Errorf("explain(%q) left a newline in", got)
+	}
+	if !strings.Contains(got, "no data available") {
+		t.Errorf("explain = %q, want the provider's message preserved", got)
 	}
 }
 
@@ -489,8 +513,18 @@ func TestRunRedactsACredentialEchoedInABody(t *testing.T) {
 	if strings.Contains(err.Error(), "s3cr3t") {
 		t.Errorf("the credential leaked through the quoted body: %v", err)
 	}
-	if !strings.Contains(err.Error(), "REDACTED") {
-		t.Errorf("error %q should show the credential was removed", err)
+	// The body no longer reaches the error at all, so its absence from the
+	// wire is not what needs proving here -- the LOG is where it goes now, and
+	// a provider echoing the request back is exactly where a query-string
+	// token turns up. Assert on the same expression the code logs, so moving
+	// the body from the error to the log cannot quietly move the leak with it.
+	echoed := `{"rejected":"token=s3cr3t"}`
+	logged := step.redactString(explain([]byte(echoed)))
+	if strings.Contains(logged, "s3cr3t") {
+		t.Errorf("the credential survives into the log line: %s", logged)
+	}
+	if !strings.Contains(logged, "REDACTED") {
+		t.Errorf("logged body = %q, want the credential replaced", logged)
 	}
 }
 
