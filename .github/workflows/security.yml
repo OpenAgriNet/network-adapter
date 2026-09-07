@@ -1,215 +1,189 @@
 name: Security
 
+# Three jobs, so the PR says *which* scan found something without anyone
+# opening a log: the dependency scan needs nothing but a checkout, so it runs
+# alongside the image build instead of queueing behind it, and the gate reads
+# both reports once they land.
+#
+# Every step is a one-line `make` call or GitHub plumbing — the scan, report
+# and gate logic lives in the Makefile, so `make trivy-deps` / `make docker &&
+# make trivy-image` / `make trivy-gate` reproduce any red check locally.
 on:
   push:
-    branches: [main]
+    # development as well as main: this is the branch PRs target and merge
+    # into, so a merge landing there has to run the same scans the PR did.
+    branches: [main, development]
   pull_request:
 
+# Least privilege at the workflow level; the scan jobs declare the extra
+# scopes they need, so the gate job stays read-only.
 permissions:
   contents: read
-  # Findings are uploaded as SARIF for GitHub's own code scanning UI (Security
-  # tab, diff annotations) AND posted as a PR comment — the SARIF path alone
-  # took three clicks (check -> run -> results) to see a finding that used to
-  # be one scroll away in the PR conversation. pull-requests: write is for
-  # the comment; security-events: write is for the SARIF upload.
-  pull-requests: write
-  security-events: write
 
 concurrency:
   group: security-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  security:
+  dependency-scan:
+    name: Dependency scan
     runs-on: ubuntu-latest
+    # Findings go to GitHub's code scanning UI as SARIF (Security tab, diff
+    # annotations) AND to a PR comment — the SARIF path alone took three clicks
+    # (check -> run -> results) to see a finding that is one scroll away in the
+    # PR conversation. pull-requests: write is the comment, security-events:
+    # write is the SARIF upload.
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/trivy-cache
 
-      # The trivy-action this replaced cached both the binary and its
-      # vulnerability DB across runs; `make trivy-deps`/`trivy-image` alone
-      # would re-download both (binary ~30MB, DB ~100MB+) on every run.
-      # Keyed on the Makefile's own hash so a TRIVY_VERSION bump there busts
-      # the cache automatically, plus a daily date so the DB itself doesn't
-      # go stale for longer than a day.
-      - name: Trivy cache date
-        id: trivy-date
-        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      # Catches what the image scan structurally cannot: a vulnerable module
+      # only the test suite imports, so it is never linked into the binary and
+      # never appears in a layer.
+      - run: make trivy-deps
 
-      - name: Cache Trivy binary and vulnerability DB
-        uses: actions/cache@v4
-        with:
-          path: |
-            bin/trivy
-            ~/.cache/trivy
-          key: trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.trivy-date.outputs.date }}
-          restore-keys: |
-            trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-
-
-      # T4, half one: the dependency graph as written. This catches what the
-      # image scan structurally cannot — a vulnerable module that only the test
-      # suite imports, so it is never linked into the binary and never appears
-      # in a layer.
+      # continue-on-error: a fork PR's GITHUB_TOKEN has no security-events
+      # write, so this 403s there. The gate job is what decides pass/fail; an
+      # upload that can't happen must not fail the scan over it.
       #
-      # Logic lives in the Makefile's trivy-deps target — same command a local
-      # `make trivy-deps` runs.
-      - name: Trivy dependency scan (report)
-        run: make trivy-deps
-
-      # A category per scan: without it the second upload replaces the first,
-      # because GitHub keys an analysis on (ref, category).
-      - name: Upload dependency findings
+      # A category per scan — GitHub keys an analysis on (ref, category), so
+      # without it the image upload would replace this one.
+      - name: Upload findings to code scanning
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-deps.sarif
           category: trivy-dependencies
 
-      # Posted right after the report, on every run — pass or fail, and
-      # before the image is even built — so a PR shows the dependency finding
-      # immediately rather than after the whole job finishes. Reads the same
-      # SARIF just uploaded above; no second scan.
-      #
-      # Trivy's SARIF has no structured per-field severity/version columns;
-      # each finding's detail lives as prose in message.text ("Package:
-      # ...\nSeverity: ...\n..."), so the table columns below are pulled out
-      # of that text rather than from dedicated JSON fields.
-      # continue-on-error: a report-formatting step must never be able to
-      # fail the job — the gate at the bottom is what decides that.
-      - name: Assemble Trivy dependency PR comment
+      # Rendered from the SARIF just uploaded, no second scan. Posted before
+      # the image scan has even finished, so a PR shows a dependency finding
+      # immediately rather than after the whole workflow completes.
+      - name: Assemble the PR comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        run: |
-          {
-            echo "<!-- sec-scan:trivy-deps -->"
-            echo "### 🛡️ Trivy — Go dependency scan (HIGH,CRITICAL)"
-            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-            echo
-            jq -r '
-              def val(re; default): (capture(re) // {v: default}).v;
-              [ .runs[].results[]? ] as $found
-              | if ($found | length) == 0 then
-                  "No HIGH or CRITICAL findings."
-                else
-                  "| Package | Severity | Installed | Fixed in | Advisory |",
-                  "|---|---|---|---|---|",
-                  ( $found[] | .ruleId as $id | (.message.text // "") as $m |
-                    "| `" + ($m | val("Package: (?<v>[^\\n]+)"; "?")) + "` "
-                    + "| " + ($m | val("Severity: (?<v>[^\\n]+)"; "?")) + " "
-                    + "| " + ($m | val("Installed Version: (?<v>[^\\n]+)"; "?")) + " "
-                    + "| " + ($m | val("Fixed Version: (?<v>[^\\n]+)"; "—")) + " "
-                    + "| [" + $id + "](" + ($m | val("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)"; "")) + ") |"
-                  )
-                end
-            ' trivy-deps.sarif
-          } > trivy-deps-comment.md
+        run: make trivy-comment SARIF=trivy-deps.sarif TITLE="Go dependency scan" OUT=trivy-deps-comment.md
 
-      - name: Find existing Trivy dependency comment
+      - name: Find the existing PR comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: peter-evans/find-comment@v3
-        id: find-trivy-deps-comment
+        uses: peter-evans/find-comment@v4
+        id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: "github-actions[bot]"
           body-includes: "<!-- sec-scan:trivy-deps -->"
 
       # continue-on-error: a fork PR's default GITHUB_TOKEN is read-only, so
-      # this 403s there even with pull-requests: write declared. The gate at
-      # the bottom of this job is what actually decides pass/fail; a comment
-      # that can't post must never fail the job over that.
-      - name: Comment Trivy dependency report on PR
+      # this 403s there even with pull-requests: write declared.
+      - name: Comment the report on the PR
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
-          comment-id: ${{ steps.find-trivy-deps-comment.outputs.comment-id }}
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
           body-path: trivy-deps-comment.md
           edit-mode: replace
 
-      - name: Log in to dhi.io
-        uses: ./.github/actions/dhi-login
+      # Handed to the gate job, which runs on a different runner. if-no-files-found
+      # is deliberately `ignore` and not `error`: a scan that produced nothing
+      # should surface as the gate reporting a MISSING report, with both scans'
+      # verdicts visible, rather than as a second red check here.
+      - name: Hand the report to the gate
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
+          name: trivy-deps-sarif
+          path: trivy-deps.sarif
+          if-no-files-found: ignore
 
-      # Both Dockerfiles default to dhi.io/* base images, and Trivy reads the
-      # base layers plus the Go build info embedded in the binary — including
-      # `stdlib`, so a Go toolchain CVE is reported here and nowhere else the
-      # dependency scan above cannot see.
-      - name: Build image
-        run: |
-          source install/scripts/version-vars.sh
-          docker build -f Dockerfile.adapter-with-plugins \
-            --build-arg ONIX_VERSION="$ONIX_VERSION" \
-            --build-arg GIT_COMMIT="$GIT_COMMIT" \
-            --build-arg GIT_TREE_STATE="$GIT_TREE_STATE" \
-            --build-arg BUILD_DATE="$BUILD_DATE" \
-            -t network-adapter:${{ github.sha }} .
-        # Plain `docker build`, not build-push-action, matches security.yml's
-        # single-arch report scan — build-and-push.yml is where per-arch,
-        # buildx-driven builds actually matter.
+  image-scan:
+    name: Image scan
+    runs-on: ubuntu-latest
+    # Findings go to GitHub's code scanning UI as SARIF (Security tab, diff
+    # annotations) AND to a PR comment — the SARIF path alone took three clicks
+    # (check -> run -> results) to see a finding that is one scroll away in the
+    # PR conversation. pull-requests: write is the comment, security-events:
+    # write is the SARIF upload.
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/trivy-cache
 
-      - name: Trivy image scan (report)
-        run: make trivy-image IMAGE=network-adapter:${{ github.sha }}
+      # The image the adapter actually ships — `make docker` builds
+      # Dockerfile.adapter-with-plugins with the same version build args, so a
+      # local `make docker && make trivy-image` scans what this gates on.
+      #
+      # Trivy reads the base layers plus the Go build info embedded in the
+      # binary, including `stdlib` — so a Go toolchain CVE shows up here and
+      # nowhere the dependency scan can see.
+      - run: make docker IMAGE=network-adapter:${{ github.sha }}
+      - run: make trivy-image IMAGE=network-adapter:${{ github.sha }}
 
-      - name: Upload image findings
+      - name: Upload findings to code scanning
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
 
-      - name: Assemble Trivy image PR comment
+      - name: Assemble the PR comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        run: |
-          {
-            echo "<!-- sec-scan:trivy-image -->"
-            echo "### 🛡️ Trivy — image scan (HIGH,CRITICAL)"
-            echo "[View full run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-            echo
-            jq -r '
-              def val(re; default): (capture(re) // {v: default}).v;
-              [ .runs[].results[]? ] as $found
-              | if ($found | length) == 0 then
-                  "No HIGH or CRITICAL findings."
-                else
-                  "| Package | Severity | Installed | Fixed in | Advisory |",
-                  "|---|---|---|---|---|",
-                  ( $found[] | .ruleId as $id | (.message.text // "") as $m |
-                    "| `" + ($m | val("Package: (?<v>[^\\n]+)"; "?")) + "` "
-                    + "| " + ($m | val("Severity: (?<v>[^\\n]+)"; "?")) + " "
-                    + "| " + ($m | val("Installed Version: (?<v>[^\\n]+)"; "?")) + " "
-                    + "| " + ($m | val("Fixed Version: (?<v>[^\\n]+)"; "—")) + " "
-                    + "| [" + $id + "](" + ($m | val("Link: \\[[^]]+\\]\\((?<v>[^)]+)\\)"; "")) + ") |"
-                  )
-                end
-            ' trivy-image.sarif
-          } > trivy-image-comment.md
+        run: make trivy-comment SARIF=trivy-image.sarif TITLE="Image scan" OUT=trivy-image-comment.md
 
-      - name: Find existing Trivy image comment
+      - name: Find the existing PR comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: peter-evans/find-comment@v3
-        id: find-trivy-image-comment
+        uses: peter-evans/find-comment@v4
+        id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: "github-actions[bot]"
           body-includes: "<!-- sec-scan:trivy-image -->"
 
-      - name: Comment Trivy image report on PR
+      - name: Comment the report on the PR
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
-          comment-id: ${{ steps.find-trivy-image-comment.outputs.comment-id }}
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
           body-path: trivy-image-comment.md
           edit-mode: replace
 
-      # Gate on the reports already produced rather than scanning a third and
-      # fourth time — logic lives in the Makefile's trivy-gate target so a
-      # local `make trivy-gate` checks the exact same two files this job
-      # just wrote. Last in the job, so a red build still leaves both reports
-      # behind.
-      - name: Gate on HIGH or CRITICAL findings
-        run: make trivy-gate || { echo "::error::HIGH or CRITICAL Trivy findings — see job log above"; exit 1; }
+      - name: Hand the report to the gate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-image-sarif
+          path: trivy-image.sarif
+          if-no-files-found: ignore
+
+  security-gate:
+    name: Security gate
+    needs: [dependency-scan, image-scan]
+    # always(): the gate has to run even when a scan job failed, so a failed
+    # scan is reported as a missing report rather than skipping the gate
+    # entirely. make trivy-gate fails on a missing or unparsable report for
+    # exactly this reason.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout is for the Makefile, not the source — this job only reads the
+      # two SARIF reports the scan jobs produced.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: trivy-*-sarif
+          merge-multiple: true
+
+      - run: make trivy-gate
