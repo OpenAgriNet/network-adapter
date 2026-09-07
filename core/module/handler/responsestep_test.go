@@ -1079,3 +1079,93 @@ func TestInitSteps_ValidateAckSignAppendsToResponseSteps(t *testing.T) {
 		t.Errorf("expected 1 response step, got %d", len(h.responseSteps))
 	}
 }
+
+// sendResponse checked only that the body was non-empty, so a mapping whose
+// response half is written as `$.response.temperature` rather than as an
+// object produced `28.5` -- valid JSON, so Content-Type was not a lie -- and
+// the adapter answered 200 with it and then signed it. A consumer looking for
+// message.contract finds nothing and cannot tell that from a protocol change.
+func TestVerifyEnvelopeRefusesWhatCannotCarryAMessage(t *testing.T) {
+	t.Parallel()
+
+	refused := map[string]string{
+		"a bare number":   `28.5`,
+		"a bare string":   `"no data"`,
+		"a bare boolean":  `true`,
+		"null":            `null`,
+		"an array":        `[{"message":{}}]`,
+		"an empty object": `{}`,
+		"not json at all": `28.5 and then some`,
+	}
+	for name, body := range refused {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := verifyEnvelope([]byte(body)); err == nil {
+				t.Errorf("verifyEnvelope(%s) = nil, want it refused", body)
+			}
+		})
+	}
+
+	accepted := map[string]string{
+		"a full envelope":      `{"context":{"action":"on_select"},"message":{"contract":{}}}`,
+		"one member is enough": `{"message":{}}`,
+		// The shape is all this checks. Which members belong in a response is
+		// the spec's business and the schema validator's.
+		"an unexpected member": `{"whatever":1}`,
+	}
+	for name, body := range accepted {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := verifyEnvelope([]byte(body)); err != nil {
+				t.Errorf("verifyEnvelope(%s) = %v, want nil", body, err)
+			}
+		})
+	}
+}
+
+// The behaviour, not just the check: a step that produced something unusable
+// must NACK rather than be signed and sent. A signed confident non-answer is
+// worse than a NACK, because the caller cannot retry what it does not know
+// failed and the signature says this adapter meant it.
+func TestSendResponseNacksAScalarInsteadOfSigningIt(t *testing.T) {
+	t.Parallel()
+
+	ctx := makeStepCtx("2.0.0", "msg-1", "sub-1", "")
+	ctx.ResponseBody = []byte(`28.5`)
+
+	w := httptest.NewRecorder()
+	written := sendResponse(ctx, w)
+
+	if w.Code == http.StatusOK {
+		t.Errorf("status = %d; a body that cannot carry a message must not be a 200", w.Code)
+	}
+	if string(written) == "28.5" {
+		t.Error("the scalar was written to the wire unchanged")
+	}
+	// And what is sent instead is a NACK the caller can act on.
+	if !strings.Contains(w.Body.String(), string(model.StatusNACK)) {
+		t.Errorf("body = %s, want a NACK", w.Body.String())
+	}
+}
+
+// A real envelope is untouched -- the check must not cost the ordinary path.
+func TestSendResponseWritesAnEnvelopeUnchanged(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"context":{"action":"on_select"},"message":{"contract":{}}}`
+	ctx := makeStepCtx("2.0.0", "msg-1", "sub-1", "")
+	ctx.ResponseBody = []byte(body)
+
+	w := httptest.NewRecorder()
+	written := sendResponse(ctx, w)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if string(written) != body {
+		t.Errorf("written = %s, want the body unchanged", written)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}
