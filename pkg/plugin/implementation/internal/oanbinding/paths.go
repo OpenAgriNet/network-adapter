@@ -60,6 +60,36 @@ func valuesAt(node any, path string) []string {
 	return walk(node, strings.Split(path, "."))
 }
 
+// countAt reports how many elements the first array segment of path holds,
+// whether or not the leaf beyond it resolves to anything.
+//
+// valuesAt cannot answer this. It returns resolved STRINGS, and walk drops a
+// leaf that is missing or is not a string -- so two commitments where one
+// carries no provider id yield one value, and a count of those values reads as
+// one commitment. That is the difference between refusing a request this
+// design cannot express and silently answering half of it.
+func countAt(node any, path string) int {
+	for _, segment := range strings.Split(path, ".") {
+		fields, ok := node.(map[string]any)
+		if !ok {
+			return 0
+		}
+		child, present := fields[strings.TrimSuffix(segment, arrayMarker)]
+		if !present {
+			return 0
+		}
+		if strings.HasSuffix(segment, arrayMarker) {
+			elements, ok := child.([]any)
+			if !ok {
+				return 0
+			}
+			return len(elements)
+		}
+		node = child
+	}
+	return 0
+}
+
 func walk(node any, segments []string) []string {
 	if len(segments) == 0 {
 		// The leaf. Only strings are binding-key material; a number or an

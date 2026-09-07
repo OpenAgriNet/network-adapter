@@ -1,6 +1,7 @@
 package oanbinding
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -324,5 +325,108 @@ func TestFromRefusesSeveralCommitments(t *testing.T) {
 	}
 	if binding.Key() != "mausamgram|openagrinet:WeatherObservation" {
 		t.Errorf("binding key = %q", binding.Key())
+	}
+}
+
+// The guard counted resolved provider-id VALUES, and walk drops a leaf that is
+// absent or is not a string -- so a payload whose second commitment carries no
+// provider id yielded one value, read as one commitment, and passed. The
+// mapping then answered commitments[0] and dropped the other, which is the
+// confident, signed, partial answer the guard exists to prevent.
+func TestFromRefusesSeveralCommitmentsEvenWhenOneDoesNotResolve(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name: "the second commitment has no provider id at all",
+			payload: `{"message":{"contract":{"commitments":[
+				{"offer":{"provider":{"id":"mausamgram"}},
+				 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]},
+				{"offer":{"provider":{}},
+				 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]}
+			]}}}`,
+		},
+		{
+			name: "the second commitment's provider id is not a string",
+			payload: `{"message":{"contract":{"commitments":[
+				{"offer":{"provider":{"id":"mausamgram"}},
+				 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]},
+				{"offer":{"provider":{"id":42}},
+				 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]}
+			]}}}`,
+		},
+		{
+			name: "the second commitment has no offer",
+			payload: `{"message":{"contract":{"commitments":[
+				{"offer":{"provider":{"id":"mausamgram"}},
+				 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]},
+				{"resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]}
+			]}}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := From(BecknV2, []byte(tt.payload))
+			if err == nil {
+				t.Fatal("two commitments must be refused, not half answered")
+			}
+			if errors.Is(err, ErrNoBinding) {
+				t.Errorf("err = %v; this is a refusal, not a payload for another step", err)
+			}
+			if !strings.Contains(err.Error(), "2 commitments") {
+				t.Errorf("err = %v, want it to report both commitments", err)
+			}
+		})
+	}
+}
+
+// One commitment whose provider id does not resolve is not this step's work --
+// it must stay ErrNoBinding rather than becoming a refusal, so the next step
+// in the pipeline still sees it.
+func TestFromStillPassesThroughASingleUnresolvableCommitment(t *testing.T) {
+	t.Parallel()
+
+	payload := `{"message":{"contract":{"commitments":[
+		{"offer":{"provider":{}},
+		 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]}
+	]}}}`
+	_, err := From(BecknV2, []byte(payload))
+	if !errors.Is(err, ErrNoBinding) {
+		t.Errorf("err = %v, want ErrNoBinding so the payload passes through", err)
+	}
+}
+
+func TestCountAt(t *testing.T) {
+	t.Parallel()
+
+	const two = `{"message":{"contract":{"commitments":[{"a":1},{"b":2}]}}}`
+	tests := []struct {
+		name    string
+		payload string
+		path    string
+		want    int
+	}{
+		{"counts the array regardless of the leaf", two, BecknV2.ProviderID, 2},
+		{"an absent path counts nothing", `{"message":{}}`, BecknV2.ProviderID, 0},
+		{"a non-array at the marker counts nothing",
+			`{"message":{"contract":{"commitments":{"a":1}}}}`, BecknV2.ProviderID, 0},
+		{"an empty array counts nothing",
+			`{"message":{"contract":{"commitments":[]}}}`, BecknV2.ProviderID, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var payload any
+			if err := json.Unmarshal([]byte(tt.payload), &payload); err != nil {
+				t.Fatalf("bad test payload: %v", err)
+			}
+			if got := countAt(payload, tt.path); got != tt.want {
+				t.Errorf("countAt = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
