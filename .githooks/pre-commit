@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# Pre-commit gate. Installed by `make hooks`, which sets core.hooksPath to this
+# directory — so this file is versioned, reviewable, and reaches everyone on
+# their next pull rather than only the people who remember to re-copy it.
+#
+# A thin wrapper on purpose: the checks and the staged-file logic live in the
+# Makefile's lint-staged target, so `make lint-staged` reproduces exactly what
+# blocked a commit, and there is one place to change what runs.
+#
+# To bypass in an emergency: git commit --no-verify
+
+exec make --no-print-directory lint-staged
