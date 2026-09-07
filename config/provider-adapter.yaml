@@ -59,7 +59,6 @@ modules:
     handler:
       type: std
       role: bpp
-
       # This adapter's own network identity -- the id a peer verifies its
       # signatures against. A placeholder rather than a working value,
       # because one deployment's identity is not everyone's, and a reader
