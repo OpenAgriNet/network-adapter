@@ -79,7 +79,29 @@ type referencedObject struct {
 	Path    string
 	Context string
 	Type    string
-	Data    map[string]interface{}
+	// Types is every @type the object carries, in payload order. JSON-LD
+	// permits the array form and the packs allow it explicitly, so which
+	// entry names the capability is not known until a document is consulted.
+	Types []string
+	Data  map[string]interface{}
+	// Unusable is set when the object claims a domain type but carries it in
+	// a shape this validator cannot resolve. It is a coded error rather than
+	// a bool because the object is then rejected, not skipped: a layer whose
+	// purpose is to turn a missing attribute into a rejection must not answer
+	// "valid" for an object it never looked at.
+	Unusable error
+}
+
+// candidateTypes returns the @type values to try, tolerating an object built
+// with Type alone -- which every caller outside findReferencedObjects does.
+func (o referencedObject) candidateTypes() []string {
+	if len(o.Types) > 0 {
+		return o.Types
+	}
+	if o.Type == "" {
+		return nil
+	}
+	return []string{o.Type}
 }
 
 // schemaCache caches loaded domain schemas with LRU eviction.
@@ -445,16 +467,29 @@ func findReferencedObjects(data interface{}, path string) []referencedObject {
 
 	switch v := data.(type) {
 	case map[string]interface{}:
-		// Check for @context and @type
-		if contextVal, hasContext := v["@context"].(string); hasContext {
-			if typeVal, hasType := v["@type"].(string); hasType {
-				results = append(results, referencedObject{
-					Path:    path,
-					Context: contextVal,
-					Type:    typeVal,
-					Data:    v,
-				})
+		// @type ABSENT is not the same as @type unreadable. An object with a
+		// context and no type makes no claim about which schema applies, and
+		// there is nothing to validate it against, so it is passed over as
+		// before. An object that does claim a type is validated or rejected.
+		rawContext, hasContext := v["@context"]
+		rawType, hasType := v["@type"]
+		if hasContext && hasType {
+			obj := referencedObject{Path: path, Data: v}
+			contextVal, contextOK := jsonLDLocation(rawContext)
+			types, typesOK := jsonLDTypes(rawType)
+			switch {
+			case !contextOK:
+				obj.Unusable = model.NewCodedError("SCH_INVALID_JSONLD_CONTEXT",
+					"@context is not a URL this validator can resolve a schema from")
+			case !typesOK:
+				obj.Unusable = model.NewCodedError("SCH_INVALID_ENTITY_TYPE",
+					"@type is present but is not a type name or a list of them")
+			default:
+				obj.Context = contextVal
+				obj.Type = types[0]
+				obj.Types = types
 			}
+			results = append(results, obj)
 		}
 
 		// Recurse into nested objects
@@ -481,6 +516,70 @@ func findReferencedObjects(data interface{}, path string) []referencedObject {
 func transformContextToSchemaURL(contextURL string) string {
 	// transformation: context.jsonld -> attributes.yaml
 	return strings.Replace(contextURL, "context.jsonld", "attributes.yaml", 1)
+}
+
+// jsonLDLocation returns the @context entry a schema can be located from.
+//
+// JSON-LD allows a string, an array mixing strings and inline objects, or a
+// single inline object. Only a URL locates a schema, so the first string is
+// taken and an inline object yields nothing -- there is no document to fetch.
+func jsonLDLocation(raw interface{}) (string, bool) {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return v, true
+		}
+	case []interface{}:
+		for _, entry := range v {
+			if s, ok := entry.(string); ok && s != "" {
+				return s, true
+			}
+		}
+	}
+	return "", false
+}
+
+// jsonLDTypes returns every @type the object carries, in payload order.
+//
+// The array form is not exotic: the packs declare @type as a oneOf whose
+// second branch is an array containing the canonical OAN type plus
+// provider-defined ones. Reading only the string form left those objects
+// matching nothing, so they were dropped before validation and the layer
+// reported a pass over an object it had not looked at.
+func jsonLDTypes(raw interface{}) ([]string, bool) {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return []string{v}, true
+		}
+	case []interface{}:
+		types := make([]string, 0, len(v))
+		for _, entry := range v {
+			if s, ok := entry.(string); ok && s != "" {
+				types = append(types, s)
+			}
+		}
+		if len(types) > 0 {
+			return types, true
+		}
+	}
+	return nil, false
+}
+
+// findSchemaForAnyType resolves the first @type the document declares a schema
+// for, and returns which one matched. With the array form the capability type
+// sits among provider-defined ones and its position is not fixed, so the
+// document decides rather than the payload's ordering.
+func findSchemaForAnyType(ctx context.Context, doc *openapi3.T, types []string) (*openapi3.SchemaRef, string, error) {
+	var lastErr error
+	for _, typeName := range types {
+		schema, err := findSchemaByType(ctx, doc, typeName)
+		if err == nil {
+			return schema, typeName, nil
+		}
+		lastErr = err
+	}
+	return nil, "", lastErr
 }
 
 // findSchemaByType finds a schema in the document by @type value.
@@ -600,18 +699,31 @@ func (c *schemaCache) validateReferencedObject(
 	allowedDomains []string,
 	localSchema bool,
 ) error {
+	// An object that claims a domain type in a shape we cannot resolve is
+	// rejected here rather than dropped in findReferencedObjects. Dropping it
+	// meant the extended layer reported a pass over an object it never
+	// validated, which is the one outcome this layer exists to prevent.
+	if obj.Unusable != nil {
+		log.Warnf(ctx, "refusing an object at %s that carries @context in an unusable shape: %v", obj.Path, obj.Unusable)
+		return obj.Unusable
+	}
+
 	var doc *openapi3.T
 
 	if localSchema {
-		typeName := obj.Type
-		if idx := strings.LastIndex(typeName, ":"); idx >= 0 {
-			typeName = typeName[idx+1:]
-		}
-		if typeName != "" && !strings.ContainsAny(typeName, "/\\") {
+		for _, candidate := range obj.candidateTypes() {
+			typeName := candidate
+			if idx := strings.LastIndex(typeName, ":"); idx >= 0 {
+				typeName = typeName[idx+1:]
+			}
+			if typeName == "" || strings.ContainsAny(typeName, "/\\") {
+				continue
+			}
 			if localDoc, localErr := c.loadSchemaFromPath(ctx, typeName+"/attributes.yaml", ttl, timeout, localSchema); localErr != nil {
-				log.Debugf(ctx, "local @type lookup failed for %s: %v", obj.Type, localErr)
+				log.Debugf(ctx, "local @type lookup failed for %s: %v", candidate, localErr)
 			} else {
 				doc = localDoc
+				break
 			}
 		}
 	}
@@ -640,7 +752,10 @@ func (c *schemaCache) validateReferencedObject(
 	}
 
 	// Find schema by @type
-	schema, err := findSchemaByType(ctx, doc, obj.Type)
+	schema, matched, err := findSchemaForAnyType(ctx, doc, obj.candidateTypes())
+	if err == nil && matched != obj.Type {
+		log.Debugf(ctx, "resolved @type %s from the array at %s", matched, obj.Path)
+	}
 	if err != nil {
 		log.Errorf(ctx, err, "Schema not found for @type: %s at path: %s", obj.Type, obj.Path)
 		return model.NewCodedErrorWithCause("SCH_INVALID_ENTITY_TYPE", err.Error(), obj.Path, err)
