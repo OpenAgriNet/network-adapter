@@ -602,7 +602,18 @@ func (s *Step) attempt(ctx context.Context, call model.ActionPlan, endpoint stri
 	// treating those as failures would refuse a perfectly good exchange. 3xx
 	// does not reach here: the client follows redirects.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		err := fmt.Errorf("provider returned %s: %s", resp.Status, explain(body))
+		// The body is logged, not returned. It goes into a 502 that is signed
+		// and sent to the network caller, and what a provider puts in a failure
+		// body is its own business -- a stack trace, an internal hostname, a
+		// database error. The status is the caller's business and stays; the
+		// body is the operator's, and the log is where the operator looks.
+		// Redacted on the way to the log too. A provider that rejects a
+		// request often quotes it back, credential and all -- so the body is
+		// exactly where a query-string token turns up, and moving it from the
+		// error to the log would only move the leak.
+		log.Warnf(ctx, "upstream: provider returned %s for %s %s: %s",
+			resp.Status, call.Method, requested, s.redactString(explain(body)))
+		err := fmt.Errorf("provider returned %s", resp.Status)
 		// 5xx and 429 are the provider asking to be tried again. Every other
 		// 4xx is a statement about the request, which will not improve.
 		if resp.StatusCode < http.StatusInternalServerError && resp.StatusCode != http.StatusTooManyRequests {
@@ -641,25 +652,40 @@ func explain(body []byte) string {
 
 // authenticate presents this provider's credentials, read from the environment
 // at call time so a rotated secret takes effect without a restart.
+// missingCredential reports an unset credential without naming the variable on
+// the wire.
+//
+// The variable name is deployment configuration, and this error is wrapped into
+// a 502 that is signed and returned to a network peer. Telling a peer that
+// MANDI_TOKEN is what this deployment reads describes the inside of somebody
+// else's stack for no benefit to the caller -- the caller cannot set it, and
+// the fix is entirely the operator's. So the name goes to the log, where the
+// operator is, and the wire gets the scheme that failed.
+func (s *Step) missingCredential(ctx context.Context, scheme, envNames string) error {
+	err := fmt.Errorf("upstream: this provider's %s credential is not configured", scheme)
+	log.Errorf(ctx, err, "upstream: %s auth is configured but %s is not set", scheme, envNames)
+	return err
+}
+
 func (s *Step) authenticate(req *http.Request) error {
 	switch s.config.AuthScheme {
 	case AuthSchemeBasic:
 		username, password := os.Getenv(s.config.UsernameEnv), os.Getenv(s.config.PasswordEnv)
 		if username == "" || password == "" {
-			return fmt.Errorf("upstream: %s and %s must both be set for basic auth",
-				s.config.UsernameEnv, s.config.PasswordEnv)
+			return s.missingCredential(req.Context(), "basic",
+				s.config.UsernameEnv+" and "+s.config.PasswordEnv)
 		}
 		req.SetBasicAuth(username, password)
 	case AuthSchemeHeader:
 		value := os.Getenv(s.config.HeaderValueEnv)
 		if value == "" {
-			return fmt.Errorf("upstream: %s must be set for header auth", s.config.HeaderValueEnv)
+			return s.missingCredential(req.Context(), "header", s.config.HeaderValueEnv)
 		}
 		req.Header.Set(s.config.HeaderName, value)
 	case AuthSchemeQuery:
 		value := os.Getenv(s.config.QueryValueEnv)
 		if value == "" {
-			return fmt.Errorf("upstream: %s must be set for query auth", s.config.QueryValueEnv)
+			return s.missingCredential(req.Context(), "query", s.config.QueryValueEnv)
 		}
 		// Set rather than Add: a second copy of the parameter is not a
 		// credential, it is an ambiguity, and which one an upstream reads is
