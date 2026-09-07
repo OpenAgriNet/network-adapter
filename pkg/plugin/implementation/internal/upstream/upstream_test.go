@@ -589,6 +589,57 @@ func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	}
 }
 
+// A credential that percent-encodes is the case the raw-value replacement
+// missed, and it is not an exotic one: base64 routinely contains "+", "/" and
+// "=", and a URL-safe token contains "-" and "_". authenticate builds the query
+// with url.Values.Encode, so the escaped form is what reaches the wire and the
+// error text -- redacting only what os.Getenv returned walked straight past it.
+func TestRedactStringRemovesThePercentEncodedCredential(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	const token = "a+b/c=d e" // every character Encode treats specially
+	t.Setenv("TEST_MANDI_TOKEN", token)
+
+	step := &Step{config: &Config{
+		AuthScheme:    AuthSchemeQuery,
+		QueryName:     "token",
+		QueryValueEnv: "TEST_MANDI_TOKEN",
+	}}
+
+	// Exactly how the credential appears once authenticate has run: Encode
+	// escapes it, so this is the string a transport error quotes.
+	query := url.Values{}
+	query.Set("token", token)
+	requested := "http://host/v1/x?statecode=CG&" + query.Encode()
+
+	got := step.redactString(requested)
+	if strings.Contains(got, url.QueryEscape(token)) {
+		t.Errorf("the encoded credential survived redaction: %s", got)
+	}
+	if strings.Contains(got, token) {
+		t.Errorf("the raw credential survived redaction: %s", got)
+	}
+	if !strings.Contains(got, "REDACTED") || !strings.Contains(got, "statecode=CG") {
+		t.Errorf("redacted url = %q, want the credential replaced and the rest intact", got)
+	}
+}
+
+// A value needing no escaping must still be redacted -- QueryEscape leaves it
+// alone, so the encoded pass is a no-op and the raw pass has to carry it.
+func TestRedactStringStillRemovesAnUnescapedCredential(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	t.Setenv("TEST_MANDI_TOKEN", "plaintoken123")
+
+	step := &Step{config: &Config{
+		AuthScheme:    AuthSchemeQuery,
+		QueryName:     "token",
+		QueryValueEnv: "TEST_MANDI_TOKEN",
+	}}
+	got := step.redactString("http://host/v1/x?token=plaintoken123")
+	if strings.Contains(got, "plaintoken123") {
+		t.Errorf("the credential survived redaction: %s", got)
+	}
+}
+
 // Half a configuration is refused at startup, the same way the header scheme's
 // is: a scheme that cannot present a credential would fail on every call.
 func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
