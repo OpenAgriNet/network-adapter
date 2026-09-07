@@ -143,6 +143,7 @@ create_benchmark_issues.sh
 # Ignore coverage output files
 coverage.out
 coverage.html
+coverage-plugin.out
 coverage-report.md
 
 # Makefile tool/build artifacts (golangci-lint, gotestsum, trivy binaries)
