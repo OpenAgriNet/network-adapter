@@ -1781,3 +1781,58 @@ func TestRedactLeavesAnUnchangedErrorAlone(t *testing.T) {
 		t.Error("redact(nil) must stay nil")
 	}
 }
+
+// hasBody upper-cased privately, which made the method look case-insensitive
+// when it is not: NewRequestWithContext transmits it verbatim, so a registry
+// row reading `method: "post"` sent `post /path HTTP/1.1`. The body was
+// attached correctly, and nginx answered 405 -- classified permanent, and
+// surfacing as a 502 "provider did not answer".
+func TestCanonicalMethodFixesTheCaseTheRowWasWrittenIn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, want string }{
+		{"post", http.MethodPost},
+		{"PoSt", http.MethodPost},
+		{"POST", http.MethodPost},
+		{"get", http.MethodGet},
+		{"delete", http.MethodDelete},
+		{"patch", http.MethodPatch},
+		// Left alone: upper-casing everything would restrict an upstream
+		// entitled to a method this list has not heard of.
+		{"FrobNicate", "FrobNicate"},
+		// Empty stays empty; net/http documents "" as GET and substitutes it.
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := canonicalMethod(tt.in); got != tt.want {
+			t.Errorf("canonicalMethod(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// The end of it: what the provider actually receives on the request line.
+func TestRunSendsTheMethodInCanonicalCase(t *testing.T) {
+	t.Parallel()
+
+	var seen string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Method
+		fmt.Fprint(w, `{}`)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	// A row written in the case an operator happened to type.
+	plan.Actions["select"] = model.ActionPlan{
+		Method: "post", Path: "/x", Mappings: testMappingRef,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("runStep returned an unexpected error: %v", err)
+	}
+	if seen != http.MethodPost {
+		t.Errorf("the provider saw method %q, want %q", seen, http.MethodPost)
+	}
+}
