@@ -192,6 +192,11 @@ func TestLiveAgainstPocra(t *testing.T) {
 	}
 	defer closeStep()
 
+	// The published pack, compiled by a real validator. The hand-written checks
+	// below say what this plugin believes the pack requires; this says what it
+	// actually does, against data nobody curated.
+	schema := facilitySchema(t)
+
 	for _, facilityType := range governedTypes {
 		t.Run(facilityType, func(t *testing.T) {
 			captured = nil
@@ -256,6 +261,11 @@ func TestLiveAgainstPocra(t *testing.T) {
 					t.Errorf("%s: carries location; POCRA publishes no verified facility geometry", id)
 				}
 			}
+
+			// The real answer, against the real pack. Every offline conformance
+			// case is a captured body; this is the only check that runs the
+			// validator over data POCRA chose today.
+			validateFacilities(t, schema, answer)
 
 			// Nothing POCRA uses as a placeholder may reach the network.
 			raw, err := json.Marshal(answer)
