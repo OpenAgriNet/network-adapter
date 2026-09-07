@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -498,6 +499,69 @@ func isAllowedDomain(u *url.URL, allowedDomains []string) bool {
 	return false
 }
 
+// jsonLDKeys are the JSON-LD control keys that travel inside a domain object
+// rather than beside it.
+var jsonLDKeys = []string{"@context", "@type"}
+
+// stripUnaccountedJSONLDKeys removes those JSON-LD keys the target schema does
+// not declare, and keeps the ones it does.
+//
+// The two schema styles in use need opposite treatment, and removing both keys
+// unconditionally only served the first:
+//
+//   - a schema that closes itself with additionalProperties:false and never
+//     mentions @type rejects the payload if @type is left in;
+//   - a schema pack that declares @type and lists it in required rejects the
+//     payload if @type is taken out.
+//
+// Asking the schema, per key, satisfies both without a config switch and
+// without either style having to know about the other.
+func stripUnaccountedJSONLDKeys(schema *openapi3.SchemaRef, data map[string]interface{}) map[string]interface{} {
+	domainData := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		if slices.Contains(jsonLDKeys, k) && !schemaDeclaresProperty(schema, k, map[*openapi3.Schema]bool{}) {
+			continue
+		}
+		domainData[k] = v
+	}
+	return domainData
+}
+
+// schemaDeclaresProperty reports whether name is declared as a property, or
+// listed as required, anywhere in a schema's composition tree.
+//
+// allOf, anyOf, oneOf and the then/else branches can each introduce a property,
+// so all of them are walked -- the OAN packs declare @type one level down, in
+// allOf. "not" is skipped because naming a property there forbids it rather
+// than permitting it, and "if" is skipped because it only selects a branch.
+// seen guards against schemas that reference themselves.
+func schemaDeclaresProperty(ref *openapi3.SchemaRef, name string, seen map[*openapi3.Schema]bool) bool {
+	if ref == nil || ref.Value == nil || seen[ref.Value] {
+		return false
+	}
+	seen[ref.Value] = true
+
+	if _, ok := ref.Value.Properties[name]; ok {
+		return true
+	}
+	if slices.Contains(ref.Value.Required, name) {
+		return true
+	}
+	for _, group := range []openapi3.SchemaRefs{ref.Value.AllOf, ref.Value.AnyOf, ref.Value.OneOf} {
+		for _, sub := range group {
+			if schemaDeclaresProperty(sub, name, seen) {
+				return true
+			}
+		}
+	}
+	for _, sub := range []*openapi3.SchemaRef{ref.Value.Then, ref.Value.Else} {
+		if schemaDeclaresProperty(sub, name, seen) {
+			return true
+		}
+	}
+	return false
+}
+
 // validateReferencedObject validates a single object with @context.
 func (c *schemaCache) validateReferencedObject(
 	ctx context.Context,
@@ -552,13 +616,8 @@ func (c *schemaCache) validateReferencedObject(
 		return model.NewCodedErrorWithCause("SCH_INVALID_ENTITY_TYPE", err.Error(), obj.Path, err)
 	}
 
-	// Strip JSON-LD metadata before validation
-	domainData := make(map[string]interface{}, len(obj.Data)-2)
-	for k, v := range obj.Data {
-		if k != "@context" && k != "@type" {
-			domainData[k] = v
-		}
-	}
+	// Strip only the JSON-LD keys this schema does not account for itself.
+	domainData := stripUnaccountedJSONLDKeys(schema, obj.Data)
 
 	// Validate domain-specific data against schema
 	opts := []openapi3.SchemaValidationOption{

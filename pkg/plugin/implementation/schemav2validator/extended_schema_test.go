@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1376,4 +1377,196 @@ func TestLoadSchemaFromPath_TTLExpiry_FetchesFresh(t *testing.T) {
 	doc2, err := cache.loadSchemaFromPath(ctx, server.URL, 1*time.Hour, 30*time.Second, false)
 	assert.NoError(t, err)
 	assert.Equal(t, "Schema v2", doc2.Info.Title, "expected v2 after TTL expiry — global URIMapCache not bypassed")
+}
+
+// packStyleSchema mirrors how the OAN schema packs are shaped: the capability
+// declares @type one level down in allOf and lists it as required, and nothing
+// closes the object with additionalProperties:false.
+const packStyleSchema = `openapi: 3.1.0
+info:
+  title: Pack Style
+  version: 1.0.0
+components:
+  schemas:
+    WeatherObservation:
+      type: object
+      x-jsonld:
+        "@context": https://schemas.example.org/schema/WeatherObservation/v0.1/context.jsonld
+        "@type": openagrinet:WeatherObservation
+      allOf:
+        - type: object
+          required:
+            - informationMode
+          properties:
+            informationMode:
+              type: string
+              enum: [OnDemand, Direct]
+        - type: object
+          required:
+            - "@type"
+          properties:
+            "@type":
+              type: string
+              const: openagrinet:WeatherObservation`
+
+func writeTempSchema(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "test-schema-*.yaml")
+	assert.NoError(t, err)
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	_, err = f.Write([]byte(content))
+	assert.NoError(t, err)
+	assert.NoError(t, f.Close())
+	return f.Name()
+}
+
+// A pack that requires @type must receive it. This is the case that could not
+// validate while both JSON-LD keys were removed unconditionally: the payload
+// carries @type, the schema requires it, and stripping it produced a spurious
+// "@type is required".
+func TestValidateReferencedObject_PackStyleKeepsAtType(t *testing.T) {
+	cache := newSchemaCache(10)
+	path := writeTempSchema(t, packStyleSchema)
+
+	obj := referencedObject{
+		Path:    "message.catalogs[0].resources[0].resourceAttributes",
+		Context: path,
+		Type:    "openagrinet:WeatherObservation",
+		Data: map[string]interface{}{
+			"@context":        "https://schemas.example.org/schema/WeatherObservation/v0.1/context.jsonld",
+			"@type":           "openagrinet:WeatherObservation",
+			"informationMode": "OnDemand",
+		},
+	}
+
+	err := cache.validateReferencedObject(context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+	assert.NoError(t, err)
+}
+
+// The same pack must still reject a payload whose @type is not the one the
+// capability declares -- keeping the key means its const is now checked, which
+// stripping it silently skipped.
+func TestValidateReferencedObject_PackStyleWrongAtTypeRejected(t *testing.T) {
+	cache := newSchemaCache(10)
+	path := writeTempSchema(t, packStyleSchema)
+
+	obj := referencedObject{
+		Path:    "message.catalogs[0].resources[0].resourceAttributes",
+		Context: path,
+		Type:    "openagrinet:WeatherObservation",
+		Data: map[string]interface{}{
+			"@type":           "openagrinet:MandiPrice",
+			"informationMode": "OnDemand",
+		},
+	}
+
+	err := cache.validateReferencedObject(context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+	assert.Error(t, err)
+}
+
+func TestStripUnaccountedJSONLDKeys(t *testing.T) {
+	declaresType := &openapi3.SchemaRef{Value: &openapi3.Schema{
+		AllOf: openapi3.SchemaRefs{
+			{Value: &openapi3.Schema{
+				Required:   []string{"@type"},
+				Properties: openapi3.Schemas{"@type": {Value: &openapi3.Schema{}}},
+			}},
+		},
+	}}
+	declaresNeither := &openapi3.SchemaRef{Value: &openapi3.Schema{
+		Properties: openapi3.Schemas{"field1": {Value: &openapi3.Schema{}}},
+	}}
+	declaresBoth := &openapi3.SchemaRef{Value: &openapi3.Schema{
+		Properties: openapi3.Schemas{
+			"@context": {Value: &openapi3.Schema{}},
+			"@type":    {Value: &openapi3.Schema{}},
+		},
+	}}
+
+	data := map[string]interface{}{
+		"@context": "https://example.com/context.jsonld",
+		"@type":    "openagrinet:WeatherObservation",
+		"field1":   "value1",
+	}
+
+	tests := []struct {
+		name   string
+		schema *openapi3.SchemaRef
+		want   []string
+	}{
+		{"pack declares @type, so only @context goes", declaresType, []string{"@type", "field1"}},
+		{"schema declares neither, so both go", declaresNeither, []string{"field1"}},
+		{"schema declares both, so neither goes", declaresBoth, []string{"@context", "@type", "field1"}},
+		{"nil schema is treated as declaring nothing", nil, []string{"field1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripUnaccountedJSONLDKeys(tt.schema, data)
+			keys := make([]string, 0, len(got))
+			for k := range got {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			assert.Equal(t, tt.want, keys)
+			// the input must not be mutated -- obj.Data is shared with the caller
+			assert.Len(t, data, 3)
+		})
+	}
+}
+
+func TestSchemaDeclaresProperty(t *testing.T) {
+	leaf := func(required ...string) *openapi3.SchemaRef {
+		return &openapi3.SchemaRef{Value: &openapi3.Schema{Required: required}}
+	}
+
+	cyclic := &openapi3.SchemaRef{Value: &openapi3.Schema{}}
+	cyclic.Value.AllOf = openapi3.SchemaRefs{cyclic}
+
+	tests := []struct {
+		name   string
+		schema *openapi3.SchemaRef
+		want   bool
+	}{
+		{"nil ref", nil, false},
+		{"nil value", &openapi3.SchemaRef{}, false},
+		{"declared directly as a property", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Properties: openapi3.Schemas{"@type": {Value: &openapi3.Schema{}}},
+		}}, true},
+		{"required directly", leaf("@type"), true},
+		{"required inside allOf", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			AllOf: openapi3.SchemaRefs{leaf("other"), leaf("@type")},
+		}}, true},
+		{"required inside anyOf", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			AnyOf: openapi3.SchemaRefs{leaf("@type")},
+		}}, true},
+		{"required inside oneOf", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			OneOf: openapi3.SchemaRefs{leaf("@type")},
+		}}, true},
+		{"required inside then", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Then: leaf("@type"),
+		}}, true},
+		{"required inside else", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Else: leaf("@type"),
+		}}, true},
+		// naming a property under "not" forbids it, so it must not count as declared
+		{"named under not does not count", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Not: leaf("@type"),
+		}}, false},
+		// "if" only selects a branch; it does not permit the property
+		{"named under if does not count", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			If: leaf("@type"),
+		}}, false},
+		{"absent everywhere", &openapi3.SchemaRef{Value: &openapi3.Schema{
+			AllOf: openapi3.SchemaRefs{leaf("informationMode")},
+		}}, false},
+		{"self-referencing schema terminates", cyclic, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := schemaDeclaresProperty(tt.schema, "@type", map[*openapi3.Schema]bool{})
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
