@@ -117,22 +117,78 @@ modules:
         signValidator:
           id: signvalidator
 
-        # Base Beckn v2 schema validation against the pinned LTS spec. The
-        # extended layer fetches each resource's own @context and validates
-        # against that -- a network call per payload and a second thing that
-        # can fail -- so it is off, and the extendedSchema_* keys below only
-        # take effect if it is switched on.
+        # ------------------------------------------------------------------
+        # schemaValidator -- two layers, both on.
+        #
+        # BASE validates the envelope against the pinned Beckn v2 LTS spec.
+        # To it, resourceAttributes is a free-form object: the envelope is
+        # correct whatever a capability puts inside.
+        #
+        # EXTENDED validates that inside. It walks the payload for every
+        # object carrying both @context and @type, resolves the schema that
+        # @type names, and validates the object against it. That is what makes
+        # a wrong unit or a missing required attribute a rejected payload
+        # rather than a provider's problem to discover later.
+        #
+        # What extended validation DOES enforce: types, string formats
+        # (date-time, duration, uri), enum, const, required, minItems,
+        # additionalProperties, not, and allOf/anyOf/oneOf.
+        #
+        # What it does NOT: if/then/else. The validator library parses those
+        # keywords but never evaluates them, so a pack's conditional rules --
+        # in the OAN packs, everything predicated on informationMode -- are
+        # not checked. Worth knowing before treating a pass here as full
+        # conformance to a pack.
+        # ------------------------------------------------------------------
         schemaValidator:
           id: schemav2validator
           config:
             type: url
             location: "https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml"
             cacheTTL: "3600"
-            extendedSchema_enabled: "false"
-            extendedSchema_cacheTTL: "86400"
+
+            extendedSchema_enabled: "true"
+
+            # Where the capability schemas are read from. Set, so resolution
+            # is a memory lookup and no payload costs a network call.
+            #
+            # Every *.yaml under this directory is loaded at STARTUP and keyed
+            # by <TypeName>/attributes.yaml, with the version segment dropped.
+            # An object's @type is then looked up directly -- the part after
+            # the colon, so openagrinet:MandiPrice finds MandiPrice. $refs
+            # between schemas resolve out of the same memory.
+            #
+            # The layout to place there, $ref targets included:
+            #
+            #   WeatherObservation/v0.1/attributes.yaml
+            #   MandiPrice/v0.1/attributes.yaml
+            #   AgricultureResource/v0.1/attributes.yaml   # the packs' base
+            #   Address/v2.0/attributes.yaml               # schema.beckn.io
+            #   Descriptor/v2.1/attributes.yaml            # schema.beckn.io
+            #   GeoJSONGeometry/v2.0/attributes.yaml       # schema.beckn.io
+            #   Location/v2.0/attributes.yaml              # schema.beckn.io
+            #
+            # The schemas are NOT in this repository: they are published, and
+            # a second copy here would drift from them. The deployment places
+            # them at this path, which is also why no source URL appears in
+            # this file -- which revision to ship is a deployment decision,
+            # not one frozen into adapter config.
+            #
+            # A missing directory FAILS STARTUP rather than degrading, which
+            # is what you want: the alternative is an adapter that accepts
+            # unvalidated payloads because a mount was forgotten. An empty one
+            # only warns, and then every payload falls through to the network.
+            extendedSchema_localSchemaPath: "/app/config/schemas"
+
+            # The network fallback, reached only on a local miss. Restricted
+            # to the host the packs' own @context names, so a miss fails
+            # loudly instead of quietly fetching a schema from somewhere else.
+            extendedSchema_allowedDomains: "schemas.openagrinet.global"
+
+            # The three keys below apply to that fallback only.
+            extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
-            extendedSchema_allowedDomains: "raw.githubusercontent.com"
 
         # ------------------------------------------------------------------
         # jsonmapper -- the JSONata mapper.
