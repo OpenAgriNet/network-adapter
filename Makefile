@@ -33,7 +33,7 @@ MIN_COVERAGE          ?= 80
 # development, not main: every branch in this repo is cut from development and
 # PRs target it, so that is the base a local `make cover-diff` must compare to.
 BASE_REF              ?= origin/development
-SEVERITY              ?= HIGH,CRITICAL
+SEVERITY              ?= CRITICAL,HIGH,MEDIUM,LOW
 GOLANGCI_LINT_VERSION := v2.5.0
 GOTESTSUM_VERSION     := v1.13.0
 TRIVY_VERSION         := v0.74.0
@@ -233,7 +233,7 @@ trivy-report:
 			esac; \
 			echo; echo "### $$title"; echo; \
 			if [ -s "$$report" ]; then \
-				jq -r -f tools/trivy-comment.jq "$$report"; \
+				jq -r --arg severity "$(SEVERITY)" -f tools/trivy-comment.jq "$$report"; \
 			else \
 				echo "⚠️ No report — the scan did not produce $$report."; \
 			fi; \
@@ -262,7 +262,7 @@ trivy-gate:
 			fail=1; \
 		fi; \
 	done; \
-	[ "$$fail" -eq 0 ] || echo "::error::HIGH or CRITICAL Trivy findings, or a missing report — see the log above"; \
+	[ "$$fail" -eq 0 ] || echo "::error::Trivy findings at $(SEVERITY), or a missing report — see the log above"; \
 	exit $$fail
 
 ## lint: vet, format check and static analysis
