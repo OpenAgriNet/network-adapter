@@ -126,8 +126,24 @@ response: |
        rather than the upstream's. */
 
     /* Absent rather than present-and-empty: a consumer must be able to tell
-       "the market reported no minimum" from "the minimum was zero". */
-    $priced := function($value) { $exists($value) ? $number($value) };
+       "the market reported no minimum" from "the minimum was zero".
+
+       GUARDS SHAPE, NOT JUST PRESENCE. Agmarknet writes an unreported price as
+       a marker -- "NR", "-", "" -- and $exists() is true for all of them, so
+       an existence-only guard handed them to $number() and it threw D3030.
+       That failed the WHOLE response: one unreported cell in one row turned a
+       good multi-row answer into an adapter error, which is the opposite of
+       the distinction this function exists to preserve.
+
+       The number branch is not redundant. $match() throws T0410 on a
+       non-string, so testing the regex first would break the day this
+       upstream sends a real number instead of a quoted one. */
+    $priced := function($value) {
+      $type($value) = "number"
+        ? $value
+        : ($type($value) = "string" and $match($value, /^[0-9]+(\.[0-9]+)?$/)
+            ? $number($value))
+    };
 
     {
       "context": {
@@ -190,7 +206,7 @@ response: |
                     "prices": {
                       "minimum":  $priced($r.`Min Price`),
                       "maximum":  $priced($r.`Max Price`),
-                      "modal":    $number($r.`Modal Price`),
+                      "modal":    $priced($r.`Modal Price`),
                       "currency": "INR",
                       "unit":     $r.`Price Unit`
                     },
