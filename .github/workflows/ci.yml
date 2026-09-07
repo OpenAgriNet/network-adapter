@@ -191,7 +191,7 @@ jobs:
           body-path: trivy-report.md
           edit-mode: replace
 
-      # The gate, last: it reads both reports and fails on a HIGH/CRITICAL
+      # The gate, last: it reads both reports and fails on any in-band
       # finding or on a report that never got written, so the report is on the
       # PR before the check goes red.
       - run: make trivy-gate
