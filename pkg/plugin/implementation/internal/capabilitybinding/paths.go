@@ -1,4 +1,4 @@
-package oanbinding
+package capabilitybinding
 
 import (
 	"fmt"
@@ -38,11 +38,11 @@ func (p Paths) Validate() error {
 		"capabilityCodeAt": p.CapabilityCode,
 	} {
 		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("oanbinding: %s is empty", name)
+			return fmt.Errorf("capabilitybinding: %s is empty", name)
 		}
 		for _, segment := range strings.Split(path, ".") {
 			if strings.TrimSpace(strings.TrimSuffix(segment, arrayMarker)) == "" {
-				return fmt.Errorf("oanbinding: %s (%q) has a blank segment", name, path)
+				return fmt.Errorf("capabilitybinding: %s (%q) has a blank segment", name, path)
 			}
 		}
 	}

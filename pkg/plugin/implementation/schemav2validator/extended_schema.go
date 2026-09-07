@@ -531,7 +531,7 @@ func stripUnaccountedJSONLDKeys(schema *openapi3.SchemaRef, data map[string]inte
 // listed as required, anywhere in a schema's composition tree.
 //
 // allOf, anyOf, oneOf and the then/else branches can each introduce a property,
-// so all of them are walked -- the OAN packs declare @type one level down, in
+// so all of them are walked -- the capability packs declare @type one level down, in
 // allOf. "not" is skipped because naming a property there forbids it rather
 // than permitting it, and "if" is skipped because it only selects a branch.
 // seen guards against schemas that reference themselves.

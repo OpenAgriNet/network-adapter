@@ -19,7 +19,7 @@
 # serves. It does NOT hold where a provider lives or how long to wait for it --
 # that is the registry's ProviderSchema row, read per request. Repointing a
 # provider is a registry write, not an edit here and a restart.
-appName: "oan-provider-adapter"
+appName: "provider-adapter"
 
 log:
   level: debug
@@ -80,7 +80,7 @@ modules:
 
       plugins:
         # ------------------------------------------------------------------
-        # oanregistry -- the OAN Registry (SunbirdRC) client.
+        # sunbirdRegistry -- the SunbirdRC registry client.
         #
         # Serves both halves of the lookup: the sender's signing key for
         # validateSign, and the capability call plans the provider steps
@@ -89,7 +89,7 @@ modules:
         # other.
         # ------------------------------------------------------------------
         registry:
-          id: oanregistry
+          id: sunbirdRegistry
           config:
             # REQUIRED, and the only key with no default. Include the API
             # version prefix; the plugin appends /{entity}/search.

@@ -17,7 +17,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/oanbinding"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/capabilitybinding"
 )
 
 const selectBody = `{
@@ -1086,7 +1086,7 @@ func TestNewUsesTheBecknConventionByDefault(t *testing.T) {
 	t.Parallel()
 
 	step := newStep(t, &stubRegistry{}, &stubMapper{})
-	if step.paths != oanbinding.BecknV2 {
+	if step.paths != capabilitybinding.BecknV2 {
 		t.Errorf("paths = %+v, want the Beckn v2 convention", step.paths)
 	}
 }
