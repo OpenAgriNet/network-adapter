@@ -39,6 +39,12 @@ const (
 	DefaultRetryMax       = 1
 	DefaultRetryWaitMin   = 100 * time.Millisecond
 	DefaultRetryWaitMax   = 500 * time.Millisecond
+
+	// DefaultMaxResponseBytes caps a registry search response. Generous for a
+	// handful of records, and a ceiling rather than an expectation: the read
+	// happens inside signature validation on every inbound message, so an
+	// unbounded one is an unbounded allocation on the request path.
+	DefaultMaxResponseBytes = 1 << 20 // 1 MiB
 )
 
 // Registry field names. They live here rather than in config because they
@@ -143,6 +149,11 @@ type Config struct {
 	RetryMax       int           `yaml:"retry_max" json:"retry_max"`
 	RetryWaitMin   time.Duration `yaml:"retry_wait_min" json:"retry_wait_min"`
 	RetryWaitMax   time.Duration `yaml:"retry_wait_max" json:"retry_wait_max"`
+	// MaxResponseBytes caps a search response. Zero means
+	// DefaultMaxResponseBytes; a response past it is refused rather than
+	// truncated, because half a JSON document fails to decode with an error
+	// that says nothing about the cause.
+	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 }
 
 // Client resolves participants from the OAN registry. It is safe for concurrent
@@ -153,6 +164,7 @@ type Client struct {
 	client            *retryablehttp.Client
 	cache             definition.Cache
 	cacheTTL          time.Duration
+	maxResponseBytes  int64
 }
 
 // participant is the subset of a registry record this plugin reads. The
@@ -309,12 +321,18 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 		return max
 	}
 
+	maxResponseBytes := cfg.MaxResponseBytes
+	if maxResponseBytes <= 0 {
+		maxResponseBytes = DefaultMaxResponseBytes
+	}
+
 	client := &Client{
 		searchURL:         searchURLFor(cfg.URL, entity),
 		providerSearchURL: searchURLFor(cfg.URL, providerEntity),
 		client:            rc,
 		cache:             cache,
 		cacheTTL:          cfg.CacheTTL,
+		maxResponseBytes:  maxResponseBytes,
 	}
 
 	closer := func() error {
