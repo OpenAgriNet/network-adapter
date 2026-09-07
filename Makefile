@@ -1,9 +1,13 @@
-# OAN Network Adapter — build, test and toolchain targets.
+# OAN Network Adapter — build, test, lint and security-scan targets.
 #
-# Single source of truth for the run-tests/security/build-and-push workflows,
-# which call these targets rather than raw commands. No DB, no sqlc/migrate,
-# no separate tools/ module — golangci-lint, gotestsum and trivy install
-# straight into bin/ via `go install`/curl.
+# Single source of truth for the ci.yml and security.yml workflows: every CI
+# step is a one-line `make <target>` call, so a red check reproduces locally
+# by running the command the log shows. Anything left inline in the workflows
+# is GitHub context (`${{ }}` expressions, $GITHUB_ENV / $GITHUB_STEP_SUMMARY
+# writes) that has no meaning outside a runner.
+#
+# No DB, no sqlc/migrate, no separate tools/ module — golangci-lint, gotestsum
+# and trivy install straight into bin/ via `go install` / curl.
 
 GO      ?= go
 BIN_DIR := bin
@@ -12,7 +16,9 @@ IMAGE   ?= network-adapter:dev
 # CI thresholds/pins live here, not duplicated into workflow env blocks — one
 # source of truth for both a local `make` run and the GitHub Actions runner.
 MIN_COVERAGE          ?= 80
-BASE_REF              ?= origin/main
+# development, not main: every branch in this repo is cut from development and
+# PRs target it, so that is the base a local `make cover-diff` must compare to.
+BASE_REF              ?= origin/development
 SEVERITY              ?= HIGH,CRITICAL
 GOLANGCI_LINT_VERSION := v2.5.0
 GOTESTSUM_VERSION     := v1.13.0
@@ -22,11 +28,41 @@ GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOTESTSUM     := $(BIN_DIR)/gotestsum
 TRIVY         := $(BIN_DIR)/trivy
 
+# pkg/plugin and benchmarks/e2e each build a real .so with a plain `go build
+# -buildmode=plugin` subprocess, then load it with plugin.Open in the same test
+# run. Two things make that .so unloadable:
+#
+#   -race     — the subprocess build carries no -race flag of its own, so a
+#               race-instrumented test binary and a non-race .so mismatch.
+#   ./...     — instrumenting the whole module's coverage in one build gives
+#               shared packages (e.g. pkg/plugin/definition) a build identity
+#               the subprocess build doesn't share, so plugin.Open rejects the
+#               .so as "built with a different version of" that package.
+#
+# So they run as their own invocation, without -race and with their own
+# coverage profile. Named once here and shared by test, cover and test-ci —
+# the three must never disagree about which packages are carved out.
+#
+# Deliberately no -coverpkg anywhere, and it can't be added: benchmarks/e2e is
+# the only test-only package in the module (`go list` confirms it holds no
+# non-test files), so it is the only place -coverpkg would credit coverage of
+# the packages it drives — and it is in this carve-out precisely because that
+# whole-module instrumentation is what makes plugin.Open reject the .so. The
+# code benchmarks/e2e exercises is therefore credited only by its own
+# packages' tests, which is why cover-diff gates on the diff rather than on a
+# module-wide total.
+PLUGIN_PKGS := ./pkg/plugin ./benchmarks/e2e/...
+MAIN_PKGS    = $$($(GO) list ./... | grep -vE '/pkg/plugin$$|/benchmarks/e2e$$')
+
+# Only used inside a workflow; a local run gets a placeholder rather than a
+# broken link.
+RUN_URL ?= $(if $(GITHUB_RUN_ID),$(GITHUB_SERVER_URL)/$(GITHUB_REPOSITORY)/actions/runs/$(GITHUB_RUN_ID),local run)
+
 .DEFAULT_GOAL := help
 
 ## help: list the available targets
 help:
-	@grep -hE '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort
+	@grep -hE '^## [a-z]' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort
 
 ## build: compile the adapter binary
 # Scoped to cmd/adapter, not ./... — pkg/plugin/implementation/*/cmd holds
@@ -35,44 +71,60 @@ help:
 build:
 	$(GO) build -trimpath -o $(BIN_DIR)/ ./cmd/adapter/...
 
-## test: run the unit and integration suites
+## test: run the unit and integration suites (plugin packages without -race)
 test:
-	$(GO) test -race ./...
+	$(GO) test -race $(MAIN_PKGS)
+	$(GO) test $(PLUGIN_PKGS)
 
-## cover: run the suites and write a coverage profile
+## cover: run the suites and write a merged coverage profile to coverage.out
 cover:
-	$(GO) test -race -covermode=atomic -coverprofile=coverage.out ./...
+	$(GO) test -race -covermode=atomic -coverprofile=coverage.out $(MAIN_PKGS)
+	$(GO) test -covermode=atomic -coverprofile=coverage-plugin.out $(PLUGIN_PKGS)
+	@$(MAKE) --no-print-directory merge-coverage
 
-## test-ci: run the suites through gotestsum — one line per package, coverage
-##          profile written alongside. What run-tests.yml calls; `make test`
-##          stays the plain everyday entrypoint.
-#
-# pkg/plugin and benchmarks/e2e each build a real .so with a plain `go build
-# -buildmode=plugin` subprocess, then load it with plugin.Open in the same
-# test run. Instrumenting the *whole* module's coverage in one `./...` build
-# gives shared packages (e.g. pkg/plugin/definition) a build identity that
-# subprocess build doesn't share, so plugin.Open rejects the .so as built
-# with a different version of that package. Splitting them into their own
-# `go test` invocation keeps their build graph small enough to match.
+## test-ci: cover, through gotestsum — one line per package. What ci.yml calls.
 test-ci: $(GOTESTSUM)
 	$(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
-		-race -coverprofile=coverage.out -covermode=atomic \
-		$$(go list ./... | grep -vE '/pkg/plugin$$|/benchmarks/e2e$$')
-	# No -race here: these two packages build a plugin .so in a subprocess
-	# `go build` with no -race flag of its own, so a race-instrumented test
-	# binary and a non-race .so mismatch and plugin.Open refuses to load it.
+		-race -coverprofile=coverage.out -covermode=atomic $(MAIN_PKGS)
 	$(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
-		-coverprofile=coverage-plugin.out -covermode=atomic \
-		./pkg/plugin ./benchmarks/e2e/...
-	@tail -n +2 coverage-plugin.out >> coverage.out && rm -f coverage-plugin.out
+		-coverprofile=coverage-plugin.out -covermode=atomic $(PLUGIN_PKGS)
+	@$(MAKE) --no-print-directory merge-coverage
 
-## cover-diff: coverage restricted to files changed vs BASE_REF — a PR review
-##             needs the diff's number, not the whole repo's. On failure,
-##             names the changed files dragging the number down (worst first).
+# `;` not `&&`, and always removes the intermediate: a failed tail must not
+# leave coverage-plugin.out behind for someone to pick up by hand and misread.
+merge-coverage:
+	@tail -n +2 coverage-plugin.out >> coverage.out; rm -f coverage-plugin.out
+
+# cover-diff needs a profile but must not re-run the suites in CI, where
+# test-ci already wrote one. A file rule gives it both: present (CI) and make
+# skips this; absent (clean local checkout) and it runs the suites once.
+coverage.out:
+	@$(MAKE) --no-print-directory cover
+
+# The marker is written into the report itself, not added by the workflow:
+# find-comment matches on this exact string to update its comment in place
+# rather than posting a new one on every run.
+COVER_MARKER := <!-- coverage-report -->
+
+## cover-diff: coverage of the files changed vs BASE_REF, gated on MIN_COVERAGE
+# A PR review needs the diff's number, not the whole repo's. On failure, names
+# the changed files dragging it down, worst first. Always writes
+# coverage-report.md — the workflow reads that file unconditionally, so every
+# exit path here has to produce it.
 cover-diff: coverage.out
-	@CHANGED=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go' | grep -v '_test\.go$$' || true); \
+	@if ! git rev-parse --verify --quiet "$(BASE_REF)^{commit}" >/dev/null; then \
+		echo "::error::BASE_REF '$(BASE_REF)' does not resolve to a commit — cannot compute the changed-file set"; \
+		echo "📊 **Test Coverage: ❌ Failed** — BASE_REF \`$(BASE_REF)\` does not resolve to a commit" > coverage-report.md; \
+		exit 1; \
+	fi; \
+	if ! DIFF=$$(git diff --name-only --diff-filter=ACMR "$(BASE_REF)...HEAD" -- '*.go'); then \
+		echo "::error::git diff against '$(BASE_REF)' failed — the changed-file set is unknown, not empty"; \
+		echo "📊 **Test Coverage: ❌ Failed** — \`git diff\` against \`$(BASE_REF)\` failed" > coverage-report.md; \
+		exit 1; \
+	fi; \
+	CHANGED=$$(printf '%s\n' "$$DIFF" | grep -v '_test\.go$$'); \
 	if [ -z "$$CHANGED" ]; then \
-		echo "📊 **Test Coverage: ✅ Passed** — not applicable, no changed Go files vs $(BASE_REF)" | tee coverage-report.md; \
+		printf '%s\n' "$(COVER_MARKER)" "📊 **Test Coverage: ✅ Passed** — not applicable, no changed Go files vs $(BASE_REF)" | tee coverage-report.md; \
 		exit 0; \
 	fi; \
 	MODULE=$$($(GO) list -m); \
@@ -92,59 +144,87 @@ cover-diff: coverage.out
 			print "TOTAL\t" int(C * 100 / T) \
 		}' - coverage.out); \
 	if echo "$$RESULT" | grep -q '^EMPTY$$'; then \
-		echo "📊 **Test Coverage: ✅ Passed** — not applicable, changed files carry no coverable statements" | tee coverage-report.md; \
+		printf '%s\n' "$(COVER_MARKER)" "📊 **Test Coverage: ✅ Passed** — not applicable, changed files carry no coverable statements" | tee coverage-report.md; \
 		exit 0; \
 	fi; \
 	PCT=$$(echo "$$RESULT" | awk -F'\t' '$$1=="TOTAL"{print $$2}'); \
-	if [ "$$PCT" -lt "$(MIN_COVERAGE)" ]; then \
-		BELOW=$$(echo "$$RESULT" | awk -F'\t' '$$1=="FILE"{printf "%s\t%s\n",$$2,$$3}' | sort -n); \
-		TOTAL_BELOW=$$(echo "$$BELOW" | wc -l); \
-		{ \
+	{ \
+		echo "$(COVER_MARKER)"; \
+		if [ "$$PCT" -lt "$(MIN_COVERAGE)" ]; then \
+			BELOW=$$(echo "$$RESULT" | awk -F'\t' '$$1=="FILE"{printf "%s\t%s\n",$$2,$$3}' | sort -n); \
+			TOTAL_BELOW=$$(echo "$$BELOW" | wc -l); \
 			echo "📊 **Test Coverage: ❌ Failed** — $${PCT}% of changed lines covered, min $(MIN_COVERAGE)%"; \
 			echo; \
 			echo "| File | Coverage |"; \
 			echo "|---|---|"; \
 			echo "$$BELOW" | head -15 | awk -F'\t' '{printf "| `%s` | %s%% |\n", $$2, $$1}'; \
 			[ "$$TOTAL_BELOW" -gt 15 ] && echo "| … | $$((TOTAL_BELOW - 15)) more file(s) below $(MIN_COVERAGE)% |"; \
-		} > coverage-report.md; \
-	else \
-		echo "📊 **Test Coverage: ✅ Passed** — $${PCT}% of changed lines covered, min $(MIN_COVERAGE)%" > coverage-report.md; \
-	fi; \
+		else \
+			echo "📊 **Test Coverage: ✅ Passed** — $${PCT}% of changed lines covered, min $(MIN_COVERAGE)%"; \
+		fi; \
+	} > coverage-report.md; \
 	cat coverage-report.md; \
-	[ "$$PCT" -ge "$(MIN_COVERAGE)" ]
+	if [ "$$PCT" -lt "$(MIN_COVERAGE)" ]; then \
+		echo "::error::changed-file coverage is $${PCT}%, below the $(MIN_COVERAGE)% minimum"; \
+		exit 1; \
+	fi
 
-## trivy-deps: dependency graph scan (T4), SARIF report. Catches what the
-##             image scan structurally cannot — a vulnerable module only the
-##             test suite imports, so it's never linked into the binary.
+## trivy-deps: scan the dependency graph, SARIF report to trivy-deps.sarif
+# Catches what the image scan structurally cannot — a vulnerable module only
+# the test suite imports, so it is never linked into the binary or a layer.
+# --skip-dirs bin: the workflow restores the cached trivy binary into bin/
+# before this runs, and a scanner reporting on its own binary is noise.
 trivy-deps: $(TRIVY)
-	$(TRIVY) fs . --severity $(SEVERITY) --exit-code 0 \
+	$(TRIVY) fs . --skip-dirs $(BIN_DIR) --severity $(SEVERITY) --exit-code 0 \
 		--format sarif --output trivy-deps.sarif
 
-TRIVY_IMAGE_SCAN = $(TRIVY) image $(IMAGE) --severity $(SEVERITY)
-
-## trivy-image: shipped image scan (T4), SARIF report. IMAGE names the ref.
+## trivy-image: scan IMAGE, SARIF report to trivy-image.sarif
+# Reads the base layers plus the Go build info embedded in the binary —
+# including `stdlib`, so a Go toolchain CVE shows up here and nowhere else.
 trivy-image: $(TRIVY)
-	$(TRIVY_IMAGE_SCAN) --exit-code 0 --format sarif --output trivy-image.sarif
+	$(TRIVY) image $(IMAGE) --severity $(SEVERITY) --exit-code 0 \
+		--format sarif --output trivy-image.sarif
 
-## trivy-release-gate: same image scan as trivy-image, but exit 1 on a
-##                     finding instead of writing a report — the pre-push
-##                     release gate build-and-push.yml runs once per
-##                     arch-tagged local image, before anything is pushed.
-trivy-release-gate: $(TRIVY)
-	$(TRIVY_IMAGE_SCAN) --exit-code 1 --format table
+## trivy-comment: render SARIF as a markdown PR comment — SARIF, TITLE, OUT
+# The jq program lives in tools/trivy-comment.jq rather than inline: as a file
+# it is lintable (`jq -n -f`), diffable, and free of Makefile `$$`/backslash
+# escaping. One target serves both scans, so the two reports cannot drift.
+trivy-comment:
+	@test -n "$(SARIF)" -a -n "$(TITLE)" -a -n "$(OUT)" || \
+		{ echo "::error::trivy-comment needs SARIF, TITLE and OUT"; exit 1; }
+	@test -s "$(SARIF)" || \
+		{ echo "::error::$(SARIF) missing or empty — no scan produced it"; exit 1; }
+	@{ \
+		echo "<!-- sec-scan:$(basename $(notdir $(SARIF))) -->"; \
+		echo "### 🛡️ Trivy — $(TITLE) ($(SEVERITY))"; \
+		echo "[View full run]($(RUN_URL))"; \
+		echo; \
+		jq -r -f tools/trivy-comment.jq "$(SARIF)"; \
+	} > $(OUT)
 
-## trivy-gate: fail if either SARIF report already produced by a scan step
-##             carries a finding. Reads the reports rather than rescanning.
+## trivy-gate: fail if either SARIF report carries a finding, or is missing
+# Reads the reports the scan jobs produced rather than scanning a third and
+# fourth time. A missing or unparsable report is a failure, not a pass: a scan
+# that silently wrote nothing must not turn the gate into a green no-op.
 trivy-gate:
 	@fail=0; \
 	for report in trivy-deps.sarif trivy-image.sarif; do \
-		count=$$(jq '[.runs[].results[]?] | length' "$$report"); \
-		echo "$${report}: $${count} $(SEVERITY)"; \
+		if [ ! -s "$$report" ]; then \
+			echo "$$report: MISSING — no scan produced it"; \
+			fail=1; continue; \
+		fi; \
+		count=$$(jq '[.runs[].results[]?] | length' "$$report" 2>/dev/null); \
+		if [ -z "$$count" ]; then \
+			echo "$$report: UNREADABLE — not valid SARIF"; \
+			fail=1; continue; \
+		fi; \
+		echo "$$report: $$count $(SEVERITY)"; \
 		if [ "$$count" -gt 0 ]; then \
 			jq -r '.runs[].results[]? | "\(.ruleId) \(.message.text)"' "$$report"; \
 			fail=1; \
 		fi; \
 	done; \
+	[ "$$fail" -eq 0 ] || echo "::error::HIGH or CRITICAL Trivy findings, or a missing report — see the log above"; \
 	exit $$fail
 
 ## lint: vet, format check and static analysis
@@ -152,27 +232,37 @@ lint: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./...
 	$(GOLANGCI_LINT) fmt --diff ./...
 
-## fmt: apply the formatters lint checks for
+## fmt: apply the formatters that lint checks for
 fmt: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) fmt ./...
 
-## docker: build the adapter image
+## docker: build the shipped adapter image — the Dockerfile and build args CI scans
+# Dockerfile.adapter-with-plugins, not Dockerfile.adapter: the plugins image is
+# what security.yml scans and what deploys, so a local `make docker &&
+# make trivy-image` has to scan the same thing CI gates on. The version vars
+# come from the script rather than being named again here, so ONIX_VERSION and
+# friends are spelled out in exactly one place.
 docker:
-	docker build -f Dockerfile.adapter -t $(IMAGE) .
-
-## tools: build the pinned toolchain into bin/
-tools: $(GOLANGCI_LINT) $(GOTESTSUM) $(TRIVY)
+	. install/scripts/version-vars.sh && \
+	docker build -f Dockerfile.adapter-with-plugins \
+		--build-arg ONIX_VERSION="$$ONIX_VERSION" \
+		--build-arg GIT_COMMIT="$$GIT_COMMIT" \
+		--build-arg GIT_TREE_STATE="$$GIT_TREE_STATE" \
+		--build-arg BUILD_DATE="$$BUILD_DATE" \
+		-t $(IMAGE) .
 
 ## clean: remove build output and coverage/scan artifacts
 clean:
-	rm -rf $(BIN_DIR) coverage.out coverage-report.md trivy-deps.sarif trivy-image.sarif
+	rm -rf $(BIN_DIR) coverage.out coverage-plugin.out coverage-report.md \
+		trivy-deps.sarif trivy-image.sarif \
+		trivy-deps-comment.md trivy-image-comment.md
 
 $(GOLANGCI_LINT):
 	@mkdir -p $(BIN_DIR)
 	GOBIN=$(abspath $(BIN_DIR)) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-# gotestsum is CI-only (see run-tests.yml), so it doesn't belong in the
-# adapter's or the linter's dependency graph either one.
+# gotestsum is CI-only (see ci.yml), so it doesn't belong in the adapter's or
+# the linter's dependency graph either one.
 $(GOTESTSUM):
 	@mkdir -p $(BIN_DIR)
 	GOBIN=$(abspath $(BIN_DIR)) $(GO) install gotest.tools/gotestsum@$(GOTESTSUM_VERSION)
@@ -186,5 +276,5 @@ $(TRIVY):
 	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | \
 		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
 
-.PHONY: help build test cover test-ci cover-diff lint fmt trivy-deps \
-	trivy-image trivy-release-gate trivy-gate docker tools clean
+.PHONY: help build test cover test-ci merge-coverage cover-diff lint fmt \
+	trivy-deps trivy-image trivy-comment trivy-gate docker clean
