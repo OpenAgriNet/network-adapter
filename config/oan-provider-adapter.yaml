@@ -127,7 +127,7 @@ modules:
             extendedSchema_cacheTTL: "86400"
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
-            extendedSchema_allowedDomains: "beckn.org,raw.githubusercontent.com"
+            extendedSchema_allowedDomains: "raw.githubusercontent.com"
 
         # ------------------------------------------------------------------
         # jsonmapper -- the JSONata mapper.
