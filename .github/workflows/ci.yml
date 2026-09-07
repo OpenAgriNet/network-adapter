@@ -130,12 +130,11 @@ jobs:
     # checkout, so it runs first and its findings are in the log before the
     # image finishes building.
     #
-    # pull-requests: write is the PR comment, security-events: write is the
-    # SARIF upload to the Security tab.
+    # pull-requests: write is the PR comment. No security-events: write — the
+    # SARIF upload is gone, see below.
     permissions:
       contents: read
       pull-requests: write
-      security-events: write
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/trivy-cache
@@ -151,25 +150,19 @@ jobs:
       - run: make docker IMAGE=network-adapter:${{ github.sha }}
       - run: make trivy-image IMAGE=network-adapter:${{ github.sha }}
 
-      # continue-on-error: a fork PR's GITHUB_TOKEN has no security-events
-      # write, so these 403 there. make trivy-gate below is what decides
-      # pass/fail; an upload that can't happen must not fail the job over it.
+      # No upload-sarif here, on purpose. github/codeql-action/upload-sarif
+      # posts its own check, "Code scanning results / Trivy", which is not a
+      # job and cannot be renamed or suppressed — so it was a third check on
+      # every PR. And it reported the opposite of the truth: on the run that
+      # found 20 HIGH stdlib CVEs it went green with "No new alerts in code
+      # change", because none of them were new to the diff, while
+      # make trivy-gate failed on the same SARIF. Two checks disagreeing about
+      # one scan is worse than one check, and the gate is the one that is
+      # right. Every finding is in the PR comment below with its severity and
+      # fixed version.
       #
-      # A category per scan — GitHub keys an analysis on (ref, category), so
-      # without them the second upload would replace the first.
-      - name: Upload dependency findings to code scanning
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-deps.sarif
-          category: trivy-dependencies
-
-      - name: Upload image findings to code scanning
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
+      # The cost: no Security-tab history or diff annotations for Trivy. The
+      # comment and the gate are the surface.
 
       # One comment covering both scans, rendered from the SARIF already
       # written — no third and fourth scan.
