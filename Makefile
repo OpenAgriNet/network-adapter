@@ -23,10 +23,17 @@ SEVERITY              ?= HIGH,CRITICAL
 GOLANGCI_LINT_VERSION := v2.5.0
 GOTESTSUM_VERSION     := v1.13.0
 TRIVY_VERSION         := v0.74.0
+ACTIONLINT_VERSION    := v1.7.12
 
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOTESTSUM     := $(BIN_DIR)/gotestsum
 TRIVY         := $(BIN_DIR)/trivy
+ACTIONLINT    := $(BIN_DIR)/actionlint
+
+# From GOROOT, not PATH: `go` is always resolvable here (every other target
+# needs it), and gofmt sits next to it, so this works even where only the
+# toolchain's bin dir is on PATH. Expanded at recipe time, hence the `$$`.
+GOFMT = $$($(GO) env GOROOT)/bin/gofmt
 
 # pkg/plugin and benchmarks/e2e each build a real .so with a plain `go build
 # -buildmode=plugin` subprocess, then load it with plugin.Open in the same test
@@ -236,6 +243,68 @@ lint: $(GOLANGCI_LINT)
 fmt: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) fmt ./...
 
+## lint-actions: validate the workflows and composite actions
+# Not wired into ci.yml on purpose — the pre-commit hook is the gate. Run
+# whole-repo rather than per-file: actionlint resolves `needs:` across a
+# workflow's jobs and checks `uses: ./.github/actions/...` against the action
+# on disk, so a single file in isolation is not enough to judge either.
+lint-actions: $(ACTIONLINT)
+	$(ACTIONLINT)
+
+## lint-staged: the pre-commit lints, against the staged files only. What the hook runs.
+# Staged-only, and only these two checks, because both can pass today:
+#
+#   workflows   actionlint reports nothing on the current tree, so it blocks
+#               from day one.
+#   formatting  22 files in the repo are not gofmt-clean. Scoped to what you
+#               staged, that history is someone else's problem until you touch
+#               one of those files — at which point `make fmt` fixes it.
+#
+# Deliberately NOT `golangci-lint run`: with no .golangci.yml it uses tool
+# defaults against a codebase that has never been linted, so it would reject
+# every commit. Nor the test suite — a pre-commit hook has to stay in seconds,
+# and CI is where `make test-ci` belongs.
+#
+# Reads the working tree, not the staged blob. A file staged clean but dirty in
+# the working copy is reported here; that is the conservative direction, and
+# avoids checking out the index to a temp dir on every commit.
+lint-staged:
+	@STAGED=$$(git diff --cached --name-only --diff-filter=ACMR); \
+	if [ -z "$$STAGED" ]; then \
+		echo "lint-staged: nothing staged"; \
+		exit 0; \
+	fi; \
+	fail=0; \
+	if printf '%s\n' "$$STAGED" | grep -qE '^\.github/(workflows/.*\.ya?ml|actions/.*/action\.ya?ml)$$'; then \
+		echo "==> lint-actions (staged workflow or action change)"; \
+		$(MAKE) --no-print-directory lint-actions || fail=1; \
+	fi; \
+	GOFILES=$$(printf '%s\n' "$$STAGED" | grep '\.go$$' || true); \
+	if [ -n "$$GOFILES" ]; then \
+		echo "==> gofmt (staged Go files)"; \
+		UNFMT=$$(printf '%s\n' "$$GOFILES" | xargs $(GOFMT) -l); \
+		if [ -n "$$UNFMT" ]; then \
+			echo "not gofmt-clean:"; \
+			printf '  %s\n' $$UNFMT; \
+			echo "run \`make fmt\` (or gofmt -w on the files above), then stage the result"; \
+			fail=1; \
+		fi; \
+	fi; \
+	if [ "$$fail" -ne 0 ]; then \
+		echo; \
+		echo "pre-commit checks failed — commit aborted"; \
+		exit 1; \
+	fi; \
+	echo "lint-staged: ok"
+
+## hooks: point git at the repo's versioned hooks (run once per clone)
+# core.hooksPath rather than copying into .git/hooks: the hook stays in the
+# repo, under review, and a change to it reaches everyone on their next pull
+# instead of only the people who re-copy it.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath -> .githooks, running: $$(ls .githooks | tr '\n' ' ')"
+
 ## docker: build the shipped adapter image — the Dockerfile and build args CI scans
 # Dockerfile.adapter-with-plugins, not Dockerfile.adapter: the plugins image is
 # what security.yml scans and what deploys, so a local `make docker &&
@@ -267,6 +336,11 @@ $(GOTESTSUM):
 	@mkdir -p $(BIN_DIR)
 	GOBIN=$(abspath $(BIN_DIR)) $(GO) install gotest.tools/gotestsum@$(GOTESTSUM_VERSION)
 
+# Pinned like the others, and go-installable, so no curl | sh for this one.
+$(ACTIONLINT):
+	@mkdir -p $(BIN_DIR)
+	GOBIN=$(abspath $(BIN_DIR)) $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+
 # The prebuilt release binary, not `go install`: trivy's rpm-db parser needs
 # cgo, and its module graph is comparable in size to golangci-lint's for a
 # tool nothing here imports — the official install script is what
@@ -277,4 +351,5 @@ $(TRIVY):
 		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
 
 .PHONY: help build test cover test-ci merge-coverage cover-diff lint fmt \
+	lint-actions lint-staged hooks \
 	trivy-deps trivy-image trivy-comment trivy-gate docker clean
