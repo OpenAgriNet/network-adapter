@@ -489,61 +489,140 @@ func resourcesOf(t *testing.T, answer map[string]any) []map[string]any {
 func TestShippedMappingSurvivesUnreportedPrices(t *testing.T) {
 	t.Parallel()
 
-	// Row one has a marker in each of the three price fields; row two is
-	// ordinary. The point is that row two still arrives.
+	// Row one has a marker in TWO price fields and a real modal, so it stays
+	// and its markers must come back absent. Row two is ordinary. Row three
+	// has markers in all three, so it has nothing to report and is dropped.
 	const withMarkers = `[
 	  {
 	    "Grade": "Non-FAQ", "Group": "Cereals", "State": "Chattisgarh",
 	    "Market": "Kasdol APMC", "Variety": "D.B.", "District": "Balodabazar",
 	    "Commodity": "Paddy(Common)",
-	    "Min Price": "NR", "Max Price": "-", "Modal Price": "",
+	    "Min Price": "NR", "Max Price": "-", "Modal Price": "2000",
 	    "Price Unit": "Rs./Qtl", "Arrival Date": "20-08-2025"
 	  },
 	  {
 	    "Grade": "FAQ", "Group": "Cereals", "State": "Chattisgarh",
 	    "Market": "Kasdol APMC", "Variety": "Common", "District": "Balodabazar",
 	    "Commodity": "Paddy(Common)",
-	    "Min Price": "1900", "Max Price": "2100", "Modal Price": "2000",
+	    "Min Price": "1900", "Max Price": "2100", "Modal Price": "2050",
 	    "Price Unit": "Rs./Qtl", "Arrival Date": "21-08-2025"
+	  },
+	  {
+	    "Grade": "FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "Common", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "NR", "Max Price": "NR", "Modal Price": "NR",
+	    "Price Unit": "Rs./Qtl", "Arrival Date": "22-08-2025"
 	  }
 	]`
 
 	_, answer := runShippedWith(t, selectRequest, withMarkers)
 
+	byDate := map[string]map[string]any{}
+	for _, r := range resourcesOf(t, answer) {
+		ra := r["resourceAttributes"].(map[string]any)
+		byDate[ra["arrivalDate"].(string)] = ra
+	}
+
+	// The row with a real modal survives -- one unreported cell must not
+	// discard it, and must not discard the rows beside it either.
+	partial, ok := byDate["2025-08-20"]
+	if !ok {
+		t.Fatal("the partially-priced row is missing; an unreported cell discarded it")
+	}
+	prices := partial["prices"].(map[string]any)
+	if _, isNum := prices["modal"].(float64); !isNum {
+		t.Errorf("prices.modal = %#v, want the reported number", prices["modal"])
+	}
+	// Absent, not zero: a consumer must tell "no minimum reported" from
+	// "the minimum was zero".
+	for _, field := range []string{"minimum", "maximum"} {
+		if v, present := prices[field]; present {
+			t.Errorf("prices.%s = %#v for an unreported price; absent is honest, zero is a lie", field, v)
+		}
+	}
+
+	if _, ok := byDate["2025-08-21"]; !ok {
+		t.Error("the fully-priced row is missing from the answer")
+	}
+
+	// Nothing to report at all: the pack's prices.anyOf cannot be satisfied,
+	// so the row is dropped rather than emitted as an invalid resource.
+	if _, ok := byDate["2025-08-22"]; ok {
+		t.Error("a row whose every price is unreported was emitted; it cannot satisfy prices.anyOf")
+	}
+}
+
+// A record that cannot produce a conformant resource is dropped, not emitted
+// with a degenerate value. Absent is honest; present-and-wrong is a lie in the
+// shape of an answer, and it is signed.
+func TestShippedMappingDropsRecordsItCannotMakeConformant(t *testing.T) {
+	t.Parallel()
+
+	// One good row, then one for each way a record fails the pack.
+	const mixed = `[
+	  {
+	    "Grade": "FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "Common", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "1900", "Max Price": "2100", "Modal Price": "2000",
+	    "Price Unit": "Rs./Qtl", "Arrival Date": "20-08-2025"
+	  },
+	  {
+	    "Grade": "FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "Common", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "1800", "Max Price": "2000", "Modal Price": "1900",
+	    "Price Unit": "Rs./Qtl"
+	  },
+	  {
+	    "Grade": "FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "Common", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "1700", "Max Price": "1900", "Modal Price": "1800",
+	    "Arrival Date": "23-08-2025"
+	  }
+	]`
+
+	_, answer := runShippedWith(t, selectRequest, mixed)
+
 	resources := resourcesOf(t, answer)
-	if len(resources) == 0 {
-		t.Fatal("the answer carries no resources; one unreported cell discarded the lot")
+	if len(resources) != 1 {
+		var dates []string
+		for _, r := range resources {
+			ra := r["resourceAttributes"].(map[string]any)
+			dates = append(dates, fmt.Sprint(ra["arrivalDate"]))
+		}
+		t.Fatalf("got %d resources with dates %v, want only the conformant one", len(resources), dates)
 	}
 
-	// The priced row keeps its numbers, as numbers.
-	var priced map[string]any
-	for _, r := range resources {
-		ra := r["resourceAttributes"].(map[string]any)
-		if ra["arrivalDate"] == "2025-08-21" {
-			priced = ra["prices"].(map[string]any)
-		}
+	ra := resources[0]["resourceAttributes"].(map[string]any)
+	if ra["arrivalDate"] != "2025-08-20" {
+		t.Errorf("arrivalDate = %v, want the one good record", ra["arrivalDate"])
 	}
-	if priced == nil {
-		t.Fatal("the row with real prices is missing from the answer")
+	// The degenerate date the old mapping produced, specifically.
+	if ra["arrivalDate"] == "--" {
+		t.Error(`arrivalDate = "--", which the pack refuses as format: date`)
 	}
-	for _, field := range []string{"minimum", "maximum", "modal"} {
-		if _, ok := priced[field].(float64); !ok {
-			t.Errorf("prices.%s = %#v, want a number", field, priced[field])
-		}
+	if _, ok := ra["prices"].(map[string]any)["unit"]; !ok {
+		t.Error("prices.unit is missing, which the pack requires")
 	}
 
-	// And a marker is absent rather than zero, which is the distinction the
-	// guard exists to preserve.
+	// The offer must not reference a resource the filter removed -- dropping a
+	// record and leaving its id in resourceIds would trade an invalid resource
+	// for a dangling reference.
+	ids := map[string]bool{}
 	for _, r := range resources {
-		ra := r["resourceAttributes"].(map[string]any)
-		if ra["arrivalDate"] != "2025-08-20" {
-			continue
-		}
-		p := ra["prices"].(map[string]any)
-		for _, field := range []string{"minimum", "maximum", "modal"} {
-			if v, present := p[field]; present {
-				t.Errorf("prices.%s = %#v for an unreported price; absent is honest, zero is a lie", field, v)
-			}
+		ids[r["id"].(string)] = true
+	}
+	offer, _ := firstCommitment(t, answer)["offer"].(map[string]any)
+	referenced, _ := offer["resourceIds"].([]any)
+	if len(referenced) != len(resources) {
+		t.Errorf("offer references %d resources, want %d", len(referenced), len(resources))
+	}
+	for _, ref := range referenced {
+		if !ids[fmt.Sprint(ref)] {
+			t.Errorf("the offer references %q, which is not among the answer's resources", ref)
 		}
 	}
 }
