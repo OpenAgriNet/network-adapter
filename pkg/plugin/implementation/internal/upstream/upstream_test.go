@@ -1836,3 +1836,84 @@ func TestRunSendsTheMethodInCanonicalCase(t *testing.T) {
 		t.Errorf("the provider saw method %q, want %q", seen, http.MethodPost)
 	}
 }
+
+// The registry publishes two urls per action and only one of them was checked.
+// jsonmapper has always validated its mapping reference this way; this is the
+// same check on the base url beside it.
+func TestVerifyBaseURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		baseURL string
+		wantErr bool
+	}{
+		{"http is fine", "http://provider:9100", false},
+		{"https is fine", "https://provider.example.com/api", false},
+		{"empty is refused", "", true},
+		// The case from the review: a scheme left off. Without this check it
+		// failed inside NewRequestWithContext and arrived as a 502.
+		{"a host and port with no scheme is refused", "registry:8081", true},
+		{"a bare host is refused", "provider", true},
+		{"a scheme that is not http is refused", "file:///etc/passwd", true},
+		{"a scheme with no host is refused", "http://", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := verifyBaseURL(tt.baseURL)
+			if tt.wantErr && err == nil {
+				t.Errorf("verifyBaseURL(%q) = nil, want an error", tt.baseURL)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("verifyBaseURL(%q) = %v, want nil", tt.baseURL, err)
+			}
+		})
+	}
+}
+
+// A dot segment would be resolved by net/url, so the request that left would
+// not be the request the row described. A fragment is never sent at all.
+func TestVerifyPathRefusesDotSegmentsAndFragments(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"/../admin",
+		"/v1/../../etc",
+		"/v1/./get-daily",
+		"/get-daily#section",
+	} {
+		if err := verifyPath(path); err == nil {
+			t.Errorf("verifyPath(%q) = nil, want it refused", path)
+		}
+	}
+	// A dot inside a segment is an ordinary character and must still pass.
+	for _, path := range []string{"/v1/get-daily", "/v1/data.json", "/a..b"} {
+		if err := verifyPath(path); err != nil {
+			t.Errorf("verifyPath(%q) = %v, want nil", path, err)
+		}
+	}
+}
+
+// The classification is the point. A row that cannot produce a request is a
+// bad request, not a provider that failed to answer -- and it must not be
+// retried on the way to being reported.
+func TestRunReportsAnUnusableBaseURLAsABadRequest(t *testing.T) {
+	t.Parallel()
+
+	plan := testPlan("registry:8081", http.MethodGet) // scheme left off
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	_, err := runStep(t, step, selectBody)
+	if err == nil {
+		t.Fatal("expected an unusable base url to be reported")
+	}
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
+		t.Errorf("error = %v, want a bad request rather than a bad gateway", err)
+	}
+	if strings.Contains(err.Error(), "did not answer") {
+		t.Errorf("error = %v; a row that cannot build a request is not the provider failing", err)
+	}
+}

@@ -836,6 +836,9 @@ func (s *Step) redactString(text string) string {
 // buildEndpoint joins the plan's base URL and path, carrying the mapped request
 // as query parameters when the method takes no body.
 func buildEndpoint(baseURL string, call model.ActionPlan, mapped []byte) (string, error) {
+	if err := verifyBaseURL(baseURL); err != nil {
+		return "", err
+	}
 	if err := verifyPath(call.Path); err != nil {
 		return "", err
 	}
@@ -884,6 +887,53 @@ func verifyPath(path string) error {
 	if strings.Contains(path, "//") {
 		return model.NewBadReqErr("", fmt.Errorf(
 			"upstream: path %q has an empty segment; write it with single slashes", path))
+	}
+	// A dot segment is refused rather than resolved. The registry says which
+	// path answers an action, and a row that climbs out of it is either a
+	// mistake or an attempt to reach something the row does not name -- and
+	// net/url would quietly resolve it either way, so the request that left
+	// would not be the request the row described.
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." || segment == "." {
+			return model.NewBadReqErr("", fmt.Errorf(
+				"upstream: path %q contains the %q segment; publish the path it resolves to instead",
+				path, segment))
+		}
+	}
+	// A fragment is never sent, so a row carrying one describes a request that
+	// cannot be made. Refused here rather than silently dropped by the
+	// transport, which would make the row look honoured.
+	if strings.Contains(path, "#") {
+		return model.NewBadReqErr("", fmt.Errorf(
+			"upstream: path %q contains a fragment, which is never sent to a server", path))
+	}
+	return nil
+}
+
+// verifyBaseURL checks the participant's base url before it is joined to a
+// path, so a row that cannot produce a request says so as a bad request rather
+// than as the provider being unreachable.
+//
+// Without this, `baseUrl: "registry:8081"` -- a scheme left off -- failed
+// inside http.NewRequestWithContext and arrived as a 502 "provider did not
+// answer after 1 attempts: could not build the request". That names the
+// provider for an error in the row describing it, and it is retried on the way
+// there. jsonmapper has always checked its own reference this way; this is the
+// same check on the other url the registry publishes.
+func verifyBaseURL(baseURL string) error {
+	if baseURL == "" {
+		return model.NewBadReqErr("", errors.New("upstream: the registry publishes no base url for this provider"))
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return model.NewBadReqErr("", fmt.Errorf("upstream: invalid base url %q: %w", baseURL, err))
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return model.NewBadReqErr("", fmt.Errorf(
+			"upstream: base url %q must be http or https", baseURL))
+	}
+	if parsed.Host == "" {
+		return model.NewBadReqErr("", fmt.Errorf("upstream: base url %q names no host", baseURL))
 	}
 	return nil
 }
