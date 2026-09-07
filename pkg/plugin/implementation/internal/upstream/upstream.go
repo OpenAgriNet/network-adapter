@@ -769,8 +769,33 @@ func (s *Step) redact(err error) error {
 	if text == err.Error() {
 		return err
 	}
-	return errors.New(text)
+	return redactedErr{text: text, err: err}
 }
+
+// redactedErr reports a redacted message while keeping the original reachable
+// for errors.Is and errors.As.
+//
+// errors.New(text) was the obvious thing and it broke the chain: the redacted
+// value is what gets %w-wrapped into the final 502, so under a query-string
+// scheme -- and only then, since nothing else redacts -- errors.Is(err,
+// context.DeadlineExceeded) silently stopped matching. Retry classification
+// was never affected, because isPermanent tests the error before redaction,
+// which is why nothing failed visibly.
+//
+// fmt.Errorf("%s: %w", text, err) would have restored the chain and undone the
+// redaction with it: %w formats the original, credential included. Reporting
+// the redacted text from Error() and the original from Unwrap() keeps both.
+//
+// The original's text is reachable through errors.Unwrap, which is a
+// deliberate act by a caller who wants the cause -- and %v, %s and %w on the
+// value itself all go through Error() and stay redacted.
+type redactedErr struct {
+	text string
+	err  error
+}
+
+func (e redactedErr) Error() string { return e.text }
+func (e redactedErr) Unwrap() error { return e.err }
 
 // redactString removes a query-string credential from any text about to be
 // logged or returned -- an error, or the URL that was requested.

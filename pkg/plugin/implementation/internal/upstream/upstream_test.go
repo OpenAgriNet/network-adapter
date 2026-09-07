@@ -1720,3 +1720,64 @@ func TestBackoffDoublesToTheCeiling(t *testing.T) {
 		}
 	}
 }
+
+// redact used to return errors.New(text), which reported the right thing and
+// broke errors.Is. The redacted value is what gets %w-wrapped into the final
+// 502, so under a query-string scheme -- and only then -- a caller testing for
+// a timeout stopped matching. Nothing failed visibly because retry
+// classification tests the error before redaction.
+func TestRedactKeepsTheErrorChainMatchable(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	t.Setenv("TEST_CHAIN_TOKEN", "s3cr3t")
+
+	step := &Step{config: &Config{
+		AuthScheme:    AuthSchemeQuery,
+		QueryName:     "token",
+		QueryValueEnv: "TEST_CHAIN_TOKEN",
+	}}
+
+	// The shape net/http produces: the cause wrapped behind text that quotes
+	// the whole URL, credential and all.
+	original := fmt.Errorf(`Get "http://host/x?token=s3cr3t": %w`, context.DeadlineExceeded)
+	got := step.redact(original)
+
+	if strings.Contains(got.Error(), "s3cr3t") {
+		t.Errorf("the credential survived redaction: %v", got)
+	}
+	if !strings.Contains(got.Error(), "REDACTED") {
+		t.Errorf("redacted error = %q, want the credential replaced", got)
+	}
+	if !errors.Is(got, context.DeadlineExceeded) {
+		t.Errorf("errors.Is lost the cause through redaction: %v", got)
+	}
+	// And wrapping it again, which is what the 502 does, must not undo either
+	// property.
+	wrapped := fmt.Errorf("upstream: provider did not answer: %w", got)
+	if strings.Contains(wrapped.Error(), "s3cr3t") {
+		t.Errorf("the credential reappeared once wrapped: %v", wrapped)
+	}
+	if !errors.Is(wrapped, context.DeadlineExceeded) {
+		t.Errorf("errors.Is lost the cause once wrapped: %v", wrapped)
+	}
+}
+
+// Nothing to redact must return the error itself, not a copy: an error that
+// needed no change should keep its identity so == and errors.Is on the value
+// both still work.
+func TestRedactLeavesAnUnchangedErrorAlone(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	t.Setenv("TEST_CHAIN_TOKEN_2", "s3cr3t")
+
+	step := &Step{config: &Config{
+		AuthScheme:    AuthSchemeQuery,
+		QueryName:     "token",
+		QueryValueEnv: "TEST_CHAIN_TOKEN_2",
+	}}
+	original := errors.New("nothing sensitive here")
+	if got := step.redact(original); got != original {
+		t.Errorf("redact returned a different error for text it did not change: %v", got)
+	}
+	if step.redact(nil) != nil {
+		t.Error("redact(nil) must stay nil")
+	}
+}
