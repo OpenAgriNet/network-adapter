@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -304,4 +305,36 @@ func TestWrapExtractContextErr(t *testing.T) {
 			t.Errorf("Error() = %q, want it to contain becknErr.Message", err.Error())
 		}
 	})
+}
+
+// The reason this is one method and not a helper beside each caller: the same
+// record has to read the same way wherever it is reported, and map iteration
+// would make it read differently on each request.
+func TestProviderRecordServedActionsIsSorted(t *testing.T) {
+	t.Parallel()
+
+	record := &ProviderRecord{Actions: map[string]ActionPlan{
+		"select":          {},
+		"catalog/publish": {},
+		"confirm":         {},
+		"discover":        {},
+	}}
+	want := []string{"catalog/publish", "confirm", "discover", "select"}
+
+	// Repeated, because one pass cannot tell a sorted result from a lucky map
+	// iteration order.
+	for i := 0; i < 20; i++ {
+		got := record.ServedActions()
+		if !slices.Equal(got, want) {
+			t.Fatalf("ServedActions() = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestProviderRecordServedActionsOnAnEmptyRecord(t *testing.T) {
+	t.Parallel()
+
+	if got := (&ProviderRecord{}).ServedActions(); len(got) != 0 {
+		t.Errorf("ServedActions() = %v, want empty", got)
+	}
 }

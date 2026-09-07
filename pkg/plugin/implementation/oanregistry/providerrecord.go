@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -131,7 +130,7 @@ func (c *Client) ProviderRecord(ctx context.Context, bindingKey string) (*model.
 	}
 
 	plan := toProviderRecord(binding, owner)
-	log.Debugf(ctx, "OAN registry resolved bindingKey=%s to %s serving %s", bindingKey, plan.BaseURL, strings.Join(servedActions(plan), ", "))
+	log.Debugf(ctx, "OAN registry resolved bindingKey=%s to %s serving %s", bindingKey, plan.BaseURL, strings.Join(plan.ServedActions(), ", "))
 	c.cacheProviderRecord(ctx, cacheKey, plan)
 
 	span.SetAttributes(telemetry.AttrErrorType.String(outcomeFound))
@@ -141,14 +140,6 @@ func (c *Client) ProviderRecord(ctx context.Context, bindingKey string) (*model.
 
 // servedActions lists the actions a plan covers, sorted so the same record logs
 // the same way twice.
-func servedActions(plan *model.ProviderRecord) []string {
-	names := make([]string, 0, len(plan.Actions))
-	for action := range plan.Actions {
-		names = append(names, action)
-	}
-	sort.Strings(names)
-	return names
-}
 
 // refuse records a deliberate denial and returns the caller's sentinel. The
 // registry answered; the answer was no.
