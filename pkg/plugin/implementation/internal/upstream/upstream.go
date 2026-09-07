@@ -619,11 +619,12 @@ func (s *Step) attempt(ctx context.Context, call model.ActionPlan, endpoint stri
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(attemptCtx, call.Method, endpoint, requestBody(call.Method, mapped))
+	method := canonicalMethod(call.Method)
+	req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, requestBody(method, mapped))
 	if err != nil {
 		return nil, doNotRetry(fmt.Errorf("could not build the request: %w", err))
 	}
-	if hasBody(call.Method) {
+	if hasBody(method) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if err := s.authenticate(req); err != nil {
@@ -646,7 +647,7 @@ func (s *Step) attempt(ctx context.Context, call model.ActionPlan, endpoint stri
 	if err != nil {
 		return nil, fmt.Errorf("could not read the response: %w", err)
 	}
-	log.Infof(ctx, "upstream: %s %s -> %s, %d bytes", call.Method, requested, resp.Status, len(body))
+	log.Infof(ctx, "upstream: %s %s -> %s, %d bytes", method, requested, resp.Status, len(body))
 	if int64(len(body)) > s.config.MaxResponseBytes {
 		// Asking again will not make the answer smaller.
 		return nil, doNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
@@ -666,7 +667,7 @@ func (s *Step) attempt(ctx context.Context, call model.ActionPlan, endpoint stri
 		// exactly where a query-string token turns up, and moving it from the
 		// error to the log would only move the leak.
 		log.Warnf(ctx, "upstream: provider returned %s for %s %s: %s",
-			resp.Status, call.Method, requested, s.redactString(explain(body)))
+			resp.Status, method, requested, s.redactString(explain(body)))
 		err := fmt.Errorf("provider returned %s", resp.Status)
 		// 5xx and 429 are the provider asking to be tried again. Every other
 		// 4xx is a statement about the request, which will not improve.
@@ -939,10 +940,39 @@ func requestBody(method string, mapped []byte) io.Reader {
 
 // hasBody reports whether a method carries a request body.
 func hasBody(method string) bool {
-	switch strings.ToUpper(method) {
+	switch canonicalMethod(method) {
 	case http.MethodGet, http.MethodHead, http.MethodDelete, "":
 		return false
 	default:
 		return true
 	}
+}
+
+// canonicalMethod returns a known HTTP method in the spelling the RFC gives
+// it, and anything else unchanged.
+//
+// hasBody used to upper-case privately, which made the method look
+// case-insensitive when it is not: NewRequestWithContext transmits it verbatim,
+// so a registry row reading `method: "post"` sent `post /path HTTP/1.1`. The
+// body was attached correctly -- hasBody had normalised -- but nginx and most
+// gateways answer 405 to a lowercase method, which classifies permanent and
+// surfaces as a 502 "provider did not answer". A row that is right in every
+// respect but its capitalisation is a bad way to spend an afternoon.
+//
+// Only known methods are rewritten. Upper-casing everything would be a new
+// restriction on an upstream entitled to a method this list has not heard of,
+// and net/http already refuses one that is not a valid token.
+//
+// An empty method is left empty: net/http documents "" as GET and substitutes
+// it, and hasBody agrees that it carries no body, so the two are already
+// consistent and inventing a value here would only hide where it comes from.
+func canonicalMethod(method string) string {
+	upper := strings.ToUpper(method)
+	switch upper {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodConnect,
+		http.MethodOptions, http.MethodTrace:
+		return upper
+	}
+	return method
 }
