@@ -93,6 +93,12 @@ response: |
               : [];
 
     $selected := beckn.message.contract.commitments[0];
+
+    /* The caller's own @context, echoed back rather than restated here. A
+       mapping that hardcodes it has to be reissued whenever the pack URL
+       moves, and it can disagree with what the request actually declared.
+       Backticks because @ is an operator in JSONata. */
+    $ctx := beckn.message.contract.commitments[0].resources[0].resourceAttributes.`@context`;
     $ra := $selected.resources[0].resourceAttributes;
 
     /* Bound once because it is used twice -- for a resource's own id and for
@@ -159,7 +165,7 @@ response: |
                      market's observation for one day, so one. */
                   "quantity": 1,
                   "resourceAttributes": {
-                    "@context": "https://schemas.openagrinet.global/schema/MandiPrice/v0.1/context.jsonld",
+                    "@context": $ctx,
                     "@type": "openagrinet:MandiPrice",
                     "informationMode": "Direct",
                     "subjectCategories": $ra.subjectCategories,
