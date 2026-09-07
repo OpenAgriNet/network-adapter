@@ -386,7 +386,7 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 	for _, tc := range []struct{ name, drop, expect string }{
 		{"no commodity code", "supportedCommodities", "commodity code"},
-		{"no market codes", "market", "state and district"},
+		{"no market codes", "market", "codes in market"},
 		{"no validity window", "validity", "validity window"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -664,6 +664,181 @@ func TestShippedMappingStatesWhatItKnowsRatherThanEchoing(t *testing.T) {
 		// marketName is the one member the pack requires.
 		if _, ok := market["marketName"]; !ok {
 			t.Error("market.marketName is missing, which the pack requires")
+		}
+	}
+}
+
+// The guards now check what they claim to. Both of these payloads are legal
+// against the pack and unanswerable by this upstream, which is the gap between
+// "valid" and "serviceable" the required block exists to close.
+func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+		expect string
+	}{
+		{
+			// The pack describes district and state as "name or governed
+			// code", so this validates -- and went to Agmarknet verbatim as
+			// codes, which answered nothing. The caller then received a
+			// signed, spec-valid "no prices" for a market that had prices.
+			name: "names where the upstream wants codes",
+			mutate: func(ra map[string]any) {
+				ra["market"] = map[string]any{
+					"marketName": "Kasdol APMC",
+					"district":   "Balodabazar",
+					"state":      "Chattisgarh",
+				}
+			},
+			expect: "codes in market",
+		},
+		{
+			// Everything downstream reads supportedCommodities[0], so this
+			// used to be queried for Paddy alone and answered confidently.
+			name: "more commodities than one request can serve",
+			mutate: func(ra map[string]any) {
+				ra["supportedCommodities"] = []any{
+					map[string]any{"code": "2", "name": "Paddy(Common)"},
+					map[string]any{"code": "3", "name": "Wheat"},
+				}
+			},
+			expect: "exactly one commodity",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+				t.Fatalf("the fixture is not JSON: %v", err)
+			}
+			ra := payload["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)[0].(map[string]any)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+			tc.mutate(ra)
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("could not rebuild the payload: %v", err)
+			}
+
+			mappings := serveMappings(t)
+			defer mappings.Close()
+
+			called := false
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				fmt.Fprint(w, providerResponse)
+			}))
+			defer upstream.Close()
+
+			mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
+			if err != nil {
+				t.Fatalf("failed to build the mapper: %v", err)
+			}
+			defer closeMapper()
+
+			registry := &stubRegistry{plan: &model.ProviderRecord{
+				BindingKey: shippedBindingKey, BaseURL: upstream.URL,
+				Actions: map[string]model.ActionPlan{
+					"select": {Method: http.MethodGet, Path: "/v1/fetch-agmarknet-vistaar",
+						Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
+				},
+			}}
+			step, closeStep, err := mandi.New(context.Background(), registry, mapper,
+				&mandi.Config{BindingKeys: []string{shippedBindingKey}})
+			if err != nil {
+				t.Fatalf("failed to build the step: %v", err)
+			}
+			defer closeStep()
+
+			stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+			if err := step.Run(stepCtx); err == nil {
+				t.Fatal("expected a payload this upstream cannot answer to be refused")
+			} else if !strings.Contains(err.Error(), tc.expect) {
+				t.Errorf("error %q should explain the refusal in terms of %q", err, tc.expect)
+			}
+			// The point of refusing early: the upstream is never troubled with
+			// a request that cannot produce an answer.
+			if called {
+				t.Error("the provider was called for a payload the mapping refuses")
+			}
+		})
+	}
+}
+
+// Agmarknet routinely reports several rows for the same market, commodity and
+// date differing only by Variety and Grade. The id was built from
+// scope:commodity:date, so those rows collided: two distinct resources under
+// one id, referenced twice by the offer, and a consumer resolving resourceIds
+// could not tell which price it had.
+func TestShippedMappingGivesCollidingRowsDistinctIDs(t *testing.T) {
+	t.Parallel()
+
+	// The same pair as this package's own fixture -- FAQ/Common and
+	// Non-FAQ/D.B. -- but sharing an arrival date, which is what the fixture
+	// was accidentally saved by not doing.
+	const sameDay = `[
+	  {
+	    "Grade": "Non-FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "D.B.", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "1900", "Max Price": "2100", "Modal Price": "2000",
+	    "Price Unit": "Rs./Qtl", "Arrival Date": "20-08-2025"
+	  },
+	  {
+	    "Grade": "FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "Common", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "1600", "Max Price": "1800", "Modal Price": "1700",
+	    "Price Unit": "Rs./Qtl", "Arrival Date": "20-08-2025"
+	  }
+	]`
+
+	_, answer := runShippedWith(t, selectRequest, sameDay)
+
+	resources := resourcesOf(t, answer)
+	if len(resources) != 2 {
+		t.Fatalf("got %d resources, want both rows", len(resources))
+	}
+	seen := map[string]int{}
+	for _, r := range resources {
+		seen[r["id"].(string)]++
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("id %q is shared by %d resources; the offer cannot reference one of them unambiguously", id, n)
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("got %d distinct ids for 2 rows: %v", len(seen), seen)
+	}
+}
+
+// supportedPriceFields was validated on the way in and ignored on the way out,
+// so a caller asking for one field got all three.
+func TestShippedMappingHonoursTheRequestedPriceFields(t *testing.T) {
+	t.Parallel()
+
+	modalOnly := strings.Replace(selectRequest,
+		`"supportedPriceFields": ["Minimum", "Maximum", "Modal"]`,
+		`"supportedPriceFields": ["Modal"]`, 1)
+	if modalOnly == selectRequest {
+		t.Fatal("the fixture no longer lists all three price fields; this test needs updating")
+	}
+
+	_, answer := runShippedWith(t, modalOnly, providerResponse)
+
+	for _, r := range resourcesOf(t, answer) {
+		prices := r["resourceAttributes"].(map[string]any)["prices"].(map[string]any)
+		if _, ok := prices["modal"]; !ok {
+			t.Error("prices.modal is missing, and it is the field that was asked for")
+		}
+		for _, unasked := range []string{"minimum", "maximum"} {
+			if v, present := prices[unasked]; present {
+				t.Errorf("prices.%s = %#v was returned though the request did not ask for it", unasked, v)
+			}
+		}
+		// The pack requires these whatever was asked for.
+		for _, required := range []string{"currency", "unit"} {
+			if _, ok := prices[required]; !ok {
+				t.Errorf("prices.%s is missing, which the pack requires", required)
+			}
 		}
 	}
 }

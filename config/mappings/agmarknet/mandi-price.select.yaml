@@ -28,15 +28,32 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* Exactly one. Everything downstream reads supportedCommodities[0]:
+           this guard, the outbound query, and the commodity stamped on each
+           resource. So a caller sending three commodities passed validation, was
+           queried for the first, and got a confident signed answer to a third of
+           what it asked -- the same failure oanbinding refuses at the commitment
+           level, where guessing would silently serve part of a request. */
         $exists($ra.supportedCommodities[0].code)
+          and $count($ra.supportedCommodities) = 1
       )
-    message: "this capability needs a commodity code in supportedCommodities[0].code"
+    message: "this capability needs exactly one commodity code in supportedCommodities; send several requests rather than have all but the first dropped"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        $exists($ra.market.state) and $exists($ra.market.district)
+        /* Shape, not just presence. The pack describes district and state as
+           "name or governed code", so the names form is pack-legal -- and the
+           existence-only check passed it, after which it went to Agmarknet
+           verbatim as codes. Agmarknet answered nothing, and the caller got a
+           signed, spec-valid "no prices" for a market that had prices.
+        
+           Agmarknet wants a numeric district and a short alphabetic state (96,
+           CG), so a district that is not all digits or a state longer than four
+           letters is a name and is refused with the reason. */
+        $match($ra.market.district, /^[0-9]+$/)
+          and $match($ra.market.state, /^[A-Za-z]{2,4}$/)
       )
-    message: "this capability needs governed state and district codes in market"
+    message: "this capability needs Agmarknet's codes in market: a numeric district and a short alphabetic state, not their names"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
@@ -117,9 +134,31 @@ response: |
     };
 
     $scope := $exists($ra.market.marketCode) ? $ra.market.marketCode : $ra.market.district;
+    /* SLUG for the parts that are names rather than codes, so an id has no
+       spaces and no case surprises. */
+    $slug := function($v) { $exists($v) ? $replace($lowercase($v), " ", "-") };
+    
+    /* Every field the upstream distinguishes rows by is in the id.
+    
+       It was scope:commodity:date only, and Agmarknet routinely reports
+       several rows for the same market, commodity and date differing by
+       Variety and Grade -- the fixture in this package is exactly that pair.
+       Two distinct resources then shared one id, and the offer referenced it
+       twice, so a consumer resolving resourceIds could not tell which price
+       it had. Market is in it too: district-wide $scope is the district, and
+       the rows come from several markets inside it.
+    
+       Built with $join over a list, because an absent Variety or Grade drops
+       out of an array literal rather than leaving an empty segment. */
     $resourceId := function($r) {
-      "res:agmarknet:" & $scope & ":" & $ra.supportedCommodities[0].code
-        & ":" & $iso($r.`Arrival Date`)
+      "res:agmarknet:" & $join([
+        $scope,
+        $ra.supportedCommodities[0].code,
+        $iso($r.`Arrival Date`),
+        $slug($r.Market),
+        $slug($r.Variety),
+        $slug($r.Grade)
+      ], ":")
     };
 
     /* dd-MM-yyyy back to ISO, so the answer speaks the pack's date format
@@ -138,6 +177,14 @@ response: |
        The number branch is not redundant. $match() throws T0410 on a
        non-string, so testing the regex first would break the day this
        upstream sends a real number instead of a quoted one. */
+    /* The price fields the caller asked for. Absent means all three: the
+       pack requires supportedPriceFields on an OnDemand request, so absence
+       is a payload this mapping does not have to serve well -- but it should
+       not silently return nothing either. */
+    $fields := $exists($ra.supportedPriceFields)
+             ? $ra.supportedPriceFields
+             : ["Minimum", "Maximum", "Modal"];
+    
     $priced := function($value) {
       $type($value) = "number"
         ? $value
@@ -178,9 +225,12 @@ response: |
          filter did nothing. Caught by the test, not by reading. */
       $count($match($iso($r.`Arrival Date`), /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)) > 0
         and $exists($r.`Price Unit`)
-        and ($exists($priced($r.`Min Price`))
-             or $exists($priced($r.`Max Price`))
-             or $exists($priced($r.`Modal Price`)))
+        /* Judged over the fields the caller asked for, not all three. A row
+           whose Modal is a marker cannot serve a request for Modal alone,
+           even though its Minimum is fine. */
+        and (("Minimum" in $fields and $exists($priced($r.`Min Price`)))
+             or ("Maximum" in $fields and $exists($priced($r.`Max Price`)))
+             or ("Modal" in $fields and $exists($priced($r.`Modal Price`))))
     };
     $usable := $filter($records, $conformant);
 
@@ -260,9 +310,13 @@ response: |
                     },
                     "arrivalDate": $iso($r.`Arrival Date`),
                     "prices": {
-                      "minimum":  $priced($r.`Min Price`),
-                      "maximum":  $priced($r.`Max Price`),
-                      "modal":    $priced($r.`Modal Price`),
+                      /* Only what was asked for. supportedPriceFields was validated on the
+                         way in and then ignored on the way out, so a caller asking for Modal
+                         alone got all three. A ternary with no else yields nothing and the key
+                         drops, which is the same mechanism an unreported price already uses. */
+                      "minimum":  "Minimum" in $fields ? $priced($r.`Min Price`),
+                      "maximum":  "Maximum" in $fields ? $priced($r.`Max Price`),
+                      "modal":    "Modal" in $fields ? $priced($r.`Modal Price`),
                       "currency": "INR",
                       "unit":     $r.`Price Unit`
                     },
