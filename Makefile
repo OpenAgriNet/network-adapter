@@ -383,6 +383,12 @@ image-build: require-image-repo
 # files are present rather than a fixed arch list, so adding an arch to the
 # build matrix needs no change here.
 #
+# `&&` between every step, not `;`: a recipe is one shell invocation with no
+# `set -e`, so with `;` the exit status would be `imagetools inspect`'s alone.
+# A failed `create` on a tag that already exists would then leave inspect
+# reporting the *previous* index and this job green — the published tag would
+# point at the wrong digests with nothing red to say so.
+#
 # The tag comes from version-vars.sh, the same place the binary's -ldflags
 # version comes from, so the image tag and `adapter --version` can't disagree.
 # `latest` moves only for a plain vX.Y.Z: git describe renders a pre-release as
@@ -392,13 +398,13 @@ image-publish: require-image-repo
 	@ls digest-*.txt >/dev/null 2>&1 || \
 		{ echo "::error::no digest-*.txt — run image-build on each arch first"; exit 1; }
 	. install/scripts/version-vars.sh && \
-	tags="-t $(IMAGE_REPO):$$ONIX_VERSION"; \
+	tags="-t $(IMAGE_REPO):$$ONIX_VERSION" && \
 	case "$$ONIX_VERSION" in \
 		*-*) echo "$$ONIX_VERSION is not a plain release — not moving :latest";; \
 		*)   tags="$$tags -t $(IMAGE_REPO):latest";; \
-	esac; \
+	esac && \
 	docker buildx imagetools create $$tags \
-		$$(for d in digest-*.txt; do echo "$(IMAGE_REPO)@$$(cat $$d)"; done); \
+		$$(for d in digest-*.txt; do echo "$(IMAGE_REPO)@$$(cat $$d)"; done) && \
 	docker buildx imagetools inspect $(IMAGE_REPO):$$ONIX_VERSION
 
 # Split out so both image targets fail the same way, naming the thing to set,
@@ -432,9 +438,14 @@ $(ACTIONLINT):
 # cgo, and its module graph is comparable in size to golangci-lint's for a
 # tool nothing here imports — the official install script is what
 # aquasecurity itself recommends over building from source for exactly this.
+#
+# The script is fetched at $(TRIVY_VERSION), not at main: this pipes a remote
+# script into sh in a job that holds the runner's GITHUB_TOKEN, so what runs
+# has to be the reviewed script for the pinned release rather than whatever is
+# on the default branch at the time. Every other tool here is pinned too.
 $(TRIVY):
 	@mkdir -p $(BIN_DIR)
-	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | \
+	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/$(TRIVY_VERSION)/contrib/install.sh | \
 		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
 
 .PHONY: help build test cover test-ci merge-coverage cover-diff lint fmt \
