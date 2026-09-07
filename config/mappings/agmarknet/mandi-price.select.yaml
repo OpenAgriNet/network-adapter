@@ -145,6 +145,45 @@ response: |
             ? $number($value))
     };
 
+    /* EMIT ONLY RECORDS THAT CAN PRODUCE A CONFORMANT RESOURCE.
+       Absent is honest; present-and-degenerate is a lie in the shape of an
+       answer, and it is worse here than elsewhere because the answer is
+       signed. Three ways a record cannot be made conformant:
+
+         no Arrival Date   $iso is substring-and-concatenate, and JSONata casts
+                           undefined to "" -- so an absent date became the
+                           string "--", which the pack refuses (format: date)
+                           and which degraded the resource id along with it.
+                           arrivalDate is on the Direct required list, so it
+                           cannot be omitted either.
+
+         no Price Unit     prices.required is [currency, unit]. JSONata drops
+                           an absent key rather than emitting null, so the unit
+                           silently vanished and took the whole resource's
+                           validity with it. Not defaulted: Rs./Qtl and Rs./Kg
+                           are both real, so inventing one would misreport a
+                           price by a factor of a hundred.
+
+         no usable price   prices carries anyOf [minimum, maximum, modal], so a
+                           row whose three prices are all unreported markers
+                           has nothing to report and cannot satisfy it.
+
+       Dropped rather than refused: the other rows in the same answer are good,
+       and failing the request would discard them too -- which is the mistake
+       the price guard above just fixed. */
+    $conformant := function($r) {
+      /* $count(...) > 0 rather than $exists($match(...)): this engine returns
+         an EMPTY ARRAY from $match when nothing matches, and $exists([]) is
+         true -- so the $exists form silently accepted every record and the
+         filter did nothing. Caught by the test, not by reading. */
+      $count($match($iso($r.`Arrival Date`), /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)) > 0
+        and $exists($r.`Price Unit`)
+        and ($exists($priced($r.`Min Price`))
+             or $exists($priced($r.`Max Price`))
+             or $exists($priced($r.`Modal Price`)))
+    };
+    $usable := $filter($records, $conformant);
+
     {
       "context": {
         "version":       beckn.context.version,
@@ -167,12 +206,12 @@ response: |
                  would point the offer at an id appearing nowhere here. */
               "offer": $merge([
                 $selected.offer,
-                { "resourceIds": [$map($records, function($r) { $resourceId($r) })] }
+                { "resourceIds": [$map($usable, function($r) { $resourceId($r) })] }
               ]),
               /* Wrapped: JSONata collapses a one-element sequence to a bare
                  value, so a single-record answer would return an object where
                  every other count returns a list. */
-              "resources": [$map($records, function($r) {
+              "resources": [$map($usable, function($r) {
                 {
                   "id": $resourceId($r),
                   /* Required by Commitment.resources in the Beckn v2 spec,
