@@ -155,6 +155,13 @@ func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderR
 // runShipped drives the real step over the real mapping and returns the query
 // the provider saw and the answer produced.
 func runShipped(t *testing.T, request string) (url.Values, map[string]any) {
+	return runShippedWith(t, request, providerResponse)
+}
+
+// runShippedWith is runShipped with the upstream's answer under the test's
+// control, for the cases where what Agmarknet returns is the thing being
+// exercised rather than the request that fetched it.
+func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map[string]any) {
 	t.Helper()
 
 	mappings := serveMappings(t)
@@ -163,7 +170,7 @@ func runShipped(t *testing.T, request string) (url.Values, map[string]any) {
 	var gotQuery url.Values
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.Query()
-		fmt.Fprint(w, providerResponse)
+		fmt.Fprint(w, providerBody)
 	}))
 	defer upstream.Close()
 
@@ -455,4 +462,88 @@ func firstCommitment(t *testing.T, answer map[string]any) map[string]any {
 	}
 	commitment, _ := commitments[0].(map[string]any)
 	return commitment
+}
+
+// resourcesOf returns the answer's resources as maps, so a test can look at
+// each record the provider's rows became.
+func resourcesOf(t *testing.T, answer map[string]any) []map[string]any {
+	t.Helper()
+
+	raw, _ := firstCommitment(t, answer)["resources"].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, r := range raw {
+		m, ok := r.(map[string]any)
+		if !ok {
+			t.Fatalf("resource is not an object: %#v", r)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// Agmarknet writes an unreported price as a marker rather than omitting the
+// field -- "NR", "-", "". $exists() is true for all of them, so an
+// existence-only guard handed them to $number() and it threw D3030, which
+// failed the WHOLE response: one unreported cell in one row turned a good
+// multi-row answer into an adapter error.
+func TestShippedMappingSurvivesUnreportedPrices(t *testing.T) {
+	t.Parallel()
+
+	// Row one has a marker in each of the three price fields; row two is
+	// ordinary. The point is that row two still arrives.
+	const withMarkers = `[
+	  {
+	    "Grade": "Non-FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "D.B.", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "NR", "Max Price": "-", "Modal Price": "",
+	    "Price Unit": "Rs./Qtl", "Arrival Date": "20-08-2025"
+	  },
+	  {
+	    "Grade": "FAQ", "Group": "Cereals", "State": "Chattisgarh",
+	    "Market": "Kasdol APMC", "Variety": "Common", "District": "Balodabazar",
+	    "Commodity": "Paddy(Common)",
+	    "Min Price": "1900", "Max Price": "2100", "Modal Price": "2000",
+	    "Price Unit": "Rs./Qtl", "Arrival Date": "21-08-2025"
+	  }
+	]`
+
+	_, answer := runShippedWith(t, selectRequest, withMarkers)
+
+	resources := resourcesOf(t, answer)
+	if len(resources) == 0 {
+		t.Fatal("the answer carries no resources; one unreported cell discarded the lot")
+	}
+
+	// The priced row keeps its numbers, as numbers.
+	var priced map[string]any
+	for _, r := range resources {
+		ra := r["resourceAttributes"].(map[string]any)
+		if ra["arrivalDate"] == "2025-08-21" {
+			priced = ra["prices"].(map[string]any)
+		}
+	}
+	if priced == nil {
+		t.Fatal("the row with real prices is missing from the answer")
+	}
+	for _, field := range []string{"minimum", "maximum", "modal"} {
+		if _, ok := priced[field].(float64); !ok {
+			t.Errorf("prices.%s = %#v, want a number", field, priced[field])
+		}
+	}
+
+	// And a marker is absent rather than zero, which is the distinction the
+	// guard exists to preserve.
+	for _, r := range resources {
+		ra := r["resourceAttributes"].(map[string]any)
+		if ra["arrivalDate"] != "2025-08-20" {
+			continue
+		}
+		p := ra["prices"].(map[string]any)
+		for _, field := range []string{"minimum", "maximum", "modal"} {
+			if v, present := p[field]; present {
+				t.Errorf("prices.%s = %#v for an unreported price; absent is honest, zero is a lie", field, v)
+			}
+		}
+	}
 }
