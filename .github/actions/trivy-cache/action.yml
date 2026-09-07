@@ -1,0 +1,26 @@
+name: Cache Trivy
+description: >
+  Restores the pinned trivy binary and its vulnerability DB from the Actions
+  cache. Both scan jobs need this, so it lives here rather than being pasted
+  into each one — the trivy-action this replaced cached both for us, and
+  `make trivy-deps`/`trivy-image` alone would re-download the binary (~30MB)
+  and the DB (~100MB+) on every run.
+
+runs:
+  using: composite
+  steps:
+    # Keyed on the Makefile's own hash so a TRIVY_VERSION bump there busts the
+    # cache automatically, plus a daily date so the DB itself never goes stale
+    # for longer than a day.
+    - id: date
+      shell: bash
+      run: echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          bin/trivy
+          ~/.cache/trivy
+        key: trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.date.outputs.today }}
+        restore-keys: |
+          trivy-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-
