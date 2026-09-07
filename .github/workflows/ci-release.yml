@@ -1,0 +1,121 @@
+# Named "CI" on purpose, same as ci.yml: the check names GitHub reports are
+# "<workflow name> / <job name>", so this keeps them reading
+# "CI / Build Artifact (amd64)" and "CI / Publish Artifact".
+#
+# A separate file rather than two more jobs in ci.yml behind an `if:`. A job
+# whose `if:` evaluates false still posts a *skipped* check to the PR, with
+# `${{ matrix.* }}` left unexpanded in its name because the matrix leg never
+# materialised. A workflow whose trigger does not match simply does not exist
+# on that event, so a PR shows nothing from here at all.
+#
+# The one cost: the Actions sidebar lists two entries called "CI". Rename this
+# workflow if that matters more than the check names do.
+name: CI
+
+on:
+  push:
+    # Both spellings on purpose. Every tag in this repo so far is v-prefixed
+    # (v1.8.2, v2.0.1-rc1), but a release cut as 1.0.0 or 1.0.0-RC1 should
+    # publish rather than silently do nothing. These are GitHub filter
+    # patterns, not regexes: + and [] work, so the digits are real digits and
+    # a branch-shaped tag like `release/foo` cannot match.
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "[0-9]+.[0-9]+.[0-9]+-*"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+# Least privilege at the workflow level; both jobs add packages: write for the
+# push to ghcr.io.
+permissions:
+  contents: read
+
+# Per tag, and deliberately never cancelled: a publish that is half-done is
+# worse than one that finishes and is then superseded.
+concurrency:
+  group: ci-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-artifact:
+    # One leg per architecture, on a runner of that architecture. Not one check
+    # with QEMU: the image compiles every plugin with `go build
+    # -buildmode=plugin`, and emulating an arm64 Go toolchain build turns a
+    # few minutes into tens of them. Both runner labels are free for public
+    # repos, so the only cost of the second leg is that it is a second check.
+    name: Build Artifact (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # A tag that can only ship one architecture should not ship at all, and
+      # stopping the other leg early keeps a doomed release from occupying a
+      # runner for another ten minutes.
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      # The push to ghcr.io. Read is not enough even for a push by digest.
+      packages: write
+    steps:
+      # fetch-depth: 0 — version-vars.sh derives ONIX_VERSION from
+      # `git describe --tags`, which needs the tag objects, not just the commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The default builder uses the `docker` driver, which supports neither
+      # push-by-digest nor --metadata-file. This switches to docker-container.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushes untagged, by digest, and writes digest-<arch>.txt. Nothing is
+      # visible under a version tag until Publish Artifact below has both.
+      - run: make image-build ARCH=${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  publish-artifact:
+    name: Publish Artifact
+    # No always() and no if-failure handling: needs alone means a failed or
+    # cancelled build leg skips this job, which is the point — a version tag
+    # must never resolve to one architecture.
+    needs: build-artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Checkout is for the Makefile and for the tag objects version-vars.sh
+      # reads; this job builds nothing.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+
+      # Binds the tag — and :latest, for a plain vX.Y.Z — to the digests the
+      # build legs pushed, then inspects the result so the log shows which
+      # platforms the published tag actually resolves to.
+      - run: make image-publish
