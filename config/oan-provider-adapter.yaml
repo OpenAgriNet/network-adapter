@@ -130,6 +130,10 @@ modules:
         # a wrong unit or a missing required attribute a rejected payload
         # rather than a provider's problem to discover later.
         #
+        # The schemas are not in this repository and are not mounted: they
+        # are fetched from the @context a payload declares, so the revision
+        # is the payload's choice and nothing here can go stale against it.
+        #
         # What extended validation DOES enforce: types, string formats
         # (date-time, duration, uri), enum, const, required, minItems,
         # additionalProperties, not, and allOf/anyOf/oneOf.
@@ -149,43 +153,26 @@ modules:
 
             extendedSchema_enabled: "true"
 
-            # Where the capability schemas are read from. Set, so resolution
-            # is a memory lookup and no payload costs a network call.
+            # Resolution is a FETCH of the @context each resource declares,
+            # not a directory mounted here. The validator swaps context.jsonld
+            # for attributes.yaml to get the schema beside it:
             #
-            # Every *.yaml under this directory is loaded at STARTUP and keyed
-            # by <TypeName>/attributes.yaml, with the version segment dropped.
-            # An object's @type is then looked up directly -- the part after
-            # the colon, so openagrinet:MandiPrice finds MandiPrice. $refs
-            # between schemas resolve out of the same memory.
+            #   @context .../schema/MandiPrice/v0.1/context.jsonld
+            #   fetched  .../schema/MandiPrice/v0.1/attributes.yaml
             #
-            # The layout to place there, $ref targets included:
+            # So a payload names the pack revision it wants to be judged
+            # against, and no copy of the schemas here can drift from the
+            # published ones. The packs' relative $refs (into
+            # AgricultureResource) resolve against that same base; their
+            # absolute ones (schema.beckn.io) resolve directly.
             #
-            #   WeatherObservation/v0.1/attributes.yaml
-            #   MandiPrice/v0.1/attributes.yaml
-            #   AgricultureResource/v0.1/attributes.yaml   # the packs' base
-            #   Address/v2.0/attributes.yaml               # schema.beckn.io
-            #   Descriptor/v2.1/attributes.yaml            # schema.beckn.io
-            #   GeoJSONGeometry/v2.0/attributes.yaml       # schema.beckn.io
-            #   Location/v2.0/attributes.yaml              # schema.beckn.io
-            #
-            # The schemas are NOT in this repository: they are published, and
-            # a second copy here would drift from them. The deployment places
-            # them at this path, which is also why no source URL appears in
-            # this file -- which revision to ship is a deployment decision,
-            # not one frozen into adapter config.
-            #
-            # A missing directory FAILS STARTUP rather than degrading, which
-            # is what you want: the alternative is an adapter that accepts
-            # unvalidated payloads because a mount was forgotten. An empty one
-            # only warns, and then every payload falls through to the network.
-            extendedSchema_localSchemaPath: "/app/config/schemas"
+            # Fetched once per @context and cached for the TTL below, so only
+            # the first payload after a restart pays for it. A fetch that
+            # FAILS rejects the payload -- it does not skip validation, which
+            # is the right way round, but it does mean this adapter needs
+            # egress to the host allowed below.
+            extendedSchema_allowedDomains: "raw.githubusercontent.com"
 
-            # The network fallback, reached only on a local miss. Restricted
-            # to the host the packs' own @context names, so a miss fails
-            # loudly instead of quietly fetching a schema from somewhere else.
-            extendedSchema_allowedDomains: "schemas.openagrinet.global"
-
-            # The three keys below apply to that fallback only.
             extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
