@@ -43,7 +43,7 @@ const shippedBindingKey = "mausamgram|openagrinet:WeatherObservation"
 
 const shippedMapping = "weather-observation.select.yaml"
 
-// selectRequest is the verbatim /select captured from the OAN network.
+// selectRequest is the verbatim /select captured from the network.
 const selectRequest = `{
   "context": { "version": "2.0.0", "action": "select",
     "networkId": "da.gov.in/vistaar",

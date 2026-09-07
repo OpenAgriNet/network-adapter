@@ -1,6 +1,6 @@
-# OAN Registry Plugin
+# SunbirdRC Registry Plugin
 
-A **registry type plugin** for Beckn-ONIX that reads the OAN Registry, a
+A **registry type plugin** for Beckn-ONIX that reads a SunbirdRC registry, a
 [SunbirdRC](https://docs.sunbirdrc.dev/) deployment.
 
 ## Overview
@@ -31,7 +31,7 @@ request spends waiting before it can even be rejected.
 
 ```yaml
 registry:
-  id: oanregistry
+  id: sunbirdRegistry
   config:
     url: http://registry:8081/api/v1
     entity: Participant

@@ -30,7 +30,7 @@ plugins=(
     "publisher"
     "registry"
     "dediregistry"
-    "oanregistry"
+    "sunbirdRegistry"
     "jsonmapper"
     "WeatherObservation"
     "MandiPrice"

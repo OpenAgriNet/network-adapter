@@ -1,10 +1,10 @@
-// Package oanbinding derives the capability binding a Beckn request is asking
+// Package capabilitybinding derives the capability binding a Beckn request is asking
 // for, so a provider step can tell whether the request is its work and, if it
 // is, which registry row describes the call.
 //
 // It is shared by every provider step rather than living in one, because the
-// binding is a property of the OAN network's payloads and not of any provider.
-package oanbinding
+// binding is a property of the network's payloads and not of any provider.
+package capabilitybinding
 
 import (
 	"encoding/json"
@@ -19,7 +19,7 @@ const separator = "|"
 // ErrNoBinding reports a payload that names no capability binding. It is not a
 // fault: a request for something else entirely reaches a provider step too, and
 // the step's answer is to do nothing.
-var ErrNoBinding = errors.New("oanbinding: payload names no capability binding")
+var ErrNoBinding = errors.New("capabilitybinding: payload names no capability binding")
 
 // Binding identifies one provider capability.
 type Binding struct {
@@ -47,7 +47,7 @@ func (b Binding) Key() string {
 func From(paths Paths, body []byte) (Binding, error) {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Binding{}, fmt.Errorf("oanbinding: payload could not be read: %w", err)
+		return Binding{}, fmt.Errorf("capabilitybinding: payload could not be read: %w", err)
 	}
 
 	// Before distinctness: N commitments naming the SAME provider and type
@@ -64,7 +64,7 @@ func From(paths Paths, body []byte) (Binding, error) {
 	// the paragraph above says is refused.
 	if commitments := countAt(payload, paths.ProviderID); commitments > 1 {
 		return Binding{}, fmt.Errorf(
-			"oanbinding: payload carries %d commitments; one request maps to one call, "+
+			"capabilitybinding: payload carries %d commitments; one request maps to one call, "+
 				"so send them separately rather than have all but the first dropped",
 			commitments)
 	}
@@ -76,11 +76,11 @@ func From(paths Paths, body []byte) (Binding, error) {
 		return Binding{}, ErrNoBinding
 	}
 	if len(providers) > 1 {
-		return Binding{}, fmt.Errorf("oanbinding: payload names %d providers (%s); one request maps to one call",
+		return Binding{}, fmt.Errorf("capabilitybinding: payload names %d providers (%s); one request maps to one call",
 			len(providers), strings.Join(providers, ", "))
 	}
 	if len(types) > 1 {
-		return Binding{}, fmt.Errorf("oanbinding: payload names %d resource types (%s); one request maps to one call",
+		return Binding{}, fmt.Errorf("capabilitybinding: payload names %d resource types (%s); one request maps to one call",
 			len(types), strings.Join(types, ", "))
 	}
 

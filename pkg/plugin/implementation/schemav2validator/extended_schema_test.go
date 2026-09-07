@@ -1379,7 +1379,7 @@ func TestLoadSchemaFromPath_TTLExpiry_FetchesFresh(t *testing.T) {
 	assert.Equal(t, "Schema v2", doc2.Info.Title, "expected v2 after TTL expiry — global URIMapCache not bypassed")
 }
 
-// packStyleSchema mirrors how the OAN schema packs are shaped: the capability
+// packStyleSchema mirrors how the capability schema packs are shaped: the capability
 // declares @type one level down in allOf and lists it as required, and nothing
 // closes the object with additionalProperties:false.
 const packStyleSchema = `openapi: 3.1.0
