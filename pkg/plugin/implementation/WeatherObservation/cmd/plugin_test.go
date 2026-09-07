@@ -9,7 +9,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/weather"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
 )
 
 type stubRegistry struct{}
@@ -32,15 +32,15 @@ func TestParseConfig(t *testing.T) {
 	testCases := []struct {
 		name        string
 		config      map[string]string
-		expected    *weather.Config
+		expected    *WeatherObservation.Config
 		expectedErr string
 	}{
 		{
-			// Everything absent is left zero: weather.New defaults it, so the
+			// Everything absent is left zero: WeatherObservation.New defaults it, so the
 			// rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &weather.Config{},
+			expected: &WeatherObservation.Config{},
 		},
 		{
 			name: "reads every supported setting",
@@ -53,7 +53,7 @@ func TestParseConfig(t *testing.T) {
 				"headerValueEnv":   "V",
 				"maxResponseBytes": "2048",
 			},
-			expected: &weather.Config{
+			expected: &WeatherObservation.Config{
 				BindingKeys:      []string{"other|capability"},
 				AuthScheme:       "basic",
 				UsernameEnv:      "U",
@@ -222,7 +222,7 @@ func TestNew(t *testing.T) {
 		t.Cleanup(func() { newStepFunc = original })
 
 		wantErr := errors.New("boom")
-		newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper, *weather.Config) (definition.Step, func() error, error) {
+		newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper, *WeatherObservation.Config) (definition.Step, func() error, error) {
 			return nil, nil, wantErr
 		}
 

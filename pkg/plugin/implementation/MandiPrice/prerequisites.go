@@ -1,4 +1,4 @@
-package mandi
+package MandiPrice
 
 import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 

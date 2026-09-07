@@ -191,7 +191,7 @@ modules:
         # rather than calling the provider unauthenticated.
         # ------------------------------------------------------------------
         providerSteps:
-          - id: weather
+          - id: WeatherObservation
             config:
               # REQUIRED. Comma-separated, because a plugin config value is a
               # string and one provider may serve several capabilities. A
@@ -241,9 +241,9 @@ modules:
           # A second capability in the same pipeline, from a different domain
           # package. Nothing about it is weather's business: a different
           # upstream, a different mapping, a different set of prerequisites --
-          # and the same two registry rows. This entry, plus "mandi" in steps
-          # below, is the entire cost of adding it.
-          - id: mandi
+          # and the same two registry rows. This entry, plus "MandiPrice"
+          # in steps below, is the entire cost of adding it.
+          - id: MandiPrice
             config:
               bindingKeys: "agmarknet|openagrinet:MandiPrice"
 
@@ -263,8 +263,8 @@ modules:
       steps:
         - validateSign     # the sender's key, from the registry
         - validateSchema   # the pinned Beckn v2 spec
-        - weather          # openagrinet:WeatherObservation, or pass through
-        - mandi            # openagrinet:MandiPrice, or pass through
+        - WeatherObservation  # its binding key, or pass through
+        - MandiPrice          # its binding key, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------

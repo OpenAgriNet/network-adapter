@@ -13,20 +13,20 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/mandi"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice"
 )
 
 // mandiProvider implements definition.ProviderStepProvider.
 type mandiProvider struct{}
 
 // newStepFunc creates a new step. Indirected for tests.
-var newStepFunc = mandi.New
+var newStepFunc = MandiPrice.New
 
 // parseConfig turns the plugin config map into a typed Config. Anything absent
-// is left zero: mandi.New applies the defaults and validates the auth scheme,
+// is left zero: MandiPrice.New applies the defaults and validates the auth scheme,
 // so those rules live in one place.
-func (p mandiProvider) parseConfig(config map[string]string) (*mandi.Config, error) {
-	cfg := &mandi.Config{
+func (p mandiProvider) parseConfig(config map[string]string) (*MandiPrice.Config, error) {
+	cfg := &MandiPrice.Config{
 		BindingKeys: splitList(config["bindingKeys"]),
 		// Absent means the Beckn v2 convention. See upstream.Config for why
 		// this is a default rather than something to set.
