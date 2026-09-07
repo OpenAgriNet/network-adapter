@@ -46,6 +46,22 @@ const (
 	// DefaultMaxResponseBytes caps what is read from the provider. The response
 	// is mapped in memory, so an unbounded one is an unbounded allocation.
 	DefaultMaxResponseBytes = 4 << 20 // 4 MiB
+
+	// MaxTimeout and MaxRetryMax bound what a registry row may ask for.
+	//
+	// Both come from DATA, not from this deployment's config, and neither is
+	// cheap: an attempt holds a goroutine and the inbound connection for its
+	// whole timeout, and http.Server's write timeout does not cancel the
+	// request context. So a row reading retryMax 1000, timeoutMs 60000 pins
+	// both for roughly seventeen hours, and a handful of such requests is the
+	// adapter. The registry is trusted to say where a provider is; it is not a
+	// reason to let one row decide how long this process is busy.
+	//
+	// Clamped rather than refused. A row that overreaches is a configuration
+	// mistake, and failing every request for that capability is a worse answer
+	// than serving it with a sane budget and saying so in the log.
+	MaxTimeout  = 30 * time.Second
+	MaxRetryMax = 5
 )
 
 // Auth schemes this step can present upstream. Credentials themselves are never
@@ -464,21 +480,46 @@ func decodeBody(body []byte) (any, error) {
 
 // call makes the upstream request described by the plan, retrying within its
 // budget.
+// budget resolves how long one attempt may take and how many retries follow
+// it, applying the registry's values within this deployment's ceilings.
+//
+// Pure and separate from call so both bounds can be asserted without a server
+// that sleeps for the timeout it is testing.
+//
+// retryMax counts retries, not attempts, so the call itself is always made
+// once. An absent retryMax and an explicit 0 are the same instruction.
+func budget(call model.ActionPlan) (time.Duration, int) {
+	timeout := DefaultTimeout
+	if call.TimeoutMs > 0 {
+		timeout = time.Duration(call.TimeoutMs) * time.Millisecond
+	}
+	if timeout > MaxTimeout {
+		timeout = MaxTimeout
+	}
+
+	retries := DefaultRetryMax
+	if call.RetryMax > 0 {
+		retries = call.RetryMax
+	}
+	if retries > MaxRetryMax {
+		retries = MaxRetryMax
+	}
+	return timeout, retries
+}
+
 func (s *Step) call(ctx context.Context, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
 	endpoint, err := buildEndpoint(baseURL, call, mapped)
 	if err != nil {
 		return nil, err
 	}
 
-	timeout := DefaultTimeout
-	if call.TimeoutMs > 0 {
-		timeout = time.Duration(call.TimeoutMs) * time.Millisecond
+	timeout, retries := budget(call)
+	if d := time.Duration(call.TimeoutMs) * time.Millisecond; d > timeout {
+		log.Warnf(ctx, "upstream: registry asks for a %v timeout; using the %v ceiling", d, timeout)
 	}
-	// retryMax counts retries, not attempts, so the call itself is always made
-	// once. An absent retryMax and an explicit 0 are the same instruction.
-	retries := DefaultRetryMax
-	if call.RetryMax > 0 {
-		retries = call.RetryMax
+	if call.RetryMax > retries {
+		log.Warnf(ctx, "upstream: registry asks for %d retries; using the %d ceiling",
+			call.RetryMax, retries)
 	}
 	attempts := retries + 1
 
@@ -541,7 +582,20 @@ func isPermanent(err error) bool {
 // no wait at all a retryMax of 5 spends its whole budget inside a couple of
 // milliseconds, which is not a retry so much as the same failure six times.
 func backoff(attempt int) time.Duration {
-	wait := RetryBackoffBase << (attempt - 1)
+	if attempt <= 1 {
+		return RetryBackoffBase
+	}
+	// Doubled in a loop that stops at the ceiling rather than shifted and then
+	// clamped. `RetryBackoffBase << (attempt - 1)` overflows int64 once the
+	// shift reaches 38 at a 50ms base, and the wrapped value is NEGATIVE -- so
+	// it passes the `> RetryBackoffMax` check, is returned, and a sleep on a
+	// negative duration returns immediately. The retry loop then spins as fast
+	// as the provider can refuse. Stopping at the ceiling cannot overflow,
+	// because it never doubles a value already at or past it.
+	wait := RetryBackoffBase
+	for i := 1; i < attempt && wait < RetryBackoffMax; i++ {
+		wait *= 2
+	}
 	if wait > RetryBackoffMax {
 		return RetryBackoffMax
 	}
