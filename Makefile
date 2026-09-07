@@ -1,10 +1,10 @@
 # OAN Network Adapter — build, test, lint and security-scan targets.
 #
-# Single source of truth for the ci.yml workflow: every CI step is a one-line
-# `make <target>` call, so a red check reproduces locally by running the
-# command the log shows. Anything left inline in the workflow is GitHub context
-# (`${{ }}` expressions, $GITHUB_STEP_SUMMARY writes) that has no meaning
-# outside a runner.
+# Single source of truth for the ci.yml and ci-release.yml workflows: every CI
+# step is a one-line `make <target>` call, so a red check reproduces locally by
+# running the command the log shows. Anything left inline in a workflow is
+# GitHub context (`${{ }}` expressions, $GITHUB_STEP_SUMMARY writes) that has
+# no meaning outside a runner.
 #
 # No DB, no sqlc/migrate, no separate tools/ module — golangci-lint, gotestsum
 # and trivy install straight into bin/ via `go install` / curl.
