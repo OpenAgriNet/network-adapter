@@ -1,36 +1,122 @@
-name: Go CI
+name: CI
+
+# Every step below is either a one-line `make` call or GitHub plumbing
+# (`${{ }}` expressions, $GITHUB_STEP_SUMMARY). The build/test/coverage logic
+# lives in the Makefile, so a red check here reproduces locally by running the
+# exact command the log shows.
 on:
-  pull_request:
-    branches:
-      - beck-onix-v1.0-develop
-      - beck-onix-v1.0
   push:
-    branches:
-      - beck-onix-v1.0-develop
-      - beck-onix-v1.0
+    # development as well as main: this is the branch PRs target and merge
+    # into, so a merge landing there has to run the same gates the PR did.
+    branches: [main, development]
+  pull_request:
+
+# Least privilege at the workflow level; the one job that needs more declares
+# it for itself.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - name: Set up Go
-        uses: actions/setup-go@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.20'
-      - name: Install dependencies
-        run: go mod tidy
-      - name: Run tests
-        run: go test -coverprofile=coverage.out ./...
-      - name: Check coverage
-        run: |
-          coverage=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-          if (( $(echo "$coverage < 90" | bc -l) )); then
-            echo "Coverage is below 90%"
-            exit 1
-          fi
-      - name: Run golangci-lint
-        run: golangci-lint run
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+          go-version-file: go.mod
+
+      # Advisory, not a gate. There is no .golangci.yml in this repo yet, so
+      # `run ./...` uses the tool's defaults against a codebase that has never
+      # been linted — enough pre-existing findings to block every PR on day
+      # one. This surfaces them; turn continue-on-error off once the baseline
+      # is clean and the config is pinned.
+      - run: make lint
+        continue-on-error: true
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    # pull-requests: write is for the coverage comment below — only this job
+    # writes to the PR, so the lint job above stays read-only.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # fetch-depth: 0 — cover-diff needs the base branch's history locally to
+      # compute the changed-file set; a PR checkout otherwise holds only the
+      # head commit.
+      - uses: actions/checkout@v4
         with:
-          files: ./coverage.out
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: make build
+      - run: make test-ci
+
+      # Diff-scoped, never whole-repo: the repo's existing coverage is well
+      # under the threshold, so a whole-repo gate would fail every PR
+      # regardless of what it changed. What a review can act on is the number
+      # for the lines the PR itself touched. On pull_request the base is the
+      # PR's target branch; on a push it's github.event.before, the commit the
+      # branch pointed at before this one landed.
+      #
+      # BASE_REF goes through env, not string-interpolated into the run script:
+      # `?=` in the Makefile means the environment wins, and nothing untrusted
+      # ends up inside a shell command.
+      #
+      # continue-on-error so a coverage miss still posts its report; the last
+      # step in the job turns that outcome back into a failure.
+      - name: Check coverage of changed files
+        id: coverage
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.event.pull_request.base.ref) || github.event.before }}
+        run: make cover-diff
+
+      # cover-diff writes coverage-report.md on every exit path, including its
+      # own error paths, so this needs no existence guard.
+      - name: Publish coverage to the job summary
+        run: cat coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Always posted — pass, fail or not-applicable. A comment that only shows
+      # up on failure is ambiguous from the PR itself: did coverage run at all,
+      # pass, or never trigger? Updated in place across runs via find-comment,
+      # which matches the marker cover-diff writes into the report.
+      #
+      # continue-on-error on both: a fork PR's default GITHUB_TOKEN is
+      # read-only, so create-or-update-comment 403s there even with
+      # pull-requests: write declared. Coverage is already gated below; a
+      # comment that can't post must never fail the job over that.
+      - name: Find existing coverage comment
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/find-comment@v4
+        id: find-coverage-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- coverage-report -->"
+
+      - name: Comment coverage on the PR
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          comment-id: ${{ steps.find-coverage-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: coverage-report.md
+          edit-mode: replace
+
+      # Turns the continue-on-error above back into a job failure. cover-diff
+      # already logged the ::error:: annotation and the per-file breakdown, so
+      # there is nothing to say here beyond the exit code.
+      - name: Gate on minimum coverage
+        if: steps.coverage.outcome == 'failure'
+        run: exit 1
