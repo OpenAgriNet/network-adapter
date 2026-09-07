@@ -60,6 +60,9 @@ const (
 	RetryBackoffBase = 50 * time.Millisecond
 	RetryBackoffMax  = 800 * time.Millisecond
 
+	// redactedMarker stands in for a credential in anything logged or returned.
+	redactedMarker = "REDACTED"
+
 	AuthSchemeNone   = "none"
 	AuthSchemeBasic  = "basic"
 	AuthSchemeHeader = "header"
@@ -703,7 +706,25 @@ func (s *Step) redactString(text string) string {
 	if value == "" {
 		return text
 	}
-	return strings.ReplaceAll(text, value, "REDACTED")
+	text = strings.ReplaceAll(text, value, redactedMarker)
+
+	// Also the percent-encoded form, because that is the one that actually
+	// reaches a URL. authenticate puts the credential in through
+	// url.Values.Encode, which escapes anything outside the unreserved set --
+	// so a base64 token, which routinely carries "+", "/" and "=", appears in
+	// the error as "a%2Bb%2Fc%3D" and a replacement of the raw value alone
+	// walks straight past it. Escaping what we hold is exact: it is the same
+	// function Encode used, so the two agree by construction rather than by a
+	// guess about which characters matter.
+	//
+	// Both forms rather than only the encoded one: a value needing no escaping
+	// is unchanged by QueryEscape, and an error that quotes the credential
+	// without having put it through a URL -- one built from the config rather
+	// than from the request -- still carries the raw form.
+	if encoded := url.QueryEscape(value); encoded != value {
+		text = strings.ReplaceAll(text, encoded, redactedMarker)
+	}
+	return text
 }
 
 // buildEndpoint joins the plan's base URL and path, carrying the mapped request
