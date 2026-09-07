@@ -70,10 +70,24 @@ modules:
           id: oanregistry
           config:
             # REQUIRED, and the only key with no default. Include the API
-            # version prefix; the plugin appends /{entity}/search. Use the
-            # service name rather than localhost -- inside a container
-            # localhost is the adapter itself.
-            url: http://registry:8081/api/v1
+            # version prefix; the plugin appends /{entity}/search.
+            #
+            # A placeholder rather than a working value, because the
+            # working value is per-deployment. The one that used to be
+            # here resolved only inside a Docker network that happened to
+            # name the service "registry" -- not in Kubernetes, not in a
+            # local run, not against a hosted registry -- so a reader who
+            # copied it into any of those got a DNS failure on every
+            # inbound message, inside signature validation.
+            #
+            # Whatever goes here, use a hostname the ADAPTER can resolve,
+            # not localhost: inside a container localhost is the adapter
+            # itself.
+            #
+            #   compose      http://registry:8081/api/v1
+            #   kubernetes   http://registry.oan.svc.cluster.local:8081/api/v1
+            #   hosted       https://registry.example.org/api/v1
+            url: <>
 
             # The two entity names, both defaulted. Only worth setting if a
             # deployment renamed the schemas.
