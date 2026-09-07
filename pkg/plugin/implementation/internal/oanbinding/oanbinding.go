@@ -56,15 +56,20 @@ func From(paths Paths, body []byte) (Binding, error) {
 	// dropped, leaving the caller a confident, signed, spec-valid answer to
 	// part of what it asked. One request maps to one call, so several is a
 	// request this design cannot express and is refused rather than halved.
-	providerValues := valuesAt(payload, paths.ProviderID)
-	if len(providerValues) > 1 {
+	// Counted at the array, not over the values it yields. valuesAt returns
+	// resolved strings and walk drops a leaf that is absent or is not a
+	// string, so two commitments where one carries no provider id produced one
+	// value -- which read as one commitment, passed this guard, and left the
+	// mapping to answer commitments[0] and drop the other. Exactly the outcome
+	// the paragraph above says is refused.
+	if commitments := countAt(payload, paths.ProviderID); commitments > 1 {
 		return Binding{}, fmt.Errorf(
 			"oanbinding: payload carries %d commitments; one request maps to one call, "+
 				"so send them separately rather than have all but the first dropped",
-			len(providerValues))
+			commitments)
 	}
 
-	providers := distinct(providerValues)
+	providers := distinct(valuesAt(payload, paths.ProviderID))
 	types := distinct(valuesAt(payload, paths.CapabilityCode))
 
 	if len(providers) == 0 || len(types) == 0 {
