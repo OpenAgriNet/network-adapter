@@ -123,6 +123,15 @@ request: |
 response: |
   (
     $selected := beckn.message.contract.commitments[0];
+
+    /* The caller's own @context, echoed back rather than restated here.
+       Hardcoding the pack URL meant this file had to know which one is current,
+       and could contradict what the request actually declared. The payload
+       always carries @context and @type on each resource, so there is nothing
+       to invent.
+
+       Backticks because @ is an operator in JSONata. */
+    $ctx := $selected.resources[0].resourceAttributes.`@context`;
     $resourceId := function($item) { "res:pocra:facility:" & $item.id };
 
     /* The inverse of the request half's $codes. Read from the item's OWN
@@ -265,7 +274,7 @@ response: |
 
     $attributes := function($item, $facilityType) {
       {
-        "@context": "https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/context.jsonld",
+        "@context": $ctx,
         "@type": "openagrinet:AgricultureFacility",
         "informationMode": "Direct",
         "facilityType": $facilityType,

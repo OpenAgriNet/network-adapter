@@ -1156,3 +1156,46 @@ func TestShippedMappingReturnsOnlyTheRequestedFacilityType(t *testing.T) {
 		})
 	}
 }
+
+// The answer echoes whatever @context the request declared, rather than
+// restating a pack URL of its own.
+//
+// Hardcoding it meant the mapping had to know which identifier is current, and
+// could contradict what the caller actually sent. Both forms below are real:
+// the schemas.openagrinet.global identifier the packs name, and the GitHub pack
+// URL a deployment tracking a branch would send.
+//
+// The pack does not constrain @context -- it appears only under x-jsonld, which
+// is annotation metadata a JSON Schema validator ignores -- so conformance
+// cannot catch a wrong one. This test is the only thing that does.
+func TestShippedMappingEchoesTheCallersContext(t *testing.T) {
+	for _, declared := range []string{
+		"https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/context.jsonld",
+		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1/context.jsonld",
+	} {
+		t.Run(declared, func(t *testing.T) {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+				t.Fatalf("the fixture is not JSON: %v", err)
+			}
+			attributes(t, payload)["@context"] = declared
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("could not rebuild the payload: %v", err)
+			}
+
+			_, answer, runErr := runSelect(t, string(body))
+			if runErr != nil {
+				t.Fatalf("Run() returned an unexpected error: %v", runErr)
+			}
+			for _, entry := range answerResources(t, answer) {
+				id, _ := dig(entry, "id").(string)
+				got := dig(entry, "resourceAttributes", "@context")
+				if got != declared {
+					t.Errorf("%s: @context = %v, want the one the request declared (%s)",
+						id, got, declared)
+				}
+			}
+		})
+	}
+}
