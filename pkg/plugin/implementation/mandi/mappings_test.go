@@ -626,3 +626,44 @@ func TestShippedMappingDropsRecordsItCannotMakeConformant(t *testing.T) {
 		}
 	}
 }
+
+// The answer must assert what it knows, not repeat what it was told. Both of
+// these were echoes of the request, and an echo is a claim this adapter signs.
+func TestShippedMappingStatesWhatItKnowsRatherThanEchoing(t *testing.T) {
+	t.Parallel()
+
+	// A caller asking a MandiPrice question with the WRONG category. It is
+	// enum-legal, so nothing downstream would reject it -- which is exactly
+	// why echoing it was dangerous.
+	wrongCategory := strings.Replace(selectRequest,
+		`"subjectCategories": ["Market"]`, `"subjectCategories": ["Weather"]`, 1)
+	if wrongCategory == selectRequest {
+		t.Fatal("the fixture no longer states subjectCategories; this test needs updating")
+	}
+
+	_, answer := runShippedWith(t, wrongCategory, providerResponse)
+
+	for _, r := range resourcesOf(t, answer) {
+		ra := r["resourceAttributes"].(map[string]any)
+
+		// Stated from the pack, not taken from the caller.
+		cats, _ := ra["subjectCategories"].([]any)
+		if len(cats) != 1 || cats[0] != "Market" {
+			t.Errorf(`subjectCategories = %#v, want ["Market"] regardless of what the request said`, ra["subjectCategories"])
+		}
+
+		market, _ := ra["market"].(map[string]any)
+		// The upstream reports no market code, so the answer must not claim one.
+		if code, present := market["marketCode"]; present {
+			t.Errorf("market.marketCode = %#v; this upstream reports no code, so asserting one is unfounded", code)
+		}
+		// And what is there comes from the record.
+		if market["marketName"] != "Kasdol APMC" || market["state"] != "Chattisgarh" {
+			t.Errorf("market = %#v, want the values the provider reported", market)
+		}
+		// marketName is the one member the pack requires.
+		if _, ok := market["marketName"]; !ok {
+			t.Error("market.marketName is missing, which the pack requires")
+		}
+	}
+}

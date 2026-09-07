@@ -223,7 +223,14 @@ response: |
                     "@context": $ctx,
                     "@type": "openagrinet:MandiPrice",
                     "informationMode": "Direct",
-                    "subjectCategories": $ra.subjectCategories,
+                    /* Stated, not echoed. subjectCategories is a closed enum on
+                       AgricultureResource, and "Market" is what a MandiPrice resource
+                       IS -- the pack states it in both of its own examples. Echoing the
+                       request meant a caller sending ["Weather"] on a MandiPrice select
+                       got it faithfully republished over this adapter's signature, and
+                       nothing caught it: the value is enum-legal, so it validates. The
+                       sibling weather mapping has always stated ["Weather"]. */
+                    "subjectCategories": ["Market"],
                     "source": {
                       "sourceId": "agmarknet",
                       "sourceName": "Agmarknet Vistaar"
@@ -235,9 +242,19 @@ response: |
                     "commodityGroup": $r.Group,
                     "variety":        $r.Variety,
                     "grade":          $r.Grade,
+                    /* Every member comes from the RECORD, so the answer describes what
+                       the provider reported rather than what was asked for.
+                    
+                       marketCode is absent, and that is not an omission. This upstream
+                       TAKES a market code as a query parameter and reports none back --
+                       there is no such field anywhere in its response. Restating the
+                       requested code against a returned row would assert something
+                       unverified, and district-wide there is no requested code at all
+                       while the rows come from several markets, so one code would have
+                       been wrong for most of them. The pack requires only marketName
+                       and calls marketCode "when available"; here it is not. */
                     "market": {
                       "marketName": $r.Market,
-                      "marketCode": $ra.market.marketCode,
                       "district":   $r.District,
                       "state":      $r.State
                     },
