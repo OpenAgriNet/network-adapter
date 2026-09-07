@@ -1,4 +1,4 @@
-# OAN provider adapter.
+# Provider adapter.
 #
 # Serves the Beckn actions synchronously: verifies the sender, resolves the
 # capability's call plan from the registry, calls the provider, and answers with
@@ -177,9 +177,9 @@ modules:
         #
         # What it does NOT: if/then/else. The validator library parses those
         # keywords but never evaluates them, so a pack's conditional rules --
-        # in the OAN packs, everything predicated on informationMode -- are
-        # not checked. Worth knowing before treating a pass here as full
-        # conformance to a pack.
+        # in the capability packs, everything predicated on informationMode
+        # -- are not checked. Worth knowing before treating a pass here as
+        # full conformance to a pack.
         # ------------------------------------------------------------------
         schemaValidator:
           id: schemav2validator
@@ -217,7 +217,7 @@ modules:
         # ------------------------------------------------------------------
         # jsonmapper -- the JSONata mapper.
         #
-        # Generic, and named for what it is rather than for OAN: it knows
+        # Generic, and named for what it is rather than for a network: it knows
         # nothing about any provider. It fetches whatever URL the registry's
         # mappings field names, compiles the JSONata, caches the compiled
         # form, and runs it in both directions.
