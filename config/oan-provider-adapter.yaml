@@ -293,6 +293,25 @@ modules:
               queryName: token
               queryValueEnv: MANDI_TOKEN
 
+              # MANDI_TOKEN MUST BE SET IN THE ADAPTER'S ENVIRONMENT. Without it
+              # every mandi call fails immediately and permanently: the step
+              # refuses to call an upstream unauthenticated, and marks the failure
+              # as one no retry can fix.
+              #
+              # There is no default and there cannot be one -- a credential is not
+              # something this file may hold. So the failure mode is a plugin that
+              # loads cleanly, registers cleanly, passes startup validation, and
+              # then fails 100% of requests. Worth knowing before deploying:
+              #
+              #   docker:     -e MANDI_TOKEN=...   or an env_file
+              #   kubernetes: a Secret, mounted as an environment variable
+              #   local:      MANDI_TOKEN=... ./server --config=...
+              #
+              # The error names the SCHEME rather than the variable, deliberately:
+              # this runs behind a signed network call and a peer has no business
+              # learning which variables this deployment reads. The variable name
+              # is in the adapter's own log at error level.
+
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
       # request falls through to the 404 above -- which looks like a registry
