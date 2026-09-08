@@ -16,6 +16,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -420,9 +422,6 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	return nil
 }
 
-// servedActions lists the actions a capability covers, sorted so the same
-// record reads the same way twice.
-
 // buildRequest produces what the provider is sent.
 //
 // Whatever the mapping produces IS the request: a body for a method that takes
@@ -789,39 +788,90 @@ type redactedErr struct {
 func (e redactedErr) Error() string { return e.text }
 func (e redactedErr) Unwrap() error { return e.err }
 
-// redactString removes a query-string credential from any text about to be
-// logged or returned -- an error, or the URL that was requested.
+// redactString removes the configured credential from any text about to be
+// logged or returned -- an error, a provider's response body, or the URL that
+// was requested.
 //
-// Logging the URL is deliberate: it says what was asked of whom, which is the
-// first thing anyone wants when a provider misbehaves. This is what makes that
-// safe to do at info level.
+// Logging those is deliberate: they say what was asked of whom and what came
+// back, which is the first thing anyone wants when a provider misbehaves. This
+// is what makes that safe to do at info and warn level.
+//
+// EVERY scheme, not just query. This used to return early unless the scheme was
+// query, on the reasoning that only a query credential reaches a URL -- true of
+// the URL, and wrong about the body. A provider quoting the request it rejected
+// is the ordinary shape of a 401 or 403 body, an API gateway echoing the
+// Authorization header is routine, and a wrong-credential 4xx is not retried,
+// so it lands in the log once per request for as long as the credential is
+// wrong. basic is the scheme the reference config ships.
 func (s *Step) redactString(text string) string {
-	if s.config.AuthScheme != AuthSchemeQuery {
-		return text
-	}
-	value := os.Getenv(s.config.QueryValueEnv)
-	if value == "" {
-		return text
-	}
-	text = strings.ReplaceAll(text, value, redactedMarker)
-
-	// Also the percent-encoded form, because that is the one that actually
-	// reaches a URL. authenticate puts the credential in through
-	// url.Values.Encode, which escapes anything outside the unreserved set --
-	// so a base64 token, which routinely carries "+", "/" and "=", appears in
-	// the error as "a%2Bb%2Fc%3D" and a replacement of the raw value alone
-	// walks straight past it. Escaping what we hold is exact: it is the same
-	// function Encode used, so the two agree by construction rather than by a
-	// guess about which characters matter.
-	//
-	// Both forms rather than only the encoded one: a value needing no escaping
-	// is unchanged by QueryEscape, and an error that quotes the credential
-	// without having put it through a URL -- one built from the config rather
-	// than from the request -- still carries the raw form.
-	if encoded := url.QueryEscape(value); encoded != value {
-		text = strings.ReplaceAll(text, encoded, redactedMarker)
+	for _, secret := range s.secretForms() {
+		text = strings.ReplaceAll(text, secret, redactedMarker)
 	}
 	return text
+}
+
+// secretForms returns every form the configured credential can appear in,
+// longest first so a value that contains another is replaced before its
+// substring turns the longer one into a partial redaction.
+//
+// Per scheme, because the schemes leak differently and redacting the value we
+// hold is not enough on its own:
+//
+//   - basic wraps the pair: SetBasicAuth sends base64(user:pass), so the
+//     password alone does not appear on the wire and replacing it misses the
+//     echoed header entirely.
+//   - query escapes: authenticate goes through url.Values.Encode, so a base64
+//     token carrying "+", "/" or "=" appears as "a%2Bb%2Fc%3D". Escaping what
+//     we hold is exact -- same function Encode used, so the two agree by
+//     construction rather than by a guess about which characters matter.
+//   - header sends the value as-is.
+//
+// The raw form is kept alongside the wrapped one in both cases: an error built
+// from the config rather than from the request still quotes the credential
+// unwrapped.
+func (s *Step) secretForms() []string {
+	switch s.config.AuthScheme {
+	case AuthSchemeBasic:
+		username, password := os.Getenv(s.config.UsernameEnv), os.Getenv(s.config.PasswordEnv)
+		if password == "" {
+			return nil
+		}
+		forms := []string{password}
+		if username != "" {
+			// The wire form, which is what a gateway echoes back.
+			forms = append(forms,
+				base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
+		}
+		// The username is deliberately NOT redacted. It identifies rather than
+		// authenticates, and it is routinely a short common word -- redacting
+		// "user" or "admin" would eat unrelated text and cost the operator the
+		// log line they came for. The pair and the password are the secrets.
+		return longestFirst(forms)
+	case AuthSchemeHeader:
+		value := os.Getenv(s.config.HeaderValueEnv)
+		if value == "" {
+			return nil
+		}
+		return []string{value}
+	case AuthSchemeQuery:
+		value := os.Getenv(s.config.QueryValueEnv)
+		if value == "" {
+			return nil
+		}
+		forms := []string{value}
+		if encoded := url.QueryEscape(value); encoded != value {
+			forms = append(forms, encoded)
+		}
+		return longestFirst(forms)
+	}
+	return nil
+}
+
+// longestFirst orders replacement candidates so a longer form is substituted
+// before any shorter one it contains.
+func longestFirst(forms []string) []string {
+	sort.Slice(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	return forms
 }
 
 // buildEndpoint joins the plan's base URL and path, carrying the mapped request
