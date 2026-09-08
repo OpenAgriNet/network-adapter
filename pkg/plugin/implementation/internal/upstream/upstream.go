@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -104,6 +106,12 @@ const (
 // codeUpstreamUnavailable reports a provider that could not be reached or
 // answered with a failure. It is not this adapter's fault and not the caller's.
 const codeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
+
+// tokenRefreshSkew is how early an oauth2 token stops being trusted. It has to
+// exceed the round trip to the provider, so that a request which passes the
+// expiry check cannot arrive after the token has actually died. One extra
+// exchange per token lifetime is the whole cost.
+const tokenRefreshSkew = 60 * time.Second
 
 // Prerequisites are the values a capability needs that its payload does not
 // carry, keyed by binding key.
@@ -188,6 +196,17 @@ type Step struct {
 	registry      definition.ProviderRecordLookup
 	mapper        definition.Mapper
 	httpClient    *http.Client
+
+	// The oauth2 token this step holds.
+	//
+	// Two mechanisms because there are two jobs. tokenMu serialises the
+	// EXCHANGE, so a cold start sends one request to the issuer rather than one
+	// per concurrent caller. token is atomic so READERS never take that mutex,
+	// which matters because secretForms is one of them and it is reached from
+	// inside the exchange -- guarding the value with tokenMu instead deadlocked
+	// on the first failing exchange, which is how this was found.
+	tokenMu sync.Mutex
+	token   atomic.Pointer[cachedToken]
 }
 
 // New creates the step.
@@ -763,6 +782,12 @@ func (s *Step) authenticate(req *http.Request) error {
 		query := req.URL.Query()
 		query.Set(s.config.QueryName, value)
 		req.URL.RawQuery = query.Encode()
+	case AuthSchemeOAuth2:
+		token, err := s.bearerToken(req.Context())
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return nil
 }
@@ -812,6 +837,122 @@ type redactedErr struct {
 
 func (e redactedErr) Error() string { return e.text }
 func (e redactedErr) Unwrap() error { return e.err }
+
+// bearerToken returns a token to send, exchanging one if what we hold has
+// expired or if we hold none.
+//
+// The lock spans the fetch on purpose. Without it a cold start sends every
+// concurrent request to the token endpoint, and the provider's issuer sees a
+// burst of identical exchanges. Serialising them costs one wait per token
+// lifetime and nothing after that, which is a better trade than a second
+// caching layer.
+//
+// NOTHING IS CACHED ON FAILURE. A transient outage at the token endpoint must
+// not leave this step holding a failure for the lifetime it never obtained --
+// the next request tries again.
+func (s *Step) bearerToken(ctx context.Context) (string, error) {
+	if held := s.token.Load(); held != nil && time.Now().Before(held.expiry) {
+		return held.value, nil
+	}
+
+	s.tokenMu.Lock()
+	defer s.tokenMu.Unlock()
+
+	// Re-checked after acquiring: while this caller waited, whoever held the
+	// mutex may already have exchanged a fresh token.
+	if held := s.token.Load(); held != nil && time.Now().Before(held.expiry) {
+		return held.value, nil
+	}
+
+	token, lifetime, err := s.exchangeToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	s.token.Store(&cachedToken{value: token, expiry: time.Now().Add(lifetime)})
+	return token, nil
+}
+
+// cachedToken is a token and the moment it stops being trusted.
+type cachedToken struct {
+	value  string
+	expiry time.Time
+}
+
+// tokenResponse is the part of an OAuth2 token response this step reads.
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
+}
+
+// exchangeToken performs the client_credentials grant.
+//
+// Every failure here is the UPSTREAM exchange failing, so all of them carry
+// 502. Unclassified they would surface as a 500, which tells a network peer
+// this adapter broke when in fact the provider's issuer did.
+func (s *Step) exchangeToken(ctx context.Context) (string, time.Duration, error) {
+	clientID, clientSecret := os.Getenv(s.config.ClientIDEnv), os.Getenv(s.config.ClientSecretEnv)
+	if clientID == "" || clientSecret == "" {
+		return "", 0, s.missingCredential(ctx, "oauth2",
+			s.config.ClientIDEnv+" and "+s.config.ClientSecretEnv)
+	}
+
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.config.TokenURL,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", 0, s.tokenErr(fmt.Errorf("token request could not be built: %w", err))
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return "", 0, s.tokenErr(fmt.Errorf("token endpoint %s could not be reached: %w",
+			s.config.TokenURL, err))
+	}
+	defer resp.Body.Close()
+
+	// Bounded like any other upstream read: a token response is small, and an
+	// unbounded read here would be a hole in the same wall.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, s.config.MaxResponseBytes+1))
+	if err != nil {
+		return "", 0, s.tokenErr(fmt.Errorf("token response could not be read: %w", err))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The status, not the body: what an issuer puts in a failure body is its
+		// own business, and it routinely quotes the request back.
+		log.Warnf(ctx, "upstream: token endpoint %s returned %s: %s",
+			s.config.TokenURL, resp.Status, s.redactString(explain(body)))
+		return "", 0, s.tokenErr(fmt.Errorf("token endpoint returned %s", resp.Status))
+	}
+
+	var parsed tokenResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", 0, s.tokenErr(fmt.Errorf("token response from %s is not JSON: %w",
+			s.config.TokenURL, err))
+	}
+	if parsed.AccessToken == "" {
+		return "", 0, s.tokenErr(fmt.Errorf("token response from %s carries no access_token",
+			s.config.TokenURL))
+	}
+	lifetime, ok := tokenLifetime(parsed.ExpiresIn, tokenRefreshSkew)
+	if !ok {
+		return "", 0, s.tokenErr(fmt.Errorf(
+			"token response from %s carries no usable expires_in, so its lifetime is unknown",
+			s.config.TokenURL))
+	}
+	return parsed.AccessToken, lifetime, nil
+}
+
+// tokenErr classifies a failed exchange. Always 502: the exchange is with the
+// provider's issuer, so its failure is upstream's, never the caller's.
+func (s *Step) tokenErr(err error) error {
+	return model.NewCodedErr(http.StatusBadGateway, codeUpstreamUnavailable,
+		fmt.Errorf("upstream: oauth2 token exchange failed: %w", err))
+}
 
 // tokenLifetime turns a token response's expires_in into how long we may hold
 // that token, or reports that we may not hold it at all.
@@ -907,6 +1048,22 @@ func (s *Step) secretForms() []string {
 			return nil
 		}
 		return []string{value}
+	case AuthSchemeOAuth2:
+		// Both halves: the client secret we send to the issuer, and the token
+		// it gave back. The token is the one that reaches the provider, so it
+		// is the one an echoing 401 body quotes.
+		var forms []string
+		if secret := os.Getenv(s.config.ClientSecretEnv); secret != "" {
+			forms = append(forms, secret)
+		}
+		// Read without tokenMu: this is reached from inside the exchange, which
+		// holds it.
+		if held := s.token.Load(); held != nil && held.value != "" {
+			forms = append(forms, held.value)
+		}
+		// The client id is deliberately NOT redacted: it identifies, it does
+		// not authenticate, and it is what makes a log line useful.
+		return longestFirst(forms)
 	case AuthSchemeQuery:
 		value := os.Getenv(s.config.QueryValueEnv)
 		if value == "" {

@@ -2198,3 +2198,255 @@ func TestTokenLifetime(t *testing.T) {
 		})
 	}
 }
+
+// tokenServer stands in for an OAuth2 token endpoint. It records what it was
+// asked and answers with whatever the test needs.
+type tokenServer struct {
+	calls     atomic.Int32
+	expiresIn int    // 0 omits the field entirely
+	token     string // rotates per call when empty
+	status    int
+	body      string // overrides the JSON when set
+	gotGrant  string
+	gotID     string
+	gotSecret string
+}
+
+func (ts *tokenServer) start(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := ts.calls.Add(1)
+		_ = r.ParseForm()
+		ts.gotGrant, ts.gotID, ts.gotSecret =
+			r.PostFormValue("grant_type"), r.PostFormValue("client_id"), r.PostFormValue("client_secret")
+		if ts.status != 0 {
+			w.WriteHeader(ts.status)
+		}
+		if ts.body != "" {
+			fmt.Fprint(w, ts.body)
+			return
+		}
+		token := ts.token
+		if token == "" {
+			token = fmt.Sprintf("tok-%d", n)
+		}
+		if ts.expiresIn == 0 {
+			fmt.Fprintf(w, `{"access_token":%q,"token_type":"Bearer"}`, token)
+			return
+		}
+		fmt.Fprintf(w, `{"access_token":%q,"token_type":"Bearer","expires_in":%d}`, token, ts.expiresIn)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/token"
+}
+
+// oauth2Step wires a step whose provider records the Authorization it received.
+func oauth2Step(t *testing.T, tokenURL string, seen *[]string) *Step {
+	t.Helper()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(provider.Close)
+
+	return newStep(t, &stubRegistry{plan: testPlan(provider.URL, http.MethodGet)},
+		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"a":1}`)},
+		func(c *Config) {
+			c.AuthScheme = AuthSchemeOAuth2
+			c.TokenURL = tokenURL
+			c.ClientIDEnv, c.ClientSecretEnv = "TEST_OAUTH_ID", "TEST_OAUTH_SECRET"
+		})
+}
+
+// A3: the exchanged token has to reach the provider, and the client
+// credentials have to reach the token endpoint the way the grant specifies.
+func TestOAuth2SendsTheExchangedTokenAsABearer(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{expiresIn: 36000, token: "the-token"}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != "Bearer the-token" {
+		t.Errorf("provider saw Authorization %q, want %q", seen, "Bearer the-token")
+	}
+	if ts.gotGrant != "client_credentials" {
+		t.Errorf("grant_type = %q, want client_credentials", ts.gotGrant)
+	}
+	if ts.gotID != "svc-client" || ts.gotSecret != "svc-secret" {
+		t.Errorf("token endpoint saw id/secret %q/%q, want the configured pair", ts.gotID, ts.gotSecret)
+	}
+}
+
+// A4: a token good for ten hours must be exchanged ONCE, not per request.
+// Without this the provider's issuer takes one extra round trip per call.
+func TestOAuth2ReusesTheTokenWithinItsLifetime(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{expiresIn: 36000}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	for i := 0; i < 5; i++ {
+		if _, err := runStep(t, step, selectBody); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if got := ts.calls.Load(); got != 1 {
+		t.Errorf("token endpoint called %d times for 5 requests, want 1", got)
+	}
+	for i, h := range seen {
+		if h != "Bearer tok-1" {
+			t.Errorf("request %d sent %q, want the cached token", i, h)
+		}
+	}
+}
+
+// A5: and once it expires, the next request exchanges a fresh one. expires_in
+// of 1s halves to 500ms under the skew, so this needs no long sleep.
+func TestOAuth2RefreshesAnExpiredToken(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{expiresIn: 1}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	if got := ts.calls.Load(); got != 2 {
+		t.Errorf("token endpoint called %d times, want 2 -- the second token was not fetched", got)
+	}
+	if len(seen) == 2 && seen[0] == seen[1] {
+		t.Errorf("both requests sent %q, want a rotated token", seen[0])
+	}
+}
+
+// A6: the token endpoint failing is the UPSTREAM exchange failing, so 502.
+// Unclassified it becomes a 500, which tells a peer this adapter broke.
+func TestOAuth2ClassifiesATokenFailureAsUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ts   *tokenServer
+	}{
+		{"the endpoint refuses", &tokenServer{status: http.StatusInternalServerError, body: `{"error":"boom"}`}},
+		{"the endpoint says unauthorized", &tokenServer{status: http.StatusUnauthorized, body: `{"error":"invalid_client"}`}},
+		{"the response is not JSON", &tokenServer{body: `<html>nope</html>`}},
+		{"the response carries no token", &tokenServer{body: `{"token_type":"Bearer","expires_in":36000}`}},
+		{"the response omits expires_in", &tokenServer{expiresIn: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TEST_OAUTH_ID", "svc-client")
+			t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+			var seen []string
+			step := oauth2Step(t, tc.ts.start(t), &seen)
+
+			_, err := runStep(t, step, selectBody)
+			if err == nil {
+				t.Fatal("expected the request to fail when no token could be obtained")
+			}
+			var coded *model.CodedErr
+			if !errors.As(err, &coded) {
+				t.Fatalf("error %v (%T) is unclassified, so it becomes a 500", err, err)
+			}
+			if coded.HTTPStatus() != http.StatusBadGateway {
+				t.Errorf("status = %d, want 502: the token exchange is upstream's failure", coded.HTTPStatus())
+			}
+			// The status alone does not prove this classification: the retry
+			// loop wraps its terminal failure in a 502 too, so an unclassified
+			// token error would still surface as one. The message is what says
+			// the exchange is where it broke, rather than the provider call.
+			if !strings.Contains(err.Error(), "oauth2 token exchange failed") {
+				t.Errorf("error %v does not identify the token exchange as the failure", err)
+			}
+			if len(seen) != 0 {
+				t.Errorf("the provider was called %d times without a token", len(seen))
+			}
+		})
+	}
+}
+
+// A6b: a failed exchange must not be cached. One transient failure would
+// otherwise poison the step for the whole lifetime it never obtained.
+func TestOAuth2DoesNotCacheAFailedExchange(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{status: http.StatusInternalServerError, body: `{"error":"boom"}`}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	for i := 0; i < 3; i++ {
+		if _, err := runStep(t, step, selectBody); err == nil {
+			t.Fatalf("request %d unexpectedly succeeded", i)
+		}
+	}
+	if got := ts.calls.Load(); got != 3 {
+		t.Errorf("token endpoint called %d times for 3 failing requests, want 3 -- a failure was cached", got)
+	}
+}
+
+// A7: neither the client secret nor the token may reach a log or an error,
+// in any form. A provider echoing the request it rejected is the ordinary
+// shape of a 401 body.
+func TestOAuth2RedactsTheSecretAndTheToken(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", `s3cr3t"quoted`)
+
+	ts := &tokenServer{expiresIn: 36000, token: "the-token"}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	// warm the cache so the step holds a token to redact
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+
+	for _, secret := range []string{`s3cr3t"quoted`, "the-token"} {
+		body := fmt.Sprintf(`{"error":"rejected %s"}`, secret)
+		got := step.redactString(explain([]byte(body)))
+		if strings.Contains(got, secret) {
+			t.Errorf("%q survived redaction: %s", secret, got)
+		}
+		if !strings.Contains(got, redactedMarker) {
+			t.Errorf("nothing was redacted from %q", got)
+		}
+	}
+	// the client id identifies rather than authenticates, so it stays
+	if got := step.redactString("client svc-client failed"); !strings.Contains(got, "svc-client") {
+		t.Errorf("the client id was redacted (%q); it identifies, it does not authenticate", got)
+	}
+}
+
+// A8: an unset credential names the VARIABLE in our log and only the scheme on
+// the wire -- a peer has no business learning which variables we read.
+func TestOAuth2ReportsAMissingCredential(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "")
+	t.Setenv("TEST_OAUTH_SECRET", "")
+
+	ts := &tokenServer{expiresIn: 36000}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	_, err := runStep(t, step, selectBody)
+	if err == nil {
+		t.Fatal("expected a missing credential to fail the request")
+	}
+	if strings.Contains(err.Error(), "TEST_OAUTH_ID") || strings.Contains(err.Error(), "TEST_OAUTH_SECRET") {
+		t.Errorf("the error names the environment variables, which goes to the peer: %v", err)
+	}
+	if ts.calls.Load() != 0 {
+		t.Error("the token endpoint was called with no credentials")
+	}
+}
