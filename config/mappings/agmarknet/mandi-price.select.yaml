@@ -143,27 +143,30 @@ response: |
     $ctx := beckn.message.contract.commitments[0].resources[0].resourceAttributes.`@context`;
     $ra := $selected.resources[0].resourceAttributes;
 
-    /* Bound once because it is used twice -- for a resource's own id and for
-       the offer's reference to it. Two copies of one expression is how a
-       dangling reference gets reintroduced. */
-    /* Built from CODES, not the names the upstream reports. A market name
-       carries spaces and a commodity name carries brackets -- "Kasdol APMC",
-       "Paddy(Common)" -- and an identifier that a consumer may put in a URL or
-       a filter should not. The codes are already in the payload, so they cost
-       nothing, and they are stable where a display name is not.
-
-       The market code is optional: without it the query widened to the whole
-       district, so the district code is what identifies the scope. */
+    /* dd-MM-yyyy back to ISO, so the answer speaks the pack's date format
+       rather than the upstream's. */
     $iso := function($ddmmyyyy) {
       $substring($ddmmyyyy, 6, 4) & "-" & $substring($ddmmyyyy, 3, 2) & "-" & $substring($ddmmyyyy, 0, 2)
     };
 
+    /* The market code is optional: without it the query widened to the whole
+       district, so the district code is what identifies the scope. */
     $scope := $exists($ra.market.marketCode) ? $ra.market.marketCode : $ra.market.district;
     /* SLUG for the parts that are names rather than codes, so an id has no
        spaces and no case surprises. */
     $slug := function($v) { $exists($v) ? $replace($lowercase($v), " ", "-") };
     
-    /* Every field the upstream distinguishes rows by is in the id.
+    /* Bound once because it is used twice -- for a resource's own id and for
+       the offer's reference to it. Two copies of one expression is how a
+       dangling reference gets reintroduced.
+
+       Built from CODES, not the names the upstream reports. A market name
+       carries spaces and a commodity name carries brackets -- "Kasdol APMC",
+       "Paddy(Common)" -- and an identifier that a consumer may put in a URL or
+       a filter should not. The codes are already in the payload, so they cost
+       nothing, and they are stable where a display name is not.
+
+       Every field the upstream distinguishes rows by is in the id.
     
        It was scope:commodity:date only, and Agmarknet routinely reports
        several rows for the same market, commodity and date differing by
@@ -185,9 +188,6 @@ response: |
         $slug($r.Grade)
       ], ":")
     };
-
-    /* dd-MM-yyyy back to ISO, so the answer speaks the pack's date format
-       rather than the upstream's. */
 
     /* Absent rather than present-and-empty: a consumer must be able to tell
        "the market reported no minimum" from "the minimum was zero".
