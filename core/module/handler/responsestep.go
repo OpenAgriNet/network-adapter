@@ -45,25 +45,9 @@ func sendResponse(ctx *model.StepContext, w http.ResponseWriter) []byte {
 	if len(ctx.ResponseBody) == 0 {
 		return sendAck(ctx, w)
 	}
-	// A step's answer has to be an envelope, and only the length was checked.
-	// A mapping whose response half is written as `$.response.temperature`
-	// rather than as an object produces `28.5`, which is valid JSON -- so
-	// Content-Type was not a lie -- and the adapter answered 200 with it and
-	// then SIGNED it. A consumer looking for message.contract finds nothing
-	// and cannot tell that from a protocol change.
-	//
-	// Refused rather than passed on, because a signed confident non-answer is
-	// worse than a NACK: the caller cannot retry what it does not know failed,
-	// and the signature says this adapter meant it. A mapping bug should fail
-	// where the mapping is, and the NACK names the step so it is findable.
-	if err := verifyEnvelope(ctx.ResponseBody); err != nil {
-		log.Errorf(ctx, err, "a step produced a response that is not a Beckn envelope; refusing to sign it")
-		// A plain error on purpose: nackBecknError's default branch turns it
-		// into a generic 500, so the caller learns the answer failed without
-		// being handed the internals of a mapping it does not own. The detail
-		// is in the log line above, where the operator is.
-		return sendNack(ctx, w, err)
-	}
+	// The envelope check is NOT here. It is in ServeHTTP, ahead of the response
+	// steps, because ackSigner is one of those steps: refusing at this point
+	// means the Signature header is already set, over the body being refused.
 	return writeJSONResponse(ctx, w, ctx.ResponseBody)
 }
 

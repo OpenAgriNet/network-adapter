@@ -247,6 +247,28 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			// Checked here for the same reason as the 404 above, and it is the
+			// same failure: ackSigner signs the body it expects to be written,
+			// so refusing after the response steps ships a Signature computed
+			// over the answer we just rejected, with a NACK body under it. A
+			// peer verifying that signature sees a digest mismatch, and reads a
+			// mapping bug as suspected tampering.
+			//
+			// It lived in sendResponse, which runs after the loop -- one step
+			// too late, on the wrong side of signing.
+			if len(stepCtx.ResponseBody) > 0 {
+				if err = verifyEnvelope(stepCtx.ResponseBody); err != nil {
+					log.Errorf(stepCtx, err, "a step produced a response that is not a Beckn envelope; refusing to sign it")
+					// A plain error on purpose: nackBecknError's default branch
+					// turns it into a generic 500, so the caller learns the
+					// answer failed without being handed the internals of a
+					// mapping it does not own. The detail is in the log above.
+					h.signNackResponse(stepCtx, err)
+					responseBody = sendNack(stepCtx, wrapped, err)
+					return
+				}
+			}
+
 			// No routing — ONIX writes the ACK directly. Run response steps here
 			// with resp=nil (publisher path semantics).
 			for _, step := range h.responseSteps {

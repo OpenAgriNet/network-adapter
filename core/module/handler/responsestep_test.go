@@ -1123,31 +1123,6 @@ func TestVerifyEnvelopeRefusesWhatCannotCarryAMessage(t *testing.T) {
 	}
 }
 
-// The behaviour, not just the check: a step that produced something unusable
-// must NACK rather than be signed and sent. A signed confident non-answer is
-// worse than a NACK, because the caller cannot retry what it does not know
-// failed and the signature says this adapter meant it.
-func TestSendResponseNacksAScalarInsteadOfSigningIt(t *testing.T) {
-	t.Parallel()
-
-	ctx := makeStepCtx("2.0.0", "msg-1", "sub-1", "")
-	ctx.ResponseBody = []byte(`28.5`)
-
-	w := httptest.NewRecorder()
-	written := sendResponse(ctx, w)
-
-	if w.Code == http.StatusOK {
-		t.Errorf("status = %d; a body that cannot carry a message must not be a 200", w.Code)
-	}
-	if string(written) == "28.5" {
-		t.Error("the scalar was written to the wire unchanged")
-	}
-	// And what is sent instead is a NACK the caller can act on.
-	if !strings.Contains(w.Body.String(), string(model.StatusNACK)) {
-		t.Errorf("body = %s, want a NACK", w.Body.String())
-	}
-}
-
 // A real envelope is untouched -- the check must not cost the ordinary path.
 func TestSendResponseWritesAnEnvelopeUnchanged(t *testing.T) {
 	t.Parallel()
