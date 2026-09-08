@@ -54,7 +54,24 @@ modules:
     handler:
       type: std
       role: bpp
-      subscriberId: provider-network-vistaar.da.gov.in
+
+      # This adapter's own network identity -- the id a peer verifies its
+      # signatures against. A placeholder rather than a working value,
+      # because one deployment's identity is not everyone's, and a reader
+      # who copies this signs as somebody else.
+      #
+      # The registry requires it to be hostname-shaped, and it is never
+      # resolved by DNS -- routing between adapters is the router plugin's
+      # config. Pick it once and deliberately: the registry is append-only,
+      # delete is soft, and a soft-deleted id keeps the unique index, so an
+      # id can never be reused.
+      #
+      #   was      provider-network-vistaar.da.gov.in
+      #   dev      provider.oan.dev
+      #
+      # Must match the keyManager's subscriberId below -- they are the same
+      # identity, named twice because the plugins are configured separately.
+      subscriberId: <>
 
       plugins:
         # ------------------------------------------------------------------
@@ -119,7 +136,13 @@ modules:
         keyManager:
           id: simplekeymanager
           config:
-            subscriberId: provider-network-vistaar.da.gov.in
+            # The same identity as the handler's subscriberId above, and it
+            # has to be: this is the id the keys are looked up under. Set one
+            # and not the other and the adapter signs as an id the registry
+            # has no keys for, which fails at the peer rather than here.
+            #
+            #   was      provider-network-vistaar.da.gov.in
+            subscriberId: <>
 
         signer:
           id: signer
@@ -273,9 +296,18 @@ modules:
 # retries are all registry writes. Nothing here changes and nothing restarts.
 #
 # Retry classification is not configurable at all: 4xx is permanent and is not
-# retried, 5xx and transport errors are, and the backoff rises from 50ms to a
-# 800ms ceiling. A non-2xx reaches the caller as an error with the provider's
-# own response included, and the mapping never runs on it -- which is why an
-# upstream that signals "no data" with a 4xx surfaces as a failure rather than
-# an empty result.
+# retried -- EXCEPT 429, which is, because "you are going too fast" is the one
+# 4xx that says try again. 5xx and transport errors are retried too, and the
+# backoff rises from 50ms to a 800ms ceiling.
+#
+# A non-2xx reaches the caller as an error carrying THE STATUS ONLY -- not the
+# provider's response body. That is deliberate, and worth knowing before you go
+# looking for the body in a NACK: what a provider puts in a failure body is its
+# own business, and it has been known to be a stack trace, an internal hostname
+# or a database error. The body goes to the adapter's log instead, at warn
+# level, with the configured credential redacted.
+#
+# The mapping never runs on a non-2xx either -- which is why an upstream that
+# signals "no data" with a 4xx surfaces as a failure rather than an empty
+# result.
 # ----------------------------------------------------------------------------

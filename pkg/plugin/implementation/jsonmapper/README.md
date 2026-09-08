@@ -188,5 +188,15 @@ the upgrade if one mapping ever becomes hot enough to matter.
 
 A mapping that cannot be fetched, parsed or compiled is an operator or registry
 fault and surfaces as a plain error. A mapping that ran but could not be applied
-is the payload's shape being wrong, and surfaces as a `SCH_SCHEMA_ADAPTATION_FAILED`
-bad request.
+surfaces as `SCH_SCHEMA_ADAPTATION_FAILED` — but **the HTTP status depends on
+which half failed**, and the difference matters if you classify on that code:
+
+- **request half → 400.** The input is the caller's own payload, so its shape
+  being wrong is the caller's to fix.
+- **response half → 502.** The input there is the PROVIDER's answer, not
+  anything the caller sent. A provider that changed shape, or a bug in the
+  response mapping, is nothing the caller did — telling them to fix a request
+  that was fine sends them after the wrong thing.
+
+So do not treat the code as uniformly 4xx for retry or alerting: an
+upstream-shape failure carrying it is a 502.
