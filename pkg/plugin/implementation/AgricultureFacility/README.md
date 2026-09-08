@@ -111,7 +111,10 @@ warehouse BPP uses `"-"` for a phone it does not have; the other three use
 
 `@context` is echoed from the request rather than restated here, so this mapping
 does not have to know which pack identifier is current and cannot contradict
-what the caller declared.
+what the caller declared. Which matters: the identifier the packs name in their
+own `x-jsonld`, `https://schemas.openagrinet.global/…`, has no DNS record, so a
+deployment tracking the published ref sends the `raw.githubusercontent.com` pack
+URL instead. Both are exercised.
 
 ## Testing
 
@@ -127,11 +130,20 @@ step against a fake POCRA. It reads from `config/mappings/pocra/` rather than
 from a fixture, so it breaks when what is deployed breaks.
 
 `conformance_test.go` validates the answer against
-`openagrinet:AgricultureFacility v0.1` with a real JSON Schema validator, using
-the schemas vendored in `testdata/schemas.yaml`. It also validates the pack's
-own published examples — if those fail, the compilation is wrong and nothing
-else in that file means anything — and covers the two things the schema is
-silent on: fields the pack does not declare, and the README's prose mapping
-rules.
+`openagrinet:AgricultureFacility v0.1` with a real JSON Schema validator. It
+also validates the pack's own published examples — if those fail, the
+compilation is wrong and nothing else in that file means anything — and covers
+the two things the schema is silent on: fields the pack does not declare, and
+the README's prose mapping rules.
+
+The schemas are not vendored. `schemacache_test.go` compiles the pack under the
+URL that publishes it,
+
+    https://github.com/OpenAgriNet/network-specs/tree/schema-packs-v0.1/schema/AgricultureFacility/v0.1
+
+lets the validator resolve the pack's own `$ref`s, and caches each document
+under `testdata/schema-cache/` (gitignored). A cold run needs the network; every
+run after it is offline. With an empty cache **and** no network the schema tests
+skip rather than fail. To refresh, delete the cache directory and re-run.
 
 Full runbook: `docs/agriculture-facility-testing.md`.

@@ -9,148 +9,57 @@ package AgricultureFacility_test
 // misreading produces a test that agrees with the mistake. This one hands the
 // answer and the published schema to a validator and lets it decide.
 //
-// The schemas are vendored under testdata/schemas so this is offline and
-// deterministic -- see the README there for provenance and how to refresh.
+// The schemas are fetched from the ref they are published under and cached
+// under testdata/schema-cache, so this is offline and deterministic after a
+// cold run -- see schemacache_test.go for the loader and how to refresh.
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
-	"gopkg.in/yaml.v3"
 )
 
-// schemaURIs maps a schema document's own info.title to every URI it must be
-// registered under.
-//
-// Keyed on the title rather than on position in the file, so the documents can
-// be reordered or one added without silently pairing a schema with the wrong
-// URI.
-//
-// The URI matters more than the file: the packs $ref each other by URL, and a
-// validator resolves a ref by the URL written rather than the one finally
-// served. AgricultureFacility refs "../../AgricultureResource/v0.1/..."
-// relative to its own base, so registering it under the schemas.openagrinet
-// path is what makes that resolve.
-//
-// The beckn schemas need BOTH forms. schema.beckn.io 301-redirects to
-// schema.nfh.global, and the two sides disagree about which to write: the OAN
-// packs ref beckn.io, while Location refs its own siblings by nfh.global. Each
-// document is therefore registered under both, so a ref resolves whichever name
-// it was written with rather than reaching for the network.
-var schemaURIs = map[string][]string{
-	"OpenAgriNet - Agriculture Facility Attributes": {
-		"https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/attributes.yaml"},
-	"OpenAgriNet - Agriculture Resource Attributes": {
-		"https://schemas.openagrinet.global/schema/AgricultureResource/v0.1/attributes.yaml"},
-	"Address": {
-		"https://schema.beckn.io/Address/v2.0/attributes.yaml",
-		"https://schema.nfh.global/Address/v2.0/attributes.yaml"},
-	"Contact": {
-		"https://schema.beckn.io/Contact/v2.0/attributes.yaml",
-		"https://schema.nfh.global/Contact/v2.0/attributes.yaml"},
-	"Descriptor": {
-		"https://schema.beckn.io/Descriptor/v2.1/attributes.yaml",
-		"https://schema.nfh.global/Descriptor/v2.1/attributes.yaml"},
-	// Reached transitively from Descriptor, which refs images and documents.
-	"MediaFile": {
-		"https://schema.beckn.io/MediaFile/v2.0/attributes.yaml",
-		"https://schema.nfh.global/MediaFile/v2.0/attributes.yaml"},
-	"Document": {
-		"https://schema.beckn.io/Document/v2.0/attributes.yaml",
-		"https://schema.nfh.global/Document/v2.0/attributes.yaml"},
-	"GeoJSONGeometry": {
-		"https://schema.beckn.io/GeoJSONGeometry/v2.0/attributes.yaml",
-		"https://schema.nfh.global/GeoJSONGeometry/v2.0/attributes.yaml"},
-	"Location": {
-		"https://schema.beckn.io/Location/v2.0/attributes.yaml",
-		"https://schema.nfh.global/Location/v2.0/attributes.yaml"},
-}
-
-// schemaStream is every schema the pack reaches, as one multi-document YAML
-// file. Each document in it is verbatim; only the "---" separators were added.
-const schemaStream = "testdata/schemas.yaml"
-
 // facilitySchemaURI is the AgricultureFacility schema inside its OpenAPI
-// document. The packs are OpenAPI 3.1.1, whose schema objects are JSON Schema
-// 2020-12, so a validator can compile one directly out of components.schemas.
-const facilitySchemaURI = "https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/attributes.yaml#/components/schemas/AgricultureFacility"
+// document, addressed by the URL that actually serves it.
+//
+// The URI matters more than the bytes: the packs $ref each other by URL, and a
+// validator resolves a ref against the base URI of the document it is written
+// in. AgricultureFacility refs "../../AgricultureResource/v0.1/attributes.yaml"
+// relative to its own base, so compiling under the published URL is what makes
+// that resolve -- and, unlike the schemas.openagrinet.global path this used to
+// be registered under, it is an address something answers.
+//
+// The packs are OpenAPI 3.1.1, whose schema objects are JSON Schema 2020-12, so
+// a validator can compile one directly out of components.schemas.
+const facilitySchemaURI = facilityPackURL + "#/components/schemas/AgricultureFacility"
 
-// facilitySchema compiles the pack once for the whole test file.
+// facilitySchema compiles the pack once per test.
 func facilitySchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
 
+	loader := newPackLoader()
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
-
-	file, err := os.Open(schemaStream)
-	if err != nil {
-		t.Fatalf("could not open %s: %v", schemaStream, err)
-	}
-	defer file.Close()
-
-	registered := 0
-	decoder := yaml.NewDecoder(file)
-	for index := 0; ; index++ {
-		var parsed any
-		err := decoder.Decode(&parsed)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("%s document %d is not YAML: %v", schemaStream, index, err)
-		}
-		if parsed == nil {
-			continue
-		}
-
-		title := documentTitle(t, index, parsed)
-		uris, known := schemaURIs[title]
-		if !known {
-			t.Fatalf("%s document %d has info.title %q, which no URI is registered for. "+
-				"Add it to schemaURIs, or the schema it defines will be fetched over "+
-				"the network instead", schemaStream, index, title)
-		}
-
-		// The packs are published as YAML and the validator takes JSON, so this
-		// is a format conversion and nothing more -- no key is renamed and no
-		// value is touched.
-		asJSON, err := json.Marshal(parsed)
-		if err != nil {
-			t.Fatalf("%s (%s) could not be converted to JSON: %v", title, schemaStream, err)
-		}
-		for _, uri := range uris {
-			// Unmarshalled per URI: AddResource takes ownership of the value,
-			// so two registrations must not share one.
-			resource, err := jsonschema.UnmarshalJSON(bytes.NewReader(asJSON))
-			if err != nil {
-				t.Fatalf("%s could not be read as a JSON document: %v", title, err)
-			}
-			if err := compiler.AddResource(uri, resource); err != nil {
-				t.Fatalf("could not register %s as %s: %v", title, uri, err)
-			}
-		}
-		registered++
-	}
-
-	// Every schema in the map has to have been found. A document silently
-	// dropped from the stream would otherwise surface as a network fetch, or as
-	// a compile error naming a URL rather than the missing document.
-	if registered != len(schemaURIs) {
-		t.Fatalf("%s carried %d documents, want %d -- one has been dropped",
-			schemaStream, registered, len(schemaURIs))
-	}
+	compiler.UseLoader(jsonschema.SchemeURLLoader{"https": loader})
 
 	schema, err := compiler.Compile(facilitySchemaURI)
 	if err != nil {
+		loader.skipIfOffline(t, err)
 		t.Fatalf("could not compile the AgricultureFacility schema: %v", err)
+	}
+
+	// Both OAN documents have to have been loaded. A compile that satisfied
+	// every ref without reading AgricultureResource would mean the composed
+	// half of the schema went unenforced, and every result below would be
+	// measured against half a pack.
+	for _, required := range []string{facilityPackURL, resourcePackURL} {
+		if !loader.sawLoaded(required) {
+			t.Fatalf("the schema compiled without loading %s -- the pack is not the one "+
+				"being validated against", required)
+		}
 	}
 	return schema
 }
@@ -259,28 +168,19 @@ func mustIndent(t *testing.T, value any) string {
 	return string(pretty)
 }
 
-// documentTitle reads a schema document's own info.title, which is how the
-// stream self-identifies.
-func documentTitle(t *testing.T, index int, document any) string {
-	t.Helper()
-	object, ok := document.(map[string]any)
-	if !ok {
-		t.Fatalf("%s document %d is not a mapping", schemaStream, index)
-	}
-	info, ok := object["info"].(map[string]any)
-	if !ok {
-		t.Fatalf("%s document %d carries no info block", schemaStream, index)
-	}
-	title, ok := info["title"].(string)
-	if !ok || title == "" {
-		t.Fatalf("%s document %d carries no info.title", schemaStream, index)
-	}
-	return title
+// packExamples are the schema pack's own published examples, by file name.
+//
+// Listed rather than discovered, so a lost example is a failure rather than a
+// shorter loop. Both information modes are published and they have disjoint
+// required sets -- OnDemand forbids most of what Direct requires -- so the set
+// is what gives the check below its reach.
+var packExamples = []string{
+	"custom-hiring-centre.json",
+	"krishi-vigyan-kendra.json",
+	"on-demand-facility-discovery.json",
+	"soil-testing-facility.json",
+	"warehouse.json",
 }
-
-// packExampleDir holds the schema pack's own published examples, fetched
-// verbatim from the same ref as the schemas themselves.
-const packExampleDir = "testdata/pack-examples"
 
 // The pack's OWN examples must satisfy the schema as this test compiles it.
 //
@@ -290,35 +190,23 @@ const packExampleDir = "testdata/pack-examples"
 // pack's published examples fail, the compilation is wrong and every other
 // conformance result in this file is worth nothing.
 //
-// It is also a drift alarm: an example that stops validating means the pack
-// moved under the vendored copy.
+// It is also a drift alarm: the examples are fetched from the same ref as the
+// schemas, so one that stops validating means the pack moved under this plugin.
 func TestThePacksOwnExamplesValidate(t *testing.T) {
 	schema := facilitySchema(t)
+	loader := newPackLoader()
 
-	entries, err := os.ReadDir(packExampleDir)
-	if err != nil {
-		t.Fatalf("could not read %s: %v", packExampleDir, err)
-	}
-	// Both information modes are published, and they have disjoint required
-	// sets -- OnDemand forbids most of what Direct requires. Finding fewer than
-	// this means an example was lost rather than that the pack shrank.
-	if len(entries) != 5 {
-		t.Fatalf("found %d pack examples, want 5", len(entries))
-	}
-
-	for _, entry := range entries {
-		t.Run(entry.Name(), func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join(packExampleDir, entry.Name()))
+	for _, name := range packExamples {
+		t.Run(name, func(t *testing.T) {
+			url := packExampleBase + "/" + name
+			instance, err := loader.Load(url)
 			if err != nil {
-				t.Fatalf("could not read %s: %v", entry.Name(), err)
-			}
-			instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-			if err != nil {
-				t.Fatalf("%s is not JSON: %v", entry.Name(), err)
+				loader.skipIfOffline(t, err)
+				t.Fatalf("could not read %s: %v", url, err)
 			}
 			if err := schema.Validate(instance); err != nil {
 				t.Errorf("the pack's own example %s does not satisfy the schema as compiled here, "+
-					"so the compilation is wrong:\n%v", entry.Name(), err)
+					"so the compilation is wrong:\n%v", name, err)
 			}
 		})
 	}
@@ -400,21 +288,27 @@ func TestTheAnswerInventsNoUngovernedField(t *testing.T) {
 // upstream should widen what the mapping may emit, and a field removed should
 // narrow it, without either going unnoticed.
 func TestTheGovernedFieldListMatchesThePack(t *testing.T) {
-	raw, err := os.ReadFile(schemaStream)
-	if err != nil {
-		t.Fatalf("could not read %s: %v", schemaStream, err)
-	}
+	loader := newPackLoader()
 
 	declared := map[string]bool{"@context": true} // conventional, not a property
-	for _, section := range []struct{ schema, until string }{
-		{"    AgricultureFacility:", "    FacilityType:"},
-		{"    AgricultureResource:", "    AdministrativeAreaReference:"},
+	for _, section := range []struct{ url, schema, until string }{
+		{facilityPackURL, "    AgricultureFacility:", "    FacilityType:"},
+		{resourcePackURL, "    AgricultureResource:", "    AdministrativeAreaReference:"},
 	} {
+		// Read as text, not as a compiled schema: the point is which property
+		// names the document declares, and a compiled schema has already
+		// flattened its allOf branches together.
+		raw, err := loader.text(section.url)
+		if err != nil {
+			loader.skipIfOffline(t, err)
+			t.Fatalf("could not read %s: %v", section.url, err)
+		}
+
 		text := string(raw)
 		start := strings.Index(text, section.schema)
 		end := strings.Index(text, section.until)
 		if start < 0 || end < 0 || end < start {
-			t.Fatalf("could not locate %s in %s", section.schema, schemaStream)
+			t.Fatalf("could not locate %s in %s", section.schema, section.url)
 		}
 		for _, name := range propertyNames(text[start:end]) {
 			declared[name] = true

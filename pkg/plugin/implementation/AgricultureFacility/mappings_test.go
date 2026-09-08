@@ -52,6 +52,16 @@ const shippedBindingKey = "pocra|" + shippedCapability
 //
 // PROVISIONAL: this convention was chosen on the design and has not yet been
 // confirmed against a payload captured from the network.
+// declaredContext is the @context the fixture declares, and the one the answer
+// must echo back.
+//
+// It is the pack's published URL because that URL resolves. The identifier the
+// pack names in its own x-jsonld, https://schemas.openagrinet.global/..., does
+// not: the host has no DNS record, so a JSON-LD processor handed it can fetch
+// nothing. Both are exercised in TestShippedMappingEchoesTheCallersContext,
+// since the mapping must not care which it is given.
+const declaredContext = "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1/context.jsonld"
+
 const selectRequest = `{
   "context": { "version": "2.0.0", "action": "select",
     "networkId": "oan-dev",
@@ -64,7 +74,7 @@ const selectRequest = `{
       "id": "res:pocra:facility-search",
       "quantity": 1,
       "resourceAttributes": {
-        "@context": "https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/context.jsonld",
+        "@context": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1/context.jsonld",
         "@type": "openagrinet:AgricultureFacility",
         "informationMode": "OnDemand",
         "supportedFacilityTypes": ["KrishiVigyanKendra"]
@@ -539,7 +549,7 @@ func TestShippedMappingFollowsTheAgricultureFacilityPack(t *testing.T) {
 		}
 
 		for _, f := range []struct{ key, want string }{
-			{"@context", "https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/context.jsonld"},
+			{"@context", declaredContext},
 			{"@type", "openagrinet:AgricultureFacility"},
 			{"informationMode", "Direct"},
 			{"facilityType", "KrishiVigyanKendra"},
@@ -1161,17 +1171,19 @@ func TestShippedMappingReturnsOnlyTheRequestedFacilityType(t *testing.T) {
 // restating a pack URL of its own.
 //
 // Hardcoding it meant the mapping had to know which identifier is current, and
-// could contradict what the caller actually sent. Both forms below are real:
-// the schemas.openagrinet.global identifier the packs name, and the GitHub pack
-// URL a deployment tracking a branch would send.
+// could contradict what the caller actually sent. Both forms below are in use:
+// the published pack URL, which is what resolves today and what the fixture
+// declares, and the schemas.openagrinet.global identifier the packs name in
+// their own x-jsonld -- which has no DNS record, so a caller cannot be assumed
+// to send either one.
 //
 // The pack does not constrain @context -- it appears only under x-jsonld, which
 // is annotation metadata a JSON Schema validator ignores -- so conformance
 // cannot catch a wrong one. This test is the only thing that does.
 func TestShippedMappingEchoesTheCallersContext(t *testing.T) {
 	for _, declared := range []string{
+		declaredContext,
 		"https://schemas.openagrinet.global/schema/AgricultureFacility/v0.1/context.jsonld",
-		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1/context.jsonld",
 	} {
 		t.Run(declared, func(t *testing.T) {
 			var payload map[string]any
