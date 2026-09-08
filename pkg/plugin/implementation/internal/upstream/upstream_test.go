@@ -2054,3 +2054,87 @@ func TestRedactStringWithNoCredentialConfigured(t *testing.T) {
 		})
 	}
 }
+
+// _local is part of the mapping interface, and until now nothing asserted it.
+// Every shipped plugin declares an empty Prerequisites map, so the whole path
+// was dead code: the first provider to add a real prerequisite would have found
+// out at runtime whether its resolved values reach the mapping at all.
+//
+// Both legs, because a resolved value is usually needed on the way back too --
+// a code looked up to make the call is what names the thing in the answer.
+func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	prerequisites := Prerequisites{
+		testBindingKey: func(context.Context, any) (map[string]any, error) {
+			return map[string]any{"stationId": "42", "marketCode": "2056"}, nil
+		},
+	}
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
+	step, closer, err := New(context.Background(),
+		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
+		&Config{BindingKeys: []string{testBindingKey}})
+	if err != nil {
+		t.Fatalf("New() returned an unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+
+	for _, leg := range []struct {
+		name  string
+		input any
+	}{
+		{name: "request", input: mapper.requestInput},
+		{name: "response", input: mapper.responseInput},
+	} {
+		t.Run(leg.name+" leg", func(t *testing.T) {
+			asMap, ok := leg.input.(map[string]any)
+			if !ok {
+				t.Fatalf("%s leg input = %T, want a map", leg.name, leg.input)
+			}
+			local, present := asMap["_local"].(map[string]any)
+			if !present {
+				t.Fatalf("%s leg carries no _local; a resolved prerequisite never reaches the mapping", leg.name)
+			}
+			if local["stationId"] != "42" || local["marketCode"] != "2056" {
+				t.Errorf("_local = %v, want both resolved values", local)
+			}
+		})
+	}
+}
+
+// With no prerequisites -- every plugin shipped today -- _local is present and
+// empty rather than absent, so a mapping referring to it reads nothing instead
+// of failing on an unknown name.
+func TestRunPassesAnEmptyLocalWhenThereAreNoPrerequisites(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+
+	asMap, ok := mapper.requestInput.(map[string]any)
+	if !ok {
+		t.Fatalf("request input = %T, want a map", mapper.requestInput)
+	}
+	local, present := asMap["_local"].(map[string]any)
+	if !present {
+		t.Fatal("_local is absent; a mapping referring to it would fail rather than read nothing")
+	}
+	if len(local) != 0 {
+		t.Errorf("_local = %v, want it empty", local)
+	}
+}
