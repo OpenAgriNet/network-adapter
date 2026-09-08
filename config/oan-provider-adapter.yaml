@@ -4,6 +4,11 @@
 # capability's call plan from the registry, calls the provider, and answers with
 # the mapped result. There is no callback -- the answer is the HTTP response.
 #
+# Two capabilities are served here, weather and mandi, by two domain packages
+# in one pipeline. They share this module, the registry client and the mapper,
+# and share nothing else: which one answers is decided by the payload, not by
+# the URL, the domain or the order they appear in.
+#
 # Adding a provider is three things, and none of them is a Go change here:
 #   1. a registry row binding "<participantId>|<capabilityCode>" to a call plan
 #   2. one mapping file per action, published at the URL that row names
@@ -270,6 +275,43 @@ modules:
               #
               #   maxResponseBytes: 4194304   # default: 4194304 (4 MiB)
 
+          # A second capability in the same pipeline, from a different domain
+          # package. Nothing about it is weather's business: a different
+          # upstream, a different mapping, a different set of prerequisites --
+          # and the same two registry rows. This entry, plus "mandi" in steps
+          # below, is the entire cost of adding it.
+          - id: mandi
+            config:
+              bindingKeys: "agmarknet|openagrinet:MandiPrice"
+
+              # Agmarknet's Vistaar API takes its token as a QUERY parameter,
+              # which is what authScheme query is for. The adapter holds the
+              # parameter's NAME and the name of the variable carrying the
+              # value -- never the value -- and redacts it from the URL it
+              # logs, so a token cannot reach the log by way of the request.
+              authScheme: query
+              queryName: token
+              queryValueEnv: MANDI_TOKEN
+
+              # MANDI_TOKEN MUST BE SET IN THE ADAPTER'S ENVIRONMENT. Without it
+              # every mandi call fails immediately and permanently: the step
+              # refuses to call an upstream unauthenticated, and marks the failure
+              # as one no retry can fix.
+              #
+              # There is no default and there cannot be one -- a credential is not
+              # something this file may hold. So the failure mode is a plugin that
+              # loads cleanly, registers cleanly, passes startup validation, and
+              # then fails 100% of requests. Worth knowing before deploying:
+              #
+              #   docker:     -e MANDI_TOKEN=...   or an env_file
+              #   kubernetes: a Secret, mounted as an environment variable
+              #   local:      MANDI_TOKEN=... ./server --config=...
+              #
+              # The error names the SCHEME rather than the variable, deliberately:
+              # this runs behind a signed network call and a peer has no business
+              # learning which variables this deployment reads. The variable name
+              # is in the adapter's own log at error level.
+
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
       # request falls through to the 404 above -- which looks like a registry
@@ -277,7 +319,8 @@ modules:
       steps:
         - validateSign     # the sender's key, from the registry
         - validateSchema   # the pinned Beckn v2 spec
-        - weather          # resolve, map out, call, map back
+        - weather          # openagrinet:WeatherObservation, or pass through
+        - mandi            # openagrinet:MandiPrice, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------
