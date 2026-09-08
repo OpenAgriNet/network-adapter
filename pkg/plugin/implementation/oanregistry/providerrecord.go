@@ -138,9 +138,6 @@ func (c *Client) ProviderRecord(ctx context.Context, bindingKey string) (*model.
 	return plan, nil
 }
 
-// servedActions lists the actions a plan covers, sorted so the same record logs
-// the same way twice.
-
 // refuse records a deliberate denial and returns the caller's sentinel. The
 // registry answered; the answer was no.
 func (c *Client) refuse(ctx context.Context, span trace.Span, start time.Time, outcome string) error {

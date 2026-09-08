@@ -222,9 +222,15 @@ plugin error counter. The `error_type` dimension is one of:
 
 Provider-record lookups report under `operation=provider_record`, with their own
 outcomes: `binding_not_found` · `binding_inactive` · `binding_unowned` ·
-`participant_not_found` · `participant_inactive` · `no_upstream_url` ·
-`no_binding_key`. Each refusal is kept distinct: they all deny the call, but a
-withdrawn capability and a suspended provider are different operational events.
+`binding_no_actions` · `participant_not_found` · `participant_inactive` ·
+`no_upstream_url` · `no_binding_key`. Each refusal is kept distinct: they all
+deny the call, but a withdrawn capability and a suspended provider are different
+operational events.
+
+`binding_no_actions` is the easiest of these to leave out of a dashboard and the
+least obvious to reproduce: the binding is active and owned by this provider,
+and it still serves nothing, because its record carries no actions. Counting it
+under one of the others would merge "misconfigured" into "withdrawn".
 
 Signing-key lookups report under `operation=lookup`:
 
