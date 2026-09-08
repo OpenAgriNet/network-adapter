@@ -9,33 +9,33 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/oanregistry"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/sunbirdRegistry"
 )
 
 // Defaults for settings an operator leaves out. Only parseConfig can tell
 // "absent" from "explicitly zero" -- retry_max of 0 is a legitimate "do not
 // retry" -- so they are applied here. The values themselves live in the
-// oanregistry package so there is exactly one place to change them.
+// sunbirdRegistry package so there is exactly one place to change them.
 const (
-	defaultEntity         = oanregistry.DefaultEntity
-	defaultProviderEntity = oanregistry.DefaultProviderEntity
-	defaultTimeout        = oanregistry.DefaultTimeoutSeconds
-	defaultRetryMax       = oanregistry.DefaultRetryMax
-	defaultRetryWaitMin   = oanregistry.DefaultRetryWaitMin
-	defaultRetryWaitMax   = oanregistry.DefaultRetryWaitMax
+	defaultEntity         = sunbirdRegistry.DefaultEntity
+	defaultProviderEntity = sunbirdRegistry.DefaultProviderEntity
+	defaultTimeout        = sunbirdRegistry.DefaultTimeoutSeconds
+	defaultRetryMax       = sunbirdRegistry.DefaultRetryMax
+	defaultRetryWaitMin   = sunbirdRegistry.DefaultRetryWaitMin
+	defaultRetryWaitMax   = sunbirdRegistry.DefaultRetryWaitMax
 )
 
-// oanRegistryProvider implements the RegistryLookupProvider interface for the
-// OAN registry plugin.
-type oanRegistryProvider struct{}
+// sunbirdRegistryProvider implements the RegistryLookupProvider interface for the
+// registry plugin.
+type sunbirdRegistryProvider struct{}
 
-// newOANRegistryFunc creates a new OAN registry client. Indirected for tests.
-var newOANRegistryFunc = oanregistry.New
+// newSunbirdRegistryFunc creates a new registry client. Indirected for tests.
+var newSunbirdRegistryFunc = sunbirdRegistry.New
 
-// parseConfig parses the configuration map into an oanregistry.Config, starting
+// parseConfig parses the configuration map into an sunbirdRegistry.Config, starting
 // from the defaults and overriding whatever the operator supplied.
-func (o oanRegistryProvider) parseConfig(config map[string]string) (*oanregistry.Config, error) {
-	cfg := &oanregistry.Config{
+func (o sunbirdRegistryProvider) parseConfig(config map[string]string) (*sunbirdRegistry.Config, error) {
+	cfg := &sunbirdRegistry.Config{
 		URL:            config["url"],
 		Entity:         defaultEntity,
 		ProviderEntity: defaultProviderEntity,
@@ -135,8 +135,8 @@ func (o oanRegistryProvider) parseConfig(config map[string]string) (*oanregistry
 	return cfg, nil
 }
 
-// New creates a new OAN registry plugin instance.
-func (o oanRegistryProvider) New(ctx context.Context, cache definition.Cache, config map[string]string) (definition.RegistryLookup, func() error, error) {
+// New creates a new registry plugin instance.
+func (o sunbirdRegistryProvider) New(ctx context.Context, cache definition.Cache, config map[string]string) (definition.RegistryLookup, func() error, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("context cannot be nil")
 	}
@@ -144,12 +144,12 @@ func (o oanRegistryProvider) New(ctx context.Context, cache definition.Cache, co
 	cfg, err := o.parseConfig(config)
 	if err != nil {
 		log.Errorf(ctx, err, "Failed to parse OAN registry configuration")
-		return nil, nil, fmt.Errorf("failed to parse oan registry configuration: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse registry configuration: %w", err)
 	}
 
 	log.Debugf(ctx, "OAN registry config mapped: %+v", cfg)
 
-	client, closer, err := newOANRegistryFunc(ctx, cache, cfg)
+	client, closer, err := newSunbirdRegistryFunc(ctx, cache, cfg)
 	if err != nil {
 		log.Errorf(ctx, err, "Failed to create OAN registry instance")
 		return nil, nil, err
@@ -160,4 +160,4 @@ func (o oanRegistryProvider) New(ctx context.Context, cache definition.Cache, co
 }
 
 // Provider is the exported plugin instance.
-var Provider = oanRegistryProvider{}
+var Provider = sunbirdRegistryProvider{}

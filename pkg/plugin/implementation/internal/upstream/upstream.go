@@ -33,7 +33,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/oanbinding"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/capabilitybinding"
 )
 
 // Defaults applied when the registry or the operator leaves a setting out.
@@ -164,7 +164,7 @@ type Config struct {
 // safe for concurrent use.
 type Step struct {
 	config        *Config
-	paths         oanbinding.Paths
+	paths         capabilitybinding.Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
 	mapper        definition.Mapper
@@ -218,19 +218,19 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 // Both halves or neither: overriding one and leaving the other on the default
 // is a half-configured deployment that would match nothing, and it would do so
 // silently on every request rather than once at startup.
-func bindingPaths(cfg *Config) (oanbinding.Paths, error) {
+func bindingPaths(cfg *Config) (capabilitybinding.Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
-		return oanbinding.BecknV2, nil
+		return capabilitybinding.BecknV2, nil
 	}
 	if cfg.ProviderIDAt == "" {
-		return oanbinding.Paths{}, errors.New("upstream: capabilityCodeAt is set without providerIdAt")
+		return capabilitybinding.Paths{}, errors.New("upstream: capabilityCodeAt is set without providerIdAt")
 	}
 	if cfg.CapabilityCodeAt == "" {
-		return oanbinding.Paths{}, errors.New("upstream: providerIdAt is set without capabilityCodeAt")
+		return capabilitybinding.Paths{}, errors.New("upstream: providerIdAt is set without capabilityCodeAt")
 	}
-	paths := oanbinding.Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
+	paths := capabilitybinding.Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
 	if err := paths.Validate(); err != nil {
-		return oanbinding.Paths{}, err
+		return capabilitybinding.Paths{}, err
 	}
 	return paths, nil
 }
@@ -283,8 +283,8 @@ func applyDefaults(cfg *Config) error {
 // pipeline and each recognises its own work, so adding a provider is one more
 // entry rather than a change to a routing table.
 func (s *Step) Run(ctx *model.StepContext) error {
-	binding, err := oanbinding.From(s.paths, ctx.Body)
-	if errors.Is(err, oanbinding.ErrNoBinding) {
+	binding, err := capabilitybinding.From(s.paths, ctx.Body)
+	if errors.Is(err, capabilitybinding.ErrNoBinding) {
 		return nil
 	}
 	if err != nil {

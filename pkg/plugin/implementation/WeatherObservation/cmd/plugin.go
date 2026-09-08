@@ -9,20 +9,20 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/weather"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
 )
 
 // weatherProvider implements definition.ProviderStepProvider.
 type weatherProvider struct{}
 
 // newStepFunc creates a new step. Indirected for tests.
-var newStepFunc = weather.New
+var newStepFunc = WeatherObservation.New
 
 // parseConfig turns the plugin config map into a typed Config. Anything absent
-// is left zero: weather.New applies the defaults and validates the auth
+// is left zero: WeatherObservation.New applies the defaults and validates the auth
 // scheme, so those rules live in one place.
-func (p weatherProvider) parseConfig(config map[string]string) (*weather.Config, error) {
-	cfg := &weather.Config{
+func (p weatherProvider) parseConfig(config map[string]string) (*WeatherObservation.Config, error) {
+	cfg := &WeatherObservation.Config{
 		BindingKeys: splitList(config["bindingKeys"]),
 		// Absent means the Beckn v2 convention. See upstream.Config for why
 		// this is a default rather than something to set.

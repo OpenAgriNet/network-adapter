@@ -1,9 +1,9 @@
-// Package oanregistry resolves participant signing keys from the OAN Registry
-// (a SunbirdRC deployment) so inbound Beckn signatures can be verified.
+// Package sunbirdRegistry resolves participant signing keys from a SunbirdRC
+// registry so inbound Beckn signatures can be verified.
 //
 // It implements definition.RegistryLookup only. Onboarding, key publication and
 // status changes all happen through the registry's own Participant APIs.
-package oanregistry
+package sunbirdRegistry
 
 import (
 	"context"
@@ -129,13 +129,13 @@ func classify(err error) string {
 }
 
 const (
-	pluginID                = "oanregistry"
+	pluginID                = "sunbirdRegistry"
 	pluginType              = "registry"
 	operationLookup         = "lookup"
 	operationProviderRecord = "provider_record"
 )
 
-// Config holds configuration parameters for the OAN registry client.
+// Config holds configuration parameters for the registry client.
 type Config struct {
 	// URL is the registry base including any API version prefix,
 	// e.g. "http://registry:8081/api/v1".
@@ -156,7 +156,7 @@ type Config struct {
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 }
 
-// Client resolves participants from the OAN registry. It is safe for concurrent
+// Client resolves participants from the registry. It is safe for concurrent
 // use: every field is set once in New and never mutated afterwards.
 type Client struct {
 	searchURL         string
@@ -232,23 +232,23 @@ type searchRequest struct {
 	Filters map[string]eqFilter `json:"filters"`
 }
 
-// validate checks if the provided OAN registry configuration is valid.
+// validate checks if the provided registry configuration is valid.
 func validate(cfg *Config) error {
 	if cfg == nil {
-		return fmt.Errorf("oan registry config cannot be nil")
+		return fmt.Errorf("registry config cannot be nil")
 	}
 	if cfg.URL == "" {
-		return fmt.Errorf("oan registry URL cannot be empty")
+		return fmt.Errorf("registry URL cannot be empty")
 	}
 	// url.Parse accepts almost anything, so check the parts that actually have
 	// to be there. Catching "registry:8081" (no scheme) at startup is far
 	// cheaper than watching every lookup fail once traffic arrives.
 	parsed, err := url.Parse(cfg.URL)
 	if err != nil {
-		return fmt.Errorf("invalid oan registry URL %q: %w", cfg.URL, err)
+		return fmt.Errorf("invalid registry URL %q: %w", cfg.URL, err)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("oan registry URL %q must include a scheme and host, e.g. http://<host>:<port>/api/v1", cfg.URL)
+		return fmt.Errorf("registry URL %q must include a scheme and host, e.g. http://<host>:<port>/api/v1", cfg.URL)
 	}
 	return nil
 }
@@ -359,7 +359,7 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.Subscription, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
-	ctx, span := tracer.Start(ctx, "oan registry lookup")
+	ctx, span := tracer.Start(ctx, "registry lookup")
 	defer span.End()
 
 	// M2: an empty key id would match any record whose OSID is absent. Unreachable
@@ -371,7 +371,7 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 		return nil, nil
 	}
 
-	cacheKey := fmt.Sprintf("oan_lookup_%s_%s", req.SubscriberID, req.KeyID)
+	cacheKey := fmt.Sprintf("registry_lookup_%s_%s", req.SubscriberID, req.KeyID)
 	if cached, ok := c.cached(ctx, tracer, cacheKey); ok {
 		log.Debugf(ctx, "OAN registry lookup cache hit for key: %s", cacheKey)
 		span.SetAttributes(telemetry.AttrErrorType.String(outcomeCacheHit))
@@ -547,7 +547,7 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 	validFrom, _ := parseTime(k.ValidFrom)
 	validUntil, _ := parseTime(k.ValidUntil)
 
-	// Domain is absent from the OAN record and so is left unset. Nothing on the
+	// Domain is absent from the registry record and so is left unset. Nothing on the
 	// signature-validation path reads it.
 	return model.Subscription{
 		Subscriber: model.Subscriber{

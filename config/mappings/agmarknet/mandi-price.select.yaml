@@ -57,8 +57,9 @@ required:
            this guard, the outbound query, and the commodity stamped on each
            resource. So a caller sending three commodities passed validation, was
            queried for the first, and got a confident signed answer to a third of
-           what it asked -- the same failure oanbinding refuses at the commitment
-           level, where guessing would silently serve part of a request. */
+           what it asked -- the same failure capabilitybinding refuses at the
+           commitment level, where guessing would silently serve part of a
+           request. */
         $exists($ra.supportedCommodities[0].code)
           and $count($ra.supportedCommodities) = 1
       )

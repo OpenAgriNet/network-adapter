@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/oanregistry"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/sunbirdRegistry"
 )
 
-func defaultConfig() *oanregistry.Config {
-	return &oanregistry.Config{
+func defaultConfig() *sunbirdRegistry.Config {
+	return &sunbirdRegistry.Config{
 		Entity:         defaultEntity,
 		ProviderEntity: defaultProviderEntity,
 		Timeout:        defaultTimeout,
@@ -26,7 +26,7 @@ func defaultConfig() *oanregistry.Config {
 func TestParseConfig(t *testing.T) {
 	t.Parallel()
 
-	withDefaults := func(apply func(*oanregistry.Config)) *oanregistry.Config {
+	withDefaults := func(apply func(*sunbirdRegistry.Config)) *sunbirdRegistry.Config {
 		cfg := defaultConfig()
 		apply(cfg)
 		return cfg
@@ -35,13 +35,13 @@ func TestParseConfig(t *testing.T) {
 	testCases := []struct {
 		name        string
 		config      map[string]string
-		expected    *oanregistry.Config
+		expected    *sunbirdRegistry.Config
 		expectedErr string
 	}{
 		{
 			name:     "applies defaults when only a URL is given",
 			config:   map[string]string{"url": "http://registry:8081/api/v1"},
-			expected: withDefaults(func(c *oanregistry.Config) { c.URL = "http://registry:8081/api/v1" }),
+			expected: withDefaults(func(c *sunbirdRegistry.Config) { c.URL = "http://registry:8081/api/v1" }),
 		},
 		{
 			name: "reads every supported setting",
@@ -54,7 +54,7 @@ func TestParseConfig(t *testing.T) {
 				"retry_wait_min": "200ms",
 				"retry_wait_max": "1s",
 			},
-			expected: &oanregistry.Config{
+			expected: &sunbirdRegistry.Config{
 				URL:            "http://registry:8081/api/v1",
 				Entity:         "Subscriber",
 				ProviderEntity: defaultProviderEntity,
@@ -71,7 +71,7 @@ func TestParseConfig(t *testing.T) {
 				"url":            "http://registry:8081",
 				"providerEntity": "ProviderCapability",
 			},
-			expected: withDefaults(func(c *oanregistry.Config) {
+			expected: withDefaults(func(c *sunbirdRegistry.Config) {
 				c.URL = "http://registry:8081"
 				c.ProviderEntity = "ProviderCapability"
 			}),
@@ -82,7 +82,7 @@ func TestParseConfig(t *testing.T) {
 				"url":            "http://registry:8081",
 				"providerEntity": "",
 			},
-			expected: withDefaults(func(c *oanregistry.Config) {
+			expected: withDefaults(func(c *sunbirdRegistry.Config) {
 				c.URL = "http://registry:8081"
 			}),
 		},
@@ -91,18 +91,18 @@ func TestParseConfig(t *testing.T) {
 			// participant keeps verifying.
 			name:     "leaves caching disabled when no TTL is set",
 			config:   map[string]string{"url": "http://registry:8081"},
-			expected: withDefaults(func(c *oanregistry.Config) { c.URL = "http://registry:8081" }),
+			expected: withDefaults(func(c *sunbirdRegistry.Config) { c.URL = "http://registry:8081" }),
 		},
 		{
 			// Distinct from "unset", which yields the default of 1.
 			name:     "honours an explicit retry_max of zero",
 			config:   map[string]string{"url": "http://registry:8081", "retry_max": "0"},
-			expected: withDefaults(func(c *oanregistry.Config) { c.URL = "http://registry:8081"; c.RetryMax = 0 }),
+			expected: withDefaults(func(c *sunbirdRegistry.Config) { c.URL = "http://registry:8081"; c.RetryMax = 0 }),
 		},
 		{
 			name:     "ignores empty values and keeps the defaults",
 			config:   map[string]string{"url": "http://registry:8081", "entity": "", "timeout": ""},
-			expected: withDefaults(func(c *oanregistry.Config) { c.URL = "http://registry:8081" }),
+			expected: withDefaults(func(c *sunbirdRegistry.Config) { c.URL = "http://registry:8081" }),
 		},
 		{
 			name:        "rejects a non-numeric timeout",
@@ -144,7 +144,7 @@ func TestParseConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := oanRegistryProvider{}.parseConfig(tc.config)
+			got, err := sunbirdRegistryProvider{}.parseConfig(tc.config)
 
 			if tc.expectedErr != "" {
 				if err == nil {
@@ -173,7 +173,7 @@ func TestNew(t *testing.T) {
 		t.Parallel()
 
 		//nolint:staticcheck // deliberately passing a nil context to assert the guard.
-		_, _, err := oanRegistryProvider{}.New(nil, nil, map[string]string{"url": "http://registry:8081"})
+		_, _, err := sunbirdRegistryProvider{}.New(nil, nil, map[string]string{"url": "http://registry:8081"})
 		if err == nil {
 			t.Fatal("expected an error for a nil context, got none")
 		}
@@ -182,7 +182,7 @@ func TestNew(t *testing.T) {
 	t.Run("rejects a missing URL", func(t *testing.T) {
 		t.Parallel()
 
-		_, _, err := oanRegistryProvider{}.New(context.Background(), nil, map[string]string{})
+		_, _, err := sunbirdRegistryProvider{}.New(context.Background(), nil, map[string]string{})
 		if err == nil {
 			t.Fatal("expected an error for a missing URL, got none")
 		}
@@ -191,7 +191,7 @@ func TestNew(t *testing.T) {
 	t.Run("rejects an unparseable config", func(t *testing.T) {
 		t.Parallel()
 
-		_, _, err := oanRegistryProvider{}.New(context.Background(), nil, map[string]string{
+		_, _, err := sunbirdRegistryProvider{}.New(context.Background(), nil, map[string]string{
 			"url":     "http://registry:8081",
 			"timeout": "soon",
 		})
@@ -203,7 +203,7 @@ func TestNew(t *testing.T) {
 	t.Run("builds a client from a valid config", func(t *testing.T) {
 		t.Parallel()
 
-		client, closer, err := oanRegistryProvider{}.New(context.Background(), nil, map[string]string{
+		client, closer, err := sunbirdRegistryProvider{}.New(context.Background(), nil, map[string]string{
 			"url": "http://registry:8081/api/v1",
 		})
 		if err != nil {
@@ -220,20 +220,20 @@ func TestNew(t *testing.T) {
 		}
 	})
 
-	// Deliberately NOT parallel: this swaps the package-level newOANRegistryFunc,
+	// Deliberately NOT parallel: this swaps the package-level newSunbirdRegistryFunc,
 	// so running it alongside its parallel siblings would race on that variable.
 	// Go never schedules a non-parallel subtest concurrently with parallel ones,
 	// which is what makes this safe -- do not add t.Parallel() "for consistency".
 	t.Run("propagates a client construction failure", func(t *testing.T) {
-		original := newOANRegistryFunc
-		t.Cleanup(func() { newOANRegistryFunc = original })
+		original := newSunbirdRegistryFunc
+		t.Cleanup(func() { newSunbirdRegistryFunc = original })
 
 		wantErr := errors.New("boom")
-		newOANRegistryFunc = func(context.Context, definition.Cache, *oanregistry.Config) (*oanregistry.Client, func() error, error) {
+		newSunbirdRegistryFunc = func(context.Context, definition.Cache, *sunbirdRegistry.Config) (*sunbirdRegistry.Client, func() error, error) {
 			return nil, nil, wantErr
 		}
 
-		_, _, err := oanRegistryProvider{}.New(context.Background(), nil, map[string]string{"url": "http://registry:8081"})
+		_, _, err := sunbirdRegistryProvider{}.New(context.Background(), nil, map[string]string{"url": "http://registry:8081"})
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("expected the underlying error to be propagated, got: %v", err)
 		}

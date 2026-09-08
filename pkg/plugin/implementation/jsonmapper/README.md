@@ -13,7 +13,7 @@ what a mapping says, and nothing about the payloads passing through. Anything
 specific to a network or a provider belongs in the caller, which is what lets one
 mapper serve all of them.
 
-Its first caller is the OAN provider flow, where it translates between Beckn
+Its first caller is the provider flow, where it translates between Beckn
 payloads and each provider's own request and response shapes -- so adding a
 provider is one mapping file and a registry row rather than another
 transformation routine.
