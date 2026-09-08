@@ -89,6 +89,16 @@ const (
 	// transport error -- so the value is redacted from anything this package
 	// logs or returns. See redact.
 	AuthSchemeQuery = "query"
+
+	// AuthSchemeOAuth2 exchanges a client id and secret for a short-lived
+	// bearer token, and sends that. For an upstream behind an OAuth2 token
+	// endpoint -- a Keycloak service account, say -- where a static token is not
+	// an option: the live one this was written against lives ten hours, so a
+	// value pasted into an environment variable is wrong twice a day.
+	//
+	// Only the client_credentials grant. There is no user to redirect and no
+	// refresh token in that grant, so the other flows would be dead code.
+	AuthSchemeOAuth2 = "oauth2"
 )
 
 // codeUpstreamUnavailable reports a provider that could not be reached or
@@ -155,6 +165,15 @@ type Config struct {
 	// never in this config, only the name of the variable carrying it.
 	QueryName     string `yaml:"queryName" json:"queryName"`
 	QueryValueEnv string `yaml:"queryValueEnv" json:"queryValueEnv"`
+
+	// TokenURL is the OAuth2 token endpoint. Not a credential, so it is named
+	// here rather than through an environment variable -- but it IS
+	// deployment-specific, so the reference config carries a placeholder.
+	TokenURL string `yaml:"tokenUrl" json:"tokenUrl"`
+	// ClientIDEnv and ClientSecretEnv name the variables holding the client
+	// credentials. The values never appear in config, the registry, or a log.
+	ClientIDEnv     string `yaml:"clientIdEnv" json:"clientIdEnv"`
+	ClientSecretEnv string `yaml:"clientSecretEnv" json:"clientSecretEnv"`
 
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
@@ -269,9 +288,14 @@ func applyDefaults(cfg *Config) error {
 		if cfg.QueryName == "" || cfg.QueryValueEnv == "" {
 			return errors.New("upstream: authScheme query requires queryName and queryValueEnv")
 		}
+	case AuthSchemeOAuth2:
+		if cfg.TokenURL == "" || cfg.ClientIDEnv == "" || cfg.ClientSecretEnv == "" {
+			return errors.New(
+				"upstream: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv")
+		}
 	default:
 		return fmt.Errorf(
-			"upstream: unknown authScheme %q: must be none, basic, header or query", cfg.AuthScheme)
+			"upstream: unknown authScheme %q: must be none, basic, header, query or oauth2", cfg.AuthScheme)
 	}
 	return nil
 }
@@ -788,6 +812,35 @@ type redactedErr struct {
 
 func (e redactedErr) Error() string { return e.text }
 func (e redactedErr) Unwrap() error { return e.err }
+
+// tokenLifetime turns a token response's expires_in into how long we may hold
+// that token, or reports that we may not hold it at all.
+//
+// The issuer owns this number, so it is read from the response and never from
+// our config: a configured copy is a second version of the same fact, and it
+// is wrong the moment a realm's token lifetime is retuned -- silently, with
+// every request 401ing until someone edits a file.
+//
+// skew is subtracted so a request that passes the check cannot arrive at the
+// provider after expiry. It has to exceed the round trip, and costs one extra
+// refresh per token lifetime.
+//
+// Two answers rather than one duration, because "we were not told" is not a
+// lifetime. A response with no expires_in is refused rather than cached for a
+// guessed period or re-fetched on every single request.
+func tokenLifetime(expiresIn int, skew time.Duration) (time.Duration, bool) {
+	if expiresIn <= 0 {
+		return 0, false
+	}
+	lifetime := time.Duration(expiresIn) * time.Second
+	// A lifetime at or under the skew would put the expiry in the past, and
+	// then every request fetches a fresh token. Half is still early enough to
+	// refresh before the real expiry.
+	if lifetime <= skew {
+		return lifetime / 2, true
+	}
+	return lifetime - skew, true
+}
 
 // redactString removes the configured credential from any text about to be
 // logged or returned -- an error, a provider's response body, or the URL that

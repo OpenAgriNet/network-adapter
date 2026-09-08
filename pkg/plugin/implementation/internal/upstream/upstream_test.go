@@ -152,6 +152,14 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 		{"header with both settings", &Config{AuthScheme: AuthSchemeHeader, HeaderName: "X-Key", HeaderValueEnv: "V"}, true},
 		{"header missing the value variable", &Config{AuthScheme: AuthSchemeHeader, HeaderName: "X-Key"}, false},
 		{"an unknown scheme", &Config{AuthScheme: "oauth"}, false},
+		{"oauth2 with all three settings", &Config{AuthScheme: AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID", ClientSecretEnv: "SECRET"}, true},
+		{"oauth2 missing the token url", &Config{AuthScheme: AuthSchemeOAuth2,
+			ClientIDEnv: "ID", ClientSecretEnv: "SECRET"}, false},
+		{"oauth2 missing the client id variable", &Config{AuthScheme: AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientSecretEnv: "SECRET"}, false},
+		{"oauth2 missing the client secret variable", &Config{AuthScheme: AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID"}, false},
 	}
 
 	for _, tc := range testCases {
@@ -2136,5 +2144,57 @@ func TestRunPassesAnEmptyLocalWhenThereAreNoPrerequisites(t *testing.T) {
 	}
 	if len(local) != 0 {
 		t.Errorf("_local = %v, want it empty", local)
+	}
+}
+
+// A token's lifetime comes from the token response, never from our config: the
+// issuer owns it, and a configured copy drifts the moment a realm is retuned.
+//
+// Pure so the edge cases need no clock and no sleeping -- the same shape as
+// budget() above.
+func TestTokenLifetime(t *testing.T) {
+	t.Parallel()
+
+	const skew = 60 * time.Second
+
+	testCases := []struct {
+		name      string
+		expiresIn int
+		want      time.Duration
+		usable    bool
+	}{
+		{
+			// The live Keycloak realm: 10 hours, so we stop trusting it a
+			// minute early and refresh on the next request through.
+			name: "the ordinary case", expiresIn: 36000,
+			want: 36000*time.Second - skew, usable: true,
+		},
+		{
+			// SHORTER THAN THE SKEW. now + 30s - 60s is in the past, so the
+			// naive arithmetic makes every single request fetch a new token.
+			// Half the lifetime is still ahead of expiry and still refreshes.
+			name: "shorter than the skew", expiresIn: 30,
+			want: 15 * time.Second, usable: true,
+		},
+		{name: "exactly the skew", expiresIn: 60, want: 30 * time.Second, usable: true},
+		{name: "one second", expiresIn: 1, want: 500 * time.Millisecond, usable: true},
+		// A response that does not say how long its token lives is refused
+		// rather than cached for a guessed duration or re-fetched forever.
+		{name: "absent", expiresIn: 0, usable: false},
+		{name: "negative", expiresIn: -1, usable: false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := tokenLifetime(tc.expiresIn, skew)
+			if ok != tc.usable {
+				t.Fatalf("tokenLifetime(%d) usable = %v, want %v", tc.expiresIn, ok, tc.usable)
+			}
+			if ok && got != tc.want {
+				t.Errorf("tokenLifetime(%d) = %v, want %v", tc.expiresIn, got, tc.want)
+			}
+		})
 	}
 }
