@@ -79,16 +79,27 @@ type stubMapper struct {
 	requestInputs []any
 	directions    []definition.Direction
 	refs          []string
+
+	// mu guards every field above. A fan-out with concurrency > 1 calls
+	// Transform from more than one goroutine at once (that concurrency is
+	// what TestFanOutHonoursTheConfiguredConcurrency exists to prove), so an
+	// unguarded slice append or field write here is a real data race in the
+	// test double, not in upstream itself -- caught by `go test -race`.
+	mu sync.Mutex
 }
 
 // verifyErr is what Verify answers with, so a test can stand in for a mapping
 // whose precondition refused.
 func (s *stubMapper) Verify(_ context.Context, mappingRef string, input any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.verified = true
 	return s.verifyErr
 }
 
 func (s *stubMapper) Transform(_ context.Context, mappingRef string, direction definition.Direction, input any) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.directions = append(s.directions, direction)
 	s.refs = append(s.refs, mappingRef)
 	if s.err != nil {
