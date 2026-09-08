@@ -16,7 +16,7 @@ package AgricultureFacility_test
 // them: once over the network, then from disk. So the base URIs are the real,
 // dereferenceable ones,
 //
-//	https://raw.githubusercontent.com/OpenAgriNet/network-specs/tree/schema-packs-v0.1/schema/AgricultureFacility/v0.1
+//	https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1
 //
 // the relative refs the pack writes ("../../AgricultureResource/v0.1/...")
 // resolve against them with no table to keep in step, and the beckn.io
@@ -37,6 +37,7 @@ package AgricultureFacility_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,10 +147,13 @@ func (l *packLoader) sawLoaded(url string) bool {
 }
 
 // skipIfOffline turns "the pack could not be reached and was not cached" into a
-// skip, and leaves every other failure to the caller.
+// skip, and leaves every other failure to the caller -- including a reachable
+// server that answered with something other than 200, which is not offline,
+// it is a finding.
 //
 // The distinction is the point. A schema that no longer compiles is a finding; a
-// laptop on a train is not.
+// laptop on a train is not. A 404 for a pack that moved or was deleted is a
+// finding too, not a train.
 func (l *packLoader) skipIfOffline(t *testing.T, cause error) {
 	t.Helper()
 
@@ -157,6 +161,10 @@ func (l *packLoader) skipIfOffline(t *testing.T, cause error) {
 	fetchErr := l.fetchErr
 	l.mu.Unlock()
 	if fetchErr == nil {
+		return
+	}
+	var status httpStatusError
+	if errors.As(fetchErr, &status) {
 		return
 	}
 	t.Skipf("the schema pack is neither cached under %s nor reachable, so conformance "+
@@ -204,6 +212,18 @@ func cachePath(rawURL string) (string, error) {
 	return filepath.Join(schemaCacheDir, parsed.Host, filepath.FromSlash(clean)), nil
 }
 
+// httpStatusError marks a fetch that reached the server and got back
+// something other than 200 -- a reachable pack that 404s or 500s, not an
+// unreachable one. skipIfOffline uses the type to tell the two apart.
+type httpStatusError struct {
+	url    string
+	status string
+}
+
+func (e httpStatusError) Error() string {
+	return fmt.Sprintf("GET %s: %s", e.url, e.status)
+}
+
 // fetchSchema retrieves one document. Redirects are followed -- schema.beckn.io
 // 301s to schema.nfh.global -- but the URL the ref was written with is what the
 // document is cached and registered under, which is what makes the refs
@@ -217,7 +237,7 @@ func fetchSchema(url string) ([]byte, error) {
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, response.Status)
+		return nil, httpStatusError{url: url, status: response.Status}
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxSchemaSize+1))
 	if err != nil {
