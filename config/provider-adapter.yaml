@@ -366,6 +366,19 @@ modules:
               # baseUrl can be published as it stands.
               authScheme: none
 
+              # 4 is every governed type at once -- the most this capability's
+              # fan-out ever produces -- so this is full concurrency for
+              # AgricultureFacility, not a partial raise.
+              #
+              # internal/upstream's default is 1 (sequential), deliberately:
+              # POCRA's failure mode when pushed is a 200 with an EMPTY catalog,
+              # indistinguishable from "no results", so a parallel search can
+              # silently lose a facility type with no error anywhere. Verify
+              # against the live API (docs/agriculture-facility-testing.md §4)
+              # before trusting this in production; drop back to 1 if a
+              # multi-type search starts coming back short.
+              fanOutConcurrency: 5
+
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
       # request falls through to the 404 above -- which looks like a registry

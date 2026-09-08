@@ -26,6 +26,7 @@ providerSteps:
     config:
       bindingKeys: "pocra|openagrinet:AgricultureFacility"
       authScheme: none
+      fanOutConcurrency: 4
 ```
 
 | Parameter | Required | Description | Default |
@@ -33,6 +34,7 @@ providerSteps:
 | `bindingKeys` | **Yes** | Comma-separated capabilities this step answers to. No default is possible: a package serving a family cannot guess which of them a deployment has providers for. | — |
 | `authScheme` | No | `none`, `basic`, `header` or `query`. POCRA needs none. | `none` |
 | `maxResponseBytes` | No | Cap on what is read from the provider. | 4 MiB |
+| `fanOutConcurrency` | No | How many of a multi-type search's calls run at once, up to `internal/upstream.MaxFanOut` (8). 4 is every governed type at once -- full concurrency for this capability. **Trade-off:** `internal/upstream` defaults to 1 (sequential) because POCRA's failure mode when pushed is a 200 with an *empty* catalog, indistinguishable from "no results" -- a parallel search can silently drop a facility type with no error. Verify against the live API (`docs/agriculture-facility-testing.md` §4) before trusting this in production. | 1 (sequential) |
 
 The id must also appear in the module's `steps:` list, and must be unique across
 `steps` and `providerSteps` — a repeat is refused at startup, because both land
