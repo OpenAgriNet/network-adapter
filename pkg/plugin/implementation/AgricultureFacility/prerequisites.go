@@ -13,5 +13,5 @@ import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstr
 // code, a token to exchange, an address to geocode. Each of those is a
 // different upstream than the one this was written against, so prefer keeping
 // the payload explicit over adding an entry here -- and see the note in
-// weather/prerequisites.go before doing so.
+// WeatherObservation/prerequisites.go before doing so.
 var prerequisites = upstream.Prerequisites{}
