@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1915,5 +1916,141 @@ func TestRunReportsAnUnusableBaseURLAsABadRequest(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "did not answer") {
 		t.Errorf("error = %v; a row that cannot build a request is not the provider failing", err)
+	}
+}
+
+// Redaction has to cover the scheme a deployment actually configured, and the
+// reference config ships basic. It used to cover only query, so a basic or
+// header credential echoed by a provider went to the log in the clear at warn
+// level -- and a wrong-credential 4xx is not retried, so that repeats once per
+// request for as long as the credential is wrong.
+//
+// The three bodies here are the ordinary shapes: an API gateway quoting the
+// Authorization header it rejected, a provider naming the password, and one
+// naming the custom header's value.
+func TestRedactStringCoversEveryScheme(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	t.Setenv("TEST_USER", "mausam")
+	t.Setenv("TEST_PASS", "s3cr3t")
+	t.Setenv("TEST_HDR", "hdr-k3y")
+	t.Setenv("TEST_QRY", "a+b/c=")
+
+	// What SetBasicAuth actually puts on the wire.
+	wire := base64.StdEncoding.EncodeToString([]byte("mausam:s3cr3t"))
+
+	for _, tc := range []struct {
+		name    string
+		tweak   func(*Config)
+		body    string
+		secret  string
+		wantOut string
+	}{
+		{
+			name: "basic, the wire form a gateway echoes",
+			tweak: func(c *Config) {
+				c.AuthScheme = AuthSchemeBasic
+				c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+			},
+			body:   `{"error":"invalid Authorization: Basic ` + wire + `"}`,
+			secret: wire,
+		},
+		{
+			name: "basic, the password quoted raw",
+			tweak: func(c *Config) {
+				c.AuthScheme = AuthSchemeBasic
+				c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+			},
+			body:   `{"error":"bad password s3cr3t"}`,
+			secret: "s3cr3t",
+		},
+		{
+			name: "header, the value as sent",
+			tweak: func(c *Config) {
+				c.AuthScheme = AuthSchemeHeader
+				c.HeaderName, c.HeaderValueEnv = "X-API-Key", "TEST_HDR"
+			},
+			body:   `{"error":"bad X-API-Key: hdr-k3y"}`,
+			secret: "hdr-k3y",
+		},
+		{
+			name: "query, still covered, raw form",
+			tweak: func(c *Config) {
+				c.AuthScheme = AuthSchemeQuery
+				c.QueryName, c.QueryValueEnv = "token", "TEST_QRY"
+			},
+			body:   `{"rejected":"token=a+b/c="}`,
+			secret: "a+b/c=",
+		},
+		{
+			name: "query, still covered, percent-encoded form",
+			tweak: func(c *Config) {
+				c.AuthScheme = AuthSchemeQuery
+				c.QueryName, c.QueryValueEnv = "token", "TEST_QRY"
+			},
+			body:   `{"rejected":"token=` + url.QueryEscape("a+b/c=") + `"}`,
+			secret: url.QueryEscape("a+b/c="),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
+				&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}, tc.tweak)
+
+			// The same expression the non-2xx path logs.
+			logged := step.redactString(explain([]byte(tc.body)))
+
+			if strings.Contains(logged, tc.secret) {
+				t.Errorf("the credential survives into the log line: %s", logged)
+			}
+			if !strings.Contains(logged, redactedMarker) {
+				t.Errorf("logged = %q, want the credential replaced", logged)
+			}
+		})
+	}
+}
+
+// A username identifies rather than authenticates, and is routinely a short
+// common word -- redacting it would eat unrelated text and cost the operator
+// the line they came for. Pinned so the choice is deliberate rather than an
+// oversight someone "fixes" without noticing what it costs.
+func TestRedactStringLeavesTheBasicUsername(t *testing.T) {
+	t.Setenv("TEST_USER", "mausam")
+	t.Setenv("TEST_PASS", "s3cr3t")
+
+	step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
+		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
+		func(c *Config) {
+			c.AuthScheme = AuthSchemeBasic
+			c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+		})
+
+	got := step.redactString(`user mausam failed to authenticate with s3cr3t`)
+	if strings.Contains(got, "s3cr3t") {
+		t.Errorf("the password survived: %s", got)
+	}
+	if !strings.Contains(got, "mausam") {
+		t.Errorf("got %q, want the username kept -- it is what makes the line useful", got)
+	}
+}
+
+// Nothing configured, nothing to hide: an unset credential must not turn every
+// empty string in the text into a redaction marker.
+func TestRedactStringWithNoCredentialConfigured(t *testing.T) {
+	for _, scheme := range []string{AuthSchemeNone, AuthSchemeBasic, AuthSchemeHeader, AuthSchemeQuery} {
+		t.Run(scheme, func(t *testing.T) {
+			const text = `{"error":"provider said no"}`
+			step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
+				&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
+				func(c *Config) {
+					c.AuthScheme = scheme
+					// Env vars named but deliberately unset.
+					c.UsernameEnv, c.PasswordEnv = "TEST_UNSET_U", "TEST_UNSET_P"
+					c.HeaderName, c.HeaderValueEnv = "X-K", "TEST_UNSET_H"
+					c.QueryName, c.QueryValueEnv = "t", "TEST_UNSET_Q"
+				})
+
+			if got := step.redactString(text); got != text {
+				t.Errorf("redactString() = %q, want the text unchanged", got)
+			}
+		})
 	}
 }
