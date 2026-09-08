@@ -1,0 +1,367 @@
+# Agmarknet Vistaar, openagrinet:MandiPrice, select. Both directions, one file.
+#
+# One file per binding-action rather than one per direction, because both legs of
+# an exchange are one contract: the response has to answer the request that was
+# sent, and splitting them lets one change without the other.
+#
+# The upstream is Agmarknet's Vistaar select. It takes governed codes -- state,
+# district, market, commodity -- plus a date range, and every one of them is in
+# the payload, so nothing here needs resolving before the call. That is why the
+# mandi plugin has no prerequisites: a MandiPrice select names the market it
+# wants rather than a point to search from.
+#
+# THE ANSWER IS WITHIN THE PACK; THE REQUEST IS NOT, AND CANNOT BE YET.
+#
+# Every field the response sets is declared by openagrinet:MandiPrice v0.1 and
+# correctly placed, inside the closed market and prices property sets. Where
+# the upstream reports something the pack has no home for, it is dropped rather
+# than invented.
+#
+# The REQUEST half is a different matter, and an earlier version of this note
+# claimed otherwise. It reads market and validity, and the pack's OnDemand
+# branch EXCLUDES both -- see the note on the guards below. That is a gap in
+# the pack rather than a mistake here: OnDemand describes what a provider can
+# obtain and Direct describes an obtained reading, and a request is neither.
+
+# What this capability cannot serve, refused before the provider is called.
+#
+# THE PACK AND THESE GUARDS DISAGREE TODAY, and an earlier version of this note
+# said the pack leaves market and validity OPTIONAL. It does not: the OnDemand
+# branch EXCLUDES them, alongside source, commodity, commodityGroup, grade,
+# variety, arrivalDate, prices and generatedAt. So a payload that satisfies
+# these guards cannot validate against the pack, and one that validates cannot
+# satisfy them.
+#
+# Nothing breaks in practice: the exclusion sits under if/then, which the
+# validator parses and never evaluates. That is an accident to rely on rather
+# than a design, and it is written down here so it is not mistaken for one.
+#
+# Resolving it is a pack change. For the market, coverageAreas is the likely
+# home -- inherited from AgricultureResource, not excluded in OnDemand, and it
+# accepts an AdministrativeAreaReference. For the date range there is no
+# candidate at all: historyPeriod and updateFrequency are durations describing
+# provider capability, not a window a caller asks for.
+#
+# What IS true, and is the reason this block exists: the pack defines
+# market.district and market.state as "name or governed code", so a payload can
+# be perfectly valid and still be unanswerable by this upstream, which wants
+# codes and a date range.
+#
+# Refusing here names what is missing. Sending it anyway earns a 400 from
+# Agmarknet, or worse an empty result that reads as "no prices".
+required:
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* Exactly one. Everything downstream reads supportedCommodities[0]:
+           this guard, the outbound query, and the commodity stamped on each
+           resource. So a caller sending three commodities passed validation, was
+           queried for the first, and got a confident signed answer to a third of
+           what it asked -- the same failure capabilitybinding refuses at the
+           commitment level, where guessing would silently serve part of a
+           request. */
+        $exists($ra.supportedCommodities[0].code)
+          and $count($ra.supportedCommodities) = 1
+      )
+    message: "this capability needs exactly one commodity code in supportedCommodities; send several requests rather than have all but the first dropped"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* Shape, not just presence. The pack describes district and state as
+           "name or governed code", so the names form is pack-legal -- and the
+           existence-only check passed it, after which it went to Agmarknet
+           verbatim as codes. Agmarknet answered nothing, and the caller got a
+           signed, spec-valid "no prices" for a market that had prices.
+        
+           Agmarknet wants a numeric district and a short alphabetic state (96,
+           CG), so a district that is not all digits or a state longer than four
+           letters is a name and is refused with the reason. */
+        $match($ra.market.district, /^[0-9]+$/)
+          and $match($ra.market.state, /^[A-Za-z]{2,4}$/)
+      )
+    message: "this capability needs Agmarknet's codes in market: a numeric district and a short alphabetic state, not their names"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        $exists($ra.validity.startsAt) and $exists($ra.validity.endsAt)
+      )
+    message: "this capability needs a validity window; it reports prices over a date range"
+
+# The upstream is a GET, so this object becomes the query string. The token is
+# not here and must never be: it comes from the adapter's authScheme query,
+# whose value is read from an environment variable. This file is published.
+#
+# marketcode is sent when the payload names one and omitted otherwise, which is
+# what the upstream expects: without it the query widens from one market to the
+# whole district.
+request: |
+  (
+    $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+
+    /* The upstream wants dd-MM-yyyy; the pack's validity is an ISO date. A
+       substring reorder rather than a date library, because these are dates
+       with no time and no zone, and $fromMillis would invent both. */
+    $ddmmyyyy := function($iso) {
+      $substring($iso, 8, 2) & "-" & $substring($iso, 5, 2) & "-" & $substring($iso, 0, 4)
+    };
+
+    $base := {
+      "statecode":     $ra.market.state,
+      "districtcode":  $ra.market.district,
+      "commoditycode": $ra.supportedCommodities[0].code,
+      "from_date":     $ddmmyyyy($ra.validity.startsAt),
+      "to_date":       $ddmmyyyy($ra.validity.endsAt)
+    };
+
+    $exists($ra.market.marketCode)
+      ? $merge([$base, {"marketcode": $ra.market.marketCode}])
+      : $base
+  )
+
+# One resource per price record, in Direct mode.
+#
+# Direct is what the pack requires of an answer: the resource now CARRIES the
+# observation rather than advertising that it could obtain one. It requires
+# source, commodity, market, arrivalDate, prices and generatedAt, and all six
+# are set below.
+#
+# The upstream's records use Title Case keys WITH SPACES -- `Modal Price`, not
+# modalPrice -- so they need backticks, and its prices are STRINGS, so they need
+# $number() before they satisfy the pack's numeric types.
+response: |
+  (
+    $records := $type(response) = "array" ? response
+              : $exists(response.data) ? response.data
+              : $exists(response.records) ? response.records
+              : [];
+
+    $selected := beckn.message.contract.commitments[0];
+
+    /* The caller's own @context, echoed back rather than restated here. A
+       mapping that hardcodes it has to be reissued whenever the pack URL
+       moves, and it can disagree with what the request actually declared.
+       Backticks because @ is an operator in JSONata. */
+    $ctx := beckn.message.contract.commitments[0].resources[0].resourceAttributes.`@context`;
+    $ra := $selected.resources[0].resourceAttributes;
+
+    /* dd-MM-yyyy back to ISO, so the answer speaks the pack's date format
+       rather than the upstream's. */
+    $iso := function($ddmmyyyy) {
+      $substring($ddmmyyyy, 6, 4) & "-" & $substring($ddmmyyyy, 3, 2) & "-" & $substring($ddmmyyyy, 0, 2)
+    };
+
+    /* The market code is optional: without it the query widened to the whole
+       district, so the district code is what identifies the scope. */
+    $scope := $exists($ra.market.marketCode) ? $ra.market.marketCode : $ra.market.district;
+    /* SLUG for the parts that are names rather than codes, so an id has no
+       spaces and no case surprises. */
+    $slug := function($v) { $exists($v) ? $replace($lowercase($v), " ", "-") };
+    
+    /* Bound once because it is used twice -- for a resource's own id and for
+       the offer's reference to it. Two copies of one expression is how a
+       dangling reference gets reintroduced.
+
+       Built from CODES, not the names the upstream reports. A market name
+       carries spaces and a commodity name carries brackets -- "Kasdol APMC",
+       "Paddy(Common)" -- and an identifier that a consumer may put in a URL or
+       a filter should not. The codes are already in the payload, so they cost
+       nothing, and they are stable where a display name is not.
+
+       Every field the upstream distinguishes rows by is in the id.
+    
+       It was scope:commodity:date only, and Agmarknet routinely reports
+       several rows for the same market, commodity and date differing by
+       Variety and Grade -- the fixture in this package is exactly that pair.
+       Two distinct resources then shared one id, and the offer referenced it
+       twice, so a consumer resolving resourceIds could not tell which price
+       it had. Market is in it too: district-wide $scope is the district, and
+       the rows come from several markets inside it.
+    
+       Built with $join over a list, because an absent Variety or Grade drops
+       out of an array literal rather than leaving an empty segment. */
+    $resourceId := function($r) {
+      "res:agmarknet:" & $join([
+        $scope,
+        $ra.supportedCommodities[0].code,
+        $iso($r.`Arrival Date`),
+        $slug($r.Market),
+        $slug($r.Variety),
+        $slug($r.Grade)
+      ], ":")
+    };
+
+    /* Absent rather than present-and-empty: a consumer must be able to tell
+       "the market reported no minimum" from "the minimum was zero".
+
+       GUARDS SHAPE, NOT JUST PRESENCE. Agmarknet writes an unreported price as
+       a marker -- "NR", "-", "" -- and $exists() is true for all of them, so
+       an existence-only guard handed them to $number() and it threw D3030.
+       That failed the WHOLE response: one unreported cell in one row turned a
+       good multi-row answer into an adapter error, which is the opposite of
+       the distinction this function exists to preserve.
+
+       The number branch is not redundant. $match() throws T0410 on a
+       non-string, so testing the regex first would break the day this
+       upstream sends a real number instead of a quoted one. */
+    /* The price fields the caller asked for. Absent means all three: the
+       pack requires supportedPriceFields on an OnDemand request, so absence
+       is a payload this mapping does not have to serve well -- but it should
+       not silently return nothing either. */
+    $fields := $exists($ra.supportedPriceFields)
+             ? $ra.supportedPriceFields
+             : ["Minimum", "Maximum", "Modal"];
+    
+    $priced := function($value) {
+      $type($value) = "number"
+        ? $value
+        : ($type($value) = "string" and $match($value, /^[0-9]+(\.[0-9]+)?$/)
+            ? $number($value))
+    };
+
+    /* EMIT ONLY RECORDS THAT CAN PRODUCE A CONFORMANT RESOURCE.
+       Absent is honest; present-and-degenerate is a lie in the shape of an
+       answer, and it is worse here than elsewhere because the answer is
+       signed. Three ways a record cannot be made conformant:
+
+         no Arrival Date   $iso is substring-and-concatenate, and JSONata casts
+                           undefined to "" -- so an absent date became the
+                           string "--", which the pack refuses (format: date)
+                           and which degraded the resource id along with it.
+                           arrivalDate is on the Direct required list, so it
+                           cannot be omitted either.
+
+         no Price Unit     prices.required is [currency, unit]. JSONata drops
+                           an absent key rather than emitting null, so the unit
+                           silently vanished and took the whole resource's
+                           validity with it. Not defaulted: Rs./Qtl and Rs./Kg
+                           are both real, so inventing one would misreport a
+                           price by a factor of a hundred.
+
+         no usable price   prices carries anyOf [minimum, maximum, modal], so a
+                           row whose three prices are all unreported markers
+                           has nothing to report and cannot satisfy it.
+
+       Dropped rather than refused: the other rows in the same answer are good,
+       and failing the request would discard them too -- which is the mistake
+       the price guard above just fixed. */
+    $conformant := function($r) {
+      /* $count(...) > 0 rather than $exists($match(...)): this engine returns
+         an EMPTY ARRAY from $match when nothing matches, and $exists([]) is
+         true -- so the $exists form silently accepted every record and the
+         filter did nothing. Caught by the test, not by reading. */
+      $count($match($iso($r.`Arrival Date`), /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)) > 0
+        and $exists($r.`Price Unit`)
+        /* Judged over the fields the caller asked for, not all three. A row
+           whose Modal is a marker cannot serve a request for Modal alone,
+           even though its Minimum is fine. */
+        and (("Minimum" in $fields and $exists($priced($r.`Min Price`)))
+             or ("Maximum" in $fields and $exists($priced($r.`Max Price`)))
+             or ("Modal" in $fields and $exists($priced($r.`Modal Price`))))
+    };
+    $usable := $filter($records, $conformant);
+
+    {
+      "context": {
+        "version":       beckn.context.version,
+        "action":        "on_select",
+        "networkId":     beckn.context.networkId,
+        "transactionId": beckn.context.transactionId,
+        "messageId":     beckn.context.messageId,
+        "timestamp":     $now()
+      },
+      "message": {
+        "contract": {
+          "commitments": [
+            {
+              "status": {
+                "descriptor": { "code": "DRAFT", "name": "Draft" }
+              },
+              /* The offer is echoed, but its references are not: the request
+                 named an abstract price enquiry and the answer returns the
+                 concrete observations. Leaving resourceIds as they arrived
+                 would point the offer at an id appearing nowhere here. */
+              "offer": $merge([
+                $selected.offer,
+                { "resourceIds": [$map($usable, function($r) { $resourceId($r) })] }
+              ]),
+              /* Wrapped: JSONata collapses a one-element sequence to a bare
+                 value, so a single-record answer would return an object where
+                 every other count returns a list. */
+              "resources": [$map($usable, function($r) {
+                {
+                  "id": $resourceId($r),
+                  /* Required by Commitment.resources in the Beckn v2 spec,
+                     which defines no quantity property and carries no Quantity
+                     schema at all -- a defect upstream. One resource is one
+                     market's observation for one day, so one. */
+                  "quantity": 1,
+                  "resourceAttributes": {
+                    "@context": $ctx,
+                    "@type": "openagrinet:MandiPrice",
+                    "informationMode": "Direct",
+                    /* Stated, not echoed. subjectCategories is a closed enum on
+                       AgricultureResource, and "Market" is what a MandiPrice resource
+                       IS -- the pack states it in both of its own examples. Echoing the
+                       request meant a caller sending ["Weather"] on a MandiPrice select
+                       got it faithfully republished over this adapter's signature, and
+                       nothing caught it: the value is enum-legal, so it validates. The
+                       sibling weather mapping has always stated ["Weather"]. */
+                    "subjectCategories": ["Market"],
+                    "source": {
+                      "sourceId": "agmarknet",
+                      "sourceName": "Agmarknet Vistaar"
+                    },
+                    "commodity": {
+                      "code": $ra.supportedCommodities[0].code,
+                      "name": $r.Commodity
+                    },
+                    "commodityGroup": $r.Group,
+                    "variety":        $r.Variety,
+                    "grade":          $r.Grade,
+                    /* Every member comes from the RECORD, so the answer describes what
+                       the provider reported rather than what was asked for.
+                    
+                       marketCode is absent, and that is not an omission. This upstream
+                       TAKES a market code as a query parameter and reports none back --
+                       there is no such field anywhere in its response. Restating the
+                       requested code against a returned row would assert something
+                       unverified, and district-wide there is no requested code at all
+                       while the rows come from several markets, so one code would have
+                       been wrong for most of them. The pack requires only marketName
+                       and calls marketCode "when available"; here it is not. */
+                    "market": {
+                      "marketName": $r.Market,
+                      "district":   $r.District,
+                      "state":      $r.State
+                    },
+                    "arrivalDate": $iso($r.`Arrival Date`),
+                    "prices": {
+                      /* Only what was asked for. supportedPriceFields was validated on the
+                         way in and then ignored on the way out, so a caller asking for Modal
+                         alone got all three. A ternary with no else yields nothing and the key
+                         drops, which is the same mechanism an unreported price already uses. */
+                      "minimum":  "Minimum" in $fields ? $priced($r.`Min Price`),
+                      "maximum":  "Maximum" in $fields ? $priced($r.`Max Price`),
+                      "modal":    "Modal" in $fields ? $priced($r.`Modal Price`),
+                      /* INR is a fact about THIS UPSTREAM, not about the pack, and it is
+                         stated rather than read because Agmarknet reports no currency field
+                         to read -- unlike the unit on the next line, which it does report.
+                         The pack requires currency, so it cannot be omitted either.
+                      
+                         Worth being deliberate about the difference: on_select, DRAFT and the
+                         @type values are PACK constants, correctly stated. INR and the
+                         agmarknet sourceId are PROVIDER constants -- they change if this file
+                         is pointed at another upstream, and the pack ones do not. */
+                      "currency": "INR",
+                      "unit":     $r.`Price Unit`
+                    },
+                    "generatedAt": $now()
+                  }
+                }
+              })]
+            }
+          ]
+        }
+      }
+    }
+  )

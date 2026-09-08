@@ -35,6 +35,49 @@ type preV2Response struct {
 	Message preV2Message `json:"message"`
 }
 
+// sendResponse writes the synchronous response for the no-route path: a step's
+// own answer when it produced one, and the generated ACK otherwise.
+//
+// Kept separate from sendAck rather than folded into it, because sendAck is also
+// reached from the routing path where a step's answer has no meaning -- the
+// proxy owns the response there.
+func sendResponse(ctx *model.StepContext, w http.ResponseWriter) []byte {
+	if len(ctx.ResponseBody) == 0 {
+		return sendAck(ctx, w)
+	}
+	// The envelope check is NOT here. It is in ServeHTTP, ahead of the response
+	// steps, because ackSigner is one of those steps: refusing at this point
+	// means the Signature header is already set, over the body being refused.
+	return writeJSONResponse(ctx, w, ctx.ResponseBody)
+}
+
+// verifyEnvelope checks that a step's answer is a JSON object.
+//
+// Only the shape, not the contents: which members belong in a response is the
+// spec's business and the schema validator's, and this runs on every answer.
+// What it catches is the class of mapping mistake that yields a scalar or an
+// array -- valid JSON that cannot carry a Beckn message however it is read.
+func verifyEnvelope(body []byte) error {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return fmt.Errorf("response body is not a JSON object: %w", err)
+	}
+	if len(envelope) == 0 {
+		return errors.New("response body is an empty JSON object, so it carries no message")
+	}
+	return nil
+}
+
+// writeJSONResponse writes body as a 200 JSON response, reporting what it wrote.
+func writeJSONResponse(ctx context.Context, w http.ResponseWriter, body []byte) []byte {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		log.Errorf(ctx, err, "failed to write response body: %v", err)
+	}
+	return body
+}
+
 // sendAck sends a synchronous ACK response to the client.
 // For context.version "2.0.0" and later the response uses the v2 envelope:
 //
@@ -271,9 +314,17 @@ func (a *ackSignerStep) RunOnResponse(ctx *model.StepContext, rctx *model.Respon
 
 	// Publisher / no-route path: ONIX writes the ACK — build the deterministic
 	// body that sendAck will write so the digest matches.
-	ackBody, err := buildAckBody(ctx.ProtocolVersion, ctx.MessageID)
-	if err != nil {
-		return fmt.Errorf("ackSigner: failed to build ack body: %w", err)
+	// A step that answered supplies the body; otherwise rebuild the deterministic
+	// ACK. Either way this signs exactly what sendResponse will write -- signing
+	// the ACK while sending an answer would put a valid signature over the wrong
+	// bytes.
+	ackBody := ctx.ResponseBody
+	if len(ackBody) == 0 {
+		built, err := buildAckBody(ctx.ProtocolVersion, ctx.MessageID)
+		if err != nil {
+			return fmt.Errorf("ackSigner: failed to build ack body: %w", err)
+		}
+		ackBody = built
 	}
 	// signBodyAndSetHeader writes to ctx.RespHeader which IS the http.ResponseWriter
 	// header map — the Signature header will be flushed when WriteHeader is called.

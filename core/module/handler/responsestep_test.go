@@ -487,6 +487,7 @@ type mockSigner struct {
 	signAckErr    error
 	returnSig     string // returned by SignAck
 	returnSignSig string // returned by Sign (default "")
+	signedBody    []byte // the body SignAck was last asked to cover
 }
 
 func (m *mockSigner) Sign(_ context.Context, _ []byte, _ string, _, _ int64) (string, error) {
@@ -494,8 +495,9 @@ func (m *mockSigner) Sign(_ context.Context, _ []byte, _ string, _, _ int64) (st
 	return m.returnSignSig, nil
 }
 
-func (m *mockSigner) SignAck(_ context.Context, _ []byte, _ string, _ string, _, _ int64) (string, error) {
+func (m *mockSigner) SignAck(_ context.Context, body []byte, _ string, _ string, _, _ int64) (string, error) {
 	m.signAckCalled = true
+	m.signedBody = body
 	if m.signAckErr != nil {
 		return "", m.signAckErr
 	}
@@ -1075,5 +1077,70 @@ func TestInitSteps_ValidateAckSignAppendsToResponseSteps(t *testing.T) {
 	}
 	if len(h.responseSteps) != 1 {
 		t.Errorf("expected 1 response step, got %d", len(h.responseSteps))
+	}
+}
+
+// sendResponse checked only that the body was non-empty, so a mapping whose
+// response half is written as `$.response.temperature` rather than as an
+// object produced `28.5` -- valid JSON, so Content-Type was not a lie -- and
+// the adapter answered 200 with it and then signed it. A consumer looking for
+// message.contract finds nothing and cannot tell that from a protocol change.
+func TestVerifyEnvelopeRefusesWhatCannotCarryAMessage(t *testing.T) {
+	t.Parallel()
+
+	refused := map[string]string{
+		"a bare number":   `28.5`,
+		"a bare string":   `"no data"`,
+		"a bare boolean":  `true`,
+		"null":            `null`,
+		"an array":        `[{"message":{}}]`,
+		"an empty object": `{}`,
+		"not json at all": `28.5 and then some`,
+	}
+	for name, body := range refused {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := verifyEnvelope([]byte(body)); err == nil {
+				t.Errorf("verifyEnvelope(%s) = nil, want it refused", body)
+			}
+		})
+	}
+
+	accepted := map[string]string{
+		"a full envelope":      `{"context":{"action":"on_select"},"message":{"contract":{}}}`,
+		"one member is enough": `{"message":{}}`,
+		// The shape is all this checks. Which members belong in a response is
+		// the spec's business and the schema validator's.
+		"an unexpected member": `{"whatever":1}`,
+	}
+	for name, body := range accepted {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := verifyEnvelope([]byte(body)); err != nil {
+				t.Errorf("verifyEnvelope(%s) = %v, want nil", body, err)
+			}
+		})
+	}
+}
+
+// A real envelope is untouched -- the check must not cost the ordinary path.
+func TestSendResponseWritesAnEnvelopeUnchanged(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"context":{"action":"on_select"},"message":{"contract":{}}}`
+	ctx := makeStepCtx("2.0.0", "msg-1", "sub-1", "")
+	ctx.ResponseBody = []byte(body)
+
+	w := httptest.NewRecorder()
+	written := sendResponse(ctx, w)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	if string(written) != body {
+		t.Errorf("written = %s, want the body unchanged", written)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
 	}
 }
