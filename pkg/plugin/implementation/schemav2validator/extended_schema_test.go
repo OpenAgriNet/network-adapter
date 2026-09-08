@@ -484,7 +484,7 @@ components:
 	// localSchema=false means the location came from a payload's @context --
 	// the only way the production caller passes it. A local file is not
 	// something the network may ask this process to open, so it is refused.
-	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, false)
+	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, nil, false)
 	if err == nil {
 		t.Fatal("a payload-directed load opened a local file")
 	}
@@ -493,7 +493,7 @@ components:
 
 	// localSchema=true is an operator naming a path in the adapter's own
 	// config, which is the one case where opening a file is the intent.
-	doc, err = cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
+	doc, err = cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 	assert.NotNil(t, doc)
 	assert.Equal(t, "3.1.0", doc.OpenAPI)
@@ -517,10 +517,10 @@ info:
 	tmpFile.Write([]byte(schemaContent))
 	tmpFile.Close()
 
-	doc1, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
+	doc1, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 
-	doc2, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
+	doc2, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 
 	assert.Equal(t, doc1, doc2)
@@ -530,7 +530,7 @@ func TestLoadSchemaFromPath_InvalidPath(t *testing.T) {
 	cache := newSchemaCache(10)
 	ctx := context.Background()
 
-	_, err := cache.loadSchemaFromPath(ctx, "/nonexistent/schema.yaml", 1*time.Hour, 30*time.Second, false)
+	_, err := cache.loadSchemaFromPath(ctx, "/nonexistent/schema.yaml", 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 }
 
@@ -559,7 +559,7 @@ components:
 	tmpFile.Write([]byte(schemaContent))
 	tmpFile.Close()
 
-	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
+	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 
 	schema, err := findSchemaByType(ctx, doc, "TestType")
@@ -589,7 +589,7 @@ components:
 	tmpFile.Write([]byte(schemaContent))
 	tmpFile.Close()
 
-	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
+	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 
 	_, err = findSchemaByType(ctx, doc, "NonExistentType")
@@ -1209,7 +1209,7 @@ components:
 
 	cache.rawSchemas["TestType/attributes.yaml"] = []byte(schemaContent)
 
-	doc, err := cache.loadSchemaFromPath(ctx, "TestType/attributes.yaml", 1*time.Hour, 30*time.Second, true)
+	doc, err := cache.loadSchemaFromPath(ctx, "TestType/attributes.yaml", 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 	assert.NotNil(t, doc)
 	assert.Equal(t, "3.1.0", doc.OpenAPI)
@@ -1223,7 +1223,7 @@ func TestLoadSchemaFromPath_LRUHit(t *testing.T) {
 	cache.set(hashURL("TestType/attributes.yaml"), expected, 1*time.Hour)
 
 	// localSchema=false skips rawSchemas step, goes straight to LRU
-	doc, err := cache.loadSchemaFromPath(ctx, "TestType/attributes.yaml", 1*time.Hour, 30*time.Second, false)
+	doc, err := cache.loadSchemaFromPath(ctx, "TestType/attributes.yaml", 1*time.Hour, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 	assert.Equal(t, expected, doc)
 }
@@ -1243,7 +1243,7 @@ info:
 	tmpFile.Close()
 
 	// rawSchemas empty, localSchema=true — local miss, falls through to file load
-	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, true)
+	doc, err := cache.loadSchemaFromPath(ctx, tmpFile.Name(), 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 	assert.NotNil(t, doc)
 }
@@ -1367,7 +1367,7 @@ func TestLoadSchemaFromPath_TTLExpiry_FetchesFresh(t *testing.T) {
 	ctx := context.Background()
 
 	// Load v1 with a 1ms TTL so the LRU entry expires almost immediately.
-	doc1, err := cache.loadSchemaFromPath(ctx, server.URL, 1*time.Millisecond, 30*time.Second, false)
+	doc1, err := cache.loadSchemaFromPath(ctx, server.URL, 1*time.Millisecond, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 	assert.Equal(t, "Schema v1", doc1.Info.Title)
 
@@ -1376,7 +1376,7 @@ func TestLoadSchemaFromPath_TTLExpiry_FetchesFresh(t *testing.T) {
 	serveV2.Store(true)
 
 	// Re-load — LRU miss (expired), freshReadFromURI fetches from the server and gets v2.
-	doc2, err := cache.loadSchemaFromPath(ctx, server.URL, 1*time.Hour, 30*time.Second, false)
+	doc2, err := cache.loadSchemaFromPath(ctx, server.URL, 1*time.Hour, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 	assert.Equal(t, "Schema v2", doc2.Info.Title, "expected v2 after TTL expiry — global URIMapCache not bypassed")
 }
@@ -1871,13 +1871,17 @@ func TestValidateReferencedObject_RefusesARefThatWouldReadTheDisk(t *testing.T) 
 	}
 }
 
-// The packs pull 15 documents across 3 hosts -- the one the allowlist names
-// plus two external spec hosts the packs $ref into -- so a $ref to a host
-// outside the allowlist is the normal case, not the attack. This pins that:
-// applying isAllowedDomain to $refs as well would need all three hosts named
-// in the allowlist first, and would otherwise stop every pack loading.
-// Deliberate, not missed.
-func TestValidateReferencedObject_AllowsARefToAHostOutsideTheAllowlist(t *testing.T) {
+// A $ref may not reach a host the allowlist does not name.
+//
+// The entry @context being allowlisted is not enough. The document it returns
+// is NOT trusted -- it came from a URL the payload chose, on a host anyone can
+// publish to -- so its $refs used to reach any http host at all. That let a
+// payload name an attacker's document and have this process fetch whatever
+// that document pointed at: an internal service, a cloud metadata endpoint.
+//
+// This is the case the allowlist has to cover to mean anything, because the
+// refs are the great majority of the reads: one pack pulls 13-16 documents.
+func TestValidateReferencedObject_RefusesARefToAHostOutsideTheAllowlist(t *testing.T) {
 	borrowed := serveSchema(t, borrowedSchema)
 	entry := serveSchema(t, strings.Replace(entrySchemaRefTemplate, "REF_TARGET", borrowed.URL+"/borrowed.yaml", 1))
 
@@ -1898,13 +1902,47 @@ func TestValidateReferencedObject_AllowsARefToAHostOutsideTheAllowlist(t *testin
 		Path:    "message.test",
 		Context: entry.URL + "/context.jsonld",
 		Type:    "TestType",
+		Types:   []string{"TestType"},
 		Data:    map[string]interface{}{"field1": "value1"},
 	}
 
-	// Only the entry host is allowlisted; the $ref host is not.
+	// Only the entry host is allowlisted. The $ref host is not.
+	err = cache.validateReferencedObject(context.Background(), obj,
+		1*time.Hour, 30*time.Second, []string{entryHost.Host}, false)
+	if err == nil {
+		t.Fatal("the cross-host $ref was fetched; a payload can point this process at any http host")
+	}
+	assert.Contains(t, err.Error(), "not in extendedSchema_allowedDomains")
+}
+
+// And naming both hosts loads it, which is the case the packs need: a
+// capability pack $refs schema.beckn.io, which $refs schema.nfh.global, so the
+// allowlist has to carry every host in the chain or nothing loads.
+func TestValidateReferencedObject_AllowsARefWhenBothHostsAreAllowlisted(t *testing.T) {
+	borrowed := serveSchema(t, borrowedSchema)
+	entry := serveSchema(t, strings.Replace(entrySchemaRefTemplate, "REF_TARGET", borrowed.URL+"/borrowed.yaml", 1))
+
+	entryHost, err := url.Parse(entry.URL)
+	if err != nil {
+		t.Fatalf("failed to parse the test server URL: %v", err)
+	}
+	borrowedHost, err := url.Parse(borrowed.URL)
+	if err != nil {
+		t.Fatalf("failed to parse the test server URL: %v", err)
+	}
+
+	cache := newSchemaCache(10)
+	obj := referencedObject{
+		Path:    "message.test",
+		Context: entry.URL + "/context.jsonld",
+		Type:    "TestType",
+		Types:   []string{"TestType"},
+		Data:    map[string]interface{}{"field1": "value1"},
+	}
+
 	if err := cache.validateReferencedObject(context.Background(), obj,
-		1*time.Hour, 30*time.Second, []string{entryHost.Host}, false); err != nil {
-		t.Fatalf("a cross-host $ref must still resolve, or no pack can load: %v", err)
+		1*time.Hour, 30*time.Second, []string{entryHost.Host, borrowedHost.Host}, false); err != nil {
+		t.Fatalf("both hosts allowlisted, so the chain must load: %v", err)
 	}
 }
 
@@ -1934,7 +1972,7 @@ func TestPayloadDirectedReader(t *testing.T) {
 				t.Fatalf("failed to parse %q: %v", raw, err)
 			}
 
-			data, err := payloadDirectedReader(openapi3.NewLoader(), u)
+			data, err := payloadDirectedReader(nil, false)(openapi3.NewLoader(), u)
 			if tt.refused {
 				if err == nil {
 					t.Fatalf("%q was read, and must not have been", raw)

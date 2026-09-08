@@ -335,7 +335,7 @@ func (c *schemaCache) cleanupExpired() int {
 	return len(expired)
 }
 
-func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string, ttl, timeout time.Duration, localSchema bool) (*openapi3.T, error) {
+func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string, ttl, timeout time.Duration, allowedDomains []string, localSchema bool) (*openapi3.T, error) {
 	urlHash := hashURL(schemaPath)
 
 	u, parseErr := url.Parse(schemaPath)
@@ -345,15 +345,18 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 
 	loader := newFreshLoader()
 	loader.Context = ctx
-	if !localSchema {
-		// The schema location on this path is derived from a payload's
-		// @context, so every read it causes is network-directed. Installed
-		// here rather than at the one @context check because that check runs
-		// once, on the entry document: the $refs inside whatever comes back
-		// are resolved by the loader and meet no check at all. One pack pulls
-		// 15 documents across 3 hosts, so this is the majority of the reads.
-		loader.ReadFromURIFunc = payloadDirectedReader
-	}
+	// Installed on BOTH branches, with the local-file allowance following
+	// localSchema. The check at the one @context runs once, on the entry
+	// document; the $refs inside whatever comes back are resolved by the
+	// loader, and a pack pulls 13-16 documents, so the refs are the great
+	// majority of the reads.
+	//
+	// localSchema is included because its rawSchemas path falls back to the
+	// NETWORK for a ref it does not hold -- so a local document could reach an
+	// arbitrary host, the same exposure by a longer route. What it keeps is
+	// the file read itself, which in that mode is the operator's stated
+	// intent rather than something a payload asked for.
+	loader.ReadFromURIFunc = payloadDirectedReader(allowedDomains, localSchema)
 
 	var doc *openapi3.T
 	var err error
@@ -440,25 +443,49 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 	return doc, nil
 }
 
-// payloadDirectedReader reads a schema document for a location that a payload
-// chose, refusing any scheme but http and https.
+// payloadDirectedReader returns a reader for schema documents whose location a
+// payload chose, enforcing the allowlist on EVERY read -- the entry document
+// and every $ref under it.
 //
-// freshReadFromURI falls through to os.ReadFile for every other scheme, so
-// without this a $ref of "file:///etc/passwd" -- or a bare path, which parses
-// with no scheme at all -- is an instruction from the network to read this
-// container's disk and parse it as a schema. The base spec loader keeps that
-// fallthrough deliberately: its location is operator-configured, where a local
-// file is the point. Here it never is.
+// Two separate refusals, for two separate reasons.
 //
-// This does NOT restrict which hosts may be reached; isAllowedDomain still
-// guards only the entry @context. Enforcing the allowlist here as well is the
-// right shape, but the packs $ref two external spec hosts, so it needs those
-// named in the allowlist or no pack loads at all.
-func payloadDirectedReader(loader *openapi3.Loader, u *url.URL) ([]byte, error) {
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("refusing to read schema from %q: only http and https are read for a location a payload chose", u.String())
+// SCHEME: freshReadFromURI falls through to os.ReadFile for every scheme but
+// http and https, so a $ref of "file:///etc/passwd" -- or a bare path, which
+// parses with no scheme at all -- is an instruction from the network to read
+// this container's disk and parse it as a schema. The base spec loader keeps
+// that fallthrough deliberately: its location is operator-configured, where a
+// local file is the point. Here it never is.
+//
+// HOST: the entry @context is allowlisted, but the document it returns is not
+// trusted -- it came from a payload-named URL on a host anyone can publish to.
+// Its $refs used to reach any http host at all, so a payload could name an
+// attacker's document and have this process fetch whatever that document
+// pointed at: an internal service, a cloud metadata endpoint. Checking the
+// same allowlist on every read closes that, and makes the allowlist mean what
+// it says -- the hosts this deployment will read schemas from, not the hosts
+// it will read the FIRST schema from.
+//
+// This is why the allowlist cannot be a single host: loading one capability
+// pack touches raw.githubusercontent.com, schema.beckn.io and
+// schema.nfh.global (13-16 reads, measured), so all three have to be named or
+// no pack loads at all. An empty allowlist still means "unset, do not check",
+// as it does at the @context.
+//
+// allowLocal follows localSchema: an operator who configured
+// extendedSchema_localSchemaPath is asking for files to be read, so the scheme
+// refusal does not apply to them. The HOST check still does, because that
+// mode falls back to the network for a ref it does not hold locally.
+func payloadDirectedReader(allowedDomains []string, allowLocal bool) func(*openapi3.Loader, *url.URL) ([]byte, error) {
+	return func(loader *openapi3.Loader, u *url.URL) ([]byte, error) {
+		remote := u.Scheme == "http" || u.Scheme == "https"
+		if !remote && !allowLocal {
+			return nil, fmt.Errorf("refusing to read schema from %q: only http and https are read for a location a payload chose", u.String())
+		}
+		if remote && len(allowedDomains) > 0 && !isAllowedDomain(u, allowedDomains) {
+			return nil, fmt.Errorf("refusing to read schema from %q: host is not in extendedSchema_allowedDomains", u.String())
+		}
+		return freshReadFromURI(loader, u)
 	}
-	return freshReadFromURI(loader, u)
 }
 
 // findReferencedObjects recursively finds domain-specific objects with @context.
@@ -719,7 +746,7 @@ func (c *schemaCache) validateReferencedObject(
 			if typeName == "" || strings.ContainsAny(typeName, "/\\") {
 				continue
 			}
-			if localDoc, localErr := c.loadSchemaFromPath(ctx, typeName+"/attributes.yaml", ttl, timeout, localSchema); localErr != nil {
+			if localDoc, localErr := c.loadSchemaFromPath(ctx, typeName+"/attributes.yaml", ttl, timeout, allowedDomains, localSchema); localErr != nil {
 				log.Debugf(ctx, "local @type lookup failed for %s: %v", candidate, localErr)
 			} else {
 				doc = localDoc
@@ -745,7 +772,7 @@ func (c *schemaCache) validateReferencedObject(
 		schemaPath := transformContextToSchemaURL(obj.Context)
 		log.Debugf(ctx, "Transformed %s -> %s (localSchema=%v)", obj.Context, schemaPath, localSchema)
 		var err error
-		doc, err = c.loadSchemaFromPath(ctx, schemaPath, ttl, timeout, false)
+		doc, err = c.loadSchemaFromPath(ctx, schemaPath, ttl, timeout, allowedDomains, false)
 		if err != nil {
 			return model.NewCodedErrorWithCause("SCH_SCHEMA_ADAPTATION_FAILED", err.Error(), obj.Path, err)
 		}
