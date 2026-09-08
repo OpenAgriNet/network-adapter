@@ -207,8 +207,30 @@ modules:
             # the first payload after a restart pays for it. A fetch that
             # FAILS rejects the payload -- it does not skip validation, which
             # is the right way round, but it does mean this adapter needs
-            # egress to the host allowed below.
-            extendedSchema_allowedDomains: "raw.githubusercontent.com"
+            # egress to every host allowed below.
+            #
+            # THIS IS THE WHOLE TRUST BOUNDARY, and it is checked on every
+            # read: the entry @context and every $ref under it. That matters
+            # because the document a payload names is NOT trusted -- it comes
+            # from a URL the payload chose, on a host anyone can publish to --
+            # so without the check its $refs could send this process at an
+            # internal service or a cloud metadata endpoint.
+            #
+            # ALL THREE HOSTS ARE REQUIRED. Loading one capability pack pulls
+            # 13-16 documents across exactly these three (measured, not
+            # assumed): the pack itself and AgricultureResource from the raw
+            # CDN, then Descriptor/GeoJSONGeometry/Location/Address from
+            # schema.beckn.io, which in turn $ref schema.nfh.global. Remove
+            # any one and no pack loads at all -- the failure is
+            # SCH_SCHEMA_ADAPTATION_FAILED on every payload, not a partial
+            # validation.
+            #
+            # Keep it as tight as the packs allow. raw.githubusercontent.com
+            # is world-writable, so this trusts every GitHub account for
+            # schema content; narrowing it to a path prefix, or mirroring the
+            # packs on a host we control, is the real fix and is not a
+            # one-line change.
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
 
             extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
