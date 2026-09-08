@@ -130,12 +130,18 @@ stays in the record for now.)
 |---|---|---|
 | `beckn` | the inbound Beckn payload | the inbound Beckn payload |
 | `response` | — | the provider's raw answer |
+| `_local` | what prerequisites resolved | what prerequisites resolved |
 
-**What a party sent, and nothing else.** Values a provider plugin resolved before
-the call are deliberately not passed in: the plugin holds them and used them to
-make the call, so a mapping reading them back would be a detour and a second name
-for the same data. Where the answer needs such a value, it takes it from what the
-provider echoed.
+**What a party sent, plus what a payload could not carry.** `_local` holds values
+the provider plugin resolved before the call — a code looked up from a name, a
+point resolved to a market — for the case where a mapping needs them and neither
+party sent them. It is an empty map when the plugin has no prerequisites, which is
+every plugin shipped today, so a mapping referring to `_local` reads nothing rather
+than failing.
+
+What does **not** go in `_local`: values the plugin already holds and merely used to
+make the call. Reading those back through a mapping is a detour and a second name for
+the same data. Where the answer needs one, it takes it from what the provider echoed.
 
 ## Why the direction is a parameter, not a convention
 

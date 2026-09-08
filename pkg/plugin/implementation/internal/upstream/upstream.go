@@ -399,7 +399,8 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// The same mapping reference as the request, other half: one file carries
 	// both directions for this action.
 	//
-	// The mapping is handed what each party sent and nothing else.
+	// The mapping is handed what each party sent, plus whatever prerequisites
+	// resolved, under _local. Empty when there are none.
 	becknResponse, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionResponse, map[string]any{
 		"beckn":    beckn,
 		"_local":   local,

@@ -14,10 +14,16 @@
 # and the response half additionally reads:
 #   response  the provider's answer, in its own shape
 #
-# Nothing else is in scope. Values the provider step resolved before the call are
-# not passed in: the step holds them and used them to make the call, so a mapping
-# reading them back would be a second name for the same data. Where the answer
-# needs them, it takes them from what the provider echoed.
+# and both halves also read:
+#   _local    whatever the step's prerequisites resolved before the call -- a
+#             code looked up from a name, a point resolved to a market. EMPTY
+#             here: this plugin declares no prerequisites, so nothing in this
+#             file reads it.
+#
+# Nothing else is in scope. In particular, values the step already holds and
+# merely used to make the call are not in _local: reading those back would be a
+# second name for the same data. Where the answer needs one, it takes it from
+# what the provider echoed.
 
 # The response half follows the openagrinet:WeatherObservation v0.1 schema pack,
 # Direct mode. The pack lives in OpenAgriNet/network-specs; it is referred to

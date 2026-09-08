@@ -32,10 +32,16 @@ type Mapper interface {
 	// Which action the mapping serves is settled by the registry entry that
 	// named it, so only the direction is passed here.
 	//
-	// input carries what a party sent: the inbound payload, and on the way back
-	// the provider's answer. It deliberately does not carry values the caller
-	// resolved for itself -- the caller holds those already, so routing them
-	// through a mapping would be a detour and a second name for the same data.
+	// input carries what a party sent -- the inbound payload, and on the way
+	// back the provider's answer -- plus, under _local, any values the caller
+	// resolved before making the call.
+	//
+	// _local is for what a payload cannot carry and a mapping cannot obtain: a
+	// code looked up from a name, a point resolved to a market. A caller with
+	// nothing to add passes an empty map, so a mapping referring to _local
+	// reads nothing rather than failing. Values the caller already holds and
+	// merely used to make the call do NOT belong here -- routing those back
+	// through a mapping is a second name for the same data.
 	//
 	// A direction the file has no transform for produces nothing, with no error.
 	// What nothing means belongs to the caller: on the request leg it means there
