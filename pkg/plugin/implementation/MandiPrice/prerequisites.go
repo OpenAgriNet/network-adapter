@@ -15,6 +15,6 @@ import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstr
 // code, a token to exchange, a point to turn into a market. Each of those is a
 // different upstream than the one this was written against, and each would
 // bring the question of where the provider-to-function binding belongs -- see
-// the note in weather/prerequisites.go and prefer keeping the payload explicit
+// the note in WeatherObservation/prerequisites.go and prefer keeping the payload explicit
 // over adding an entry here.
 var prerequisites = upstream.Prerequisites{}
