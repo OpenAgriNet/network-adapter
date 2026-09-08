@@ -1,4 +1,4 @@
-package oanbinding
+package capabilitybinding
 
 import (
 	"encoding/json"
@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// realSelectPayload is a verbatim /select request captured from the OAN network
+// realSelectPayload is a verbatim /select request captured from the network
 // on 29 Aug 2026. It is the reason this package reads through contract and
 // commitments rather than off message directly: the design notes showed the
 // shallower message.offer.provider.id, and the wire does not.

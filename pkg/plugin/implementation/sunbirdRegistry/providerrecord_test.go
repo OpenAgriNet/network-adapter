@@ -1,4 +1,4 @@
-package oanregistry
+package sunbirdRegistry
 
 import (
 	"context"
@@ -591,7 +591,7 @@ func TestProviderRecordCacheKeyIsDistinctFromTheKeyLookupCacheKey(t *testing.T) 
 	if _, err := resolvePlan(t, client); err != nil {
 		t.Fatalf("ProviderRecord() returned an unexpected error: %v", err)
 	}
-	if strings.HasPrefix(cache.setKey, "oan_lookup_") {
+	if strings.HasPrefix(cache.setKey, "registry_lookup_") {
 		t.Errorf("provider plan cache key %q shares the signing-key namespace", cache.setKey)
 	}
 }

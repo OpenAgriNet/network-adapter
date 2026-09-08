@@ -1,8 +1,8 @@
-// Package mandi serves the network's market price capabilities.
+// Package MandiPrice serves the network's market price capabilities.
 //
-// One package per schema pack family, so which plugin owns a capability is
-// readable from its binding key: openagrinet:MandiPrice is mandi's,
-// openagrinet:WeatherObservation is weather's.
+// One package per capability, named for the capability it serves, so which
+// plugin owns a payload is readable from its binding key without a lookup:
+// openagrinet:MandiPrice is this one's, openagrinet:WeatherObservation is not.
 //
 // Almost nothing lives here, and that is the point. Recognising a capability,
 // resolving the call plan, authenticating, calling with the registry's budget
@@ -15,7 +15,7 @@
 // select takes governed codes for state, district, market and commodity plus a
 // date range, all of which a MandiPrice payload carries. So the package is a
 // name and nothing else: see prerequisites.go for why that is worth stating.
-package mandi
+package MandiPrice
 
 import (
 	"context"

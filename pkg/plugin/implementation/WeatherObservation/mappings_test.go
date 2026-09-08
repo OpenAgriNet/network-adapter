@@ -1,4 +1,4 @@
-package weather_test
+package WeatherObservation_test
 
 // mappings_test.go runs the shipped mapping files through the real mapper and
 // the real provider step. It is the only test that proves the three pieces fit:
@@ -22,8 +22,8 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/weather"
 )
 
 // mappingsDir is where the shipped mappings live, relative to this package.
@@ -43,7 +43,7 @@ const shippedBindingKey = "mausamgram|openagrinet:WeatherObservation"
 
 const shippedMapping = "weather-observation.select.yaml"
 
-// selectRequest is the verbatim /select captured from the OAN network.
+// selectRequest is the verbatim /select captured from the network.
 const selectRequest = `{
   "context": { "version": "2.0.0", "action": "select",
     "networkId": "da.gov.in/vistaar",
@@ -142,8 +142,8 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 		},
 	}}
 
-	step, closeStep, err := weather.New(context.Background(), registry, mapper,
-		&weather.Config{BindingKeys: []string{shippedBindingKey}})
+	step, closeStep, err := WeatherObservation.New(context.Background(), registry, mapper,
+		&WeatherObservation.Config{BindingKeys: []string{shippedBindingKey}})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}

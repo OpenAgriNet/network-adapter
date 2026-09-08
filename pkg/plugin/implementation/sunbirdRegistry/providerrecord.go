@@ -1,10 +1,10 @@
-package oanregistry
+package sunbirdRegistry
 
 // providerrecord.go resolves a capability binding into a call plan: what to
 // call, how to call it, and which mappings translate in and out.
 //
-// This is the second thing the OAN registry is asked for, and it is a different
-// question from the signing-key lookup in oanregistry.go. That one asks "who
+// This is the second thing the registry is asked for, and it is a different
+// question from the signing-key lookup in sunbirdRegistry.go. That one asks "who
 // sent this", keyed by an inbound Authorization header. This one asks "who do I
 // call next", keyed by a binding taken from the request body. Different subject,
 // different cache, different meaning of failure -- so they share transport and
@@ -95,7 +95,7 @@ func searchURLFor(baseURL, entity string) string {
 func (c *Client) ProviderRecord(ctx context.Context, bindingKey string) (*model.ProviderRecord, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
-	ctx, span := tracer.Start(ctx, "oan registry provider record")
+	ctx, span := tracer.Start(ctx, "registry provider record")
 	defer span.End()
 
 	if bindingKey == "" {
@@ -373,7 +373,7 @@ func decodeRecords[T any](body []byte) ([]T, error) {
 // one cache but have different subjects and lifetimes, and a collision would
 // serve one as the other.
 func providerRecordCacheKey(bindingKey string) string {
-	return "oan_provider_" + bindingKey
+	return "registry_provider_" + bindingKey
 }
 
 func (c *Client) cachedProviderRecord(ctx context.Context, tracer trace.Tracer, key string) (*model.ProviderRecord, bool) {

@@ -1,4 +1,4 @@
-package oanregistry
+package sunbirdRegistry
 
 import (
 	"context"
@@ -144,12 +144,12 @@ func TestValidate(t *testing.T) {
 		{
 			name:        "should return error for nil config",
 			config:      nil,
-			expectedErr: "oan registry config cannot be nil",
+			expectedErr: "registry config cannot be nil",
 		},
 		{
 			name:        "should return error for empty URL",
 			config:      &Config{URL: ""},
-			expectedErr: "oan registry URL cannot be empty",
+			expectedErr: "registry URL cannot be empty",
 		},
 		{
 			name:        "should succeed for valid config",
@@ -1169,7 +1169,7 @@ func TestLookupCachesUsableResults(t *testing.T) {
 	if cache.setTTL != ttl {
 		t.Errorf("expected the configured TTL %v, got %v", ttl, cache.setTTL)
 	}
-	if expected := fmt.Sprintf("oan_lookup_%s_%s", testParticipantID, testOSID); cache.setKey != expected {
+	if expected := fmt.Sprintf("registry_lookup_%s_%s", testParticipantID, testOSID); cache.setKey != expected {
 		t.Errorf("expected cache key %q, got %q", expected, cache.setKey)
 	}
 
@@ -1358,7 +1358,7 @@ func assertOutcomeAttribute(t *testing.T, m metricdata.Metrics, outcome string) 
 }
 
 // TestLookupAgainstCapturedRegistryResponse runs the plugin against a verbatim
-// response captured from the real OAN registry on 31 Aug 2026, reformatted for
+// response captured from a live registry on 31 Aug 2026, reformatted for
 // readability with field order and values untouched.
 //
 // It pins the deployed shape: the data envelope, one flat level with the keys
@@ -1482,7 +1482,7 @@ func TestLookupAgainstCapturedRegistryResponse(t *testing.T) {
 }
 
 // TestLookupAgainstCurrentRegistryResponse runs the plugin against a verbatim
-// response captured from an OAN registry on 2 Sep 2026, after the Participant
+// response captured from a live registry on 2 Sep 2026, after the Participant
 // schema dropped three things from a published key.
 //
 // It pins the shape a registry writes TODAY, and every difference from the

@@ -1,4 +1,4 @@
-# OAN provider adapter.
+# Provider adapter.
 #
 # Serves the Beckn actions synchronously: verifies the sender, resolves the
 # capability's call plan from the registry, calls the provider, and answers with
@@ -19,7 +19,7 @@
 # serves. It does NOT hold where a provider lives or how long to wait for it --
 # that is the registry's ProviderSchema row, read per request. Repointing a
 # provider is a registry write, not an edit here and a restart.
-appName: "oan-provider-adapter"
+appName: "provider-adapter"
 
 log:
   level: debug
@@ -80,7 +80,7 @@ modules:
 
       plugins:
         # ------------------------------------------------------------------
-        # oanregistry -- the OAN Registry (SunbirdRC) client.
+        # sunbirdRegistry -- the SunbirdRC registry client.
         #
         # Serves both halves of the lookup: the sender's signing key for
         # validateSign, and the capability call plans the provider steps
@@ -89,7 +89,7 @@ modules:
         # other.
         # ------------------------------------------------------------------
         registry:
-          id: oanregistry
+          id: sunbirdRegistry
           config:
             # REQUIRED, and the only key with no default. Include the API
             # version prefix; the plugin appends /{entity}/search.
@@ -154,27 +154,92 @@ modules:
         signValidator:
           id: signvalidator
 
-        # Base Beckn v2 schema validation against the pinned LTS spec. The
-        # extended layer fetches each resource's own @context and validates
-        # against that -- a network call per payload and a second thing that
-        # can fail -- so it is off, and the extendedSchema_* keys below only
-        # take effect if it is switched on.
+        # ------------------------------------------------------------------
+        # schemaValidator -- two layers, both on.
+        #
+        # BASE validates the envelope against the pinned Beckn v2 LTS spec.
+        # To it, resourceAttributes is a free-form object: the envelope is
+        # correct whatever a capability puts inside.
+        #
+        # EXTENDED validates that inside. It walks the payload for every
+        # object carrying both @context and @type, resolves the schema that
+        # @type names, and validates the object against it. That is what makes
+        # a wrong unit or a missing required attribute a rejected payload
+        # rather than a provider's problem to discover later.
+        #
+        # The schemas are not in this repository and are not mounted: they
+        # are fetched from the @context a payload declares, so the revision
+        # is the payload's choice and nothing here can go stale against it.
+        #
+        # What extended validation DOES enforce: types, string formats
+        # (date-time, duration, uri), enum, const, required, minItems,
+        # additionalProperties, not, and allOf/anyOf/oneOf.
+        #
+        # What it does NOT: if/then/else. The validator library parses those
+        # keywords but never evaluates them, so a pack's conditional rules --
+        # in the capability packs, everything predicated on informationMode
+        # -- are not checked. Worth knowing before treating a pass here as
+        # full conformance to a pack.
+        # ------------------------------------------------------------------
         schemaValidator:
           id: schemav2validator
           config:
             type: url
             location: "https://raw.githubusercontent.com/beckn/protocol-specifications-v2/refs/tags/core-v2.0.0-lts/api/v2.0.0/beckn.yaml"
             cacheTTL: "3600"
-            extendedSchema_enabled: "false"
-            extendedSchema_cacheTTL: "86400"
+
+            extendedSchema_enabled: "true"
+
+            # Resolution is a FETCH of the @context each resource declares,
+            # not a directory mounted here. The validator swaps context.jsonld
+            # for attributes.yaml to get the schema beside it:
+            #
+            #   @context .../schema/MandiPrice/v0.1/context.jsonld
+            #   fetched  .../schema/MandiPrice/v0.1/attributes.yaml
+            #
+            # So a payload names the pack revision it wants to be judged
+            # against, and no copy of the schemas here can drift from the
+            # published ones. The packs' relative $refs (into
+            # AgricultureResource) resolve against that same base; their
+            # absolute ones resolve directly, against whichever host they name.
+            #
+            # Fetched once per @context and cached for the TTL below, so only
+            # the first payload after a restart pays for it. A fetch that
+            # FAILS rejects the payload -- it does not skip validation, which
+            # is the right way round, but it does mean this adapter needs
+            # egress to every host allowed below.
+            #
+            # THIS IS THE WHOLE TRUST BOUNDARY, and it is checked on every
+            # read: the entry @context and every $ref under it. That matters
+            # because the document a payload names is NOT trusted -- it comes
+            # from a URL the payload chose, on a host anyone can publish to --
+            # so without the check its $refs could send this process at an
+            # internal service or a cloud metadata endpoint.
+            #
+            # ALL THREE HOSTS ARE REQUIRED. Loading one capability pack pulls
+            # 13-16 documents across exactly these three (measured, not
+            # assumed): the pack itself and AgricultureResource from the raw
+            # CDN, then Descriptor/GeoJSONGeometry/Location/Address from
+            # schema.beckn.io, which in turn $ref schema.nfh.global. Remove
+            # any one and no pack loads at all -- the failure is
+            # SCH_SCHEMA_ADAPTATION_FAILED on every payload, not a partial
+            # validation.
+            #
+            # Keep it as tight as the packs allow. raw.githubusercontent.com
+            # is world-writable, so this trusts every GitHub account for
+            # schema content; narrowing it to a path prefix, or mirroring the
+            # packs on a host we control, is the real fix and is not a
+            # one-line change.
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
+
+            extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
-            extendedSchema_allowedDomains: "raw.githubusercontent.com"
 
         # ------------------------------------------------------------------
         # jsonmapper -- the JSONata mapper.
         #
-        # Generic, and named for what it is rather than for OAN: it knows
+        # Generic, and named for what it is rather than for a network: it knows
         # nothing about any provider. It fetches whatever URL the registry's
         # mappings field names, compiles the JSONata, caches the compiled
         # form, and runs it in both directions.
@@ -228,7 +293,7 @@ modules:
         # rather than calling the provider unauthenticated.
         # ------------------------------------------------------------------
         providerSteps:
-          - id: weather
+          - id: WeatherObservation
             config:
               # REQUIRED. Comma-separated, because a plugin config value is a
               # string and one provider may serve several capabilities. A
@@ -278,9 +343,9 @@ modules:
           # A second capability in the same pipeline, from a different domain
           # package. Nothing about it is weather's business: a different
           # upstream, a different mapping, a different set of prerequisites --
-          # and the same two registry rows. This entry, plus "mandi" in steps
-          # below, is the entire cost of adding it.
-          - id: mandi
+          # and the same two registry rows. This entry, plus "MandiPrice"
+          # in steps below, is the entire cost of adding it.
+          - id: MandiPrice
             config:
               bindingKeys: "agmarknet|openagrinet:MandiPrice"
 
@@ -319,8 +384,8 @@ modules:
       steps:
         - validateSign     # the sender's key, from the registry
         - validateSchema   # the pinned Beckn v2 spec
-        - weather          # openagrinet:WeatherObservation, or pass through
-        - mandi            # openagrinet:MandiPrice, or pass through
+        - WeatherObservation  # its binding key, or pass through
+        - MandiPrice          # its binding key, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------

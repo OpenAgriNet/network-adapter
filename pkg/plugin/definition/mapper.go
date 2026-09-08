@@ -17,7 +17,7 @@ const (
 
 // Mapper transforms a document with a mapping fetched from a reference.
 //
-// It exists so that translating between OAN's Beckn payloads and a provider's
+// It exists so that translating between the network's Beckn payloads and a provider's
 // own shape is configuration rather than code: a new provider ships mapping
 // files, not a new transformation routine. The mapper itself knows nothing
 // about any provider, and nothing about what a mapping says -- it fetches,

@@ -1,4 +1,4 @@
-package mandi_test
+package MandiPrice_test
 
 // mappings_test.go runs the shipped mandi mapping through the real mapper and
 // the real provider step. It is the only test that proves the three pieces fit:
@@ -22,8 +22,8 @@ import (
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/mandi"
 )
 
 // mappingsDir is where the shipped mappings live, relative to this package.
@@ -191,8 +191,8 @@ func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map
 		},
 	}}
 
-	step, closeStep, err := mandi.New(context.Background(), registry, mapper,
-		&mandi.Config{BindingKeys: []string{shippedBindingKey}})
+	step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
+		&MandiPrice.Config{BindingKeys: []string{shippedBindingKey}})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}
@@ -431,8 +431,8 @@ func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 						Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
 				},
 			}}
-			step, closeStep, err := mandi.New(context.Background(), registry, mapper,
-				&mandi.Config{BindingKeys: []string{shippedBindingKey}})
+			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
+				&MandiPrice.Config{BindingKeys: []string{shippedBindingKey}})
 			if err != nil {
 				t.Fatalf("failed to build the step: %v", err)
 			}
@@ -740,8 +740,8 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 						Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
 				},
 			}}
-			step, closeStep, err := mandi.New(context.Background(), registry, mapper,
-				&mandi.Config{BindingKeys: []string{shippedBindingKey}})
+			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
+				&MandiPrice.Config{BindingKeys: []string{shippedBindingKey}})
 			if err != nil {
 				t.Fatalf("failed to build the step: %v", err)
 			}
