@@ -1,0 +1,464 @@
+# POCRA, openagrinet:AgricultureFacility, select. Both directions, one file.
+#
+# One file per binding-action rather than one per direction, because both legs of
+# an exchange are one contract: the response has to answer the request that was
+# sent, and splitting them lets one change without the other.
+#
+# The registry entry pointing here decides which action this serves, so nothing
+# in the file names it. The filename's action segment must match that entry --
+# a mismatch would apply a correct mapping to the wrong call, silently.
+#
+# Both halves read:
+#   beckn     the inbound Beckn payload
+# and the response half additionally reads:
+#   response  POCRA's answer, in its own shape
+#
+# WHERE THE QUERY LIVES, and why it is not in resourceAttributes.
+#
+# An inbound query resource is informationMode OnDemand, and the
+# AgricultureFacility v0.1 pack forbids an OnDemand resource from carrying
+# location, address or facilityType. So the search origin is read from the Beckn
+# fulfillment stop and the requested type from supportedFacilityTypes.
+#
+# PROVISIONAL. This convention was chosen on the design and has not been
+# confirmed against a payload captured from the network. Confirm it before the
+# registry row goes live.
+
+# What this capability cannot serve, refused before the provider is called.
+#
+# A predicate that is false refuses the request with the message beside it, so
+# the caller is told what is wrong with their payload rather than that an
+# expression somewhere returned false. Each check is its own expression and binds
+# for itself; the first failure is the one reported.
+#
+# Sending an unservable payload anyway earns POCRA's own schema NACK, whose
+# instanceLocation names a JSON pointer into a request the caller never saw.
+required:
+  - check: |
+      (
+        $geo := beckn.message.contract.commitments[0].fulfillment.stops[0].location.geo;
+        $exists($geo) and $geo.type = "Point" and $count($geo.coordinates) = 2
+      )
+    message: "this capability needs a fulfillment stop with a Point location; POCRA searches around one point at a time"
+  - check: |
+      (
+        $requested := [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes];
+        $governed := ["CustomHiringCentre", "KrishiVigyanKendra", "Warehouse", "SoilTestingFacility"];
+        $count($requested) > 0 and $count($requested[$ in $governed]) = $count($requested)
+      )
+    message: "every entry in supportedFacilityTypes must name a governed facility type: CustomHiringCentre, KrishiVigyanKendra, Warehouse or SoilTestingFacility"
+
+# One upstream call per facility type the payload asks for.
+#
+# POCRA's search takes exactly ONE category code. A comma-separated pair
+# ("kvk,warehouse") answers 200 with no providers at all, and a category array
+# is refused with "Schema validation failed" -- both verified against the live
+# API. So a payload asking for two types cannot be served by one call, however
+# this file is written, and the step makes one call per value yielded here.
+#
+# Before this existed the request half sent supportedFacilityTypes[0] and the
+# response half filtered to that same first entry, so a two-type search returned
+# the first type and silently dropped the rest. Nothing in the answer said a
+# type had been asked for and lost.
+#
+# Wrapped in [] because JSONata collapses a one-element sequence to a bare
+# value: a one-type search would otherwise yield a string where every other
+# count yields a list. The step accepts either, but the list is what this means.
+fanOut: |
+  [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes]
+
+# The upstream is a POST, so this object becomes the request body.
+#
+# This is where the extraction lives, deliberately. When POCRA wants another
+# parameter it is an edit here and nothing else: no Go, no rebuild, live on the
+# next cache expiry.
+#
+# $codes is the ONLY place POCRA's private vocabulary appears. Adding a facility
+# type is one line here, one line in the inverse table below, and one more entry
+# in the precondition's list.
+#
+# GeoJSON is [lon, lat] -- longitude first -- and POCRA's gps is "lat,lon".
+# Reading them the same way round gives a point in the wrong place that is still
+# a valid request, so it fails as wrong data rather than as an error.
+#
+# context.timestamp is epoch SECONDS as a string. Every other timestamp in both
+# protocols is ISO 8601, and POCRA's schema refuses one here.
+#
+# domain, version, bap_id and bap_uri are POCRA's request contract rather than
+# this adapter's identity. Identity on the wire is the adapter's own: it signs
+# what it answers with, using the key the registry publishes for it.
+request: |
+  (
+    $commitment := beckn.message.contract.commitments[0];
+    $stop := $commitment.fulfillment.stops[0];
+    /* This call's own facility type, from the fan-out half above -- not the
+       payload's first entry, which is what made a multi-type search return one
+       type. */
+    $requested := _fan.value;
+    $codes := {
+      "CustomHiringCentre": "chc",
+      "KrishiVigyanKendra": "kvk",
+      "Warehouse": "warehouse",
+      "SoilTestingFacility": "soil_lab"
+    };
+    {
+      "context": {
+        "domain": "advisory:mh-vistaar",
+        "location": { "country": { "name": "IND" } },
+        "action": "search",
+        "version": "1.1.0",
+        "bap_id": "bap.mahapocra.gov.in",
+        "bap_uri": "https://middleware.mahapocra.gov.in/bap/",
+        /* This call's own id, not the caller's messageId. POCRA keeps a
+           message_id's answers for ten minutes and returns the UNION of
+           everything asked for under it, so reusing one id across the fan-out
+           would make every call return every other call's facilities too. The
+           step supplies a fresh UUID per call; POCRA's schema refuses a
+           message_id that is not one. */
+        "message_id": _fan.callId,
+        "transaction_id": beckn.context.transactionId,
+        "timestamp": $string($floor($millis() / 1000))
+      },
+      "message": {
+        "intent": {
+          "category": { "descriptor": { "code": $lookup($codes, $requested) } },
+          "item": { "descriptor": { "name": "service-locations" } },
+          "fulfillment": {
+            "stops": [
+              {
+                "location": {
+                  "gps": $string($stop.location.geo.coordinates[1]) & "," & $string($stop.location.geo.coordinates[0])
+                },
+                "time": {
+                  "range": {
+                    "start": $exists($stop.time.range.start) ? $stop.time.range.start : $now()
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  )
+
+# Keyed by direction, not by the action it produces: a select is answered by an
+# on_select over the same HTTP round trip, so the callback is this half rather
+# than an action of its own.
+#
+# POCRA answers with responses[], one entry per BPP that replied, each carrying
+# its own catalog. Every facility is an item inside one of them, so the path
+# flattens all four levels at once.
+response: |
+  (
+    $selected := beckn.message.contract.commitments[0];
+
+    /* The caller's own @context, echoed back rather than restated here.
+       Hardcoding the pack URL meant this file had to know which one is current,
+       and could contradict what the request actually declared. The payload
+       always carries @context and @type on each resource, so there is nothing
+       to invent.
+
+       Backticks because @ is an operator in JSONata. */
+    $ctx := $selected.resources[0].resourceAttributes.`@context`;
+    $resourceId := function($item) { "res:pocra:facility:" & $item.id };
+
+    /* The inverse of the request half's $codes. Read from the item's OWN
+       category tag rather than echoed from the request, so an answer carrying
+       more than one category still labels each facility correctly. */
+    $types := {
+      "chc": "CustomHiringCentre",
+      "kvk": "KrishiVigyanKendra",
+      "warehouse": "Warehouse",
+      "soil_lab": "SoilTestingFacility",
+      /* The warehouse BPP labels its fulfillment GSW rather than "warehouse",
+         and its items carry no category tag at all, so this is the only place
+         a warehouse says what it is. */
+      "GSW": "Warehouse"
+    };
+
+    /* EVERY type the payload asked for, as a list. The answer is filtered to
+       this set rather than to its first entry -- filtering to [0] is what made a
+       two-type search drop a type. */
+    $requestedTypes := [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes];
+
+    /* POCRA states a provider's facility type in the provider's own id:
+       COMMON_PROVIDER_KVK, COMMON_PROVIDER_CHC, COMMON_PROVIDER_SOIL_LAB. That
+       is the outermost and most reliable statement of what a group of items is,
+       because POCRA groups items under one provider per category.
+
+       $contains first because $substringAfter returns the WHOLE string when the
+       separator is absent, so "WAREHOUSE001" would otherwise become the code
+       "warehouse001" and look like a deliberate answer rather than no answer.
+       Warehouse providers are named that way and state their type only in their
+       fulfillment, so they fall through to the sources below. */
+    $providerCode := function($id) {
+      $contains($id, "COMMON_PROVIDER_")
+        ? $lowercase($substringAfter($id, "COMMON_PROVIDER_"))
+    };
+
+    /* Every facility POCRA returned, each carrying the type it actually is.
+       Walked per PROVIDER rather than flattened straight to items, because both
+       of the reliable statements of type are the provider's -- a warehouse item
+       carries no category tag of its own at all.
+
+       Three sources, narrowest-trusted first: the provider's id, then the
+       item's own category tag, then the provider's fulfillment category. The
+       provider id leads because it is what POCRA groups by; the item tag is
+       kept as a second source so a provider that ever mixed categories still
+       labels each facility correctly; the fulfillment is what a warehouse has
+       instead of either.
+
+       Nothing falls back to what was REQUESTED. Doing that relabels a leaked
+       facility as the thing being searched for, which is how a warehouse comes
+       back as a Krishi Vigyan Kendra. An item none of the three can type stays
+       untyped and is dropped by the filter below -- POCRA also returns
+       administrative and mandi providers, which are not facilities at all. */
+    /* POCRA writes "Unknown", "N/A" and "000000" where it has no value.
+       Publishing them would put junk on the network under a governed schema, so
+       a value that is one of them is treated as absent. A ternary with no else
+       yields nothing, which is how a field is omitted rather than nulled. */
+    $clean := function($value) {
+      ($exists($value) and $value != "" and $value != "Unknown"
+        and $value != "N/A" and $value != "000000" and $value != "-") ? $value
+    };
+
+    /* $number($substringBefore(...)) THROWS on anything it cannot parse, and
+       that throw is not local: it propagates out of the whole response
+       mapping, so one placeholder on one item's distance or capacity failed
+       the ENTIRE search, good facilities included. $exists() cannot guard
+       it -- $exists($number(...)) evaluates its argument first, so the throw
+       fires before $exists is ever reached.
+
+       $clean strips the placeholders this file already knows POCRA writes
+       ("Unknown", "N/A", "000000", "-"); $type/$match then confirms what is
+       left actually looks like "<number><space><unit>" before $number ever
+       sees it. Same shape as $priced in agmarknet/mandi-price.select.yaml,
+       and for the same reason: $match() itself throws T0410 on a non-string,
+       so the string check has to come first rather than be folded into the
+       regex.
+
+       Returns nothing when the value cannot be read as a number -- absent,
+       not zero, so a caller cannot mistake "not reported" for "reported as
+       none". */
+    $numericPrefix := function($tagged) {
+      (
+        $head := $clean($substringBefore($tagged, " "));
+        $exists($head) and $type($head) = "string" and $match($head, /^[0-9]+(\.[0-9]+)?$/)
+          ? $number($head)
+      )
+    };
+
+    $labelled := response.responses.message.catalog.providers.(
+      $provider := $;
+      $fromProvider := $lookup($types, $providerCode($provider.id));
+      /* NOT a single $lookup($types, ....descriptor.code): a provider with more
+         than one fulfillment, or a fulfillment with more than one category,
+         makes descriptor.code a SEQUENCE rather than a string, and $lookup
+         throws T0410 on anything but a scalar key. One bad provider shape then
+         took the whole response down, all items included -- not just the ones
+         with more than one category.
+
+         Each code is looked up on its own instead, and the first that resolves
+         to a governed type wins. A provider that never mixes categories still
+         gets exactly the $lookup($types, code) it had before, since a
+         one-element sequence maps to a one-element result. */
+      $fromFulfillment := (
+        $resolved := [$provider.fulfillments.categories.descriptor.code].($lookup($types, $));
+        $resolved[$exists($)][0]
+      );
+      $map($provider.items, function($item) {
+        {
+          "item": $item,
+          "type": (
+            $tagged := $lookup($types, $item.tags.list[descriptor.code = "category"].value);
+            $exists($fromProvider) ? $fromProvider
+              : $exists($tagged) ? $tagged
+              : $fromFulfillment
+          )
+        }
+      })
+    );
+
+    /* A search is answered with the types it asked for and nothing else,
+       whatever POCRA chose to include.
+
+       It includes more than was asked for, verified against the live API: it
+       caches per message_id for PT10M and ACCUMULATES across searches sharing
+       one, so a kvk search under a reused message_id comes back carrying the chc
+       facilities of an earlier one. The step now sends a fresh message_id per
+       call, which stops this adapter causing it; the filter stays because a
+       provider deciding what to include is not something a mapping should
+       trust either way. */
+    $wanted := $labelled[type in $requestedTypes];
+
+    /* The same facility appears in more than one responses[] entry, so grouping
+       by id keeps one of each; [0] takes the first where a key collected
+       several. A repeated id in the answer would be a dangling reference the
+       moment anything resolved it. */
+    $unique := $each($wanted{ item.id: $ }, function($grouped) { $grouped[0] });
+
+    /* POCRA ranks by distance and reports it only as a string with a unit --
+       "165 Km". It is parsed to sort by and then dropped: the pack states that
+       query-relative distance is not an intrinsic facility attribute, and
+       belongs in result metadata rather than on the facility.
+
+       Sorting the strings would put "165 Km" before "98 Km", which nothing
+       downstream could detect. An item with no distance sorts last, which is
+       what an absent ranking should mean. */
+    $reading := function($item) {
+      $numericPrefix($item.tags.list[descriptor.code = "distance"].value)
+    };
+    $sorted := $map($unique, function($entry) {
+      {
+        "facility": $entry.item,
+        "type": $entry.type,
+        "distance": $exists($reading($entry.item)) ? $reading($entry.item) : 1e9
+      }
+    })^(distance);
+
+    /* POCRA reports a warehouse's capacity as one string with a unit --
+       "500 tons" -- and reports it for no other facility type. The pack has a
+       home for it, so dropping it would discard the most useful thing a
+       warehouse search returns.
+
+       No basis: the pack's example says "total storage", but POCRA does not say
+       which it means and guessing would put an unverified claim under a governed
+       field. */
+    $capacity := function($item) {
+      (
+        $reported := $item.tags.list[descriptor.code = "capacity_estimate"].value;
+        /* value guarded the same way distance is, above -- "Unknown" or any
+           other placeholder must not reach $number. unit is left unguarded
+           deliberately: it is only ever read when value parsed, and at that
+           point substringAfter on the same string that just matched the
+           numeric-prefix regex cannot itself throw. */
+        $exists($numericPrefix($reported)) ? {
+          "value": $numericPrefix($reported),
+          "unit": $substringAfter($reported, " ")
+        }
+      )
+    };
+
+    /* A Beckn Address. streetAddress is POCRA's one real address line; district,
+       taluka and village go to extendedAddress, which is where the pack's own
+       examples put them. addressRegion is Maharashtra because POCRA is that
+       state's aggregator and publishes nothing outside it. */
+    $address := function($item) {
+      (
+        $parts := [$clean($item.address.district), $clean($item.address.taluka), $clean($item.address.vilage)];
+        {
+          "streetAddress": $clean($item.address.address),
+          "extendedAddress": $count($parts) > 0 ? $join($parts, ", "),
+          "postalCode": $clean($item.address.pinCode),
+          "addressRegion": "Maharashtra",
+          "addressCountry": "IN"
+        }
+      )
+    };
+
+    /* Organisational contact only. The pack restricts publicContact to contact
+       data approved for catalog publication, and POCRA's person field is an
+       office rather than an individual. Omitted entirely when there is nothing
+       usable, rather than emitted empty. */
+    $contact := function($item) {
+      (
+        $company := $clean($item.contact.person);
+        $phone := $clean($item.contact.phone);
+        $email := $clean($item.contact.email);
+        ($exists($company) or $exists($phone) or $exists($email)) ? {
+          "company": $company,
+          "phone": $phone,
+          "email": $email
+        }
+      )
+    };
+
+    $attributes := function($item, $facilityType) {
+      {
+        "@context": $ctx,
+        "@type": "openagrinet:AgricultureFacility",
+        "informationMode": "Direct",
+        "facilityType": $facilityType,
+        "address": $address($item),
+        "capacity": $capacity($item),
+        /* sourceUri rather than website: contact.webUrl is POCRA's own site
+           repeated on every item, so it identifies the source and not the
+           facility. */
+        "source": {
+          "sourceId": "pocra",
+          "sourceName": "PoCRA Provider Aggregator Services",
+          "sourceUri": $clean($item.contact.webUrl)
+        },
+        "publicContact": $contact($item)
+      }
+    };
+    {
+      /* Correlation only: the ids that tie this answer to the request that
+         asked for it, and nothing that asserts who anybody is.
+
+         bapId, bapUri, bppId and bppUri are deliberately absent. A mapping is a
+         payload transformation -- it has no business asserting network identity,
+         and the two Uri fields it could copy are whatever the caller happened to
+         send, which in a deployed stack is a container-internal address that
+         means nothing to anyone outside it. */
+      "context": {
+        "version": beckn.context.version,
+        "action": "on_select",
+        "networkId": beckn.context.networkId,
+        "transactionId": beckn.context.transactionId,
+        "messageId": beckn.context.messageId,
+        "timestamp": $now()
+      },
+      "message": {
+        "contract": {
+          "commitments": [
+            {
+              /* DRAFT, not QUOTED. The Beckn v2 status enum is DRAFT, ACTIVE and
+                 CLOSED, and a quote is still a draft: nothing is committed until
+                 init and confirm. QUOTED read better and validated nowhere. */
+              "status": {
+                "descriptor": { "code": "DRAFT", "name": "Draft" }
+              },
+              /* The offer is echoed, but its references are not: the request
+                 named an abstract facility search, and the answer returns the
+                 concrete facilities that satisfy it. Leaving resourceIds as they
+                 arrived would point the offer at an id that appears nowhere in
+                 the answer.
+
+                 $merge keeps everything else the request offered -- the id, the
+                 descriptor, the provider -- and replaces one key. */
+              "offer": $merge([
+                $selected.offer,
+                { "resourceIds": [$map($sorted, function($entry) { $resourceId($entry.facility) })] }
+              ]),
+              /* Wrapped in [] because JSONata collapses a one-element sequence
+                 to a bare value, so a single facility would answer with an
+                 object where every other count answers with a list. */
+              "resources": [$map($sorted, function($entry) {
+                {
+                  "id": $resourceId($entry.facility),
+                  /* Required by Commitment.resources in the spec, which defines
+                     no quantity property and no Quantity schema anywhere -- a
+                     defect upstream. One resource is one facility, so one. */
+                  "quantity": 1,
+                  /* Direct mode requires @type, informationMode, facilityType
+                     and source, plus one of location or address.
+
+                     location is deliberately absent: POCRA returns no verified
+                     per-facility coordinate, and the pack forbids substituting
+                     the search origin for one.
+
+                     services, capacity, website and lastUpdatedAt are absent for
+                     the same reason -- POCRA supplies none of them, and deriving
+                     them from the facility type, or lastUpdatedAt from the time
+                     of the fetch, would assert something nobody verified. */
+                  "resourceAttributes": $attributes($entry.facility, $entry.type)
+                }
+              })]
+            }
+          ]
+        }
+      }
+    }
+  )

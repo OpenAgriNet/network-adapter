@@ -377,6 +377,30 @@ modules:
               # learning which variables this deployment reads. The variable name
               # is in the adapter's own log at error level.
 
+          - id: AgricultureFacility
+            config:
+              # One capability for all four governed facility types. Which one a
+              # request wants is a value in its payload -- supportedFacilityTypes
+              # -- not part of the binding key, so there is one row in the
+              # registry and one mapping however many types are in use.
+              bindingKeys: "pocra|openagrinet:AgricultureFacility"
+
+              # POCRA's search takes no credential, which is also why its
+              # baseUrl can be published as it stands.
+              authScheme: none
+
+              # 4 is every governed type at once -- the most this capability's
+              # fan-out ever produces -- so this is full concurrency for
+              # AgricultureFacility, not a partial raise.
+              #
+              # internal/upstream's default is 1 (sequential), deliberately:
+              # POCRA's failure mode when pushed is a 200 with an EMPTY catalog,
+              # indistinguishable from "no results", so a parallel search can
+              # silently lose a facility type with no error anywhere. Verify
+              # against the live API before trusting this in production; drop
+              # back to 1 if a multi-type search starts coming back short.
+              fanOutConcurrency: 5
+
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
       # request falls through to the 404 above -- which looks like a registry
@@ -386,6 +410,7 @@ modules:
         - validateSchema   # the pinned Beckn v2 spec
         - WeatherObservation  # its binding key, or pass through
         - MandiPrice          # its binding key, or pass through
+        - AgricultureFacility # its binding key, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------
