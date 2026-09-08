@@ -953,3 +953,65 @@ func TestCompiledStillCachesAndKeepsReferencesIndependent(t *testing.T) {
 		t.Errorf("reference B was fetched %d times, want 1 -- it must not share A's result", got)
 	}
 }
+
+// namedFunctionMapping is shaped like the shipped mappings: it binds functions
+// to variables and passes one to $filter by name. That matters, because the
+// library's shared writes happen when a function is APPLIED -- a mapping of
+// only field lookups never reaches them, which is why
+// TestTransformIsSafeUnderConcurrentUse ran green over a real race for as long
+// as its fixtures stayed simple.
+const namedFunctionMapping = `request: |
+  (
+    $ok := function($v) { $exists($v) and $v != "" };
+    { "txn": $ok(beckn.context.transactionId) ? beckn.context.transactionId : "none" }
+  )
+
+response: |
+  (
+    $ok := function($r) { $exists($r) };
+    $tag := function($v) { $exists($v) ? $lowercase($v) };
+    {
+      "txn": beckn.context.transactionId,
+      "kept": $count($filter([response.fcstday1.rain, 1, 2], $ok)),
+      "tag":  $tag("MM")
+    }
+  )
+`
+
+// Two DIFFERENT mappings, evaluated at the same time. This is the case the
+// per-mapping lock deliberately allowed to run in parallel, and the library's
+// built-ins are package-level state, so it raced: applying $exists or $count
+// writes error-reporting fields onto one shared *Function. A provider adapter
+// serving both its capabilities at once does exactly this.
+func TestConcurrentDifferentMappingsDoNotRace(t *testing.T) {
+	t.Parallel()
+
+	srv := newMappingServer(t, namedFunctionMapping, nil)
+	defer srv.Close()
+
+	mapper := newTestMapper(t)
+	errs := make(chan error, 24)
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			direction, input := definition.DirectionRequest, requestInput()
+			if i%2 == 1 {
+				direction, input = definition.DirectionResponse, responseInput()
+			}
+			// A distinct reference per goroutine: distinct cache entries, so
+			// nothing but package-level state is shared between them.
+			_, err := mapper.Transform(context.Background(),
+				fmt.Sprintf("%s/distinct-%d.yaml", srv.URL, i), direction, input)
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent Transform() over distinct mappings failed: %v", err)
+		}
+	}
+}
