@@ -18,8 +18,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/AgricultureFacility"
@@ -61,6 +65,11 @@ const shippedBindingKey = "pocra|" + shippedCapability
 // nothing. Both are exercised in TestShippedMappingEchoesTheCallersContext,
 // since the mapping must not care which it is given.
 const declaredContext = "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1/context.jsonld"
+
+// callerMessageID is the messageId selectRequest declares. Named so the
+// fan-out assertion that no upstream call reuses it reads from one place rather
+// than repeating the literal.
+const callerMessageID = "a1b2c3d4-e5f6-4789-abcd-ef1234567890"
 
 const selectRequest = `{
   "context": { "version": "2.0.0", "action": "select",
@@ -1209,5 +1218,442 @@ func TestShippedMappingEchoesTheCallersContext(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// Fan-out: one payload, one upstream call per facility type it asks for.
+//
+// POCRA's search takes exactly ONE category code -- a comma-separated pair
+// answers 200 with no providers, and a category array is refused with "Schema
+// validation failed", both verified against the live API. So a payload naming
+// two types cannot be served by one call.
+//
+// Before fan-out existed the request half sent supportedFacilityTypes[0] and
+// the response half filtered to that same entry, so a two-type search returned
+// the first type and silently dropped the rest. Nothing in the answer said a
+// type had been asked for and lost, which is what made it worth finding.
+// --------------------------------------------------------------------------
+
+// pocraByCategory is a fake POCRA that answers each category with its own
+// captured response, and records what it was asked.
+//
+// Routing on the category code is the whole point: a fake that returns one
+// canned body whatever it is asked cannot tell a fan-out that sent the right
+// codes from one that sent the same code twice.
+type pocraByCategory struct {
+	mu       sync.Mutex
+	byCode   map[string]string
+	codes    []string
+	messages []string
+}
+
+func (p *pocraByCategory) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var sent map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+		http.Error(w, "not JSON", http.StatusBadRequest)
+		return
+	}
+	code, _ := dig(sent, "message", "intent", "category", "descriptor", "code").(string)
+	message, _ := dig(sent, "context", "message_id").(string)
+
+	p.mu.Lock()
+	p.codes = append(p.codes, code)
+	p.messages = append(p.messages, message)
+	body, known := p.byCode[code]
+	p.mu.Unlock()
+
+	if !known {
+		// A code with no fixture is a fan-out that sent something unasked for,
+		// and answering it with anything would hide that.
+		http.Error(w, "unexpected category "+code, http.StatusBadRequest)
+		return
+	}
+	fmt.Fprint(w, body)
+}
+
+// asked returns the category codes POCRA was sent, sorted so an assertion does
+// not depend on which concurrent call arrived first.
+func (p *pocraByCategory) asked() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sorted := append([]string(nil), p.codes...)
+	sort.Strings(sorted)
+	return sorted
+}
+
+// runFanOut runs the shipped mapping against a fake POCRA that answers per
+// category, and returns the answer with the fake for inspection.
+func runFanOut(t *testing.T, types []string, byCode map[string]string) (map[string]any, *pocraByCategory) {
+	t.Helper()
+
+	mappings := serveMappings(t)
+	defer mappings.Close()
+
+	pocra := &pocraByCategory{byCode: byCode}
+	upstream := httptest.NewServer(pocra)
+	defer upstream.Close()
+
+	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
+	if err != nil {
+		t.Fatalf("failed to build the mapper: %v", err)
+	}
+	defer closeMapper()
+
+	registry := &stubRegistry{plan: &model.ProviderRecord{
+		BindingKey: shippedBindingKey, BaseURL: upstream.URL,
+		Actions: map[string]model.ActionPlan{
+			"select": {Method: http.MethodPost, Path: "/search",
+				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
+		},
+	}}
+
+	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+		&AgricultureFacility.Config{BindingKeys: []string{shippedBindingKey}})
+	if err != nil {
+		t.Fatalf("failed to build the step: %v", err)
+	}
+	defer closeStep()
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	attributes(t, payload)["supportedFacilityTypes"] = toAny(types)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("could not rebuild the payload: %v", err)
+	}
+
+	stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+	if err := step.Run(stepCtx); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	var answer map[string]any
+	if err := json.Unmarshal(stepCtx.ResponseBody, &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v\n%s", err, stepCtx.ResponseBody)
+	}
+	return answer, pocra
+}
+
+func toAny(values []string) []any {
+	out := make([]any, len(values))
+	for index, value := range values {
+		out[index] = value
+	}
+	return out
+}
+
+// typesIn counts the answer's resources by facilityType.
+func typesIn(t *testing.T, answer map[string]any) map[string]int {
+	t.Helper()
+	counts := map[string]int{}
+	for _, entry := range answerResources(t, answer) {
+		got, _ := dig(entry, "resourceAttributes", "facilityType").(string)
+		counts[got]++
+	}
+	return counts
+}
+
+// The whole point: two types asked for, two types answered.
+//
+// This is the case that was broken. It returned KrishiVigyanKendra alone, and
+// the Warehouse the caller also asked for was dropped without a word.
+func TestATwoTypeSearchIsAnsweredWithBothTypes(t *testing.T) {
+	answer, pocra := runFanOut(t,
+		[]string{"KrishiVigyanKendra", "Warehouse"},
+		map[string]string{"kvk": providerResponse, "warehouse": warehouseResponse})
+
+	if want := []string{"kvk", "warehouse"}; !slices.Equal(pocra.asked(), want) {
+		t.Errorf("POCRA was asked for %v, want one call per type %v", pocra.asked(), want)
+	}
+	got := typesIn(t, answer)
+	if got["KrishiVigyanKendra"] == 0 || got["Warehouse"] == 0 {
+		t.Errorf("answer carries %v, want both requested types present", got)
+	}
+	for facilityType := range got {
+		if facilityType != "KrishiVigyanKendra" && facilityType != "Warehouse" {
+			t.Errorf("answer carries %q, which was not asked for", facilityType)
+		}
+	}
+}
+
+// All four, because they do not all state their type the same way -- three
+// carry a category tag and a COMMON_PROVIDER_ id, a warehouse carries neither.
+func TestEveryGovernedTypeCanBeAskedForAtOnce(t *testing.T) {
+	answer, pocra := runFanOut(t,
+		[]string{"KrishiVigyanKendra", "CustomHiringCentre", "SoilTestingFacility", "Warehouse"},
+		map[string]string{
+			"kvk":       providerResponse,
+			"chc":       mixedResponse,
+			"soil_lab":  mixedResponse,
+			"warehouse": warehouseResponse,
+		})
+
+	if want := []string{"chc", "kvk", "soil_lab", "warehouse"}; !slices.Equal(pocra.asked(), want) {
+		t.Errorf("POCRA was asked for %v, want %v", pocra.asked(), want)
+	}
+	got := typesIn(t, answer)
+	// soil_lab is routed to a fixture that carries none, so three of the four
+	// have facilities to return. The assertion is that nothing UNASKED appears
+	// and that the types with data all do.
+	for _, want := range []string{"KrishiVigyanKendra", "CustomHiringCentre", "Warehouse"} {
+		if got[want] == 0 {
+			t.Errorf("answer carries %v, want %s present", got, want)
+		}
+	}
+	if got["SoilTestingFacility"] != 0 {
+		t.Errorf("answer carries %d SoilTestingFacility, but the fixture has none",
+			got["SoilTestingFacility"])
+	}
+}
+
+// A leaked facility is still dropped when fanning out.
+//
+// mixedResponse is POCRA answering a chc search with kvk, mandi, administrative
+// and warehouse providers in it too. Asking for chc and warehouse must return
+// the chc facilities and the warehouse ones -- not the kvk that leaked into the
+// chc answer, and not the mandi or administrative providers, which are not
+// facilities at all.
+func TestFanningOutStillDropsWhatWasNotAskedFor(t *testing.T) {
+	answer, _ := runFanOut(t,
+		[]string{"CustomHiringCentre", "Warehouse"},
+		map[string]string{"chc": mixedResponse, "warehouse": warehouseResponse})
+
+	got := typesIn(t, answer)
+	if got["KrishiVigyanKendra"] != 0 {
+		t.Errorf("the kvk that leaked into the chc answer was returned: %v", got)
+	}
+	for facilityType, count := range got {
+		if facilityType != "CustomHiringCentre" && facilityType != "Warehouse" {
+			t.Errorf("answer carries %d of %q, which was not asked for", count, facilityType)
+		}
+	}
+	if got["CustomHiringCentre"] == 0 || got["Warehouse"] == 0 {
+		t.Errorf("answer carries %v, want both requested types", got)
+	}
+}
+
+// Each fan-out call carries its OWN message_id, and none of them is the
+// caller's.
+//
+// POCRA keeps a message_id's answers for ten minutes and returns the union of
+// everything asked for under it -- verified against the live API, where a kvk
+// search under a reused id came back carrying an earlier chc search's
+// facilities. Sending one id across the fan-out would make every call return
+// every other call's facilities, so this is what stops the adapter causing the
+// leak it also filters.
+func TestEachFanOutCallCarriesItsOwnRequestId(t *testing.T) {
+	_, pocra := runFanOut(t,
+		[]string{"KrishiVigyanKendra", "Warehouse"},
+		map[string]string{"kvk": providerResponse, "warehouse": warehouseResponse})
+
+	if len(pocra.messages) != 2 {
+		t.Fatalf("POCRA saw %d calls, want 2", len(pocra.messages))
+	}
+	if pocra.messages[0] == pocra.messages[1] {
+		t.Errorf("both calls used message_id %q, so POCRA would blend their answers",
+			pocra.messages[0])
+	}
+	for _, message := range pocra.messages {
+		// POCRA's schema refuses a message_id that is not a UUID: a derived one
+		// like "<caller-id>-kvk" is answered with 400 Schema validation failed.
+		if _, err := uuid.Parse(message); err != nil {
+			t.Errorf("message_id %q is not a UUID, which POCRA refuses: %v", message, err)
+		}
+		if message == callerMessageID {
+			t.Errorf("a call reused the caller's messageId %q", message)
+		}
+	}
+}
+
+// An ungoverned type anywhere in the list is refused, not just in first place.
+//
+// The precondition used to read supportedFacilityTypes[0], so a payload naming
+// a governed type first and nonsense second passed the check and then fanned
+// out to a call POCRA would refuse.
+func TestAnUngovernedTypeIsRefusedWhereverItAppears(t *testing.T) {
+	for _, types := range [][]string{
+		{"NotAFacility"},
+		{"KrishiVigyanKendra", "NotAFacility"},
+		{"NotAFacility", "KrishiVigyanKendra"},
+	} {
+		t.Run(strings.Join(types, "+"), func(t *testing.T) {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+				t.Fatalf("the fixture is not JSON: %v", err)
+			}
+			attributes(t, payload)["supportedFacilityTypes"] = toAny(types)
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("could not rebuild the payload: %v", err)
+			}
+
+			_, _, runErr := runSelect(t, string(body))
+			if runErr == nil {
+				t.Fatal("the payload was served, want it refused for naming an ungoverned type")
+			}
+			if !strings.Contains(runErr.Error(), "governed facility type") {
+				t.Errorf("error = %v, want the mapping's own explanation", runErr)
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// A placeholder value must not crash the whole search.
+//
+// $number() throws on anything it cannot parse, and the throw is not local to
+// the item carrying the bad value -- it propagates out of the whole response
+// mapping. One placeholder distance or capacity_estimate on one item then
+// failed a search that also carried good facilities, which is worse than
+// dropping the one bad field: it drops everything.
+// --------------------------------------------------------------------------
+
+// pocraSingleWith builds a minimal, valid POCRA envelope around one item's
+// extra tags, so a test can vary just the field it is checking.
+func pocraSingleWith(providerID, categoryCode, itemID, extraTags string) string {
+	return `{ "responses": [ {
+	  "context": { "action": "on_search", "version": "1.1.0" },
+	  "message": { "catalog": { "descriptor": { "name": "x" },
+	    "providers": [{
+	      "id": "` + providerID + `",
+	      "fulfillments": [{ "id": "f1", "categories": [{ "descriptor": { "code": "` + categoryCode + `" } }] }],
+	      "items": [
+	        { "id": "` + itemID + `", "descriptor": {"name":"a"}, "address": {}, "contact": {},
+	          "fulfillment_ids": ["f1"], "category_ids": ["c1"],
+	          "tags": [{ "list": [` + extraTags + `] }] }
+	      ]
+	    }]
+	  } }
+	} ] }`
+}
+
+// A placeholder distance is dropped from ranking, not fatal to the search.
+//
+// POCRA reports "165 Km" when it knows the distance and "Unknown" -- among the
+// same placeholders this file already strips elsewhere -- when it does not.
+// TestReadingTreatsAnAbsentDistanceAsUnranked (below, existing) covers the
+// field being missing outright; this covers it being PRESENT but unparseable,
+// which used to throw D3030 rather than return the resource unranked.
+func TestAPlaceholderDistanceDoesNotFailTheSearch(t *testing.T) {
+	body := `{ "responses": [ {
+	  "context": { "action": "on_search", "version": "1.1.0" },
+	  "message": { "catalog": { "descriptor": { "name": "x" },
+	    "providers": [{
+	      "id": "COMMON_PROVIDER_KVK",
+	      "fulfillments": [{ "id": "f1", "categories": [{ "descriptor": { "code": "kvk" } }] }],
+	      "items": [
+	        { "id": "NEAR", "descriptor": {"name":"a"}, "address": {}, "contact": {},
+	          "fulfillment_ids": ["f1"], "category_ids": ["c1"],
+	          "tags": [{ "list": [{ "descriptor": {"code":"distance"}, "value": "12 Km" }] }] },
+	        { "id": "PLACEHOLDER", "descriptor": {"name":"b"}, "address": {}, "contact": {},
+	          "fulfillment_ids": ["f1"], "category_ids": ["c1"],
+	          "tags": [{ "list": [{ "descriptor": {"code":"distance"}, "value": "Unknown" }] }] }
+	      ]
+	    }]
+	  } }
+	} ] }`
+
+	answer := runAgainst(t, requestFor(t, "KrishiVigyanKendra"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 2 {
+		t.Fatalf("got %d resources, want 2 -- a placeholder distance must not drop the item, "+
+			"only its ranking", len(resources))
+	}
+	// The good reading sorts first; the placeholder, like an absent distance,
+	// sorts last.
+	if got := dig(resources[0], "id"); got != "res:pocra:facility:NEAR" {
+		t.Errorf("resources[0] = %v, want NEAR (the one with a real distance) first", got)
+	}
+	if got := dig(resources[1], "id"); got != "res:pocra:facility:PLACEHOLDER" {
+		t.Errorf("resources[1] = %v, want PLACEHOLDER last, same as an absent distance", got)
+	}
+}
+
+// A non-numeric distance with no space -- "12Km" rather than "12 Km" -- is the
+// same failure by a different route: $substringBefore returns the WHOLE string
+// when there is no separator, so "12Km" reached $number unparsed.
+func TestADistanceWithNoSpaceDoesNotFailTheSearch(t *testing.T) {
+	body := pocraSingleWith("COMMON_PROVIDER_KVK", "kvk", "NOSPACE",
+		`{ "descriptor": {"code":"distance"}, "value": "12Km" }`)
+	answer := runAgainst(t, requestFor(t, "KrishiVigyanKendra"), body)
+	if len(answerResources(t, answer)) != 1 {
+		t.Fatalf("got %d resources, want 1 -- a malformed distance must not fail the search",
+			len(answerResources(t, answer)))
+	}
+}
+
+// A placeholder capacity_estimate is omitted, not fatal, on the one facility
+// type that reports it.
+func TestAPlaceholderCapacityDoesNotFailTheSearch(t *testing.T) {
+	body := pocraSingleWith("WAREHOUSE001", "GSW", "WARE-PLACEHOLDER",
+		`{ "descriptor": {"code":"capacity_estimate"}, "value": "Unknown" }`)
+	answer := runAgainst(t, requestFor(t, "Warehouse"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want 1 -- a placeholder capacity must not fail the search",
+			len(resources))
+	}
+	if capacity := dig(resources[0], "resourceAttributes", "capacity"); capacity != nil {
+		t.Errorf("capacity = %v, want omitted for a placeholder value", capacity)
+	}
+}
+
+// A real capacity still parses -- the guard added for the placeholder must not
+// have broken the value it is meant to let through.
+func TestARealCapacityStillParses(t *testing.T) {
+	body := pocraSingleWith("WAREHOUSE001", "GSW", "WARE-REAL",
+		`{ "descriptor": {"code":"capacity_estimate"}, "value": "500 tons" }`)
+	answer := runAgainst(t, requestFor(t, "Warehouse"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want 1", len(resources))
+	}
+	capacity, ok := dig(resources[0], "resourceAttributes", "capacity").(map[string]any)
+	if !ok {
+		t.Fatalf("capacity = %v, want a parsed {value, unit}",
+			dig(resources[0], "resourceAttributes", "capacity"))
+	}
+	if capacity["value"] != float64(500) || capacity["unit"] != "tons" {
+		t.Errorf("capacity = %v, want {value: 500, unit: \"tons\"}", capacity)
+	}
+}
+
+// A provider naming more than one fulfillment category must not crash the
+// search either.
+//
+// $lookup throws T0410 on anything but a scalar key, and
+// provider.fulfillments.categories.descriptor.code is a SEQUENCE the moment a
+// provider has more than one fulfillment or a fulfillment has more than one
+// category. Every shipped fixture has exactly one of each, so nothing else in
+// this suite reaches the path.
+//
+// The provider id here deliberately does not match COMMON_PROVIDER_*, so type
+// resolution falls all the way through to the fulfillment-category source this
+// is testing -- the id and item-tag sources are tried first and would mask the
+// bug otherwise.
+func TestAProviderWithTwoFulfillmentCategoriesDoesNotFailTheSearch(t *testing.T) {
+	body := `{ "responses": [ {
+	  "context": { "action": "on_search", "version": "1.1.0" },
+	  "message": { "catalog": { "descriptor": { "name": "x" },
+	    "providers": [{
+	      "id": "NOT_A_COMMON_PROVIDER",
+	      "fulfillments": [
+	        { "id": "f1", "categories": [{ "descriptor": { "code": "kvk" } }] },
+	        { "id": "f2", "categories": [{ "descriptor": { "code": "chc" } }] }
+	      ],
+	      "items": [
+	        { "id": "MIXED-1", "descriptor": {"name":"a"}, "address": {}, "contact": {},
+	          "fulfillment_ids": ["f1","f2"], "category_ids": ["c1"],
+	          "tags": [{ "list": [{ "descriptor": {"code":"distance"}, "value": "12 Km" }] }] }
+	      ]
+	    }]
+	  } }
+	} ] }`
+	answer := runAgainst(t, requestFor(t, "KrishiVigyanKendra"), body)
+	if len(answerResources(t, answer)) != 1 {
+		t.Fatalf("got %d resources, want 1 -- a provider with two fulfillment categories "+
+			"must not fail the search", len(answerResources(t, answer)))
 	}
 }

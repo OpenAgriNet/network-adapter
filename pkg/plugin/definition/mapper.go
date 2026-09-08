@@ -13,6 +13,18 @@ const (
 	DirectionRequest Direction = "request"
 	// DirectionResponse translates the upstream's answer back.
 	DirectionResponse Direction = "response"
+	// DirectionFanOut names the values a single inbound payload must be split
+	// across, one upstream call each.
+	//
+	// It exists because some providers answer one question at a time. POCRA's
+	// facility search takes exactly one category code -- a comma-separated pair
+	// matches nothing and an array is refused outright -- so a payload asking
+	// for two facility types cannot be served by one call to it, however the
+	// request half is written.
+	//
+	// A mapping declaring no fan-out is called once, which is every provider
+	// that can answer a whole payload in one exchange.
+	DirectionFanOut Direction = "fanOut"
 )
 
 // Mapper transforms a document with a mapping fetched from a reference.

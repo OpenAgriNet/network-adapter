@@ -28,7 +28,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -63,6 +66,36 @@ const (
 	// than serving it with a sane budget and saying so in the log.
 	MaxTimeout  = 30 * time.Second
 	MaxRetryMax = 5
+
+	// MaxFanOut bounds how many upstream calls one inbound payload may become.
+	//
+	// Fan-out is amplification: one request in, N out, each with its own retry
+	// budget. The values come from the PAYLOAD, so without a ceiling a caller
+	// decides how much work this adapter and the provider do -- and the
+	// provider is a government API that takes eight seconds to answer.
+	//
+	// Refused rather than clamped, unlike the registry's budgets. A clamped
+	// timeout still answers the question asked; a clamped fan-out silently
+	// drops facility types from the answer, which is the exact defect fan-out
+	// was added to fix.
+	MaxFanOut = 8
+
+	// DefaultFanOutConcurrency is how many fan-out calls are in flight at once
+	// when a deployment does not say.
+	//
+	// One -- sequential. Fan-out exists for providers that answer one question
+	// at a time, and a provider built that way is not usually built to be asked
+	// several at once: POCRA's aggregator waits a fixed window for its BPPs to
+	// reply and returns whatever arrived, so a slow BPP that misses the window
+	// is reported as no results rather than as an error. Concurrency makes that
+	// more likely, and its failure mode is silent data loss -- the exact defect
+	// fan-out was added to fix.
+	//
+	// A provider that tolerates concurrency can say so per deployment, which is
+	// a config change rather than a code one. The cost of the safe default is
+	// latency: N calls take N times as long, and the operator can see that in
+	// the log line each call writes.
+	DefaultFanOutConcurrency = 1
 )
 
 // Auth schemes this step can present upstream. Credentials themselves are never
@@ -158,6 +191,16 @@ type Config struct {
 
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+
+	// FanOutConcurrency is how many of a fan-out's calls may be in flight at
+	// once. Absent means DefaultFanOutConcurrency, which is sequential.
+	//
+	// Configuration rather than a constant because it is a fact about the
+	// PROVIDER, and this package serves several. Raising it for a provider that
+	// cannot take it does not fail loudly -- POCRA answers a call it could not
+	// service in time with 200 and an empty catalog -- so the default is the
+	// cautious one and raising it is a deliberate act.
+	FanOutConcurrency int `yaml:"fanOutConcurrency" json:"fanOutConcurrency"`
 }
 
 // Step serves whatever capabilities a domain package configures it for. It is
@@ -253,6 +296,12 @@ func applyDefaults(cfg *Config) error {
 	}
 	if cfg.MaxResponseBytes <= 0 {
 		cfg.MaxResponseBytes = DefaultMaxResponseBytes
+	}
+	if cfg.FanOutConcurrency <= 0 {
+		cfg.FanOutConcurrency = DefaultFanOutConcurrency
+	}
+	if cfg.FanOutConcurrency > MaxFanOut {
+		cfg.FanOutConcurrency = MaxFanOut
 	}
 
 	switch cfg.AuthScheme {
@@ -381,19 +430,17 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local)
+	// What this payload has to be split across, if anything. A provider that
+	// answers a whole payload in one exchange declares no fan-out and is called
+	// once, exactly as before.
+	fan, err := s.fanOut(ctx, call, beckn, local)
 	if err != nil {
 		return err
 	}
 
-	upstreamResponse, err := s.call(ctx, plan.BaseURL, call, upstreamRequest)
+	answer, err := s.gather(ctx, plan, call, beckn, local, fan)
 	if err != nil {
 		return err
-	}
-
-	answer, err := decodeBody(upstreamResponse)
-	if err != nil {
-		return fmt.Errorf("upstream: provider answered with something that is not JSON: %w", err)
 	}
 
 	// The same mapping reference as the request, other half: one file carries
@@ -433,11 +480,19 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 // that. It meant the choice of which payload fields reach the provider lived in
 // Go, so adding a parameter -- a date range, say -- was a rebuild. Now it is a
 // mapping edit and nothing else.
-func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn any, local map[string]any) ([]byte, error) {
-	mapped, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionRequest, map[string]any{
+func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn any, local map[string]any,
+	fanValue any) ([]byte, error) {
+
+	input := map[string]any{
 		"beckn":  beckn,
 		"_local": local,
-	})
+	}
+	// Bound only when fanning out, so a mapping without fan-out sees exactly
+	// the input it always has.
+	if fanValue != nil {
+		input["_fan"] = fanValue
+	}
+	mapped, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionRequest, input)
 	if err != nil {
 		return nil, err
 	}
@@ -445,6 +500,142 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 		log.Debugf(ctx, "upstream: the request half of %s produced nothing; sending an empty request", call.Mappings)
 	}
 	return mapped, nil
+}
+
+// fanOut evaluates the mapping's fan-out half: the values this payload must be
+// split across, one upstream call each.
+//
+// Returns nil when the mapping declares no fan-out, which means one call with
+// no fan value bound -- the behaviour of every mapping written before this
+// existed, and of every provider that can answer a whole payload at once.
+func (s *Step) fanOut(ctx context.Context, call model.ActionPlan, beckn any, local map[string]any) ([]any, error) {
+	declared, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionFanOut, map[string]any{
+		"beckn":  beckn,
+		"_local": local,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(declared) == 0 {
+		return nil, nil
+	}
+
+	decoded, err := decodeBody(declared)
+	if err != nil {
+		return nil, fmt.Errorf("upstream: the fan-out half of %s produced something that is not JSON: %w",
+			call.Mappings, err)
+	}
+
+	// A single value rather than a list is the same instruction: one call.
+	// JSONata collapses a one-element sequence to a bare value, so a mapping
+	// that maps over a one-entry list arrives here as a scalar whether or not
+	// it meant to.
+	values, isList := decoded.([]any)
+	if !isList {
+		values = []any{decoded}
+	}
+
+	if len(values) == 0 {
+		// The half ran and selected nothing. Distinct from declaring no
+		// fan-out: this payload asked for something the mapping recognised as
+		// empty, and calling once with no fan value bound would send whatever
+		// the request half builds from an unset one.
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"upstream: the fan-out half of %s selected no values, so there is nothing to ask %s for",
+			call.Mappings, call.Path))
+	}
+	if len(values) > MaxFanOut {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"upstream: this payload asks for %d upstream calls and the ceiling is %d; "+
+				"split it across more than one request", len(values), MaxFanOut))
+	}
+	return values, nil
+}
+
+// gather makes the upstream calls this payload becomes and returns what the
+// response half is handed.
+//
+// With no fan-out that is one call and the provider's own answer, unchanged.
+// With fan-out it is one call per value and a LIST of answers, in the order the
+// fan-out half named them rather than the order they arrived -- an answer whose
+// content depends on which provider replied first is not reproducible, and the
+// suite could not assert it.
+func (s *Step) gather(ctx *model.StepContext, plan *model.ProviderRecord, call model.ActionPlan,
+	beckn any, local map[string]any, fan []any) (any, error) {
+
+	if fan == nil {
+		body, err := s.one(ctx, plan.BaseURL, call, beckn, local, nil)
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+
+	// Bounded, and sequential unless the deployment raised it. These are
+	// independent questions, but a provider that answers one at a time is
+	// often not built to be asked several at once -- see
+	// DefaultFanOutConcurrency for what POCRA does when pushed, and why its
+	// failure mode is the reason not to default to parallel.
+	//
+	// The cost is latency: sequentially, N calls take N times as long.
+	answers := make([]any, len(fan))
+	failures := make([]error, len(fan))
+	inFlight := make(chan struct{}, s.config.FanOutConcurrency)
+	var waiting sync.WaitGroup
+	for index, value := range fan {
+		waiting.Add(1)
+		inFlight <- struct{}{}
+		go func(index int, value any) {
+			defer func() { <-inFlight }()
+			defer waiting.Done()
+			// Each call gets its own identity. A provider that caches or
+			// accumulates per request id -- POCRA keeps a message_id's answers
+			// for ten minutes and returns the union of everything asked for
+			// under it -- would otherwise blend these calls into each other,
+			// and the fan-out would return the same blended answer N times.
+			//
+			// Generated here rather than in the mapping because it has to be a
+			// fresh UUID, which JSONata cannot produce, and POCRA's schema
+			// refuses a message_id that is not one.
+			answers[index], failures[index] = s.one(ctx, plan.BaseURL, call, beckn, local, map[string]any{
+				"value":  value,
+				"index":  index,
+				"callId": uuid.NewString(),
+			})
+		}(index, value)
+	}
+	waiting.Wait()
+
+	// One failure fails the request. A partial answer is the defect this was
+	// built to fix wearing a different hat: the caller asked for four facility
+	// types, would receive three, and nothing in the payload would say that the
+	// fourth was asked for and lost.
+	for index, err := range failures {
+		if err != nil {
+			return nil, fmt.Errorf("upstream: the call for fan-out value %v failed: %w", fan[index], err)
+		}
+	}
+	return answers, nil
+}
+
+// one builds and makes a single upstream call, with fanValue bound as _fan for
+// the request half when there is one.
+func (s *Step) one(ctx *model.StepContext, baseURL string, call model.ActionPlan,
+	beckn any, local map[string]any, fanValue any) (any, error) {
+
+	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local, fanValue)
+	if err != nil {
+		return nil, err
+	}
+	upstreamResponse, err := s.call(ctx, baseURL, call, upstreamRequest)
+	if err != nil {
+		return nil, err
+	}
+	answer, err := decodeBody(upstreamResponse)
+	if err != nil {
+		return nil, fmt.Errorf("upstream: provider answered with something that is not JSON: %w", err)
+	}
+	return answer, nil
 }
 
 // extractAction reads the Beckn action a request is for.
