@@ -1,0 +1,154 @@
+# Knowledge advisory: a Beckn /select against the network's knowledge
+# capability, answered from a provider's retrieval service.
+#
+# ONE FILE, BOTH DIRECTIONS, one Beckn action. The registry row for this
+# capability names this URL, and the adapter fetches it verbatim -- so a
+# deployment pointing at a different corpus points at its own copy of this
+# file, and nothing about the provider is compiled in.
+#
+# Both halves read:
+#   beckn     the inbound Beckn payload -- the context to echo, the topics to
+#             search for, the resource the caller selected
+# and the response half additionally reads:
+#   response  the provider's answer, in its own shape
+#
+# The base URL, the path and the credentials are NOT here. The first two are
+# the registry's ProviderSchema row; the credentials are environment variables
+# named in the adapter config. No host appears in this file.
+
+request: |
+  /* Request half: an OnDemand KnowledgeAdvisory select -> POST /search.
+
+     Only `query` is required upstream; every other SearchRequest field has a
+     provider-side default, so nothing else is sent.
+
+     The base URL and path are NOT here -- they live in the provider's registry
+     ProviderSchema row, so moving the provider is a registry write and no file
+     in this repo names a host. */
+  (
+    $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+
+    /* DEPLOYMENT CONSTANT. Which corpus this deployment searches. The registry
+       row names this mapping file per deployment, so a different environment
+       points at a mapping carrying its own index. Omit the key entirely to let
+       the provider fall back to its persisted SearchSettings.indexName. */
+    $indexName := "test_doc_pipeline";
+
+    {
+      "query":      $trim($join($ra.topics, " ")),
+      "index_name": $indexName
+    }
+  )
+
+response: |
+  (
+    $ra  := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+    $ctx := $ra.`@context`;
+    $sel := beckn.message.contract.commitments[0].resources[0].id;
+
+    /* Every hit the provider returned, unfiltered. It ran the query and chose
+       what to send back; second-guessing that with a score threshold here would
+       be this adapter deciding relevance on the provider's behalf.
+
+       Worth knowing what that means in practice: hybrid RRF scores are not
+       calibrated, so a query can return hits within 0.005 of each other whose
+       subjects are unrelated. They will all be cited. Reinstating a floor is
+       one $filter if a deployment wants it. */
+    $usable := $filter(response.hits, function($h) { $h.is_reference != true });
+
+    /* ONE recommendation per DOCUMENT, not per hit. doc_id repeats: the engine
+       returns up to max_chunks_per_doc chunks per document, and this corpus also
+       indexes one chunk twice, once as type "document" and once as "scheme".
+       Per-hit would say the same thing two or four times. */
+    $docIds := $distinct($usable.doc_id);
+    $forDoc := function($id) { $filter($usable, function($h) { $h.doc_id = $id }) };
+    $textOf := function($id) { $join($distinct($forDoc($id).text), "\n\n") };
+
+    /* Language comes from the REQUEST, not the hit. doc_language is "" on every
+       hit in this corpus (verified live), and recommendations[].language is
+       required with minLength 2, so reading it from upstream would emit an
+       invalid advisory. OnDemand requires languages, so the caller has sent it. */
+    $lang := $ra.languages[0];
+
+    /* Scheme hits carry a governed code; document hits do not. Only "scheme"
+       maps -- "document" names a container format, not a subject. */
+    $cats := $distinct($map($usable, function($h) {
+      $h.type = "scheme" ? "Scheme"
+    }));
+
+    /* RATIONALE cites aggregate provenance only. Naming the index, the ranking
+       method or its parameters would leak engine internals to the caller. */
+    $rationale := "Retrieved " & $string($count($usable)) & " of "
+      & $string(response.candidate_count) & " candidate passages from the "
+      & $distinct($usable.instance_name)[0] & " corpus.";
+
+    {
+      "context": $merge([ beckn.context, { "action": "on_select" } ]),
+      "message": {
+        "contract": {
+          "status": { "code": "DRAFT" },
+          "commitments": [{
+            "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+            "offer": {
+              "id": "offer:knowledge:" & $sel,
+              /* BOTH ids. The OnDemand id the caller selected, plus the Direct
+                 id minted here -- OnDemand and Direct require different fields,
+                 so the answer cannot restate the selected resource. Without the
+                 old id the caller cannot correlate the callback. */
+              /* Only mint an id when there IS a document. With no hits the
+                 old form emitted "res:knowledge-advisory:" -- a dangling id
+                 pointing at nothing. */
+              "resourceIds": $exists($docIds)
+                ? [$sel, "res:knowledge-advisory:" & $docIds[0]]
+                : [$sel]
+            },
+            /* ONE advisory, every contributing document cited beneath it.
+
+               NO RESULTS IS AN ANSWER, NOT A FAILURE. With nothing above the
+               floor this emits resources: [] -- Commitment.resources is
+               required but carries no minItems, so an empty array is valid and
+               says "nothing matched" without inventing an advisory. Building
+               one anyway produced an empty resource id and no recommendations,
+               which is a malformed advisory the response leg never validates. */
+            "resources": $exists($docIds) ? [{
+              "id": "res:knowledge-advisory:" & $docIds[0],
+              "quantity": 1,
+              "descriptor": $merge([
+                { "code": "KNOWLEDGE_ADVISORY" },
+                $exists($distinct($usable.scheme_name)[0])
+                  ? { "name": $distinct($usable.scheme_name)[0] } : {}
+              ]),
+              "resourceAttributes": {
+                "@context": $ctx,
+                "@type": "openagrinet:KnowledgeAdvisory",
+                "informationMode": "Direct",
+                /* Echoed: category_tags is "" on every hit in this corpus. */
+                "topics": $ra.topics,
+                "languages": $ra.languages,
+                "issuedAt": $now(),
+                "recommendations": [$map($docIds, function($id) {
+                  { "message": $textOf($id), "language": $lang }
+                })],
+                /* Resource IDENTIFIERS, not raw doc hashes: the pack calls
+                   these "Beckn Resource identifiers of supporting
+                   KnowledgeResource information". Caveat worth knowing: they
+                   only resolve if those documents are also published as
+                   KnowledgeResource resources on the network. Today they are
+                   not, so a caller can correlate but not dereference them. */
+                "supportingResourceIds": [$map($docIds, function($id) {
+                  "res:knowledge:" & $id
+                })],
+                "rationale": $rationale,
+                /* NOT hits[].source -- that is "docs-pipeline", the ingestion
+                   pipeline name, not the authority behind the knowledge. */
+                "source": {
+                  "sourceId": "participant:bharat-vistaar",
+                  "sourceName": $distinct($usable.instance_name)[0]
+                }
+              }
+            }] : []
+          }]
+        }
+      }
+    }
+  )
