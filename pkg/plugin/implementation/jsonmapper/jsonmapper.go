@@ -103,6 +103,41 @@ type Config struct {
 	MaxCacheEntries int `yaml:"maxCacheEntries" json:"maxCacheEntries"`
 }
 
+// evaluateLocked runs one expression under the package lock.
+//
+// The unlock is DEFERRED, not written after the call. A panic inside the
+// library -- and this is a library we have already found a data race in --
+// would otherwise leave the mutex held with nothing to release it. Because the
+// lock is package-wide, that is not one wedged mapping but every mapping in
+// the process, for every provider step, until a restart. Widening the lock
+// widened that blast radius, so the defer matters more here than it did when
+// the lock was per mapping.
+//
+// A helper rather than a defer at each call site, because the precondition
+// loop evaluates once per check: a defer there would release only when the
+// whole loop returned, holding the lock across every check in the file.
+//
+// The panic is converted to an error rather than re-raised. net/http recovers
+// a panic per connection, so re-raising costs the caller its connection with
+// no NACK and nothing in our log naming the mapping -- for what is, from the
+// caller's side, indistinguishable from a mapping that could not be applied.
+// Reported as one, so it lands where the fault is.
+func evaluateLocked(expr jsonata.Expression, document []byte) (result []byte, err error) {
+	evaluating.Lock()
+	defer evaluating.Unlock()
+
+	// Registered after the unlock so it runs BEFORE it: recover, name the
+	// failure, then release.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = nil
+			err = fmt.Errorf("jsonata evaluation panicked: %v", recovered)
+		}
+	}()
+
+	return expr.Evaluate(document, nil)
+}
+
 // evaluating serialises every Evaluate in this package, across all mappings.
 //
 // It has to be this wide. Evaluate mutates more than the expression it is
@@ -295,10 +330,9 @@ func (m *Mapper) Verify(ctx context.Context, mappingRef string, input any) error
 			return precondition.err
 		}
 
-		// See evaluating: serialised across the package, not per expression.
-		evaluating.Lock()
-		result, evalErr := precondition.expression.Evaluate(document, nil)
-		evaluating.Unlock()
+		// See evaluateLocked: serialised across the package, and released even
+		// if the library panics.
+		result, evalErr := evaluateLocked(precondition.expression, document)
 		if evalErr != nil {
 			log.Errorf(ctx, evalErr, "JSON mapping %s precondition failed to evaluate: %v", mappingRef, evalErr)
 			return model.NewBadReqErr(codeAdaptationFailed, fmt.Errorf(
@@ -600,12 +634,10 @@ func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mapping
 		return nil, fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
 	}
 
-	// See evaluating: serialised across the package, because the library's
+	// See evaluateLocked: serialised across the package, because the library's
 	// shared built-ins make even two different mappings unsafe to overlap.
 	// Marshalling above is deliberately outside the lock.
-	evaluating.Lock()
-	result, err := mapping.expression.Evaluate(document, nil)
-	evaluating.Unlock()
+	result, err := evaluateLocked(mapping.expression, document)
 	if err != nil {
 		log.Errorf(ctx, err, "JSON mapping %s %s half failed to evaluate: %v", mappingRef, direction, err)
 		wrapped := fmt.Errorf("mapping %q %s half could not be applied: %w", mappingRef, direction, err)

@@ -1015,3 +1015,71 @@ func TestConcurrentDifferentMappingsDoNotRace(t *testing.T) {
 		}
 	}
 }
+
+// panickingExpression stands in for the library misbehaving. jsonata.Expression
+// is an interface, so this needs no cooperation from the library -- which is
+// the point: the failure being guarded against is one we cannot ask it for.
+type panickingExpression struct{}
+
+func (panickingExpression) Evaluate([]byte, map[string]interface{}) ([]byte, error) {
+	panic("library exploded mid-evaluation")
+}
+func (panickingExpression) SetMaxDepth(int)                                    {}
+func (panickingExpression) SetMaxTime(int)                                     {}
+func (panickingExpression) SetMaxRange(int)                                    {}
+func (panickingExpression) Assign(string, interface{})                         {}
+func (panickingExpression) RegisterFunction(string, interface{}, string) error { return nil }
+func (panickingExpression) AST() interface{}                                   { return nil }
+func (panickingExpression) Errors() []error                                    { return nil }
+
+// A panic inside Evaluate must not leave the lock held. It is package-wide, so
+// a wedged mutex is not one broken mapping -- it is every mapping in the
+// process, for every provider step, until someone restarts it. Writing the
+// unlock after the call rather than deferring it is what would cause that, and
+// widening the lock is what turned it from a bounded fault into an outage.
+func TestEvaluateLockedReleasesTheLockOnPanic(t *testing.T) {
+	// Not parallel: it asserts on the state of a package-level lock.
+	result, err := evaluateLocked(panickingExpression{}, []byte(`{}`))
+
+	if err == nil {
+		t.Fatal("a panic must surface as an error, not be swallowed")
+	}
+	if !strings.Contains(err.Error(), "panicked") {
+		t.Errorf("error = %v, want it to say the evaluation panicked", err)
+	}
+	if result != nil {
+		t.Errorf("result = %q, want nothing on a failed evaluation", result)
+	}
+
+	// The part that matters. If the unlock were not deferred, this would block
+	// forever rather than fail.
+	done := make(chan struct{})
+	go func() {
+		evaluating.Lock()
+		evaluating.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the lock was never released: every mapping in the process is now wedged")
+	}
+}
+
+// And the ordinary path still works through the same helper, so the guard above
+// cannot be satisfied by a helper that never evaluates anything.
+func TestEvaluateLockedRunsAnOrdinaryExpression(t *testing.T) {
+	mapper := newTestMapper(t)
+	expr, err := mapper.instance.Compile(`{ "kept": $count([1,2,3]) }`, false)
+	if err != nil {
+		t.Fatalf("failed to compile: %v", err)
+	}
+
+	got, err := evaluateLocked(expr, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("evaluateLocked() returned an unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `"kept"`) {
+		t.Errorf("got %q, want the evaluated object", got)
+	}
+}
