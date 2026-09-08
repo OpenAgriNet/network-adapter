@@ -103,20 +103,42 @@ type Config struct {
 	MaxCacheEntries int `yaml:"maxCacheEntries" json:"maxCacheEntries"`
 }
 
+// evaluating serialises every Evaluate in this package, across all mappings.
+//
+// It has to be this wide. Evaluate mutates more than the expression it is
+// called on: the library keeps its built-in functions in a package-level frame
+// (v206's staticFrame), and applying one writes token and position onto that
+// shared *Function for error reporting. Every mapping uses built-ins, so any
+// two concurrent evaluations race -- including two DIFFERENT mappings, which a
+// per-mapping lock explicitly allowed to run in parallel. That was this code's
+// previous shape, and it was wrong.
+//
+// Measured, not reasoned about: eight goroutines, each with its own
+// jsonata.OpenLatest() instance and its own compiled expression, evaluating an
+// expression shaped like the shipped mappings, produce race reports under
+// -race. Separate instances are not separate state, so nothing narrower than
+// package scope is sufficient.
+//
+// The cost is real and bounded: mapping evaluation no longer overlaps, at ~22us
+// a call, while the upstream HTTP request each mapped call goes on to make is
+// outside this lock and dominates. If it ever does matter, the fix is upstream
+// -- the shared writes are error-reporting metadata that could be carried on
+// the call rather than the function -- not a narrower lock here.
+//
+// reqmapper and schemaversionmediator evaluate JSONata too and have the same
+// exposure. Not addressed here: they are separate plugins with their own
+// owners, and this lock cannot reach across a .so boundary anyway.
+var evaluating sync.Mutex
+
 // cacheEntry is one compiled mapping, or the failure that stopped it compiling.
 // Failures are cached too, which is the whole point of the negative TTL.
 //
-// The mutex guards evaluation, not the entry: jsonata.Expression.Evaluate
-// mutates the expression it is called on -- it binds into the expression's own
-// frame -- so one compiled mapping cannot serve two requests at once. Confirmed
-// with the race detector, not assumed.
+// Evaluation is serialised process-wide by evaluating, above -- see there for
+// why it cannot be per mapping.
 //
 // Evaluating under a lock rather than compiling per request is the cheaper
 // trade by a wide margin: evaluation is ~22us against ~184us to compile, and
-// both are dwarfed by the upstream call the mapped request goes on to make. The
-// lock is per mapping, so different mappings still run in parallel. A pool of
-// compiled expressions would remove even that, and is the upgrade if one
-// mapping ever becomes hot enough to matter.
+// both are dwarfed by the upstream call the mapped request goes on to make.
 type cacheEntry struct {
 	// directions holds the compiled halves the file carries. A file is fetched
 	// and compiled as a whole, so both are ready after the first request for
@@ -136,7 +158,6 @@ type cacheEntry struct {
 // taking the halves down with it.
 type compiledRequirement struct {
 	expression jsonata.Expression
-	evaluating *sync.Mutex
 	message    string
 	err        error
 }
@@ -151,7 +172,6 @@ type compiledRequirement struct {
 // file could not be read" stay different answers.
 type compiledMapping struct {
 	expression jsonata.Expression
-	evaluating *sync.Mutex
 	err        error
 }
 
@@ -275,10 +295,10 @@ func (m *Mapper) Verify(ctx context.Context, mappingRef string, input any) error
 			return precondition.err
 		}
 
-		// See compiledMapping: Evaluate mutates the expression it is called on.
-		precondition.evaluating.Lock()
+		// See evaluating: serialised across the package, not per expression.
+		evaluating.Lock()
 		result, evalErr := precondition.expression.Evaluate(document, nil)
-		precondition.evaluating.Unlock()
+		evaluating.Unlock()
 		if evalErr != nil {
 			log.Errorf(ctx, evalErr, "JSON mapping %s precondition failed to evaluate: %v", mappingRef, evalErr)
 			return model.NewBadReqErr(codeAdaptationFailed, fmt.Errorf(
@@ -468,7 +488,6 @@ func (m *Mapper) compileRequirement(ctx context.Context, mappingRef string, decl
 	}
 	return &compiledRequirement{
 		expression: expression,
-		evaluating: &sync.Mutex{},
 		message:    declared.Message,
 	}
 }
@@ -485,7 +504,7 @@ func (m *Mapper) compileMapping(ctx context.Context, mappingRef string, directio
 		log.Errorf(ctx, err, "JSON mapper could not compile the %s half of %s: %v", direction, mappingRef, err)
 		return &compiledMapping{err: fmt.Errorf("jsonmapper: mapping %q %s half failed to compile: %w", mappingRef, direction, err)}
 	}
-	return &compiledMapping{expression: expression, evaluating: &sync.Mutex{}}
+	return &compiledMapping{expression: expression}
 }
 
 // fetch retrieves a mapping's bytes, bounded in both time and size.
@@ -581,12 +600,12 @@ func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mapping
 		return nil, fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
 	}
 
-	// See compiledMapping: Evaluate mutates the expression, so one half serves
-	// one request at a time. The other half is unaffected, and marshalling above
-	// is deliberately outside the lock.
-	mapping.evaluating.Lock()
+	// See evaluating: serialised across the package, because the library's
+	// shared built-ins make even two different mappings unsafe to overlap.
+	// Marshalling above is deliberately outside the lock.
+	evaluating.Lock()
 	result, err := mapping.expression.Evaluate(document, nil)
-	mapping.evaluating.Unlock()
+	evaluating.Unlock()
 	if err != nil {
 		log.Errorf(ctx, err, "JSON mapping %s %s half failed to evaluate: %v", mappingRef, direction, err)
 		wrapped := fmt.Errorf("mapping %q %s half could not be applied: %w", mappingRef, direction, err)
