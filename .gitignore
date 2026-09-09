@@ -180,3 +180,4 @@ test_request.json
 
 # Local, non-shipped developer notes (review summaries, scratch docs)
 /dev_docs/
+/docs/
