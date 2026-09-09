@@ -44,7 +44,7 @@ response: |
   (
     $ra  := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
     $ctx := $ra.`@context`;
-    $sel := beckn.message.contract.commitments[0].resources[0].id;
+    $offer := beckn.message.contract.commitments[0].offer;
 
     /* Every hit the provider returned, unfiltered. It ran the query and chose
        what to send back; second-guessing that with a score threshold here would
@@ -89,18 +89,24 @@ response: |
           "status": { "code": "DRAFT" },
           "commitments": [{
             "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
-            "offer": {
-              "id": "offer:knowledge:" & $sel,
-              /* BOTH ids. The OnDemand id the caller selected, plus the Direct
-                 id minted here -- OnDemand and Direct require different fields,
-                 so the answer cannot restate the selected resource. Without the
-                 old id the caller cannot correlate the callback. */
-              /* Only mint an id when there IS a document. With no hits the
-                 old form emitted "res:knowledge-advisory:" -- a dangling id
-                 pointing at nothing. */
-              "resourceIds": $append([$sel],
-                [$map($docIds, function($id) { "res:knowledge-advisory:" & $id })])
-            },
+            /* The offer is echoed, but its references are not. The request
+               named the OnDemand resource -- the question -- while the answer
+               returns the advisories, so resourceIds is rebuilt from those.
+
+               The selected id is deliberately NOT retained. resourceIds are
+               "references to resources covered by this offer", and the OnDemand
+               resource appears nowhere in resources[] here: OnDemand and Direct
+               require different fields, so the answer cannot restate it. Listing
+               it would leave the offer pointing at an id a caller cannot resolve.
+               Correlating the callback needs no help from it -- context carries
+               transactionId and messageId. Mandi echoes its offer the same way.
+
+               With no hits $docIds is absent, so this is [] rather than a
+               dangling "res:knowledge-advisory:" -- matching resources[]. */
+            "offer": $merge([
+              $offer,
+              { "resourceIds": [$map($docIds, function($id) { "res:knowledge-advisory:" & $id })] }
+            ]),
               /* ONE RESOURCE PER DOCUMENT.
 
                  A single resource carrying every document's text was the first

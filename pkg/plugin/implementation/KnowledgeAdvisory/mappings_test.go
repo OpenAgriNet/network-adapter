@@ -66,6 +66,9 @@ const selectRequest = `{
   }] } }
 }`
 
+// The offer id selectRequest carries. The answer echoes it: one offer, one id.
+const requestOfferID = "offer:knowledge-advisory:schemes"
+
 // providerResponse is captured from the live retrieval service, trimmed to the
 // fields the mapping reads. Four hits over TWO documents: the engine returns
 // several chunks per document, and this corpus indexes one chunk twice, once
@@ -393,36 +396,46 @@ func TestShippedMappingAnswersAnEmptyResultWithNoResources(t *testing.T) {
 	commitments := answer["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)
 	offer := commitments[0].(map[string]any)["offer"].(map[string]any)
 	ids, _ := offer["resourceIds"].([]any)
-	if len(ids) != 1 {
-		t.Fatalf("offer.resourceIds = %v, want only the selected id", ids)
-	}
-	if !strings.Contains(fmt.Sprint(ids[0]), "ondemand") {
-		t.Errorf("offer.resourceIds = %v, want the id the caller selected", ids)
+	if len(ids) != 0 {
+		t.Fatalf("offer.resourceIds = %v, want none: the offer covers no resource", ids)
 	}
 }
 
-// The offer keeps BOTH ids: the OnDemand one the caller selected and the
-// Direct one minted here. OnDemand and Direct require different fields, so the
-// answer cannot restate the selected resource -- and without the old id the
-// caller has nothing tying the callback to what it asked for.
-func TestShippedMappingKeepsBothResourceIds(t *testing.T) {
+// The offer is echoed and its references are rebuilt. resourceIds are
+// "references to resources covered by this offer", so every id has to resolve
+// inside resources[] -- and the OnDemand id the caller selected must NOT
+// appear, because the answer cannot restate it: OnDemand and Direct require
+// different fields. Correlation is context.transactionId's job, not this
+// field's.
+func TestShippedMappingReferencesOnlyTheResourcesItReturns(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 
 	commitments := answer["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)
 	offer := commitments[0].(map[string]any)["offer"].(map[string]any)
+
+	// The request's own offer id, carried through rather than minted.
+	if got := fmt.Sprint(offer["id"]); got != requestOfferID {
+		t.Errorf("offer.id = %q, want the request's %q echoed", got, requestOfferID)
+	}
+
 	ids, _ := offer["resourceIds"].([]any)
 	res := resourcesOf(t, answer)
-	if len(ids) != len(res)+1 {
-		t.Fatalf("offer.resourceIds = %v, want the selected id plus one per advisory (%d)", ids, len(res))
+	if len(ids) != len(res) {
+		t.Fatalf("offer.resourceIds = %v, want exactly one per advisory (%d)", ids, len(res))
 	}
-	if !strings.Contains(fmt.Sprint(ids[0]), "ondemand") {
-		t.Errorf("the selected id is missing from %v", ids)
+
+	returned := map[string]bool{}
+	for _, r := range res {
+		returned[fmt.Sprint(r.(map[string]any)["id"])] = true
 	}
-	// Every minted advisory has to appear, or a caller cannot resolve it.
-	for i := range res {
-		want := fmt.Sprint(res[i].(map[string]any)["id"])
+	for _, id := range ids {
+		if !returned[fmt.Sprint(id)] {
+			t.Errorf("offer references %q, which is not in resources[] -- a caller cannot resolve it", id)
+		}
+	}
+	for want := range returned {
 		found := false
-		for _, got := range ids[1:] {
+		for _, got := range ids {
 			if fmt.Sprint(got) == want {
 				found = true
 			}
