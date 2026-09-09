@@ -69,6 +69,10 @@ const selectRequest = `{
 // The offer id selectRequest carries. The answer echoes it: one offer, one id.
 const requestOfferID = "offer:knowledge-advisory:schemes"
 
+// The OnDemand resource id selectRequest selects. The answer retains it in
+// offer.resourceIds so the caller can correlate the callback.
+const selectedResourceID = "res:knowledge-advisory:schemes:ondemand"
+
 // providerResponse is captured from the live retrieval service, trimmed to the
 // fields the mapping reads. Four hits over TWO documents: the engine returns
 // several chunks per document, and this corpus indexes one chunk twice, once
@@ -419,18 +423,19 @@ func TestShippedMappingAnswersAnEmptyResultWithNoResources(t *testing.T) {
 	commitments := answer["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)
 	offer := commitments[0].(map[string]any)["offer"].(map[string]any)
 	ids, _ := offer["resourceIds"].([]any)
-	if len(ids) != 0 {
-		t.Fatalf("offer.resourceIds = %v, want none: the offer covers no resource", ids)
+	if len(ids) != 1 || fmt.Sprint(ids[0]) != selectedResourceID {
+		t.Fatalf("offer.resourceIds = %v, want just the selected id %q", ids, selectedResourceID)
 	}
 }
 
-// The offer is echoed and its references are rebuilt. resourceIds are
-// "references to resources covered by this offer", so every id has to resolve
-// inside resources[] -- and the OnDemand id the caller selected must NOT
-// appear, because the answer cannot restate it: OnDemand and Direct require
-// different fields. Correlation is context.transactionId's job, not this
-// field's.
-func TestShippedMappingReferencesOnlyTheResourcesItReturns(t *testing.T) {
+// The offer is echoed and its references are rebuilt, per the implementation
+// guide: the OnDemand id the caller selected is RETAINED so it can correlate
+// the callback, alongside the Direct id minted for each document. The selected
+// id deliberately does not resolve inside resources[] -- OnDemand and Direct
+// require different fields, so the answer cannot restate it, and the caller
+// matches it against its own request. $distinct guards a re-selected advisory
+// appearing twice.
+func TestShippedMappingRetainsTheSelectedIdAlongsideTheMintedOnes(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 
 	commitments := answer["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)
@@ -443,22 +448,17 @@ func TestShippedMappingReferencesOnlyTheResourcesItReturns(t *testing.T) {
 
 	ids, _ := offer["resourceIds"].([]any)
 	res := resourcesOf(t, answer)
-	if len(ids) != len(res) {
-		t.Fatalf("offer.resourceIds = %v, want exactly one per advisory (%d)", ids, len(res))
+	if len(ids) != len(res)+1 {
+		t.Fatalf("offer.resourceIds = %v, want the selected id plus one per advisory (%d)", ids, len(res))
 	}
-
-	returned := map[string]bool{}
-	for _, r := range res {
-		returned[fmt.Sprint(r.(map[string]any)["id"])] = true
+	if fmt.Sprint(ids[0]) != selectedResourceID {
+		t.Errorf("offer.resourceIds[0] = %v, want the selected id %q", ids[0], selectedResourceID)
 	}
-	for _, id := range ids {
-		if !returned[fmt.Sprint(id)] {
-			t.Errorf("offer references %q, which is not in resources[] -- a caller cannot resolve it", id)
-		}
-	}
-	for want := range returned {
+	// Every minted advisory must appear, or a caller cannot resolve it.
+	for i := range res {
+		want := fmt.Sprint(res[i].(map[string]any)["id"])
 		found := false
-		for _, got := range ids {
+		for _, got := range ids[1:] {
 			if fmt.Sprint(got) == want {
 				found = true
 			}
@@ -466,5 +466,13 @@ func TestShippedMappingReferencesOnlyTheResourcesItReturns(t *testing.T) {
 		if !found {
 			t.Errorf("resource %q is missing from offer.resourceIds %v", want, ids)
 		}
+	}
+	// No duplicates: $distinct has to be doing its job.
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[fmt.Sprint(id)] {
+			t.Errorf("offer.resourceIds repeats %v", id)
+		}
+		seen[fmt.Sprint(id)] = true
 	}
 }
