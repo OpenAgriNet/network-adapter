@@ -1,6 +1,6 @@
 // Building the URL a request goes to, and refusing one a registry row could
 // not have meant.
-package httputil
+package util
 
 import (
 	"errors"

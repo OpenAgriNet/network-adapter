@@ -23,7 +23,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // Prerequisites are the values a capability needs that its payload does not
@@ -170,7 +170,7 @@ func applyDefaults(cfg *Config) error {
 		}
 	}
 	if cfg.MaxResponseBytes <= 0 {
-		cfg.MaxResponseBytes = httputil.DefaultMaxResponseBytes
+		cfg.MaxResponseBytes = util.DefaultMaxResponseBytes
 	}
 	if cfg.AuthByProvider == nil {
 		cfg.AuthByProvider = map[string]*AuthProfile{}

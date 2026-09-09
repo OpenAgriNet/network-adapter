@@ -14,7 +14,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // bearerToken returns a token to send, exchanging one if the held token has
@@ -100,7 +100,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 		// The status, not the body: a failure body routinely quotes the
 		// request back.
 		log.Warnf(ctx, "token endpoint %s returned %s: %s",
-			cfg.TokenURL, resp.Status, s.redactString(httputil.Explain(body)))
+			cfg.TokenURL, resp.Status, s.redactString(util.Explain(body)))
 		return "", 0, s.tokenErr(fmt.Errorf("token endpoint returned %s", resp.Status))
 	}
 
@@ -113,7 +113,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 		return "", 0, s.tokenErr(fmt.Errorf("token response from %s carries no access_token",
 			cfg.TokenURL))
 	}
-	lifetime, ok := tokenLifetime(parsed.ExpiresIn, httputil.TokenRefreshSkew)
+	lifetime, ok := tokenLifetime(parsed.ExpiresIn, util.TokenRefreshSkew)
 	if !ok {
 		return "", 0, s.tokenErr(fmt.Errorf(
 			"token response from %s carries no usable expires_in, so its lifetime is unknown",
@@ -125,7 +125,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 // tokenErr classifies a failed exchange. Always 502: the failure is the
 // issuer's, never the caller's.
 func (s *Step) tokenErr(err error) error {
-	return model.NewCodedErr(http.StatusBadGateway, httputil.CodeUpstreamUnavailable,
+	return model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable,
 		fmt.Errorf("oauth2 token exchange failed: %w", err))
 }
 

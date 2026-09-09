@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // redact removes a credential from an error's text.
@@ -50,7 +50,7 @@ func (e redactedErr) Unwrap() error { return e.err }
 // so a credential reaches a message under any scheme.
 func (s *Step) redactString(text string) string {
 	for _, secret := range s.secretForms() {
-		text = strings.ReplaceAll(text, secret, httputil.RedactedMarker)
+		text = strings.ReplaceAll(text, secret, util.RedactedMarker)
 	}
 	return text
 }
@@ -83,7 +83,7 @@ func (s *Step) secretForms() []string {
 // request.
 func (a *authenticator) secretForms() []string {
 	switch a.cfg.Scheme {
-	case httputil.AuthSchemeBasic:
+	case util.AuthSchemeBasic:
 		username, password := os.Getenv(a.cfg.UsernameEnv), os.Getenv(a.cfg.PasswordEnv)
 		if password == "" {
 			return nil
@@ -98,13 +98,13 @@ func (a *authenticator) secretForms() []string {
 		// authenticates, and words like "user" or "admin" would eat
 		// unrelated text.
 		return forms
-	case httputil.AuthSchemeHeader:
+	case util.AuthSchemeHeader:
 		value := os.Getenv(a.cfg.HeaderValueEnv)
 		if value == "" {
 			return nil
 		}
 		return []string{value}
-	case httputil.AuthSchemeOAuth2:
+	case util.AuthSchemeOAuth2:
 		// Both halves: the secret we send the issuer, and the token it gave
 		// back. The token is what reaches the provider.
 		var forms []string
@@ -119,7 +119,7 @@ func (a *authenticator) secretForms() []string {
 		// The client id is NOT redacted: it identifies, it does not
 		// authenticate.
 		return forms
-	case httputil.AuthSchemeQuery:
+	case util.AuthSchemeQuery:
 		value := os.Getenv(a.cfg.QueryValueEnv)
 		if value == "" {
 			return nil

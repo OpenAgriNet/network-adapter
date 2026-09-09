@@ -1,5 +1,5 @@
 // Rendering a mapped request as query parameters, for methods with no body.
-package httputil
+package util
 
 import (
 	"bytes"

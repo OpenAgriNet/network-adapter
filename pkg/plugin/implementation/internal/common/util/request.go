@@ -1,5 +1,5 @@
 // The request body and method: what to send, and in what spelling.
-package httputil
+package util
 
 import (
 	"bytes"
