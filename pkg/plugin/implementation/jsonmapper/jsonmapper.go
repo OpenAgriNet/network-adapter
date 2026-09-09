@@ -281,9 +281,7 @@ func applyDefaults(cfg *Config) {
 
 // Transform runs one direction of the mapping at mappingRef over input.
 func (m *Mapper) Transform(ctx context.Context, mappingRef string, direction definition.Direction, input any) ([]byte, error) {
-	switch direction {
-	case definition.DirectionRequest, definition.DirectionResponse:
-	default:
+	if direction != definition.DirectionRequest && direction != definition.DirectionResponse {
 		return nil, fmt.Errorf("jsonmapper: mapping %q: %q is not a direction; want %q or %q",
 			mappingRef, direction, definition.DirectionRequest, definition.DirectionResponse)
 	}

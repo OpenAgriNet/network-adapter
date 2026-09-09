@@ -392,9 +392,19 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	answer, err := s.one(ctx, plan.BaseURL, call, beckn, local)
+	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local)
 	if err != nil {
 		return err
+	}
+
+	upstreamResponse, err := s.call(ctx, plan.BaseURL, call, upstreamRequest)
+	if err != nil {
+		return err
+	}
+
+	answer, err := decodeBody(upstreamResponse)
+	if err != nil {
+		return fmt.Errorf("upstream: provider answered with something that is not JSON: %w", err)
 	}
 
 	// The same mapping reference as the request, other half: one file carries
@@ -434,14 +444,11 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 // that. It meant the choice of which payload fields reach the provider lived in
 // Go, so adding a parameter -- a date range, say -- was a rebuild. Now it is a
 // mapping edit and nothing else.
-func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan,
-	beckn any, local map[string]any) ([]byte, error) {
-
-	input := map[string]any{
+func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn any, local map[string]any) ([]byte, error) {
+	mapped, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionRequest, map[string]any{
 		"beckn":  beckn,
 		"_local": local,
-	}
-	mapped, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionRequest, input)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -449,25 +456,6 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan,
 		log.Debugf(ctx, "upstream: the request half of %s produced nothing; sending an empty request", call.Mappings)
 	}
 	return mapped, nil
-}
-
-// one builds and makes the upstream call and returns its decoded answer.
-func (s *Step) one(ctx context.Context, baseURL string, call model.ActionPlan,
-	beckn any, local map[string]any) (any, error) {
-
-	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local)
-	if err != nil {
-		return nil, err
-	}
-	upstreamResponse, err := s.call(ctx, baseURL, call, upstreamRequest)
-	if err != nil {
-		return nil, err
-	}
-	answer, err := decodeBody(upstreamResponse)
-	if err != nil {
-		return nil, fmt.Errorf("upstream: provider answered with something that is not JSON: %w", err)
-	}
-	return answer, nil
 }
 
 // extractAction reads the Beckn action a request is for.
