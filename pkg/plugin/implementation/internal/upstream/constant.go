@@ -1,5 +1,8 @@
-// Constants: the budgets a registry row is clamped to, the retry backoff, the
-// auth schemes, and the two markers this package puts in text it returns.
+// Constants only: the budgets a registry row is clamped to, the retry backoff,
+// the auth schemes, and the markers this package puts in text it returns.
+//
+// authFields is deliberately NOT here. It is a var -- Go has no constant maps --
+// and it belongs beside the parser in auth.go that reads it.
 package upstream
 
 import (
@@ -35,10 +38,7 @@ const (
 	MaxRetryMax = 5
 )
 
-// Auth schemes this step can present upstream. Credentials themselves are never
-// configured here or held in the registry -- config names the environment
-// variable to read, so a secret reaches the process through its environment and
-// nothing else.
+// How long this step waits between attempts.
 const (
 	// RetryBackoffBase is the first wait between attempts, doubling from there
 	// up to RetryBackoffMax. Short, because the retry budget comes from the
@@ -46,10 +46,16 @@ const (
 	// latency -- only for the provider's brief unavailability to be ridden out.
 	RetryBackoffBase = 50 * time.Millisecond
 	RetryBackoffMax  = 800 * time.Millisecond
+)
 
-	// redactedMarker stands in for a credential in anything logged or returned.
-	redactedMarker = "REDACTED"
+// redactedMarker stands in for a credential in anything logged or returned.
+const redactedMarker = "REDACTED"
 
+// Auth schemes this step can present upstream. Credentials themselves are never
+// configured here or held in the registry -- config names the environment
+// variable to read, so a secret reaches the process through its environment and
+// nothing else.
+const (
 	AuthSchemeNone   = "none"
 	AuthSchemeBasic  = "basic"
 	AuthSchemeHeader = "header"
