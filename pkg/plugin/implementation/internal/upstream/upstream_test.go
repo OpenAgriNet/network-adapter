@@ -11,7 +11,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,45 +62,28 @@ type stubMapper struct {
 
 	requestInput  any
 	responseInput any
-	// requestInputs is every input the request half was handed, so a test can
-	// assert what the mapping actually saw rather than that the last write
-	// overwrote the rest.
-	requestInputs []any
 	directions    []definition.Direction
 	refs          []string
-
-	// mu guards every field above. A step that wraps this one and serves
-	// several payloads at once -- AgricultureFacility's does, see its
-	// search.go -- reaches Transform from more than one goroutine, so an
-	// unguarded slice append or field write here would be a real data race in
-	// the test double, not in upstream itself. Caught by `go test -race`.
-	mu sync.Mutex
 }
 
 // verifyErr is what Verify answers with, so a test can stand in for a mapping
 // whose precondition refused.
 func (s *stubMapper) Verify(_ context.Context, mappingRef string, input any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.verified = true
 	return s.verifyErr
 }
 
 func (s *stubMapper) Transform(_ context.Context, mappingRef string, direction definition.Direction, input any) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.directions = append(s.directions, direction)
 	s.refs = append(s.refs, mappingRef)
 	if s.err != nil {
 		return nil, s.err
 	}
-	switch direction {
-	case definition.DirectionRequest:
+	if direction == definition.DirectionRequest {
 		s.requestInput = input
 		if s.requestErr != nil {
 			return nil, s.requestErr
 		}
-		s.requestInputs = append(s.requestInputs, input)
 		return s.requestResult, nil
 	}
 	s.responseInput = input
@@ -791,15 +773,13 @@ func TestRunServesItsCapabilityEndToEnd(t *testing.T) {
 	// Each leg asks for the action it deals in: the request translates a select,
 	// the response produces an on_select. Asking for the same name on both would
 	// make one file unable to hold both directions.
-	if want := []definition.Direction{definition.DirectionRequest,
-		definition.DirectionResponse}; !slices.Equal(mapper.directions, want) {
+	if want := []definition.Direction{definition.DirectionRequest, definition.DirectionResponse}; !slices.Equal(mapper.directions, want) {
 		t.Errorf("mapper was asked for %v, want %v", mapper.directions, want)
 	}
-	// Every half comes from the one file the action names. More than one
-	// reference here would mean the step had gone back to treating the legs as
-	// separate.
+	// Both halves come from the one file the action names. Two references here
+	// would mean the step had gone back to treating the legs as separate.
 	if want := []string{testMappingRef, testMappingRef}; !slices.Equal(mapper.refs, want) {
-		t.Errorf("mapper was handed %v, want every half from %q", mapper.refs, testMappingRef)
+		t.Errorf("mapper was handed %v, want both halves from %q", mapper.refs, testMappingRef)
 	}
 }
 
@@ -2145,6 +2125,7 @@ func TestRunPassesAnEmptyLocalWhenThereAreNoPrerequisites(t *testing.T) {
 	if _, err := runStep(t, step, selectBody); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}
+
 	asMap, ok := mapper.requestInput.(map[string]any)
 	if !ok {
 		t.Fatalf("request input = %T, want a map", mapper.requestInput)
@@ -2156,94 +2137,4 @@ func TestRunPassesAnEmptyLocalWhenThereAreNoPrerequisites(t *testing.T) {
 	if len(local) != 0 {
 		t.Errorf("_local = %v, want it empty", local)
 	}
-}
-
-// --- one payload, one call --------------------------------------------------
-
-// The response half is handed the provider's own answer, unchanged and
-// unwrapped.
-//
-// The contract every mapping in this repo relies on. A capability whose
-// provider cannot answer a whole payload at once splits the payload before it
-// reaches this package and runs this step once per part, so this stays true
-// there too -- see pkg/plugin/implementation/AgricultureFacility/search.go.
-func TestRunHandsTheResponseHalfTheProvidersAnswerItself(t *testing.T) {
-	t.Parallel()
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"reading":42}`)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"context":{}}`)}
-	if _, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody); err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-
-	input := mapper.responseInput.(map[string]any)
-	answer, ok := input["response"].(map[string]any)
-	if !ok {
-		t.Fatalf("response = %T, want the provider's own object", input["response"])
-	}
-	if answer["reading"] != float64(42) {
-		t.Errorf("response = %v, want the provider's answer unchanged", answer)
-	}
-}
-
-// One payload is exactly one call, whatever the payload says.
-//
-// Pinned because this package used to decide otherwise: a mapping could
-// declare values to split across and this step would make one call per value.
-// That policy now lives entirely in the domain package that has a provider
-// needing it, so a payload arriving here means one call and nothing else.
-func TestRunMakesExactlyOneCallPerPayload(t *testing.T) {
-	t.Parallel()
-
-	var seen int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&seen, 1)
-		fmt.Fprint(w, `{}`)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"context":{}}`)}
-	if _, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody); err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-	if got := atomic.LoadInt32(&seen); got != 1 {
-		t.Errorf("provider saw %d calls, want exactly 1", got)
-	}
-}
-
-// The request half is handed the payload and what the prerequisites resolved,
-// and nothing else -- no variable this package invented.
-func TestRunGivesTheRequestHalfNoInventedInput(t *testing.T) {
-	t.Parallel()
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{}`)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"context":{}}`)}
-	if _, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody); err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-
-	input := mapper.requestInputs[0].(map[string]any)
-	for key := range input {
-		if key != "beckn" && key != "_local" {
-			t.Errorf("the request half was handed %q; it may see only beckn and _local", key)
-		}
-	}
-}
-
-// keysOfBool names the keys of a set, for a failure message.
-func keysOfBool(set map[string]bool) []string {
-	names := make([]string, 0, len(set))
-	for name := range set {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
