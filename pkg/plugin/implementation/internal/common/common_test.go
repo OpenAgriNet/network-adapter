@@ -2152,8 +2152,13 @@ func TestOAuth2DoesNotCacheAFailedExchange(t *testing.T) {
 			t.Fatalf("request %d unexpectedly succeeded", i)
 		}
 	}
-	if got := ts.calls.Load(); got != 3 {
-		t.Errorf("token endpoint called %d times for 3 failing requests, want 3 -- a failure was cached", got)
+	// Two per request, not one: RetryMax is 1, and a 500 from the issuer is
+	// weather, so the retry budget covers the exchange. What matters here is
+	// that the count RISES with the requests -- a cached failure would leave it
+	// at 2 for all three.
+	if got := ts.calls.Load(); got != 6 {
+		t.Errorf("token endpoint called %d times for 3 failing requests, want 6 "+
+			"(2 attempts each) -- fewer means a failure was cached", got)
 	}
 }
 
@@ -2254,5 +2259,74 @@ func TestNoAuthFieldNameCarriesADash(t *testing.T) {
 		if strings.Contains(name, "-") {
 			t.Errorf("setting %q carries a dash, which makes the split ambiguous", name)
 		}
+	}
+}
+
+// A 5xx from the token issuer is weather, so the retry budget covers it -- the
+// same rule the provider's own 5xx gets a few lines below in attempt.
+//
+// This was the defect a reviewer found on #24: authenticate's error was wrapped
+// in DoNotRetry wholesale, which was right when the only way to fail was an
+// unset environment variable. oauth2 made that path do network I/O to a third
+// party, and the blanket wrap then swallowed a transient issuer failure.
+func TestOAuth2RetriesATransientIssuerFailure(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   int32
+	}{
+		{"500 is retried", http.StatusInternalServerError, 2},
+		{"503 is retried", http.StatusServiceUnavailable, 2},
+		{"429 is retried", http.StatusTooManyRequests, 2},
+		// A 4xx that is not 429 says the client credentials are wrong, which
+		// another attempt will not change.
+		{"401 is not retried", http.StatusUnauthorized, 1},
+		{"400 is not retried", http.StatusBadRequest, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := &tokenServer{status: tc.status, body: `{"error":"no"}`}
+			var seen []string
+			step := oauth2Step(t, ts.start(t), &seen)
+
+			if _, err := runStep(t, step, selectBody); err == nil {
+				t.Fatal("expected the request to fail")
+			}
+			if got := ts.calls.Load(); got != tc.want {
+				t.Errorf("token endpoint called %d times, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// An unset credential is configuration, not weather: retrying reports an
+// operator's missing environment variable as the provider being down.
+func TestOAuth2DoesNotRetryAMissingCredential(t *testing.T) {
+	// Deliberately unset, so authenticate fails before any network I/O.
+	t.Setenv("TEST_OAUTH_ABSENT_ID", "")
+	t.Setenv("TEST_OAUTH_ABSENT_SECRET", "")
+
+	ts := &tokenServer{status: http.StatusOK, body: `{"access_token":"t","expires_in":3600}`}
+	tokenURL := ts.start(t)
+	step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
+		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
+		func(c *Config) {
+			c.setProviderAuth(AuthProfile{
+				Scheme:          util.AuthSchemeOAuth2,
+				TokenURL:        tokenURL,
+				ClientIDEnv:     "TEST_OAUTH_ABSENT_ID",
+				ClientSecretEnv: "TEST_OAUTH_ABSENT_SECRET",
+			})
+		})
+
+	if _, err := runStep(t, step, selectBody); err == nil {
+		t.Fatal("expected an unset credential to fail")
+	}
+	// Never dialled: the credential is missing before the exchange, and the
+	// failure must not be repeated.
+	if got := ts.calls.Load(); got != 0 {
+		t.Errorf("token endpoint called %d times, want 0", got)
 	}
 }
