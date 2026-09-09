@@ -48,6 +48,39 @@ func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderR
 // default any more: this package serves whatever a domain package points it at.
 const testBindingKey = "mausamgram|openagrinet:WeatherObservation"
 
+// testProvider is the participant half of testBindingKey. Auth is per
+// provider, so a step config needs a profile under this key.
+const testProvider = "mausamgram"
+
+// setAuth gives every provider this config serves the same profile. Keyed off
+// BindingKeys rather than a constant, so a test that serves a different
+// provider does not also have to remember to move its auth.
+func (c *Config) setAuth(a Auth) {
+	c.Auth = map[string]*Auth{}
+	for _, key := range c.BindingKeys {
+		provider := participantOf(key)
+		profile := a
+		profile.Provider = provider
+		c.Auth[provider] = &profile
+	}
+}
+
+// authFor is setAuth for a Config literal.
+func authFor(a Auth) map[string]*Auth {
+	a.Provider = testProvider
+	return map[string]*Auth{testProvider: &a}
+}
+
+// stepWithAuth builds a Step directly, for the handful of tests that exercise
+// redaction without a request. New() is the path everything else takes.
+func stepWithAuth(a Auth) *Step {
+	a.Provider = testProvider
+	return &Step{
+		config: &Config{BindingKeys: []string{testBindingKey}, Auth: authFor(a)},
+		auth:   map[string]*authenticator{testProvider: {cfg: a}},
+	}
+}
+
 const testMappingRef = "https://mappings.example.com/mausamgram/weather-observation.select.yaml"
 
 // assert what reached the mapping without writing one.
@@ -110,6 +143,12 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	for _, apply := range tweak {
 		apply(cfg)
 	}
+	// There is no step-wide default, so a served provider without a profile is
+	// refused at startup. Filled in after the tweaks, because a tweak may
+	// replace BindingKeys and the profile has to follow.
+	if len(cfg.Auth) == 0 {
+		cfg.setAuth(Auth{Scheme: AuthSchemeNone})
+	}
 	step, closer, err := New(context.Background(), registry, mapper, nil, cfg)
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
@@ -145,21 +184,26 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 		config *Config
 		valid  bool
 	}{
-		{"none by default", &Config{}, true},
-		{"basic with both variables", &Config{AuthScheme: AuthSchemeBasic, UsernameEnv: "U", PasswordEnv: "P"}, true},
-		{"basic missing the password variable", &Config{AuthScheme: AuthSchemeBasic, UsernameEnv: "U"}, false},
-		{"basic missing the username variable", &Config{AuthScheme: AuthSchemeBasic, PasswordEnv: "P"}, false},
-		{"header with both settings", &Config{AuthScheme: AuthSchemeHeader, HeaderName: "X-Key", HeaderValueEnv: "V"}, true},
-		{"header missing the value variable", &Config{AuthScheme: AuthSchemeHeader, HeaderName: "X-Key"}, false},
-		{"an unknown scheme", &Config{AuthScheme: "oauth"}, false},
-		{"oauth2 with all three settings", &Config{AuthScheme: AuthSchemeOAuth2,
-			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID", ClientSecretEnv: "SECRET"}, true},
-		{"oauth2 missing the token url", &Config{AuthScheme: AuthSchemeOAuth2,
-			ClientIDEnv: "ID", ClientSecretEnv: "SECRET"}, false},
-		{"oauth2 missing the client id variable", &Config{AuthScheme: AuthSchemeOAuth2,
-			TokenURL: "https://issuer.invalid/token", ClientSecretEnv: "SECRET"}, false},
-		{"oauth2 missing the client secret variable", &Config{AuthScheme: AuthSchemeOAuth2,
-			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID"}, false},
+		{"none, declared", &Config{Auth: authFor(Auth{Scheme: AuthSchemeNone})}, true},
+		{"no profile at all for a served provider", &Config{}, false},
+		{"an empty scheme", &Config{Auth: authFor(Auth{})}, false},
+		{"basic with both variables", &Config{Auth: authFor(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "U", PasswordEnv: "P"})}, true},
+		{"basic missing the password variable", &Config{Auth: authFor(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "U"})}, false},
+		{"basic missing the username variable", &Config{Auth: authFor(Auth{Scheme: AuthSchemeBasic, PasswordEnv: "P"})}, false},
+		{"header with both settings", &Config{Auth: authFor(Auth{Scheme: AuthSchemeHeader, HeaderName: "X-Key", HeaderValueEnv: "V"})}, true},
+		{"header missing the value variable", &Config{Auth: authFor(Auth{Scheme: AuthSchemeHeader, HeaderName: "X-Key"})}, false},
+		{"query with both settings", &Config{Auth: authFor(Auth{Scheme: AuthSchemeQuery, QueryName: "t", QueryValueEnv: "V"})}, true},
+		{"an unknown scheme", &Config{Auth: authFor(Auth{Scheme: "oauth"})}, false},
+		{"oauth2 with all three settings", &Config{Auth: authFor(Auth{Scheme: AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID", ClientSecretEnv: "SECRET"})}, true},
+		{"oauth2 missing the token url", &Config{Auth: authFor(Auth{Scheme: AuthSchemeOAuth2,
+			ClientIDEnv: "ID", ClientSecretEnv: "SECRET"})}, false},
+		{"oauth2 missing the client id variable", &Config{Auth: authFor(Auth{Scheme: AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientSecretEnv: "SECRET"})}, false},
+		{"oauth2 missing the client secret variable", &Config{Auth: authFor(Auth{Scheme: AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID"})}, false},
+		{"a profile for a provider not in bindingKeys", &Config{
+			Auth: map[string]*Auth{"someone-else": {Scheme: AuthSchemeNone}}}, false},
 	}
 
 	for _, tc := range testCases {
@@ -293,9 +337,7 @@ func TestRunDoesNotRetryAMissingCredential(t *testing.T) {
 	}
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper, func(c *Config) {
-		c.AuthScheme = AuthSchemeBasic
-		c.UsernameEnv = "TEST_ABSENT_USER_FOR_RETRY"
-		c.PasswordEnv = "TEST_ABSENT_PASS_FOR_RETRY"
+		c.setAuth(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_ABSENT_USER_FOR_RETRY", PasswordEnv: "TEST_ABSENT_PASS_FOR_RETRY"})
 	})
 
 	_, err := runStep(t, step, selectBody)
@@ -511,9 +553,7 @@ func TestRunRedactsACredentialEchoedInABody(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeQuery
-			c.QueryName = "token"
-			c.QueryValueEnv = "TEST_ECHO_TOKEN"
+			c.setAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_ECHO_TOKEN"})
 		})
 
 	_, err := runStep(t, step, selectBody)
@@ -557,9 +597,7 @@ func TestRunSendsTheCredentialAsAQueryParameter(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{"statecode":"CG"}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeQuery
-			c.QueryName = "token"
-			c.QueryValueEnv = "TEST_MANDI_TOKEN"
+			c.setAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -589,9 +627,7 @@ func TestRunRedactsAQueryCredentialFromAnError(t *testing.T) {
 	}
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper, func(c *Config) {
-		c.AuthScheme = AuthSchemeQuery
-		c.QueryName = "token"
-		c.QueryValueEnv = "TEST_MANDI_TOKEN"
+		c.setAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	})
 
 	_, err := runStep(t, step, selectBody)
@@ -613,11 +649,7 @@ func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_MANDI_TOKEN", "s3cr3t")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_MANDI_TOKEN",
-	}}
+	step := stepWithAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	got := step.redactString("http://host/v1/x?statecode=CG&token=s3cr3t")
 	if strings.Contains(got, "s3cr3t") {
 		t.Errorf("the credential survived redaction: %s", got)
@@ -627,7 +659,7 @@ func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	}
 
 	// Any other scheme has nothing to hide in a URL, so the text is untouched.
-	plain := &Step{config: &Config{AuthScheme: AuthSchemeNone}}
+	plain := stepWithAuth(Auth{Scheme: AuthSchemeNone})
 	if out := plain.redactString("http://host/v1/x?statecode=CG"); out != "http://host/v1/x?statecode=CG" {
 		t.Errorf("a url with no credential must pass through unchanged, got %q", out)
 	}
@@ -643,11 +675,7 @@ func TestRedactStringRemovesThePercentEncodedCredential(t *testing.T) {
 	const token = "a+b/c=d e" // every character Encode treats specially
 	t.Setenv("TEST_MANDI_TOKEN", token)
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_MANDI_TOKEN",
-	}}
+	step := stepWithAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 
 	// Exactly how the credential appears once authenticate has run: Encode
 	// escapes it, so this is the string a transport error quotes.
@@ -673,11 +701,7 @@ func TestRedactStringStillRemovesAnUnescapedCredential(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_MANDI_TOKEN", "plaintoken123")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_MANDI_TOKEN",
-	}}
+	step := stepWithAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	got := step.redactString("http://host/v1/x?token=plaintoken123")
 	if strings.Contains(got, "plaintoken123") {
 		t.Errorf("the credential survived redaction: %s", got)
@@ -694,9 +718,9 @@ func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
 		cfg  *Config
 	}{
 		{"no queryName", &Config{BindingKeys: []string{testBindingKey},
-			AuthScheme: AuthSchemeQuery, QueryValueEnv: "TEST_MANDI_TOKEN"}},
+			Auth: authFor(Auth{Scheme: AuthSchemeQuery, QueryValueEnv: "TEST_MANDI_TOKEN"})}},
 		{"no queryValueEnv", &Config{BindingKeys: []string{testBindingKey},
-			AuthScheme: AuthSchemeQuery, QueryName: "token"}},
+			Auth: authFor(Auth{Scheme: AuthSchemeQuery, QueryName: "token"})}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1135,6 +1159,7 @@ func TestNewRefusesAHalfConfiguredOverride(t *testing.T) {
 	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{
 		BindingKeys:  []string{testBindingKey},
 		ProviderIDAt: "who.provider",
+		Auth:         authFor(Auth{Scheme: AuthSchemeNone}),
 	})
 	if err == nil {
 		t.Fatal("expected one path without the other to be refused")
@@ -1383,9 +1408,7 @@ func TestRunPresentsBasicCredentialsFromTheEnvironment(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeBasic
-			c.UsernameEnv = "TEST_MAUSAMGRAM_USER"
-			c.PasswordEnv = "TEST_MAUSAMGRAM_KEY"
+			c.setAuth(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_USER", PasswordEnv: "TEST_MAUSAMGRAM_KEY"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -1409,9 +1432,7 @@ func TestRunPresentsAHeaderCredentialFromTheEnvironment(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeHeader
-			c.HeaderName = "X-Api-Key"
-			c.HeaderValueEnv = "TEST_MAUSAMGRAM_TOKEN"
+			c.setAuth(Auth{Scheme: AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_MAUSAMGRAM_TOKEN"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -1433,9 +1454,7 @@ func TestRunFailsWhenAConfiguredCredentialIsAbsent(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeBasic
-			c.UsernameEnv = "TEST_MAUSAMGRAM_ABSENT_USER"
-			c.PasswordEnv = "TEST_MAUSAMGRAM_ABSENT_KEY"
+			c.setAuth(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_ABSENT_USER", PasswordEnv: "TEST_MAUSAMGRAM_ABSENT_KEY"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err == nil {
@@ -1739,11 +1758,7 @@ func TestRedactKeepsTheErrorChainMatchable(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_CHAIN_TOKEN", "s3cr3t")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_CHAIN_TOKEN",
-	}}
+	step := stepWithAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN"})
 
 	// The shape net/http produces: the cause wrapped behind text that quotes
 	// the whole URL, credential and all.
@@ -1777,11 +1792,7 @@ func TestRedactLeavesAnUnchangedErrorAlone(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_CHAIN_TOKEN_2", "s3cr3t")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_CHAIN_TOKEN_2",
-	}}
+	step := stepWithAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN_2"})
 	original := errors.New("nothing sensitive here")
 	if got := step.redact(original); got != original {
 		t.Errorf("redact returned a different error for text it did not change: %v", got)
@@ -1956,8 +1967,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "basic, the wire form a gateway echoes",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeBasic
-				c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+				c.setAuth(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 			},
 			body:   `{"error":"invalid Authorization: Basic ` + wire + `"}`,
 			secret: wire,
@@ -1965,8 +1975,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "basic, the password quoted raw",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeBasic
-				c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+				c.setAuth(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 			},
 			body:   `{"error":"bad password s3cr3t"}`,
 			secret: "s3cr3t",
@@ -1974,8 +1983,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "header, the value as sent",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeHeader
-				c.HeaderName, c.HeaderValueEnv = "X-API-Key", "TEST_HDR"
+				c.setAuth(Auth{Scheme: AuthSchemeHeader, HeaderName: "X-API-Key", HeaderValueEnv: "TEST_HDR"})
 			},
 			body:   `{"error":"bad X-API-Key: hdr-k3y"}`,
 			secret: "hdr-k3y",
@@ -1983,8 +1991,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "query, still covered, raw form",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeQuery
-				c.QueryName, c.QueryValueEnv = "token", "TEST_QRY"
+				c.setAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
 			},
 			body:   `{"rejected":"token=a+b/c="}`,
 			secret: "a+b/c=",
@@ -1992,8 +1999,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "query, still covered, percent-encoded form",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeQuery
-				c.QueryName, c.QueryValueEnv = "token", "TEST_QRY"
+				c.setAuth(Auth{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
 			},
 			body:   `{"rejected":"token=` + url.QueryEscape("a+b/c=") + `"}`,
 			secret: url.QueryEscape("a+b/c="),
@@ -2027,8 +2033,7 @@ func TestRedactStringLeavesTheBasicUsername(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeBasic
-			c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+			c.setAuth(Auth{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 		})
 
 	got := step.redactString(`user mausam failed to authenticate with s3cr3t`)
@@ -2049,11 +2054,16 @@ func TestRedactStringWithNoCredentialConfigured(t *testing.T) {
 			step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
 				&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 				func(c *Config) {
-					c.AuthScheme = scheme
 					// Env vars named but deliberately unset.
-					c.UsernameEnv, c.PasswordEnv = "TEST_UNSET_U", "TEST_UNSET_P"
-					c.HeaderName, c.HeaderValueEnv = "X-K", "TEST_UNSET_H"
-					c.QueryName, c.QueryValueEnv = "t", "TEST_UNSET_Q"
+					c.setAuth(Auth{
+						Scheme:         scheme,
+						UsernameEnv:    "TEST_UNSET_U",
+						PasswordEnv:    "TEST_UNSET_P",
+						HeaderName:     "X-K",
+						HeaderValueEnv: "TEST_UNSET_H",
+						QueryName:      "t",
+						QueryValueEnv:  "TEST_UNSET_Q",
+					})
 				})
 
 			if got := step.redactString(text); got != text {
@@ -2085,7 +2095,8 @@ func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
 	step, closer, err := New(context.Background(),
 		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
-		&Config{BindingKeys: []string{testBindingKey}})
+		&Config{BindingKeys: []string{testBindingKey},
+			Auth: authFor(Auth{Scheme: AuthSchemeNone})})
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
 	}
@@ -2252,9 +2263,7 @@ func oauth2Step(t *testing.T, tokenURL string, seen *[]string) *Step {
 	return newStep(t, &stubRegistry{plan: testPlan(provider.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"a":1}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeOAuth2
-			c.TokenURL = tokenURL
-			c.ClientIDEnv, c.ClientSecretEnv = "TEST_OAUTH_ID", "TEST_OAUTH_SECRET"
+			c.setAuth(Auth{Scheme: AuthSchemeOAuth2, TokenURL: tokenURL, ClientIDEnv: "TEST_OAUTH_ID", ClientSecretEnv: "TEST_OAUTH_SECRET"})
 		})
 }
 

@@ -79,7 +79,14 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 			&stubRegistry{plan: plan},
 			fixedMapper{answer: answer},
 			nil,
-			&upstream.Config{BindingKeys: []string{bindingKey}})
+			&upstream.Config{
+				BindingKeys: []string{bindingKey},
+				// Auth is per provider, so each step declares its own even
+				// when neither upstream needs a credential.
+				Auth: map[string]*upstream.Auth{
+					strings.Split(bindingKey, "|")[0]: {Scheme: upstream.AuthSchemeNone},
+				},
+			})
 		if err != nil {
 			t.Fatal(err)
 		}

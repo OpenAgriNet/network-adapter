@@ -152,39 +152,88 @@ type Config struct {
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
-	// AuthScheme is how credentials are presented upstream: none, basic or
-	// header. Providers differ here -- basic auth, a raw token header, a field
-	// in the body -- which is why it is configuration and not an assumption.
-	AuthScheme string `yaml:"authScheme" json:"authScheme"`
+	// Auth carries one credential profile PER PROVIDER, keyed by participant
+	// id -- the left half of a binding key.
+	//
+	// Per provider rather than per step because a step serves several binding
+	// keys and the providers behind them need not authenticate alike: one may
+	// take an oauth2 client id and secret, the next a token in a query
+	// parameter. Everything else that differs per provider already comes from
+	// the registry -- the endpoint, the path, the mapping -- so auth was the
+	// only thing pinned to the step, and the only thing that made a second
+	// provider of the same capability impossible to configure.
+	//
+	// There is deliberately NO step-wide default. A profile per provider means
+	// there is never a question of which setting applies, and a provider whose
+	// profile is missing is refused at startup rather than quietly falling
+	// through to sending nothing.
+	//
+	// Built by ParseAuth from the flattened config, not decoded from YAML
+	// directly: what an operator writes is a nested block per provider, which
+	// pkg/plugin flattens on the way in.
+	Auth map[string]*Auth `yaml:"-" json:"-"`
+
+	// MaxResponseBytes caps what is read from the provider.
+	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+}
+
+// Auth is how one provider's credentials are presented upstream.
+type Auth struct {
+	// Provider is the participant id this profile belongs to. Held so an error
+	// can name it: with several profiles on one step, "authScheme query
+	// requires queryName" would otherwise leave an operator guessing which
+	// provider it meant.
+	Provider string
+
+	// Scheme is one of none, basic, header, query or oauth2. Providers differ
+	// here, which is why it is configuration and not an assumption.
+	Scheme string
 
 	// UsernameEnv and PasswordEnv name the environment variables holding basic
 	// credentials. They are variable NAMES, never the values.
-	UsernameEnv string `yaml:"usernameEnv" json:"usernameEnv"`
-	PasswordEnv string `yaml:"passwordEnv" json:"passwordEnv"`
+	UsernameEnv string
+	PasswordEnv string
 
-	// HeaderName and HeaderValueEnv configure the header scheme: which header to
-	// set, and which environment variable holds its value.
-	HeaderName     string `yaml:"headerName" json:"headerName"`
-	HeaderValueEnv string `yaml:"headerValueEnv" json:"headerValueEnv"`
+	// HeaderName and HeaderValueEnv configure the header scheme: which header
+	// to set, and which environment variable holds its value.
+	HeaderName     string
+	HeaderValueEnv string
 
-	// QueryName and QueryValueEnv configure authScheme query: the parameter
+	// QueryName and QueryValueEnv configure the query scheme: the parameter
 	// name to add, and the environment variable holding its value. Named the
 	// same way as the header pair, for the same reason -- the credential is
 	// never in this config, only the name of the variable carrying it.
-	QueryName     string `yaml:"queryName" json:"queryName"`
-	QueryValueEnv string `yaml:"queryValueEnv" json:"queryValueEnv"`
+	QueryName     string
+	QueryValueEnv string
 
 	// TokenURL is the OAuth2 token endpoint. Not a credential, so it is named
 	// here rather than through an environment variable -- but it IS
 	// deployment-specific, so the reference config carries a placeholder.
-	TokenURL string `yaml:"tokenUrl" json:"tokenUrl"`
+	TokenURL string
 	// ClientIDEnv and ClientSecretEnv name the variables holding the client
 	// credentials. The values never appear in config, the registry, or a log.
-	ClientIDEnv     string `yaml:"clientIdEnv" json:"clientIdEnv"`
-	ClientSecretEnv string `yaml:"clientSecretEnv" json:"clientSecretEnv"`
+	ClientIDEnv     string
+	ClientSecretEnv string
+}
 
-	// MaxResponseBytes caps what is read from the provider.
-	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+// authenticator is one provider's profile plus the token it holds.
+//
+// The token cache lives HERE rather than on the Step, and that is the whole
+// reason this type exists. A step-wide cache shared between two oauth2
+// providers would hand the first provider's token to the second, which is
+// authenticating as somebody else -- a failure no test of a single provider
+// can see.
+type authenticator struct {
+	cfg Auth
+
+	// Two mechanisms because there are two jobs. tokenMu serialises the
+	// EXCHANGE, so a cold start sends one request to the issuer rather than one
+	// per concurrent caller. token is atomic so READERS never take that mutex,
+	// which matters because secretForms is one of them and it is reached from
+	// inside the exchange -- guarding the value with tokenMu instead deadlocked
+	// on the first failing exchange, which is how this was found.
+	tokenMu sync.Mutex
+	token   atomic.Pointer[cachedToken]
 }
 
 // Step serves whatever capabilities a domain package configures it for. It is
@@ -197,16 +246,10 @@ type Step struct {
 	mapper        definition.Mapper
 	httpClient    *http.Client
 
-	// The oauth2 token this step holds.
-	//
-	// Two mechanisms because there are two jobs. tokenMu serialises the
-	// EXCHANGE, so a cold start sends one request to the issuer rather than one
-	// per concurrent caller. token is atomic so READERS never take that mutex,
-	// which matters because secretForms is one of them and it is reached from
-	// inside the exchange -- guarding the value with tokenMu instead deadlocked
-	// on the first failing exchange, which is how this was found.
-	tokenMu sync.Mutex
-	token   atomic.Pointer[cachedToken]
+	// One authenticator per provider, keyed by participant id. Built once at
+	// startup, so a request only looks one up -- and each holds its own token,
+	// so two oauth2 providers cannot share one.
+	auth map[string]*authenticator
 }
 
 // New creates the step.
@@ -239,6 +282,10 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		// Timeout is set per request from the registry's own budget, so the
 		// client carries none of its own.
 		httpClient: &http.Client{},
+		auth:       make(map[string]*authenticator, len(cfg.Auth)),
+	}
+	for provider, profile := range cfg.Auth {
+		step.auth[provider] = &authenticator{cfg: *profile}
 	}
 
 	closer := func() error {
@@ -286,37 +333,190 @@ func applyDefaults(cfg *Config) error {
 			return errors.New("upstream: bindingKeys carries an empty entry")
 		}
 	}
-	if cfg.AuthScheme == "" {
-		cfg.AuthScheme = AuthSchemeNone
-	}
 	if cfg.MaxResponseBytes <= 0 {
 		cfg.MaxResponseBytes = DefaultMaxResponseBytes
 	}
+	if cfg.Auth == nil {
+		cfg.Auth = map[string]*Auth{}
+	}
 
-	switch cfg.AuthScheme {
-	case AuthSchemeNone:
-	case AuthSchemeBasic:
-		if cfg.UsernameEnv == "" || cfg.PasswordEnv == "" {
-			return errors.New("upstream: authScheme basic requires usernameEnv and passwordEnv")
+	// Both directions, because each catches a different mistake and both are
+	// silent at runtime. A profile for a provider this step does not serve is a
+	// typo that would apply to nothing; a served provider with no profile would
+	// fall through to sending no credential and read as the provider rejecting
+	// us.
+	served := map[string]bool{}
+	for _, key := range cfg.BindingKeys {
+		served[participantOf(key)] = true
+	}
+	for provider := range cfg.Auth {
+		if !served[provider] {
+			return fmt.Errorf(
+				"upstream: auth is configured for %q, which is not a provider in bindingKeys (%s)",
+				provider, strings.Join(cfg.BindingKeys, ", "))
 		}
-	case AuthSchemeHeader:
-		if cfg.HeaderName == "" || cfg.HeaderValueEnv == "" {
-			return errors.New("upstream: authScheme header requires headerName and headerValueEnv")
+	}
+	for provider := range served {
+		profile, ok := cfg.Auth[provider]
+		if !ok {
+			return fmt.Errorf(
+				"upstream: %q is served but has no auth block; every provider declares its own, "+
+					"using authScheme none where the upstream needs no credential", provider)
 		}
-	case AuthSchemeQuery:
-		if cfg.QueryName == "" || cfg.QueryValueEnv == "" {
-			return errors.New("upstream: authScheme query requires queryName and queryValueEnv")
+		profile.Provider = provider
+		if err := profile.validate(); err != nil {
+			return err
 		}
-	case AuthSchemeOAuth2:
-		if cfg.TokenURL == "" || cfg.ClientIDEnv == "" || cfg.ClientSecretEnv == "" {
-			return errors.New(
-				"upstream: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv")
-		}
-	default:
-		return fmt.Errorf(
-			"upstream: unknown authScheme %q: must be none, basic, header, query or oauth2", cfg.AuthScheme)
 	}
 	return nil
+}
+
+// validate refuses a profile whose scheme and fields disagree. Every message
+// names the provider: with several profiles on one step, the field alone would
+// leave an operator guessing which block to look at.
+func (a *Auth) validate() error {
+	switch a.Scheme {
+	case AuthSchemeNone:
+	case AuthSchemeBasic:
+		if a.UsernameEnv == "" || a.PasswordEnv == "" {
+			return fmt.Errorf(
+				"upstream: %s: authScheme basic requires usernameEnv and passwordEnv", a.Provider)
+		}
+	case AuthSchemeHeader:
+		if a.HeaderName == "" || a.HeaderValueEnv == "" {
+			return fmt.Errorf(
+				"upstream: %s: authScheme header requires headerName and headerValueEnv", a.Provider)
+		}
+	case AuthSchemeQuery:
+		if a.QueryName == "" || a.QueryValueEnv == "" {
+			return fmt.Errorf(
+				"upstream: %s: authScheme query requires queryName and queryValueEnv", a.Provider)
+		}
+	case AuthSchemeOAuth2:
+		if a.TokenURL == "" || a.ClientIDEnv == "" || a.ClientSecretEnv == "" {
+			return fmt.Errorf(
+				"upstream: %s: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv",
+				a.Provider)
+		}
+	case "":
+		return fmt.Errorf("upstream: %s: authScheme is required, "+
+			"and is none where the upstream needs no credential", a.Provider)
+	default:
+		return fmt.Errorf(
+			"upstream: %s: unknown authScheme %q: must be none, basic, header, query or oauth2",
+			a.Provider, a.Scheme)
+	}
+	return nil
+}
+
+// ParseAuth builds one credential profile per provider from a plugin's
+// flattened settings.
+//
+// What an operator writes is a block per provider:
+//
+//	knowledge-provider:
+//	  authScheme: oauth2
+//	  tokenUrl: https://issuer.example/token
+//
+// which pkg/plugin flattens to authScheme-knowledge-provider and
+// tokenUrl-knowledge-provider before any plugin sees it. This reads that form
+// back into profiles.
+//
+// Shared rather than repeated in each capability plugin: all of them copied
+// the same field list out of the same map, so a scheme added in one place had
+// to be remembered in three.
+//
+// The split is on the FIRST dash, which is unambiguous because no setting name
+// contains one while a participant id routinely does -- knowledge-provider,
+// provider.oan.dev. So the field is always the part before it.
+func ParseAuth(config map[string]string) (map[string]*Auth, error) {
+	profiles := map[string]*Auth{}
+
+	// Sorted so a config with two mistakes reports the same one every run.
+	keys := make([]string, 0, len(config))
+	for key := range config {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		field, provider, dashed := strings.Cut(key, "-")
+		if !dashed {
+			// A bare auth field is the old step-wide form. Refused rather than
+			// ignored: silently dropping it leaves every provider on no
+			// credential at all, which reads as the provider rejecting us.
+			if authFields[key] {
+				return nil, fmt.Errorf(
+					"upstream: %q is set for the whole step; auth is per provider now, "+
+						"so it belongs in a block named for the participant id", key)
+			}
+			continue
+		}
+		if !authFields[field] {
+			// Not an auth setting, and nothing else on a provider step carries
+			// a dash -- so this is a misspelled field rather than something to
+			// pass through.
+			return nil, fmt.Errorf("upstream: %q is not a credential setting", key)
+		}
+		if strings.TrimSpace(provider) == "" {
+			return nil, fmt.Errorf("upstream: %q names no provider after the dash", key)
+		}
+
+		profile, seen := profiles[provider]
+		if !seen {
+			profile = &Auth{Provider: provider}
+			profiles[provider] = profile
+		}
+		value := config[key]
+		switch field {
+		case "authScheme":
+			profile.Scheme = value
+		case "usernameEnv":
+			profile.UsernameEnv = value
+		case "passwordEnv":
+			profile.PasswordEnv = value
+		case "headerName":
+			profile.HeaderName = value
+		case "headerValueEnv":
+			profile.HeaderValueEnv = value
+		case "queryName":
+			profile.QueryName = value
+		case "queryValueEnv":
+			profile.QueryValueEnv = value
+		case "tokenUrl":
+			profile.TokenURL = value
+		case "clientIdEnv":
+			profile.ClientIDEnv = value
+		case "clientSecretEnv":
+			profile.ClientSecretEnv = value
+		}
+	}
+	return profiles, nil
+}
+
+// authFields is the closed set of per-provider credential settings. Closed on
+// purpose: it is what makes the split on the first dash decidable, and what
+// turns a misspelled field into a startup error rather than a setting that
+// quietly does nothing.
+var authFields = map[string]bool{
+	"authScheme":      true,
+	"usernameEnv":     true,
+	"passwordEnv":     true,
+	"headerName":      true,
+	"headerValueEnv":  true,
+	"queryName":       true,
+	"queryValueEnv":   true,
+	"tokenUrl":        true,
+	"clientIdEnv":     true,
+	"clientSecretEnv": true,
+}
+
+// participantOf returns the provider half of a binding key. The format is
+// "<participantId>|<capabilityCode>", and a participant id carries dashes and
+// dots but never a pipe, so the first one separates them.
+func participantOf(bindingKey string) string {
+	provider, _, _ := strings.Cut(bindingKey, "|")
+	return strings.TrimSpace(provider)
 }
 
 // Run serves the request when it is for this step's capability, and does
@@ -429,7 +629,16 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	upstreamResponse, err := s.call(ctx, plan.BaseURL, call, upstreamRequest)
+	// Which credential this provider takes. Resolved from the binding key, so
+	// one step serving several providers authenticates each as its own.
+	// Startup guarantees a profile per served provider; this guards the case
+	// where a record arrives for a key the config never declared.
+	auth, configured := s.auth[participantOf(plan.BindingKey)]
+	if !configured {
+		return fmt.Errorf("upstream: no credential is configured for %s", plan.BindingKey)
+	}
+
+	upstreamResponse, err := s.call(ctx, auth, plan.BaseURL, call, upstreamRequest)
 	if err != nil {
 		return err
 	}
@@ -541,7 +750,7 @@ func budget(call model.ActionPlan) (time.Duration, int) {
 	return timeout, retries
 }
 
-func (s *Step) call(ctx context.Context, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
+func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
 	endpoint, err := buildEndpoint(baseURL, call, mapped)
 	if err != nil {
 		return nil, err
@@ -569,7 +778,7 @@ func (s *Step) call(ctx context.Context, baseURL string, call model.ActionPlan, 
 			break
 		}
 
-		body, err := s.attempt(ctx, call, endpoint, mapped, timeout)
+		body, err := s.attempt(ctx, auth, call, endpoint, mapped, timeout)
 		if err == nil {
 			return body, nil
 		}
@@ -649,7 +858,7 @@ func sleep(ctx context.Context, d time.Duration) error {
 }
 
 // attempt makes one upstream request.
-func (s *Step) attempt(ctx context.Context, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration) ([]byte, error) {
+func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration) ([]byte, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -661,7 +870,7 @@ func (s *Step) attempt(ctx context.Context, call model.ActionPlan, endpoint stri
 	if hasBody(method) {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if err := s.authenticate(req); err != nil {
+	if err := s.authenticate(auth, req); err != nil {
 		// A missing or unreadable credential is configuration, not weather.
 		return nil, doNotRetry(err)
 	}
@@ -750,40 +959,42 @@ func explain(body []byte) string {
 // else's stack for no benefit to the caller -- the caller cannot set it, and
 // the fix is entirely the operator's. So the name goes to the log, where the
 // operator is, and the wire gets the scheme that failed.
-func (s *Step) missingCredential(ctx context.Context, scheme, envNames string) error {
-	err := fmt.Errorf("upstream: this provider's %s credential is not configured", scheme)
-	log.Errorf(ctx, err, "upstream: %s auth is configured but %s is not set", scheme, envNames)
+func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames string) error {
+	err := fmt.Errorf("upstream: the %s credential for %s is not configured", scheme, provider)
+	log.Errorf(ctx, err, "upstream: %s auth is configured for %s but %s is not set",
+		scheme, provider, envNames)
 	return err
 }
 
-func (s *Step) authenticate(req *http.Request) error {
-	switch s.config.AuthScheme {
+func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
+	cfg := auth.cfg
+	switch cfg.Scheme {
 	case AuthSchemeBasic:
-		username, password := os.Getenv(s.config.UsernameEnv), os.Getenv(s.config.PasswordEnv)
+		username, password := os.Getenv(cfg.UsernameEnv), os.Getenv(cfg.PasswordEnv)
 		if username == "" || password == "" {
-			return s.missingCredential(req.Context(), "basic",
-				s.config.UsernameEnv+" and "+s.config.PasswordEnv)
+			return s.missingCredential(req.Context(), cfg.Provider, "basic",
+				cfg.UsernameEnv+" and "+cfg.PasswordEnv)
 		}
 		req.SetBasicAuth(username, password)
 	case AuthSchemeHeader:
-		value := os.Getenv(s.config.HeaderValueEnv)
+		value := os.Getenv(cfg.HeaderValueEnv)
 		if value == "" {
-			return s.missingCredential(req.Context(), "header", s.config.HeaderValueEnv)
+			return s.missingCredential(req.Context(), cfg.Provider, "header", cfg.HeaderValueEnv)
 		}
-		req.Header.Set(s.config.HeaderName, value)
+		req.Header.Set(cfg.HeaderName, value)
 	case AuthSchemeQuery:
-		value := os.Getenv(s.config.QueryValueEnv)
+		value := os.Getenv(cfg.QueryValueEnv)
 		if value == "" {
-			return s.missingCredential(req.Context(), "query", s.config.QueryValueEnv)
+			return s.missingCredential(req.Context(), cfg.Provider, "query", cfg.QueryValueEnv)
 		}
 		// Set rather than Add: a second copy of the parameter is not a
 		// credential, it is an ambiguity, and which one an upstream reads is
 		// its own business.
 		query := req.URL.Query()
-		query.Set(s.config.QueryName, value)
+		query.Set(cfg.QueryName, value)
 		req.URL.RawQuery = query.Encode()
 	case AuthSchemeOAuth2:
-		token, err := s.bearerToken(req.Context())
+		token, err := s.bearerToken(req.Context(), auth)
 		if err != nil {
 			return err
 		}
@@ -850,25 +1061,25 @@ func (e redactedErr) Unwrap() error { return e.err }
 // NOTHING IS CACHED ON FAILURE. A transient outage at the token endpoint must
 // not leave this step holding a failure for the lifetime it never obtained --
 // the next request tries again.
-func (s *Step) bearerToken(ctx context.Context) (string, error) {
-	if held := s.token.Load(); held != nil && time.Now().Before(held.expiry) {
+func (s *Step) bearerToken(ctx context.Context, auth *authenticator) (string, error) {
+	if held := auth.token.Load(); held != nil && time.Now().Before(held.expiry) {
 		return held.value, nil
 	}
 
-	s.tokenMu.Lock()
-	defer s.tokenMu.Unlock()
+	auth.tokenMu.Lock()
+	defer auth.tokenMu.Unlock()
 
 	// Re-checked after acquiring: while this caller waited, whoever held the
 	// mutex may already have exchanged a fresh token.
-	if held := s.token.Load(); held != nil && time.Now().Before(held.expiry) {
+	if held := auth.token.Load(); held != nil && time.Now().Before(held.expiry) {
 		return held.value, nil
 	}
 
-	token, lifetime, err := s.exchangeToken(ctx)
+	token, lifetime, err := s.exchangeToken(ctx, auth)
 	if err != nil {
 		return "", err
 	}
-	s.token.Store(&cachedToken{value: token, expiry: time.Now().Add(lifetime)})
+	auth.token.Store(&cachedToken{value: token, expiry: time.Now().Add(lifetime)})
 	return token, nil
 }
 
@@ -889,11 +1100,12 @@ type tokenResponse struct {
 // Every failure here is the UPSTREAM exchange failing, so all of them carry
 // 502. Unclassified they would surface as a 500, which tells a network peer
 // this adapter broke when in fact the provider's issuer did.
-func (s *Step) exchangeToken(ctx context.Context) (string, time.Duration, error) {
-	clientID, clientSecret := os.Getenv(s.config.ClientIDEnv), os.Getenv(s.config.ClientSecretEnv)
+func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
+	cfg := auth.cfg
+	clientID, clientSecret := os.Getenv(cfg.ClientIDEnv), os.Getenv(cfg.ClientSecretEnv)
 	if clientID == "" || clientSecret == "" {
-		return "", 0, s.missingCredential(ctx, "oauth2",
-			s.config.ClientIDEnv+" and "+s.config.ClientSecretEnv)
+		return "", 0, s.missingCredential(ctx, cfg.Provider, "oauth2",
+			cfg.ClientIDEnv+" and "+cfg.ClientSecretEnv)
 	}
 
 	form := url.Values{
@@ -901,7 +1113,7 @@ func (s *Step) exchangeToken(ctx context.Context) (string, time.Duration, error)
 		"client_id":     {clientID},
 		"client_secret": {clientSecret},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.config.TokenURL,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL,
 		strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", 0, s.tokenErr(fmt.Errorf("token request could not be built: %w", err))
@@ -911,7 +1123,7 @@ func (s *Step) exchangeToken(ctx context.Context) (string, time.Duration, error)
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return "", 0, s.tokenErr(fmt.Errorf("token endpoint %s could not be reached: %w",
-			s.config.TokenURL, err))
+			cfg.TokenURL, err))
 	}
 	defer resp.Body.Close()
 
@@ -925,24 +1137,24 @@ func (s *Step) exchangeToken(ctx context.Context) (string, time.Duration, error)
 		// The status, not the body: what an issuer puts in a failure body is its
 		// own business, and it routinely quotes the request back.
 		log.Warnf(ctx, "upstream: token endpoint %s returned %s: %s",
-			s.config.TokenURL, resp.Status, s.redactString(explain(body)))
+			cfg.TokenURL, resp.Status, s.redactString(explain(body)))
 		return "", 0, s.tokenErr(fmt.Errorf("token endpoint returned %s", resp.Status))
 	}
 
 	var parsed tokenResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", 0, s.tokenErr(fmt.Errorf("token response from %s is not JSON: %w",
-			s.config.TokenURL, err))
+			cfg.TokenURL, err))
 	}
 	if parsed.AccessToken == "" {
 		return "", 0, s.tokenErr(fmt.Errorf("token response from %s carries no access_token",
-			s.config.TokenURL))
+			cfg.TokenURL))
 	}
 	lifetime, ok := tokenLifetime(parsed.ExpiresIn, tokenRefreshSkew)
 	if !ok {
 		return "", 0, s.tokenErr(fmt.Errorf(
 			"token response from %s carries no usable expires_in, so its lifetime is unknown",
-			s.config.TokenURL))
+			cfg.TokenURL))
 	}
 	return parsed.AccessToken, lifetime, nil
 }
@@ -1025,9 +1237,46 @@ func (s *Step) redactString(text string) string {
 // from the config rather than from the request still quotes the credential
 // unwrapped.
 func (s *Step) secretForms() []string {
-	switch s.config.AuthScheme {
+	// EVERY profile, not the one being served.
+	//
+	// Redaction is about what could appear in a piece of text, not about which
+	// provider a request happened to be for. An error or a log line built while
+	// serving one provider can quote another's credential -- a shared client
+	// echoing a header, an issuer naming the wrong caller -- and scoping this
+	// to the active profile would let that reach the log unredacted. There are
+	// a handful of profiles and this runs on a failure path, so walking all of
+	// them costs nothing worth measuring.
+	var forms []string
+	for _, auth := range s.auth {
+		forms = append(forms, auth.secretForms()...)
+	}
+	// Sorted across the merged set rather than per profile: one provider's
+	// short token can be a substring of another's, and replacing the short one
+	// first would leave the longer half-redacted.
+	return longestFirst(forms)
+}
+
+// secretForms returns every form this profile's credential can appear in.
+//
+// Per scheme, because the schemes leak differently and redacting the value we
+// hold is not enough on its own:
+//
+//   - basic wraps the pair: SetBasicAuth sends base64(user:pass), so the
+//     password alone does not appear on the wire and replacing it misses the
+//     echoed header entirely.
+//   - query escapes: authenticate goes through url.Values.Encode, so a base64
+//     token carrying "+", "/" or "=" appears as "a%2Bb%2Fc%3D". Escaping what
+//     we hold is exact -- same function Encode used, so the two agree by
+//     construction rather than by a guess about which characters matter.
+//   - header sends the value as-is.
+//
+// The raw form is kept alongside the wrapped one in both cases: an error built
+// from the config rather than from the request still quotes the credential
+// unwrapped.
+func (a *authenticator) secretForms() []string {
+	switch a.cfg.Scheme {
 	case AuthSchemeBasic:
-		username, password := os.Getenv(s.config.UsernameEnv), os.Getenv(s.config.PasswordEnv)
+		username, password := os.Getenv(a.cfg.UsernameEnv), os.Getenv(a.cfg.PasswordEnv)
 		if password == "" {
 			return nil
 		}
@@ -1041,9 +1290,9 @@ func (s *Step) secretForms() []string {
 		// authenticates, and it is routinely a short common word -- redacting
 		// "user" or "admin" would eat unrelated text and cost the operator the
 		// log line they came for. The pair and the password are the secrets.
-		return longestFirst(forms)
+		return forms
 	case AuthSchemeHeader:
-		value := os.Getenv(s.config.HeaderValueEnv)
+		value := os.Getenv(a.cfg.HeaderValueEnv)
 		if value == "" {
 			return nil
 		}
@@ -1053,19 +1302,19 @@ func (s *Step) secretForms() []string {
 		// it gave back. The token is the one that reaches the provider, so it
 		// is the one an echoing 401 body quotes.
 		var forms []string
-		if secret := os.Getenv(s.config.ClientSecretEnv); secret != "" {
+		if secret := os.Getenv(a.cfg.ClientSecretEnv); secret != "" {
 			forms = append(forms, secret)
 		}
 		// Read without tokenMu: this is reached from inside the exchange, which
 		// holds it.
-		if held := s.token.Load(); held != nil && held.value != "" {
+		if held := a.token.Load(); held != nil && held.value != "" {
 			forms = append(forms, held.value)
 		}
 		// The client id is deliberately NOT redacted: it identifies, it does
 		// not authenticate, and it is what makes a log line useful.
-		return longestFirst(forms)
+		return forms
 	case AuthSchemeQuery:
-		value := os.Getenv(s.config.QueryValueEnv)
+		value := os.Getenv(a.cfg.QueryValueEnv)
 		if value == "" {
 			return nil
 		}
@@ -1073,7 +1322,7 @@ func (s *Step) secretForms() []string {
 		if encoded := url.QueryEscape(value); encoded != value {
 			forms = append(forms, encoded)
 		}
-		return longestFirst(forms)
+		return forms
 	}
 	return nil
 }

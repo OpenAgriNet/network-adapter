@@ -10,6 +10,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 )
 
 type stubRegistry struct{}
@@ -40,7 +41,7 @@ func TestParseConfig(t *testing.T) {
 			// rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &MandiPrice.Config{},
+			expected: &MandiPrice.Config{Auth: map[string]*upstream.Auth{}},
 		},
 		{
 			// Query auth is why this capability has its own entry rather than
@@ -49,40 +50,50 @@ func TestParseConfig(t *testing.T) {
 			// expressible.
 			name: "reads the query auth scheme this capability needs",
 			config: map[string]string{
-				"bindingKeys":   "agmarknet|openagrinet:MandiPrice",
-				"authScheme":    "query",
-				"queryName":     "api-key",
-				"queryValueEnv": "MANDI_TOKEN",
+				"bindingKeys":             "agmarknet|openagrinet:MandiPrice",
+				"authScheme-agmarknet":    "query",
+				"queryName-agmarknet":     "api-key",
+				"queryValueEnv-agmarknet": "MANDI_TOKEN",
 			},
 			expected: &MandiPrice.Config{
-				BindingKeys:   []string{"agmarknet|openagrinet:MandiPrice"},
-				AuthScheme:    "query",
-				QueryName:     "api-key",
-				QueryValueEnv: "MANDI_TOKEN",
+				BindingKeys: []string{"agmarknet|openagrinet:MandiPrice"},
+				Auth: map[string]*upstream.Auth{
+					"agmarknet": {
+						Provider:      "agmarknet",
+						Scheme:        "query",
+						QueryName:     "api-key",
+						QueryValueEnv: "MANDI_TOKEN",
+					},
+				},
 			},
 		},
 		{
 			name: "reads every supported setting",
 			config: map[string]string{
-				"bindingKeys":      "other|capability",
-				"authScheme":       "basic",
-				"usernameEnv":      "U",
-				"passwordEnv":      "P",
-				"headerName":       "X-Key",
-				"headerValueEnv":   "V",
-				"queryName":        "q",
-				"queryValueEnv":    "Q",
-				"maxResponseBytes": "2048",
+				"bindingKeys":          "other|capability",
+				"authScheme-other":     "basic",
+				"usernameEnv-other":    "U",
+				"passwordEnv-other":    "P",
+				"headerName-other":     "X-Key",
+				"headerValueEnv-other": "V",
+				"queryName-other":      "q",
+				"queryValueEnv-other":  "Q",
+				"maxResponseBytes":     "2048",
 			},
 			expected: &MandiPrice.Config{
-				BindingKeys:      []string{"other|capability"},
-				AuthScheme:       "basic",
-				UsernameEnv:      "U",
-				PasswordEnv:      "P",
-				HeaderName:       "X-Key",
-				HeaderValueEnv:   "V",
-				QueryName:        "q",
-				QueryValueEnv:    "Q",
+				BindingKeys: []string{"other|capability"},
+				Auth: map[string]*upstream.Auth{
+					"other": {
+						Provider:       "other",
+						Scheme:         "basic",
+						UsernameEnv:    "U",
+						PasswordEnv:    "P",
+						HeaderName:     "X-Key",
+						HeaderValueEnv: "V",
+						QueryName:      "q",
+						QueryValueEnv:  "Q",
+					},
+				},
 				MaxResponseBytes: 2048,
 			},
 		},
@@ -102,7 +113,7 @@ func TestParseConfig(t *testing.T) {
 			// as "unset" rather than failing startup.
 			name:     "treats an empty response cap as unset",
 			config:   map[string]string{"maxResponseBytes": ""},
-			expected: &MandiPrice.Config{},
+			expected: &MandiPrice.Config{Auth: map[string]*upstream.Auth{}},
 		},
 	}
 
@@ -220,7 +231,10 @@ func TestNew(t *testing.T) {
 		t.Parallel()
 
 		_, _, err := mandiProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
-			map[string]string{"authScheme": "oauth"})
+			map[string]string{
+				"bindingKeys":          "agmarknet|openagrinet:MandiPrice",
+				"authScheme-agmarknet": "oauth",
+			})
 		if err == nil {
 			t.Fatal("expected an unknown auth scheme to be refused")
 		}

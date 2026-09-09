@@ -10,6 +10,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 )
 
 type stubRegistry struct{}
@@ -37,10 +38,11 @@ func TestParseConfig(t *testing.T) {
 	}{
 		{
 			// Everything absent is left zero: KnowledgeAdvisory.New defaults
-			// it, so the rules are defined in exactly one place.
+			// it, so the rules are defined in exactly one place. Auth is an
+			// empty map rather than nil -- ParseAuth always returns one.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &KnowledgeAdvisory.Config{},
+			expected: &KnowledgeAdvisory.Config{Auth: map[string]*upstream.Auth{}},
 		},
 		{
 			// The scheme this capability exists to use. Its provider sits
@@ -48,48 +50,145 @@ func TestParseConfig(t *testing.T) {
 			// static value in an environment variable is wrong twice a day.
 			name: "reads the oauth2 settings this capability needs",
 			config: map[string]string{
-				"bindingKeys":     "knowledge-provider|openagrinet:KnowledgeAdvisory",
-				"authScheme":      "oauth2",
-				"tokenUrl":        "https://issuer.invalid/token",
-				"clientIdEnv":     "KNOWLEDGE_CLIENT_ID",
-				"clientSecretEnv": "KNOWLEDGE_CLIENT_SECRET",
+				"bindingKeys":                        "knowledge-provider|openagrinet:KnowledgeAdvisory",
+				"authScheme-knowledge-provider":      "oauth2",
+				"tokenUrl-knowledge-provider":        "https://issuer.invalid/token",
+				"clientIdEnv-knowledge-provider":     "KNOWLEDGE_CLIENT_ID",
+				"clientSecretEnv-knowledge-provider": "KNOWLEDGE_CLIENT_SECRET",
 			},
 			expected: &KnowledgeAdvisory.Config{
-				BindingKeys:     []string{"knowledge-provider|openagrinet:KnowledgeAdvisory"},
-				AuthScheme:      "oauth2",
-				TokenURL:        "https://issuer.invalid/token",
-				ClientIDEnv:     "KNOWLEDGE_CLIENT_ID",
-				ClientSecretEnv: "KNOWLEDGE_CLIENT_SECRET",
+				BindingKeys: []string{"knowledge-provider|openagrinet:KnowledgeAdvisory"},
+				Auth: map[string]*upstream.Auth{
+					"knowledge-provider": {
+						Provider:        "knowledge-provider",
+						Scheme:          "oauth2",
+						TokenURL:        "https://issuer.invalid/token",
+						ClientIDEnv:     "KNOWLEDGE_CLIENT_ID",
+						ClientSecretEnv: "KNOWLEDGE_CLIENT_SECRET",
+					},
+				},
 			},
+		},
+		{
+			// TWO PROVIDERS, DIFFERENT SCHEMES -- the reason this shape exists.
+			// One step serves both binding keys, and each authenticates as
+			// itself.
+			name: "reads a profile per provider",
+			config: map[string]string{
+				"bindingKeys": "knowledge-provider|openagrinet:KnowledgeAdvisory," +
+					"vistaar-two|openagrinet:KnowledgeAdvisory",
+				"authScheme-knowledge-provider":      "oauth2",
+				"tokenUrl-knowledge-provider":        "https://issuer.invalid/token",
+				"clientIdEnv-knowledge-provider":     "ID",
+				"clientSecretEnv-knowledge-provider": "SECRET",
+				"authScheme-vistaar-two":             "query",
+				"queryName-vistaar-two":              "token",
+				"queryValueEnv-vistaar-two":          "VISTAAR_TWO_TOKEN",
+			},
+			expected: &KnowledgeAdvisory.Config{
+				BindingKeys: []string{
+					"knowledge-provider|openagrinet:KnowledgeAdvisory",
+					"vistaar-two|openagrinet:KnowledgeAdvisory",
+				},
+				Auth: map[string]*upstream.Auth{
+					"knowledge-provider": {
+						Provider:        "knowledge-provider",
+						Scheme:          "oauth2",
+						TokenURL:        "https://issuer.invalid/token",
+						ClientIDEnv:     "ID",
+						ClientSecretEnv: "SECRET",
+					},
+					"vistaar-two": {
+						Provider:      "vistaar-two",
+						Scheme:        "query",
+						QueryName:     "token",
+						QueryValueEnv: "VISTAAR_TWO_TOKEN",
+					},
+				},
+			},
+		},
+		{
+			// A participant id is hostname-shaped, so dots are legal. The
+			// field name in front is what the split anchors on.
+			name: "reads a dotted participant id",
+			config: map[string]string{
+				"bindingKeys":                  "provider.oan.dev|openagrinet:KnowledgeAdvisory",
+				"authScheme-provider.oan.dev":  "basic",
+				"usernameEnv-provider.oan.dev": "P_USER",
+				"passwordEnv-provider.oan.dev": "P_PASS",
+			},
+			expected: &KnowledgeAdvisory.Config{
+				BindingKeys: []string{"provider.oan.dev|openagrinet:KnowledgeAdvisory"},
+				Auth: map[string]*upstream.Auth{
+					"provider.oan.dev": {
+						Provider:    "provider.oan.dev",
+						Scheme:      "basic",
+						UsernameEnv: "P_USER",
+						PasswordEnv: "P_PASS",
+					},
+				},
+			},
+		},
+		{
+			// The old step-wide spelling. Refused rather than ignored: dropping
+			// it silently leaves every provider on no credential at all, which
+			// reads as the provider rejecting us.
+			name: "refuses a step-wide authScheme",
+			config: map[string]string{
+				"bindingKeys": "knowledge-provider|openagrinet:KnowledgeAdvisory",
+				"authScheme":  "oauth2",
+			},
+			expectedErr: "auth is per provider now",
+		},
+		{
+			name: "refuses a misspelled credential setting",
+			config: map[string]string{
+				"bindingKeys":                    "knowledge-provider|openagrinet:KnowledgeAdvisory",
+				"authScheeme-knowledge-provider": "oauth2",
+			},
+			expectedErr: "is not a credential setting",
+		},
+		{
+			name: "refuses a setting that names no provider",
+			config: map[string]string{
+				"bindingKeys": "knowledge-provider|openagrinet:KnowledgeAdvisory",
+				"authScheme-": "oauth2",
+			},
+			expectedErr: "names no provider",
 		},
 		{
 			name: "reads every supported setting",
 			config: map[string]string{
-				"bindingKeys":      "other|capability",
-				"authScheme":       "basic",
-				"usernameEnv":      "U",
-				"passwordEnv":      "P",
-				"headerName":       "X-Key",
-				"headerValueEnv":   "V",
-				"queryName":        "q",
-				"queryValueEnv":    "Q",
-				"tokenUrl":         "https://issuer.invalid/token",
-				"clientIdEnv":      "ID",
-				"clientSecretEnv":  "SECRET",
-				"maxResponseBytes": "2048",
+				"bindingKeys":           "other|capability",
+				"authScheme-other":      "basic",
+				"usernameEnv-other":     "U",
+				"passwordEnv-other":     "P",
+				"headerName-other":      "X-Key",
+				"headerValueEnv-other":  "V",
+				"queryName-other":       "q",
+				"queryValueEnv-other":   "Q",
+				"tokenUrl-other":        "https://issuer.invalid/token",
+				"clientIdEnv-other":     "ID",
+				"clientSecretEnv-other": "SECRET",
+				"maxResponseBytes":      "2048",
 			},
 			expected: &KnowledgeAdvisory.Config{
-				BindingKeys:      []string{"other|capability"},
-				AuthScheme:       "basic",
-				UsernameEnv:      "U",
-				PasswordEnv:      "P",
-				HeaderName:       "X-Key",
-				HeaderValueEnv:   "V",
-				QueryName:        "q",
-				QueryValueEnv:    "Q",
-				TokenURL:         "https://issuer.invalid/token",
-				ClientIDEnv:      "ID",
-				ClientSecretEnv:  "SECRET",
+				BindingKeys: []string{"other|capability"},
+				Auth: map[string]*upstream.Auth{
+					"other": {
+						Provider:        "other",
+						Scheme:          "basic",
+						UsernameEnv:     "U",
+						PasswordEnv:     "P",
+						HeaderName:      "X-Key",
+						HeaderValueEnv:  "V",
+						QueryName:       "q",
+						QueryValueEnv:   "Q",
+						TokenURL:        "https://issuer.invalid/token",
+						ClientIDEnv:     "ID",
+						ClientSecretEnv: "SECRET",
+					},
+				},
 				MaxResponseBytes: 2048,
 			},
 		},
@@ -108,7 +207,7 @@ func TestParseConfig(t *testing.T) {
 			// unset variable produces this, and it should read as "unset".
 			name:     "treats an empty response cap as unset",
 			config:   map[string]string{"maxResponseBytes": ""},
-			expected: &KnowledgeAdvisory.Config{},
+			expected: &KnowledgeAdvisory.Config{Auth: map[string]*upstream.Auth{}},
 		},
 	}
 
