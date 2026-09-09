@@ -61,7 +61,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 			}
 		}
 	}
-	return nil, model.NewCodedErr(http.StatusBadGateway, codeUpstreamUnavailable,
+	return nil, model.NewCodedErr(http.StatusBadGateway, httputil.CodeUpstreamUnavailable,
 		fmt.Errorf("provider did not answer after %d attempts: %w", attempts, lastErr))
 }
 

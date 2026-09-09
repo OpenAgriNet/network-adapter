@@ -15,8 +15,8 @@ func Explain(body []byte) string {
 	// Collapse whitespace: indented JSON or an HTML error page should not
 	// spread one failure over forty log lines.
 	text = strings.Join(strings.Fields(text), " ")
-	if len(text) > explainLimit {
-		return text[:explainLimit] + "... (truncated)"
+	if len(text) > ExplainLimit {
+		return text[:ExplainLimit] + "... (truncated)"
 	}
 	return text
 }

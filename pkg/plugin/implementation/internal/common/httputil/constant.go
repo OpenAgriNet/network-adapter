@@ -1,8 +1,13 @@
-// Constants for the call and its retry budget.
+// Every constant this machinery uses, in one file.
 //
-// Here rather than in common's constant.go because the code that reads them
-// is here, and common imports this package -- so a shared file would be an
-// import cycle.
+// Here rather than in common because common imports this package: a constant
+// read by anything under httputil could not live in common without an import
+// cycle, and splitting them across two files put the auth schemes in one place
+// and the retry budget in another.
+//
+// The consequence is that the package name undersells the contents -- the auth
+// schemes and the redaction marker are not about HTTP plumbing. One file that
+// can be found beats two that are each in the right place.
 package httputil
 
 import (
@@ -37,4 +42,40 @@ const (
 
 // How much of a failed response is quoted: enough for the provider's message,
 // not a page of HTML in a log line.
-const explainLimit = 300
+const ExplainLimit = 300
+
+// DefaultMaxResponseBytes caps what is read from a provider. The response is
+// mapped in memory, so an unbounded one is an unbounded allocation.
+const DefaultMaxResponseBytes = 4 << 20 // 4 MiB
+
+// RedactedMarker stands in for a credential in anything logged or returned.
+const RedactedMarker = "REDACTED"
+
+// Auth schemes a step can present. Credentials are never in config or in the
+// registry: config names the environment variable to read.
+const (
+	AuthSchemeNone   = "none"
+	AuthSchemeBasic  = "basic"
+	AuthSchemeHeader = "header"
+	// The credential goes in the query string, which some upstreams require.
+	// The least safe scheme -- proxies log query strings and transport errors
+	// quote them -- so the value is redacted. See redact.
+	AuthSchemeQuery = "query"
+
+	// A client id and secret are exchanged for a short-lived bearer token. For
+	// an upstream where a static token is not an option: the live one this was
+	// written against expires every ten hours.
+	//
+	// Only client_credentials. That grant has no user to redirect and no
+	// refresh token, so the other flows would be dead code.
+	AuthSchemeOAuth2 = "oauth2"
+)
+
+// CodeUpstreamUnavailable: the provider could not be reached or failed. Not
+// this adapter's fault and not the caller's.
+const CodeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
+
+// How early an oauth2 token stops being trusted. Must exceed the round trip to
+// the provider, so a request that passed the expiry check cannot arrive after
+// the token died. Costs one extra exchange per lifetime.
+const TokenRefreshSkew = 60 * time.Second

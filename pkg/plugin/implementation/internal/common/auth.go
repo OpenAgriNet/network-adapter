@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
 )
 
 // AuthProfile is how ONE provider's credentials are presented upstream.
@@ -68,23 +69,23 @@ type authenticator struct {
 // names the provider, since several profiles share one step.
 func (a *AuthProfile) validate() error {
 	switch a.Scheme {
-	case AuthSchemeNone:
-	case AuthSchemeBasic:
+	case httputil.AuthSchemeNone:
+	case httputil.AuthSchemeBasic:
 		if a.UsernameEnv == "" || a.PasswordEnv == "" {
 			return fmt.Errorf(
 				"%s: authScheme basic requires usernameEnv and passwordEnv", a.Provider)
 		}
-	case AuthSchemeHeader:
+	case httputil.AuthSchemeHeader:
 		if a.HeaderName == "" || a.HeaderValueEnv == "" {
 			return fmt.Errorf(
 				"%s: authScheme header requires headerName and headerValueEnv", a.Provider)
 		}
-	case AuthSchemeQuery:
+	case httputil.AuthSchemeQuery:
 		if a.QueryName == "" || a.QueryValueEnv == "" {
 			return fmt.Errorf(
 				"%s: authScheme query requires queryName and queryValueEnv", a.Provider)
 		}
-	case AuthSchemeOAuth2:
+	case httputil.AuthSchemeOAuth2:
 		if a.TokenURL == "" || a.ClientIDEnv == "" || a.ClientSecretEnv == "" {
 			return fmt.Errorf(
 				"%s: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv",
@@ -207,20 +208,20 @@ func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames
 func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 	cfg := auth.cfg
 	switch cfg.Scheme {
-	case AuthSchemeBasic:
+	case httputil.AuthSchemeBasic:
 		username, password := os.Getenv(cfg.UsernameEnv), os.Getenv(cfg.PasswordEnv)
 		if username == "" || password == "" {
 			return s.missingCredential(req.Context(), cfg.Provider, "basic",
 				cfg.UsernameEnv+" and "+cfg.PasswordEnv)
 		}
 		req.SetBasicAuth(username, password)
-	case AuthSchemeHeader:
+	case httputil.AuthSchemeHeader:
 		value := os.Getenv(cfg.HeaderValueEnv)
 		if value == "" {
 			return s.missingCredential(req.Context(), cfg.Provider, "header", cfg.HeaderValueEnv)
 		}
 		req.Header.Set(cfg.HeaderName, value)
-	case AuthSchemeQuery:
+	case httputil.AuthSchemeQuery:
 		value := os.Getenv(cfg.QueryValueEnv)
 		if value == "" {
 			return s.missingCredential(req.Context(), cfg.Provider, "query", cfg.QueryValueEnv)
@@ -230,7 +231,7 @@ func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 		query := req.URL.Query()
 		query.Set(cfg.QueryName, value)
 		req.URL.RawQuery = query.Encode()
-	case AuthSchemeOAuth2:
+	case httputil.AuthSchemeOAuth2:
 		token, err := s.bearerToken(req.Context(), auth)
 		if err != nil {
 			return err
