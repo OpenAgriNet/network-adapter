@@ -62,19 +62,33 @@ import (
 // moves, deliberately, so this suite always tests against what schema-packs-v0.1
 // currently publishes rather than a snapshot that quietly falls behind.
 //
-// The cost of that: commit b76c9ad8a5 on this branch, titled "docs #5:
-// generate composed schema reference pages," silently dropped the
-// `not: anyOf: [...]` clause that makes an OnDemand resource reject
-// facilityType/location/address/services/capacity/publicContact/website/
-// source/lastUpdatedAt -- exactly the constraint
-// TestTheRequestResourceSatisfiesOnDemandMode exists to verify, and exactly
-// the constraint this plugin's whole design (see the package doc and
-// README's "Where the query lives") depends on. As of this writing that
-// regression is still on the branch tip, so a cold cache against this URL
-// FAILS TestTheRequestResourceSatisfiesOnDemandMode until upstream fixes it
-// forward -- see https://github.com/OpenAgriNet/network-specs/commits/schema-packs-v0.1.
-// That test failing red is this file's way of saying so; it is not this
-// repo's bug to silence.
+// The cost of that: the branch moves under this suite, so a change upstream
+// lands as a red build here on the next COLD cache -- CI always is, a
+// developer's machine usually is not. Two have happened so far, and they are
+// worth reading as the two shapes this takes.
+//
+// A constraint DROPPED. Commit b76c9ad8a5, titled "docs #5: generate composed
+// schema reference pages," silently removed the `not: anyOf: [...]` clause
+// that made an OnDemand resource reject facilityType/location/address/
+// services/capacity/publicContact/website/source/lastUpdatedAt. That was the
+// constraint this plugin's design leans on (see the package doc and README's
+// "Where the query lives"), and nothing here could restore it: the test that
+// asserted the forbid now asserts only that the fixture is a valid OnDemand
+// resource, and the convention is kept as a choice. See
+// dev_docs/schema-onDemand-forbid-removed.md.
+//
+// A constraint ADDED. AgricultureResource v0.1 later made subjectCategories
+// REQUIRED (it was optional), added "Facility" to its enum, and
+// AgricultureFacility now requires the list to contain "Facility". That one
+// this repo could and did satisfy: the mapping states
+// subjectCategories: ["Facility"] on every facility it answers with, and the
+// request fixture carries it too. See the mapping's own comment beside the
+// field.
+//
+// The rule for the next one: a red cold-cache run here is a question about
+// which of those two it is. If the pack asks for something this adapter can
+// state, state it. If the pack dropped something this adapter relies on, that
+// is not ours to silence -- say so in the test and in dev_docs.
 const (
 	packBase = "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema"
 

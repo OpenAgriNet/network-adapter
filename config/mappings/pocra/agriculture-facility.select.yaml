@@ -414,6 +414,16 @@ response: |
         "@context": $ctx,
         "@type": "openagrinet:AgricultureFacility",
         "informationMode": "Direct",
+        /* REQUIRED by AgricultureResource v0.1, and the AgricultureFacility
+           pack additionally requires this list to CONTAIN "Facility". It is
+           the pack's broad discovery category, deliberately coarse: the
+           concrete kind is facilityType below.
+
+           "Facility" alone. The pack permits further values to name the
+           agricultural domains a facility serves (Crop, Livestock, ...), and
+           POCRA states nothing about that for any item -- inventing one would
+           publish a guess as a governed discovery category. */
+        "subjectCategories": ["Facility"],
         "facilityType": $facilityType,
         "address": $address($item),
         "capacity": $capacity($item),

@@ -86,6 +86,7 @@ const selectRequest = `{
         "@context": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1/context.jsonld",
         "@type": "openagrinet:AgricultureFacility",
         "informationMode": "OnDemand",
+        "subjectCategories": ["Facility"],
         "supportedFacilityTypes": ["KrishiVigyanKendra"]
       }
     }],
