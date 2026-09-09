@@ -16,7 +16,7 @@ package AgricultureFacility_test
 // them: once over the network, then from disk. So the base URIs are the real,
 // dereferenceable ones,
 //
-//	https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1
+//	https://raw.githubusercontent.com/OpenAgriNet/network-specs/<commit>/schema/AgricultureFacility/v0.1
 //
 // the relative refs the pack writes ("../../AgricultureResource/v0.1/...")
 // resolve against them with no table to keep in step, and the beckn.io
@@ -54,11 +54,28 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The published pack. Pinned to the schema-packs-v0.1 ref rather than to a
-// moving default branch: a suite whose verdict depends on the day it ran is not
-// a conformance suite.
+// The published pack. Pinned to a COMMIT, not the schema-packs-v0.1 branch --
+// a suite whose verdict depends on the day it ran is not a conformance suite,
+// and a branch name in a raw.githubusercontent.com URL is not a pin at all:
+// it serves whatever that branch's tip currently is.
+//
+// That distinction is not academic. commit b76c9ad8a5 on schema-packs-v0.1,
+// titled "docs #5: generate composed schema reference pages," silently
+// dropped the `not: anyOf: [...]` clause that makes an OnDemand resource
+// reject facilityType/location/address/services/capacity/publicContact/
+// website/source/lastUpdatedAt -- exactly the constraint
+// TestTheRequestResourceSatisfiesOnDemandMode exists to verify, and exactly
+// the constraint this plugin's whole design (see the package doc and
+// README's "Where the query lives") depends on. A branch pin would have
+// picked that up silently on the next cold cache; this pin does not move
+// until a human reads the upstream diff and updates it.
+//
+// a39d2f3723 is the last commit before that regression. Bump this after
+// confirming the successor commit still carries the `not:` clause -- diff it
+// against https://github.com/OpenAgriNet/network-specs/commits/schema-packs-v0.1
+// -- rather than moving straight to the branch tip.
 const (
-	packBase = "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema"
+	packBase = "https://raw.githubusercontent.com/OpenAgriNet/network-specs/a39d2f372349401df5e4f5efd9e8b6992ae60d46/schema"
 
 	facilityPackURL = packBase + "/AgricultureFacility/v0.1/attributes.yaml"
 	resourcePackURL = packBase + "/AgricultureResource/v0.1/attributes.yaml"

@@ -399,7 +399,7 @@ modules:
               # silently lose a facility type with no error anywhere. Verify
               # against the live API before trusting this in production; drop
               # back to 1 if a multi-type search starts coming back short.
-              fanOutConcurrency: 4
+              fanOutConcurrency: 6
 
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
