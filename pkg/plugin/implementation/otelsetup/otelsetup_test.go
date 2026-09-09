@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/beckn-one/beckn-onix/pkg/plugin"
 	"github.com/beckn-one/beckn-onix/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -203,7 +204,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 		name           string
 		cfg            *Config
 		expectedID     string
-		expectedConfig map[string]string
+		expectedConfig plugin.Settings
 	}{
 		{
 			name: "Valid config with all fields",
@@ -220,7 +221,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 				TimeInterval:   5,
 			},
 			expectedID: "otelsetup",
-			expectedConfig: map[string]string{
+			expectedConfig: plugin.Settings{
 				"serviceName":       "test-service",
 				"serviceVersion":    "1.0.0",
 				"environment":       "test",
@@ -244,7 +245,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 				Environment:    "production",
 			},
 			expectedID: "otelsetup",
-			expectedConfig: map[string]string{
+			expectedConfig: plugin.Settings{
 				"serviceName":       "my-service",
 				"serviceVersion":    "2.0.0",
 				"environment":       "production",
@@ -271,7 +272,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 				OtlpEndpoint:   "",
 			},
 			expectedID: "otelsetup",
-			expectedConfig: map[string]string{
+			expectedConfig: plugin.Settings{
 				"serviceName":       "",
 				"serviceVersion":    "",
 				"environment":       "",
