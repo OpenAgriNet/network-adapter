@@ -34,7 +34,6 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/capabilitybinding"
 )
 
 // Prerequisites are the values a capability needs that its payload does not
@@ -105,7 +104,7 @@ type Config struct {
 // safe for concurrent use.
 type Step struct {
 	config        *Config
-	paths         capabilitybinding.Paths
+	paths         Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
 	mapper        definition.Mapper
@@ -168,19 +167,19 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 // Both halves or neither: overriding one and leaving the other on the default
 // is a half-configured deployment that would match nothing, and it would do so
 // silently on every request rather than once at startup.
-func bindingPaths(cfg *Config) (capabilitybinding.Paths, error) {
+func bindingPaths(cfg *Config) (Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
-		return capabilitybinding.BecknV2, nil
+		return BecknV2, nil
 	}
 	if cfg.ProviderIDAt == "" {
-		return capabilitybinding.Paths{}, errors.New("upstream: capabilityCodeAt is set without providerIdAt")
+		return Paths{}, errors.New("upstream: capabilityCodeAt is set without providerIdAt")
 	}
 	if cfg.CapabilityCodeAt == "" {
-		return capabilitybinding.Paths{}, errors.New("upstream: providerIdAt is set without capabilityCodeAt")
+		return Paths{}, errors.New("upstream: providerIdAt is set without capabilityCodeAt")
 	}
-	paths := capabilitybinding.Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
+	paths := Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
 	if err := paths.Validate(); err != nil {
-		return capabilitybinding.Paths{}, err
+		return Paths{}, err
 	}
 	return paths, nil
 }

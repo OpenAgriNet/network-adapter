@@ -13,7 +13,6 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/capabilitybinding"
 )
 
 // Run serves the request when it is for this step's capability, and does
@@ -23,8 +22,8 @@ import (
 // pipeline and each recognises its own work, so adding a provider is one more
 // entry rather than a change to a routing table.
 func (s *Step) Run(ctx *model.StepContext) error {
-	binding, err := capabilitybinding.From(s.paths, ctx.Body)
-	if errors.Is(err, capabilitybinding.ErrNoBinding) {
+	binding, err := bindingFrom(s.paths, ctx.Body)
+	if errors.Is(err, errNoBinding) {
 		return nil
 	}
 	if err != nil {
