@@ -132,14 +132,15 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 			// The old step-wide form. Refused rather than ignored: dropping it
 			// silently leaves every provider with no credential, which reads
 			// as the provider rejecting us.
-			if authFields[key] {
+			if _, isSetting := authFields[key]; isSetting {
 				return nil, fmt.Errorf(
 					"%q is set for the whole step; auth is per provider now, "+
 						"so it belongs in a block named for the participant id", key)
 			}
 			continue
 		}
-		if !authFields[field] {
+		set, isSetting := authFields[field]
+		if !isSetting {
 			// Nothing else on a provider step carries a dash, so this is a
 			// misspelling rather than a setting to pass through.
 			return nil, fmt.Errorf("%q is not a credential setting", key)
@@ -153,46 +154,32 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 			profile = &AuthProfile{Provider: provider}
 			profiles[provider] = profile
 		}
-		value := config[key]
-		switch field {
-		case "authScheme":
-			profile.Scheme = value
-		case "usernameEnv":
-			profile.UsernameEnv = value
-		case "passwordEnv":
-			profile.PasswordEnv = value
-		case "headerName":
-			profile.HeaderName = value
-		case "headerValueEnv":
-			profile.HeaderValueEnv = value
-		case "queryName":
-			profile.QueryName = value
-		case "queryValueEnv":
-			profile.QueryValueEnv = value
-		case "tokenUrl":
-			profile.TokenURL = value
-		case "clientIdEnv":
-			profile.ClientIDEnv = value
-		case "clientSecretEnv":
-			profile.ClientSecretEnv = value
-		}
+		set(profile, config[key])
 	}
 	return profiles, nil
 }
 
-// authFields is the closed set of per-provider settings. Closed on purpose: it
-// makes the dash split decidable and turns a misspelling into a startup error.
-var authFields = map[string]bool{
-	"authScheme":      true,
-	"usernameEnv":     true,
-	"passwordEnv":     true,
-	"headerName":      true,
-	"headerValueEnv":  true,
-	"queryName":       true,
-	"queryValueEnv":   true,
-	"tokenUrl":        true,
-	"clientIdEnv":     true,
-	"clientSecretEnv": true,
+// authFields maps each per-provider setting to the field it fills.
+//
+// ONE list, not two. The name and the assignment used to sit apart -- a switch
+// in ParseProviderAuth and a set of valid names here -- and the two had to stay
+// in sync by hand. Forgetting the switch was the silent direction: the setting
+// parsed, validated, and was discarded, leaving a provider on a credential the
+// operator thought they had configured.
+//
+// Being the whole vocabulary, this is also what makes the dash split decidable
+// and turns a misspelled setting into a startup error.
+var authFields = map[string]func(*AuthProfile, string){
+	"authScheme":      func(p *AuthProfile, v string) { p.Scheme = v },
+	"usernameEnv":     func(p *AuthProfile, v string) { p.UsernameEnv = v },
+	"passwordEnv":     func(p *AuthProfile, v string) { p.PasswordEnv = v },
+	"headerName":      func(p *AuthProfile, v string) { p.HeaderName = v },
+	"headerValueEnv":  func(p *AuthProfile, v string) { p.HeaderValueEnv = v },
+	"queryName":       func(p *AuthProfile, v string) { p.QueryName = v },
+	"queryValueEnv":   func(p *AuthProfile, v string) { p.QueryValueEnv = v },
+	"tokenUrl":        func(p *AuthProfile, v string) { p.TokenURL = v },
+	"clientIdEnv":     func(p *AuthProfile, v string) { p.ClientIDEnv = v },
+	"clientSecretEnv": func(p *AuthProfile, v string) { p.ClientSecretEnv = v },
 }
 
 // providerIDFrom returns the provider half of "<participantId>|<capabilityCode>".
