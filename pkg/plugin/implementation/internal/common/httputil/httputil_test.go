@@ -32,9 +32,9 @@ func TestExplainTruncatesAndHandlesAnEmptyBody(t *testing.T) {
 	if got := Explain(nil); got != "(no body)" {
 		t.Errorf("Explain(nil) = %q, want a marker rather than an empty string", got)
 	}
-	long := Explain([]byte(strings.Repeat("x", explainLimit+50)))
-	if len(long) > explainLimit+len("... (truncated)") {
-		t.Errorf("explain kept %d characters, want it truncated near %d", len(long), explainLimit)
+	long := Explain([]byte(strings.Repeat("x", ExplainLimit+50)))
+	if len(long) > ExplainLimit+len("... (truncated)") {
+		t.Errorf("explain kept %d characters, want it truncated near %d", len(long), ExplainLimit)
 	}
 	if !strings.HasSuffix(long, "(truncated)") {
 		t.Errorf("a truncated body should say so, got %q", long[len(long)-20:])

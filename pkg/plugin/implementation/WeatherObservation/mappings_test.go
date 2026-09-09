@@ -24,6 +24,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
@@ -149,7 +150,7 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 			// Auth is per provider; these upstreams are stubs needing
 			// no credential, and that is declared rather than defaulted.
 			AuthByProvider: map[string]*common.AuthProfile{
-				strings.Split(shippedBindingKey, "|")[0]: {Scheme: common.AuthSchemeNone},
+				strings.Split(shippedBindingKey, "|")[0]: {Scheme: httputil.AuthSchemeNone},
 			},
 		})
 	if err != nil {

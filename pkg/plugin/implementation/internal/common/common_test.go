@@ -149,7 +149,7 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	// refused at startup. Filled in after the tweaks, because a tweak may
 	// replace BindingKeys and the profile has to follow.
 	if len(cfg.AuthByProvider) == 0 {
-		cfg.setProviderAuth(AuthProfile{Scheme: AuthSchemeNone})
+		cfg.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeNone})
 	}
 	step, closer, err := New(context.Background(), registry, mapper, nil, cfg)
 	if err != nil {
@@ -186,26 +186,26 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 		config *Config
 		valid  bool
 	}{
-		{"none, declared", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeNone})}, true},
+		{"none, declared", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeNone})}, true},
 		{"no profile at all for a served provider", &Config{}, false},
 		{"an empty scheme", &Config{AuthByProvider: authForTestProvider(AuthProfile{})}, false},
-		{"basic with both variables", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "U", PasswordEnv: "P"})}, true},
-		{"basic missing the password variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "U"})}, false},
-		{"basic missing the username variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeBasic, PasswordEnv: "P"})}, false},
-		{"header with both settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeHeader, HeaderName: "X-Key", HeaderValueEnv: "V"})}, true},
-		{"header missing the value variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeHeader, HeaderName: "X-Key"})}, false},
-		{"query with both settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "t", QueryValueEnv: "V"})}, true},
+		{"basic with both variables", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "U", PasswordEnv: "P"})}, true},
+		{"basic missing the password variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "U"})}, false},
+		{"basic missing the username variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeBasic, PasswordEnv: "P"})}, false},
+		{"header with both settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeHeader, HeaderName: "X-Key", HeaderValueEnv: "V"})}, true},
+		{"header missing the value variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeHeader, HeaderName: "X-Key"})}, false},
+		{"query with both settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "t", QueryValueEnv: "V"})}, true},
 		{"an unknown scheme", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: "oauth"})}, false},
-		{"oauth2 with all three settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeOAuth2,
+		{"oauth2 with all three settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeOAuth2,
 			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID", ClientSecretEnv: "SECRET"})}, true},
-		{"oauth2 missing the token url", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeOAuth2,
+		{"oauth2 missing the token url", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeOAuth2,
 			ClientIDEnv: "ID", ClientSecretEnv: "SECRET"})}, false},
-		{"oauth2 missing the client id variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeOAuth2,
+		{"oauth2 missing the client id variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeOAuth2,
 			TokenURL: "https://issuer.invalid/token", ClientSecretEnv: "SECRET"})}, false},
-		{"oauth2 missing the client secret variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeOAuth2,
+		{"oauth2 missing the client secret variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeOAuth2,
 			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID"})}, false},
 		{"a profile for a provider not in bindingKeys", &Config{
-			AuthByProvider: map[string]*AuthProfile{"someone-else": {Scheme: AuthSchemeNone}}}, false},
+			AuthByProvider: map[string]*AuthProfile{"someone-else": {Scheme: httputil.AuthSchemeNone}}}, false},
 	}
 
 	for _, tc := range testCases {
@@ -339,7 +339,7 @@ func TestRunDoesNotRetryAMissingCredential(t *testing.T) {
 	}
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper, func(c *Config) {
-		c.setProviderAuth(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_ABSENT_USER_FOR_RETRY", PasswordEnv: "TEST_ABSENT_PASS_FOR_RETRY"})
+		c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "TEST_ABSENT_USER_FOR_RETRY", PasswordEnv: "TEST_ABSENT_PASS_FOR_RETRY"})
 	})
 
 	_, err := runStep(t, step, selectBody)
@@ -523,7 +523,7 @@ func TestRunRedactsACredentialEchoedInABody(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
 		func(c *Config) {
-			c.setProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_ECHO_TOKEN"})
+			c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_ECHO_TOKEN"})
 		})
 
 	_, err := runStep(t, step, selectBody)
@@ -567,7 +567,7 @@ func TestRunSendsTheCredentialAsAQueryParameter(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{"statecode":"CG"}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
 		func(c *Config) {
-			c.setProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
+			c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -597,7 +597,7 @@ func TestRunRedactsAQueryCredentialFromAnError(t *testing.T) {
 	}
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper, func(c *Config) {
-		c.setProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
+		c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	})
 
 	_, err := runStep(t, step, selectBody)
@@ -619,7 +619,7 @@ func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_MANDI_TOKEN", "s3cr3t")
 
-	step := stepWithProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
+	step := stepWithProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	got := step.redactString("http://host/v1/x?statecode=CG&token=s3cr3t")
 	if strings.Contains(got, "s3cr3t") {
 		t.Errorf("the credential survived redaction: %s", got)
@@ -629,7 +629,7 @@ func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	}
 
 	// Any other scheme has nothing to hide in a URL, so the text is untouched.
-	plain := stepWithProviderAuth(AuthProfile{Scheme: AuthSchemeNone})
+	plain := stepWithProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeNone})
 	if out := plain.redactString("http://host/v1/x?statecode=CG"); out != "http://host/v1/x?statecode=CG" {
 		t.Errorf("a url with no credential must pass through unchanged, got %q", out)
 	}
@@ -645,7 +645,7 @@ func TestRedactStringRemovesThePercentEncodedCredential(t *testing.T) {
 	const token = "a+b/c=d e" // every character Encode treats specially
 	t.Setenv("TEST_MANDI_TOKEN", token)
 
-	step := stepWithProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
+	step := stepWithProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 
 	// Exactly how the credential appears once authenticate has run: Encode
 	// escapes it, so this is the string a transport error quotes.
@@ -671,7 +671,7 @@ func TestRedactStringStillRemovesAnUnescapedCredential(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_MANDI_TOKEN", "plaintoken123")
 
-	step := stepWithProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
+	step := stepWithProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	got := step.redactString("http://host/v1/x?token=plaintoken123")
 	if strings.Contains(got, "plaintoken123") {
 		t.Errorf("the credential survived redaction: %s", got)
@@ -688,9 +688,9 @@ func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
 		cfg  *Config
 	}{
 		{"no queryName", &Config{BindingKeys: []string{testBindingKey},
-			AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeQuery, QueryValueEnv: "TEST_MANDI_TOKEN"})}},
+			AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryValueEnv: "TEST_MANDI_TOKEN"})}},
 		{"no queryValueEnv", &Config{BindingKeys: []string{testBindingKey},
-			AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token"})}},
+			AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token"})}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1101,7 +1101,7 @@ func TestNewRefusesAHalfConfiguredOverride(t *testing.T) {
 	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{
 		BindingKeys:    []string{testBindingKey},
 		ProviderIDAt:   "who.provider",
-		AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeNone}),
+		AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeNone}),
 	})
 	if err == nil {
 		t.Fatal("expected one path without the other to be refused")
@@ -1350,7 +1350,7 @@ func TestRunPresentsBasicCredentialsFromTheEnvironment(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.setProviderAuth(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_USER", PasswordEnv: "TEST_MAUSAMGRAM_KEY"})
+			c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_USER", PasswordEnv: "TEST_MAUSAMGRAM_KEY"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -1374,7 +1374,7 @@ func TestRunPresentsAHeaderCredentialFromTheEnvironment(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.setProviderAuth(AuthProfile{Scheme: AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_MAUSAMGRAM_TOKEN"})
+			c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_MAUSAMGRAM_TOKEN"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -1396,7 +1396,7 @@ func TestRunFailsWhenAConfiguredCredentialIsAbsent(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.setProviderAuth(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_ABSENT_USER", PasswordEnv: "TEST_MAUSAMGRAM_ABSENT_KEY"})
+			c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_ABSENT_USER", PasswordEnv: "TEST_MAUSAMGRAM_ABSENT_KEY"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err == nil {
@@ -1595,7 +1595,7 @@ func TestRedactKeepsTheErrorChainMatchable(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_CHAIN_TOKEN", "s3cr3t")
 
-	step := stepWithProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN"})
+	step := stepWithProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN"})
 
 	// The shape net/http produces: the cause wrapped behind text that quotes
 	// the whole URL, credential and all.
@@ -1629,7 +1629,7 @@ func TestRedactLeavesAnUnchangedErrorAlone(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_CHAIN_TOKEN_2", "s3cr3t")
 
-	step := stepWithProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN_2"})
+	step := stepWithProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN_2"})
 	original := errors.New("nothing sensitive here")
 	if got := step.redact(original); got != original {
 		t.Errorf("redact returned a different error for text it did not change: %v", got)
@@ -1718,7 +1718,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "basic, the wire form a gateway echoes",
 			tweak: func(c *Config) {
-				c.setProviderAuth(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
+				c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 			},
 			body:   `{"error":"invalid Authorization: Basic ` + wire + `"}`,
 			secret: wire,
@@ -1726,7 +1726,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "basic, the password quoted raw",
 			tweak: func(c *Config) {
-				c.setProviderAuth(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
+				c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 			},
 			body:   `{"error":"bad password s3cr3t"}`,
 			secret: "s3cr3t",
@@ -1734,7 +1734,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "header, the value as sent",
 			tweak: func(c *Config) {
-				c.setProviderAuth(AuthProfile{Scheme: AuthSchemeHeader, HeaderName: "X-API-Key", HeaderValueEnv: "TEST_HDR"})
+				c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeHeader, HeaderName: "X-API-Key", HeaderValueEnv: "TEST_HDR"})
 			},
 			body:   `{"error":"bad X-API-Key: hdr-k3y"}`,
 			secret: "hdr-k3y",
@@ -1742,7 +1742,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "query, still covered, raw form",
 			tweak: func(c *Config) {
-				c.setProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
+				c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
 			},
 			body:   `{"rejected":"token=a+b/c="}`,
 			secret: "a+b/c=",
@@ -1750,7 +1750,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "query, still covered, percent-encoded form",
 			tweak: func(c *Config) {
-				c.setProviderAuth(AuthProfile{Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
+				c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
 			},
 			body:   `{"rejected":"token=` + url.QueryEscape("a+b/c=") + `"}`,
 			secret: url.QueryEscape("a+b/c="),
@@ -1766,7 +1766,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 			if strings.Contains(logged, tc.secret) {
 				t.Errorf("the credential survives into the log line: %s", logged)
 			}
-			if !strings.Contains(logged, redactedMarker) {
+			if !strings.Contains(logged, httputil.RedactedMarker) {
 				t.Errorf("logged = %q, want the credential replaced", logged)
 			}
 		})
@@ -1784,7 +1784,7 @@ func TestRedactStringLeavesTheBasicUsername(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.setProviderAuth(AuthProfile{Scheme: AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
+			c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 		})
 
 	got := step.redactString(`user mausam failed to authenticate with s3cr3t`)
@@ -1799,7 +1799,7 @@ func TestRedactStringLeavesTheBasicUsername(t *testing.T) {
 // Nothing configured, nothing to hide: an unset credential must not turn every
 // empty string in the text into a redaction marker.
 func TestRedactStringWithNoCredentialConfigured(t *testing.T) {
-	for _, scheme := range []string{AuthSchemeNone, AuthSchemeBasic, AuthSchemeHeader, AuthSchemeQuery} {
+	for _, scheme := range []string{httputil.AuthSchemeNone, httputil.AuthSchemeBasic, httputil.AuthSchemeHeader, httputil.AuthSchemeQuery} {
 		t.Run(scheme, func(t *testing.T) {
 			const text = `{"error":"provider said no"}`
 			step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
@@ -1847,7 +1847,7 @@ func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
 	step, closer, err := New(context.Background(),
 		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
 		&Config{BindingKeys: []string{testBindingKey},
-			AuthByProvider: authForTestProvider(AuthProfile{Scheme: AuthSchemeNone})})
+			AuthByProvider: authForTestProvider(AuthProfile{Scheme: httputil.AuthSchemeNone})})
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
 	}
@@ -2014,7 +2014,7 @@ func oauth2Step(t *testing.T, tokenURL string, seen *[]string) *Step {
 	return newStep(t, &stubRegistry{plan: testPlan(provider.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"a":1}`)},
 		func(c *Config) {
-			c.setProviderAuth(AuthProfile{Scheme: AuthSchemeOAuth2, TokenURL: tokenURL, ClientIDEnv: "TEST_OAUTH_ID", ClientSecretEnv: "TEST_OAUTH_SECRET"})
+			c.setProviderAuth(AuthProfile{Scheme: httputil.AuthSchemeOAuth2, TokenURL: tokenURL, ClientIDEnv: "TEST_OAUTH_ID", ClientSecretEnv: "TEST_OAUTH_SECRET"})
 		})
 }
 
@@ -2179,7 +2179,7 @@ func TestOAuth2RedactsTheSecretAndTheToken(t *testing.T) {
 		if strings.Contains(got, secret) {
 			t.Errorf("%q survived redaction: %s", secret, got)
 		}
-		if !strings.Contains(got, redactedMarker) {
+		if !strings.Contains(got, httputil.RedactedMarker) {
 			t.Errorf("nothing was redacted from %q", got)
 		}
 	}

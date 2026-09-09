@@ -113,7 +113,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 		return "", 0, s.tokenErr(fmt.Errorf("token response from %s carries no access_token",
 			cfg.TokenURL))
 	}
-	lifetime, ok := tokenLifetime(parsed.ExpiresIn, tokenRefreshSkew)
+	lifetime, ok := tokenLifetime(parsed.ExpiresIn, httputil.TokenRefreshSkew)
 	if !ok {
 		return "", 0, s.tokenErr(fmt.Errorf(
 			"token response from %s carries no usable expires_in, so its lifetime is unknown",
@@ -125,7 +125,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 // tokenErr classifies a failed exchange. Always 502: the failure is the
 // issuer's, never the caller's.
 func (s *Step) tokenErr(err error) error {
-	return model.NewCodedErr(http.StatusBadGateway, codeUpstreamUnavailable,
+	return model.NewCodedErr(http.StatusBadGateway, httputil.CodeUpstreamUnavailable,
 		fmt.Errorf("oauth2 token exchange failed: %w", err))
 }
 
