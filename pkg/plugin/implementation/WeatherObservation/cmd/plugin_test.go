@@ -10,7 +10,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 )
 
 type stubRegistry struct{}
@@ -41,7 +41,7 @@ func TestParseConfig(t *testing.T) {
 			// rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &WeatherObservation.Config{AuthByProvider: map[string]*upstream.AuthProfile{}},
+			expected: &WeatherObservation.Config{AuthByProvider: map[string]*common.AuthProfile{}},
 		},
 		{
 			name: "reads every supported setting",
@@ -56,7 +56,7 @@ func TestParseConfig(t *testing.T) {
 			},
 			expected: &WeatherObservation.Config{
 				BindingKeys: []string{"other|capability"},
-				AuthByProvider: map[string]*upstream.AuthProfile{
+				AuthByProvider: map[string]*common.AuthProfile{
 					"other": {
 						Provider:       "other",
 						Scheme:         "basic",

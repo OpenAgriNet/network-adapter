@@ -1,5 +1,5 @@
 // Keeping credentials out of anything this package logs or returns.
-package upstream
+package common
 
 import (
 	"encoding/base64"

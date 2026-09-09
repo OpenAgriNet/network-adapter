@@ -15,7 +15,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
-	upstreamstep "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
@@ -103,7 +103,7 @@ func TestLiveEndToEnd(t *testing.T) {
 	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), registry, mapper,
 		&KnowledgeAdvisory.Config{
 			BindingKeys: []string{key},
-			AuthByProvider: map[string]*upstreamstep.AuthProfile{
+			AuthByProvider: map[string]*common.AuthProfile{
 				strings.Split(key, "|")[0]: {
 					Scheme:          "oauth2",
 					TokenURL:        issuer.URL + "/token",

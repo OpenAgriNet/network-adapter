@@ -1,0 +1,57 @@
+openapi: 3.1.1
+info:
+  title: GeoJSONGeometry
+  version: 2.0.0
+  description: "Container schemas fetched from beckn.yaml. This cannot be extended as it is a reserved schema in beckn protocol. Any additional properties added to this schema can only be made using its *Attributes property"
+  license:
+    name: CC-BY-NC-SA 4.0 International
+  contact:
+    name: Beckn Labs
+    url: https://beckn.io
+components:
+  schemas:
+    GeoJSONGeometry:
+      x-iri: https://schema.nfh.global/GeoJSONGeometry/v2.0
+      description: "**GeoJSON geometry** per RFC 7946. Coordinates are in **EPSG:4326\
+        \ (WGS-84)** and MUST follow **[longitude, latitude, (altitude?)]** order. \
+        Supported types: - Point, LineString, Polygon - MultiPoint, MultiLineString,\
+        \ MultiPolygon - GeometryCollection (uses `geometries` instead of `coordinates`) \
+        Notes: - For rectangles, use a Polygon with a single linear ring where the\
+        \ first  and last positions are identical. - Circles are **not native**\
+        \ to GeoJSON. For circular searches, use  `SpatialConstraint` with `op: s_dwithin`\
+        \ and a Point + `distanceMeters`,  or approximate the circle as a Polygon. \
+        - Optional `bbox` is `[west, south, east, north]` in degrees."
+      title: GeoJSONGeometry
+      type: object
+      properties:
+        bbox:
+          description: Optional bounding box `[west, south, east, north]` in degrees.
+          type: array
+          minItems: 4
+          maxItems: 4
+          items:
+            type: number
+        coordinates:
+          description: Coordinates per RFC 7946 for all types **except** GeometryCollection.
+            Order is **[lon, lat, (alt)]**. For Polygons, this is an array of linear
+            rings; each ring is an array of positions.
+          type: array
+          items: {}
+        geometries:
+          description: Member geometries when `type` is **GeometryCollection**.
+          type: array
+          items:
+            $ref: https://schema.nfh.global/GeoJSONGeometry/v2.0/attributes.yaml#/components/schemas/GeoJSONGeometry
+        type:
+          type: string
+          enum:
+          - Point
+          - LineString
+          - Polygon
+          - MultiPoint
+          - MultiLineString
+          - MultiPolygon
+          - GeometryCollection
+      required:
+      - type
+      additionalProperties: true

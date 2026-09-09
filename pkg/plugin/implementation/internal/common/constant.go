@@ -3,7 +3,7 @@
 //
 // authFields is deliberately NOT here. It is a var -- Go has no constant maps --
 // and it belongs beside the parser in auth.go that reads it.
-package upstream
+package common
 
 import (
 	"time"

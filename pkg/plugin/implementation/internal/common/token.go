@@ -1,5 +1,5 @@
 // The oauth2 client_credentials exchange and the token each provider holds.
-package upstream
+package common
 
 import (
 	"context"

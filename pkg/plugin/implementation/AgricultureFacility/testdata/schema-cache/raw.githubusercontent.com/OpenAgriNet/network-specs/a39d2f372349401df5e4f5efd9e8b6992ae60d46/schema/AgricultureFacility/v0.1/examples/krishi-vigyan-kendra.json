@@ -1,0 +1,34 @@
+{
+  "@context": "https://openagrinet.github.io/network-specs/schema/AgricultureFacility/v0.1/context.jsonld",
+  "@type": "openagrinet:AgricultureFacility",
+  "informationMode": "Direct",
+  "languages": [
+    "en",
+    "hi",
+    "mr"
+  ],
+  "facilityType": "KrishiVigyanKendra",
+  "address": {
+    "streetAddress": "Krishi Vigyan Kendra, PO Babhleshwar",
+    "addressLocality": "Babhleshwar",
+    "addressRegion": "Maharashtra",
+    "postalCode": "413737",
+    "addressCountry": "IN",
+    "extendedAddress": "Rahata, Ahmednagar district"
+  },
+  "services": [
+    {
+      "code": "FARM_ADVISORY",
+      "name": "Farm advisory"
+    },
+    {
+      "code": "FARMER_TRAINING",
+      "name": "Farmer training"
+    }
+  ],
+  "source": {
+    "sourceId": "provider:agriculture-common-services",
+    "sourceName": "Agriculture Common Services Provider"
+  },
+  "lastUpdatedAt": "2026-08-29T00:00:00Z"
+}

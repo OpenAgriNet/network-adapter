@@ -1,0 +1,197 @@
+openapi: 3.1.1
+info:
+  title: OpenAgriNet - Agriculture Resource Attributes
+  version: 0.1.0
+  description: >
+    Shared agriculture attributes for information published on OpenAgriNet.
+    Attaches to beckn:Resource through resourceAttributes.
+
+components:
+  schemas:
+    AgricultureResource:
+      type: object
+      x-beckn-container: resourceAttributes
+      x-jsonld:
+        "@context": "https://openagrinet.github.io/network-specs/schema/AgricultureResource/v0.1/context.jsonld"
+        "@type": openagrinet:AgricultureResource
+      required: [informationMode]
+      properties:
+        informationMode:
+          type: string
+          enum: [OnDemand, Direct]
+          description: Whether obtaining specific information requires a Provider invocation or the Resource already contains or directly references that information.
+          x-jsonld-id: "openagrinet:informationMode"
+        subjectCategories:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Optional broad agricultural subjects used for discovery. The Resource type is expressed by @type, not repeated here.
+          items:
+            type: string
+            enum: [Crop, Livestock, Weather, Market, Scheme, Practice]
+          x-jsonld-id: "openagrinet:subjectCategories"
+        agricultureSubjects:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Optional governed subjects such as a named crop, livestock species, pest, or scheme. Absence means the Resource applies broadly within subjectCategories.
+          items:
+            $ref: "#/components/schemas/AgricultureSubjectReference"
+          x-jsonld-id: "openagrinet:agricultureSubjects"
+        languages:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: BCP 47 language tags supported by or present in the Resource.
+          items:
+            type: string
+            minLength: 2
+          x-jsonld-id: "openagrinet:languages"
+        coverageAreas:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Geographic areas within which the Resource applies. Each item is either an administrative area reference or a GeoJSON geometry.
+          items:
+            oneOf:
+              - $ref: "#/components/schemas/AdministrativeAreaReference"
+              - $ref: "#/components/schemas/CompleteGeoJSONGeometry"
+          x-jsonld-id: "openagrinet:coverageAreas"
+
+    AdministrativeAreaReference:
+      type: object
+      description: A governed administrative or postal area identified within a stated code system. Use a GeoJSON geometry instead when coverage is defined by coordinates.
+      required: [codeScheme, areaCode]
+      properties:
+        codeScheme:
+          type: string
+          minLength: 1
+          description: Geographic code system, such as ISO-3166-1, ISO-3166-2, LGD, or IN-PIN.
+          x-jsonld-id: "openagrinet:areaCodeScheme"
+        areaCode:
+          type: string
+          minLength: 1
+          description: Area identifier in the stated scheme.
+          x-jsonld-id: "openagrinet:areaCode"
+        areaLevel:
+          type: string
+          enum: [Country, State, District, Block, Village, PostalCode, Other]
+          description: Administrative or postal level represented by the code when known.
+          x-jsonld-id: "openagrinet:areaLevel"
+        areaName:
+          type: string
+          minLength: 1
+          description: Optional human-readable area name.
+          x-jsonld-id: "openagrinet:areaName"
+      additionalProperties: false
+
+    AgricultureSubjectReference:
+      type: object
+      description: Stable reference to a governed agriculture subject and its human-readable Beckn descriptor.
+      required: [subjectId, subjectType, descriptor]
+      properties:
+        subjectId:
+          type: string
+          format: uri
+          description: Stable identifier from a governed agriculture taxonomy.
+          x-jsonld-id: "openagrinet:subjectId"
+        subjectType:
+          type: string
+          enum: [Crop, Livestock, Commodity, Pest, Disease, Practice, Scheme, Market]
+          description: Kind of agricultural subject referenced by subjectId.
+          x-jsonld-id: "openagrinet:subjectType"
+        descriptor:
+          $ref: "#/components/schemas/IdentifiedDescriptor"
+          description: Beckn descriptor carrying the governed code and display name.
+          x-jsonld-id: "https://schema.beckn.io/descriptor"
+      additionalProperties: false
+
+    SourceReference:
+      type: object
+      description: Reference to the authoritative upstream source of information.
+      required: [sourceId]
+      properties:
+        sourceId:
+          type: string
+          minLength: 1
+          description: Stable identifier of the upstream source.
+          x-jsonld-id: "openagrinet:sourceId"
+        sourceName:
+          type: string
+          minLength: 1
+          description: Human-readable source name.
+          x-jsonld-id: "openagrinet:sourceName"
+        sourceUri:
+          type: string
+          format: uri
+          description: Authoritative public or Provider-supplied source URI.
+          x-jsonld-id: "openagrinet:sourceUri"
+      additionalProperties: false
+
+    TimePeriod:
+      type: object
+      description: Inclusive validity or applicability period.
+      minProperties: 1
+      properties:
+        startsAt:
+          type: string
+          format: date-time
+          description: Start of the period.
+          x-jsonld-id: "openagrinet:startsAt"
+        endsAt:
+          type: string
+          format: date-time
+          description: End of the period.
+          x-jsonld-id: "openagrinet:endsAt"
+      additionalProperties: false
+
+    ClosedTimePeriod:
+      allOf:
+        - $ref: "#/components/schemas/TimePeriod"
+        - type: object
+          required: [startsAt, endsAt]
+      description: A bounded applicability period with both start and end timestamps. Conformance also verifies that startsAt is not after endsAt.
+
+    IdentifiedDescriptor:
+      allOf:
+        - $ref: "https://schema.beckn.io/Descriptor/v2.1/attributes.yaml#/components/schemas/Descriptor"
+        - type: object
+          anyOf:
+            - required: [code]
+            - required: [name]
+      description: A Beckn Descriptor with at least a machine-readable code or human-readable name.
+
+    CompleteGeoJSONGeometry:
+      allOf:
+        - $ref: "https://schema.beckn.io/GeoJSONGeometry/v2.0/attributes.yaml#/components/schemas/GeoJSONGeometry"
+        - oneOf:
+            - type: object
+              properties:
+                type:
+                  const: GeometryCollection
+              required: [type, geometries]
+            - type: object
+              properties:
+                type:
+                  enum: [Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon]
+              required: [type, coordinates]
+      description: A GeoJSON geometry that includes coordinates, or geometries for a GeometryCollection.
+
+    NonEmptyAddress:
+      allOf:
+        - $ref: "https://schema.beckn.io/Address/v2.0/attributes.yaml#/components/schemas/Address"
+        - type: object
+          minProperties: 1
+      description: A Beckn postal address containing at least one address field.
+
+    CompleteLocation:
+      allOf:
+        - $ref: "https://schema.beckn.io/Location/v2.0/attributes.yaml#/components/schemas/Location"
+        - type: object
+          required: [geo]
+          properties:
+            geo:
+              $ref: "#/components/schemas/CompleteGeoJSONGeometry"
+            address:
+              $ref: "#/components/schemas/NonEmptyAddress"
+      description: A Beckn Location with a complete GeoJSON geometry and an optional non-empty address.

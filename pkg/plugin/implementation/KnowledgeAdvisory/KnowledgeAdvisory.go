@@ -6,7 +6,7 @@
 //
 // Almost nothing lives here, and that is the point. Recognising a capability,
 // resolving the call plan, authenticating, calling with the registry's budget
-// and translating in both directions are all internal/upstream's, because none
+// and translating in both directions are all internal/common's, because none
 // of them differ by domain. What this package owns is its name.
 //
 // The upstream this was written against is a retrieval service: it takes a
@@ -20,12 +20,12 @@ import (
 	"context"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 )
 
 // Config is upstream's, unchanged. Aliased here so a domain plugin's cmd
 // package need not know where the machinery lives.
-type Config = upstream.Config
+type Config = common.Config
 
 // New creates the knowledge advisory step.
 //
@@ -33,5 +33,5 @@ type Config = upstream.Config
 // serving a family cannot guess which of them a deployment has providers for.
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
-	return upstream.New(ctx, registry, mapper, prerequisites, cfg)
+	return common.New(ctx, registry, mapper, prerequisites, cfg)
 }

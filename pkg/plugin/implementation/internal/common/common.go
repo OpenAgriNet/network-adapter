@@ -1,17 +1,29 @@
-// Package upstream serves a Beckn capability by calling an ordinary API that has
+// Package common serves a Beckn capability by calling an ordinary API that has
 // never heard of Beckn.
 //
-// "upstream" is the registry's own word for such an API -- a Participant of type
-// upstream, as against a node that speaks Beckn. This package is the machinery
-// for calling one: recognise the capability, resolve the call plan, translate
-// out, call, translate back.
+// Common to every capability plugin, and to nothing else: WeatherObservation,
+// MandiPrice and KnowledgeAdvisory are each a name, a set of binding keys and a
+// credential profile over this machinery. Recognise the capability, resolve the
+// call plan, translate out, call, translate back.
+//
+// "UPSTREAM" IS STILL THE WORD FOR THE API BEING CALLED. It is the registry's
+// own -- a Participant of type upstream, as against a node that speaks Beckn --
+// so it stays in the errors, the logs and the comments here even though the
+// package no longer carries it. An operator reading "upstream: provider did not
+// answer" is being told which leg of the call failed, and "common:" would tell
+// them nothing.
 //
 // It holds nothing about any provider or any domain. What varies per capability
 // comes from the registry (endpoint, method, budget, which mapping) and from the
 // mapping itself (what the payload must satisfy, what to send, what to return).
 // A domain package wraps this, supplying only its name and whatever prerequisite
 // work a mapping cannot express.
-package upstream
+//
+// NOT A DUMPING GROUND. Everything here is one subject -- calling an upstream on
+// a capability's behalf. Something shared by fewer than all three plugins, or
+// unrelated to that call, belongs in its own package rather than here on the
+// strength of the name.
+package common
 
 import (
 	"context"
