@@ -40,138 +40,215 @@ request: |
     }
   )
 
+
+# Response half derived from the OpenAgriNet non-normative implementation guide
+# for this capability (knowledge-mapper/on_select.jsonata). Its derivation
+# rules are followed; its INPUT SHAPE is not, because it reads a hand-built
+# { search, pn } object and this adapter supplies { beckn, _local, response }.
+#
+# Divergences from the guide, each deliberate and marked at its site:
+#   - one Resource PER DOCUMENT, not one for the top-scoring hit
+#   - hits[].text IS the recommendation message; nothing here synthesizes
+#   - no $assert: an empty result is an answer, not an error
+#   - senderId/receiverId, not bapId/bppId, per the runtime Beckn spec
+#   - `res:` id prefix, matching the other OAN capabilities
+#   - Contract.consideration omitted; see the note at the emit block
 response: |
   (
-    $ra  := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-    $ctx := $ra.`@context`;
+    $ra    := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+    $ctx   := $ra.`@context`;
     $offer := beckn.message.contract.commitments[0].offer;
 
-    /* Every hit the provider returned, unfiltered. It ran the query and chose
-       what to send back; second-guessing that with a score threshold here would
-       be this adapter deciding relevance on the provider's behalf.
+    /* DEPLOYMENT CONSTANT, like index_name in the request half: the
+       network-stable participant id of the authority behind this corpus.
+       SourceReference.sourceId is required and retrieval cannot supply it.
+       Two upstream fields look like candidates and are traps:
+         hits[].instance  "bv"            provider-internal, collides across PNs
+         hits[].source    "docs-pipeline" the ingestion pipeline, not the authority */
+    $sourceId := "participant:bharat-vistaar";
 
-       Worth knowing what that means in practice: hybrid RRF scores are not
-       calibrated, so a query can return hits within 0.005 of each other whose
-       subjects are unrelated. They will all be cited. Reinstating a floor is
-       one $filter if a deployment wants it. */
+    /* This API returns "" for absent strings -- doc_language, category_tags,
+       title_en, doc_short_description and description are all "" on every hit
+       in the live corpus. Treat "" and absent identically, or a blank ships as
+       a present-but-empty value and fails minLength. */
+    $text := function($s) { $exists($s) ? ($trim($s) != "" ? $trim($s)) : undefined };
+
+    /* hits[].type -> subjectCategories enum. Only these have an unambiguous
+       counterpart; "document" maps to NOTHING on purpose, because it names a
+       container format rather than a subject. */
+    $categoryOf := function($t) {
+      $lookup({
+        "scheme": "Scheme", "crop": "Crop", "livestock": "Livestock",
+        "weather": "Weather", "market": "Market", "practice": "Practice"
+      }, $lowercase($t))
+    };
+
+    /* Governed codes are upper-case; the corpus emits scheme_code as "tgj". */
+    $toCode := function($s) { $uppercase($replace($s, /[^A-Za-z0-9]+/, "_")) };
+
+    /* Every hit the provider returned, less its own reference chunks. It ran
+       the query and chose what to send; applying a score floor here would be
+       this adapter overriding the provider's relevance judgement. The guide
+       argues for a floor (unrelated documents can land within 0.005 of the top
+       hit) -- that is one $filter to reinstate if a deployment wants it. */
     $usable := $filter(response.hits, function($h) { $h.is_reference != true });
 
-    /* ONE recommendation per DOCUMENT, not per hit. doc_id repeats: the engine
-       returns up to max_chunks_per_doc chunks per document, and this corpus also
-       indexes one chunk twice, once as type "document" and once as "scheme".
-       Per-hit would say the same thing two or four times. */
+    /* ONE ADVISORY PER DOCUMENT. doc_id repeats: the engine returns up to
+       max_chunks_per_doc chunks per document, and this corpus also indexes one
+       chunk twice, as type "document" and again as type "scheme". */
     $docIds := $distinct($usable.doc_id);
-    $forDoc := function($id) { $filter($usable, function($h) { $h.doc_id = $id }) };
-    $textOf := function($id) { $join($distinct($forDoc($id).text), "\n\n") };
+    $hitsOf := function($id) { $filter($usable, function($h) { $h.doc_id = $id }) };
 
-    /* Language comes from the REQUEST, not the hit. doc_language is "" on every
-       hit in this corpus (verified live), and recommendations[].language is
-       required with minLength 2, so reading it from upstream would emit an
-       invalid advisory. OnDemand requires languages, so the caller has sent it. */
-    $lang := $ra.languages[0];
-
-    /* Scheme hits carry a governed code; document hits do not. Only "scheme"
-       maps -- "document" names a container format, not a subject. */
-    $cats := $distinct($map($usable, function($h) {
-      $h.type = "scheme" ? "Scheme"
-    }));
-
-    /* RATIONALE cites aggregate provenance only. Naming the index, the ranking
-       method or its parameters would leak engine internals to the caller. */
-    $rationale := "Retrieved " & $string($count($usable)) & " of "
-      & $string(response.candidate_count) & " candidate passages from the "
-      & $distinct($usable.instance_name)[0] & " corpus.";
+    /* Counts are whole-response facts, so the rationale reads the same on every
+       advisory. It cites aggregate provenance only -- naming the index, the
+       ranking method or its parameters would leak engine internals. */
+    $counts := "Retrieved " & $string($count($usable)) & " of "
+             & $string(response.candidate_count) & " candidate passages";
 
     {
       "context": $merge([ beckn.context, { "action": "on_select" } ]),
       "message": {
         "contract": {
           "status": { "code": "DRAFT" },
+          /* Contract.consideration is NOT emitted. The guide recommends a
+             priced quote, but its own caveat is the reason to leave it out:
+             Beckn v2.0.0 never DEFINES beckn:PriceSpecification, so any
+             considerationAttributes shape here is unverifiable. Contract
+             requires only `commitments`, so omitting it is valid, and an
+             advisory served at no charge is better said by saying nothing than
+             by inventing a schema. */
           "commitments": [{
             "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
-            /* The offer is echoed, but its references are not. The request
+            /* The offer is echoed, but its references are not: the request
                named the OnDemand resource -- the question -- while the answer
-               returns the advisories, so resourceIds is rebuilt from those.
-
-               The selected id is deliberately NOT retained. resourceIds are
-               "references to resources covered by this offer", and the OnDemand
-               resource appears nowhere in resources[] here: OnDemand and Direct
-               require different fields, so the answer cannot restate it. Listing
-               it would leave the offer pointing at an id a caller cannot resolve.
-               Correlating the callback needs no help from it -- context carries
-               transactionId and messageId. Mandi echoes its offer the same way.
-
-               With no hits $docIds is absent, so this is [] rather than a
-               dangling "res:knowledge-advisory:" -- matching resources[]. */
+               returns the advisories. The selected id is NOT retained; it
+               resolves to nothing in resources[], and context.transactionId
+               already correlates the callback. With no hits this is []. */
             "offer": $merge([
               $offer,
               { "resourceIds": [$map($docIds, function($id) { "res:knowledge-advisory:" & $id })] }
             ]),
-              /* ONE RESOURCE PER DOCUMENT.
+            "resources": [$map($docIds, function($id) { (
+              $h := $hitsOf($id);
 
-                 A single resource carrying every document's text was the first
-                 shape here, and it could not label itself honestly: it took
-                 its id from one doc_id and its descriptor from whichever hit
-                 happened to carry a scheme_name, then held recommendations
-                 from documents on entirely different subjects. On this corpus
-                 an advisory came back named "Telangana Gruha Jyoti" whose
-                 second recommendation was a Karnataka legislative question.
+              /* Per document, the metadata-bearing hit: the scheme-typed one if
+                 this document has it, else the highest scoring. _score orders
+                 only and is never emitted. Without the first clause a document
+                 indexed both ways loses its scheme_name to an untyped chunk. */
+              $sch := $h[$exists(scheme_code)];
+              $top := $exists($sch) ? $sch[0] : ($h^(>`_score`))[0];
 
-                 Per document, each advisory covers exactly what its id names.
-                 It also matches how the other capabilities answer -- mandi
-                 emits one resource per market row, not one holding all of
-                 them.
+              /* doc_language, then the guide's "en" default. recommendations[]
+                 requires language with minLength 2, so there is no honest empty
+                 to fall back to -- the corpus leaves it blank on every hit. */
+              $lang := $exists($text($top.doc_language)) ? $text($top.doc_language) : "en";
 
-                 NO RESULTS IS AN ANSWER: with nothing to map this is [],
-                 which Commitment.resources allows -- required, but with no
-                 minItems. */
-              "resources": [$map($docIds, function($id) {
-                {
-                  "id": "res:knowledge-advisory:" & $id,
-                  "quantity": 1,
-                  "descriptor": $merge([
-                    { "code": "KNOWLEDGE_ADVISORY" },
-                    /* Only THIS document's scheme_name, and only when it has
-                       one. document-typed hits carry none, and borrowing
-                       another document's name is what made the old shape
-                       misleading. */
-                    $exists($distinct($forDoc($id).scheme_name)[0])
-                      ? { "name": $distinct($forDoc($id).scheme_name)[0] } : {}
-                  ]),
-                  "resourceAttributes": {
+              /* category_tags is a COMMA-JOINED STRING, not an array, and is ""
+                 throughout this corpus. Falling back to the query the engine
+                 reports having run keeps topics sourced from the response
+                 rather than echoed from the request. topics is required in
+                 Direct mode with minItems 1. */
+              $tags  := $distinct($h.category_tags[$ != ""].$split($, ",").$trim($)[$ != ""]);
+              $query := $text(response.effective_config.query);
+              $topics := $exists($tags) ? $tags : ($exists($query) ? [ $query ] : undefined);
+
+              $cats := $distinct($h.$categoryOf(type));
+
+              /* scheme_name, then the human titles, then name_en/name_gu LAST:
+                 this corpus fills those with the ingestion filename slug
+                 ("Praja-Palana-Application-Form"), which reads badly to a
+                 farmer. Only this document's hits are consulted -- borrowing
+                 another document's name is what made an earlier shape lie. */
+              $label := $exists($text($top.scheme_name)) ? $text($top.scheme_name)
+                      : $exists($text($top.title_en))    ? $text($top.title_en)
+                      : $exists($text($top.title_gu))    ? $text($top.title_gu)
+                      : $exists($text($top.name_en))     ? $text($top.name_en)
+                      : $exists($text($top.name_gu))     ? $text($top.name_gu)
+                      : undefined;
+
+              {
+                "id": "res:knowledge-advisory:" & $id,
+                /* Required by Commitment.resources, which declares no quantity
+                   property and carries no Quantity schema at all -- a defect
+                   upstream. One resource is one advisory. */
+                "quantity": 1,
+                "descriptor": $merge([
+                  {
+                    "code": $exists($text($top.scheme_code))
+                            ? $toCode($text($top.scheme_code)) & "_ADVISORY"
+                            : "KNOWLEDGE_ADVISORY"
+                  },
+                  $exists($label)    ? { "name": $label & " advisory" } : {},
+                  /* Blank on every hit here, so $text drops them both today. */
+                  $exists($text($top.doc_short_description))
+                    ? { "shortDesc": $text($top.doc_short_description) } : {},
+                  $exists($text($top.doc_llm_description))
+                    ? { "longDesc": $text($top.doc_llm_description) }
+                    : ($exists($text($top.description))
+                       ? { "longDesc": $text($top.description) } : {})
+                ]),
+                "resourceAttributes": $merge([
+                  {
                     "@context": $ctx,
                     "@type": "openagrinet:KnowledgeAdvisory",
+                    /* The discriminator. Its Direct branch is what makes
+                       topics, issuedAt, recommendations and source required. */
                     "informationMode": "Direct",
-                    /* Echoed: category_tags is "" on every hit here. */
-                    "topics": $ra.topics,
-                    "languages": $ra.languages,
+                    "languages": [ $lang ],
+                    /* Not in the search response: the advisory is issued by
+                       this answer, at this moment. */
                     "issuedAt": $now(),
-                    /* This document's passages, joined: the engine returns up
-                       to max_chunks_per_doc of them, and the same chunk can
-                       arrive twice under two type labels. */
+                    /* This document's passages, joined. The engine returns up
+                       to max_chunks_per_doc of them and the same chunk can
+                       arrive twice under two type labels, hence $distinct.
+
+                       The guide holds that hits[].text is evidence and the
+                       message must be synthesized upstream. Nothing in this
+                       path synthesizes, and /search returns passages, so the
+                       retrieved text IS the message here -- a deliberate
+                       divergence, recorded rather than hidden. */
                     "recommendations": [{
-                      "message": $textOf($id),
+                      "message": $join($distinct($h.text), "\n\n"),
                       "language": $lang
                     }],
-                    /* The document this advisory is drawn from, as a resource
-                       IDENTIFIER rather than the raw hash -- the pack calls
-                       these "Beckn Resource identifiers of supporting
-                       KnowledgeResource information". They resolve only if
-                       those documents are themselves published as
-                       KnowledgeResource resources, which today they are not,
-                       so a caller can correlate but not dereference them. */
+                    /* This document only, as a resource IDENTIFIER rather than
+                       the raw hash. doc_id never chunk_id: uniqueItems is true
+                       and one document contributes several chunks. They resolve
+                       only once those documents are themselves published as
+                       KnowledgeResource resources, which today they are not. */
                     "supportingResourceIds": ["res:knowledge:" & $id],
-                    "rationale": $rationale,
-                    /* NOT hits[].source -- that is "docs-pipeline", the
-                       ingestion pipeline, not the authority behind the
-                       knowledge. */
-                    "source": {
-                      "sourceId": "participant:bharat-vistaar",
-                      "sourceName": $distinct($usable.instance_name)[0]
-                    }
-                  }
-                }
-              })]
+                    "rationale": $exists($text($top.instance_name))
+                      ? $counts & " from the " & $text($top.instance_name) & " corpus."
+                      : $counts & ".",
+                    "source": $merge([
+                      { "sourceId": $sourceId },
+                      /* This document's own instance, not the first across all
+                         of them. */
+                      $exists($text($top.instance_name))
+                        ? { "sourceName": $text($top.instance_name) } : {}
+                    ])
+                  },
+                  /* Optional, so emitted only when the corpus yields one. */
+                  $exists($cats) ? { "subjectCategories": [ $cats ] } : {},
+                  /* REQUIRED in Direct mode, yet category_tags is blank across
+                     this corpus and effective_config.query is the only other
+                     source. When neither speaks, the key is OMITTED rather than
+                     emitted as [] -- an empty array asserts "this advisory has
+                     no topics", where absence says nothing was available to
+                     say. Both fail the pack; only one of them is honest, and
+                     the absence is what makes the gap visible. */
+                  $exists($topics) ? { "topics": [ $topics ] } : {}
+                  /* agricultureSubjects is deliberately absent even though
+                     scheme_code and scheme_name are real data here:
+                     AgricultureSubjectReference requires subjectId, a taxonomy
+                     URI retrieval does not supply. Emitting the array without
+                     it would be invalid; inventing a base URI would be a guess.
+                     coverageAreas is absent for the same reason -- it has no
+                     counterpart in the response, and deriving it from a
+                     scheme's name ("Telangana" -> IN-TG) is guesswork. */
+                ])
+              }
+            ) })]
           }]
         }
       }
