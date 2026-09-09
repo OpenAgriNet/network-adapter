@@ -43,9 +43,9 @@ const realSelectPayload = `{
 func TestFromReadsARealSelectPayload(t *testing.T) {
 	t.Parallel()
 
-	got, err := bindingFrom(BecknV2, []byte(realSelectPayload))
+	got, err := BindingFrom(BecknV2, []byte(realSelectPayload))
 	if err != nil {
-		t.Fatalf("bindingFrom() returned an unexpected error: %v", err)
+		t.Fatalf("BindingFrom() returned an unexpected error: %v", err)
 	}
 	if got.ParticipantID != "mausamgram" {
 		t.Errorf("participant = %q, want mausamgram", got.ParticipantID)
@@ -80,7 +80,7 @@ func TestFromReportsAPayloadWithNoBinding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			if _, err := bindingFrom(BecknV2, []byte(tc.body)); !errors.Is(err, errNoBinding) {
+			if _, err := BindingFrom(BecknV2, []byte(tc.body)); !errors.Is(err, errNoBinding) {
 				t.Errorf("expected errNoBinding, got %v", err)
 			}
 		})
@@ -119,7 +119,7 @@ func TestFromRefusesAnAmbiguousPayload(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := bindingFrom(BecknV2, []byte(tc.body))
+			_, err := BindingFrom(BecknV2, []byte(tc.body))
 			if err == nil {
 				t.Fatal("expected an ambiguous payload to be refused")
 			}
@@ -136,7 +136,7 @@ func TestFromRefusesAnAmbiguousPayload(t *testing.T) {
 func TestFromReportsAnUnreadablePayload(t *testing.T) {
 	t.Parallel()
 
-	_, err := bindingFrom(BecknV2, []byte(`{"message":`))
+	_, err := BindingFrom(BecknV2, []byte(`{"message":`))
 	if err == nil {
 		t.Fatal("expected unreadable JSON to be reported")
 	}
@@ -161,9 +161,9 @@ func TestBecknV2IsTheDefault(t *testing.T) {
 	if BecknV2.ProviderID == "" || BecknV2.CapabilityCode == "" {
 		t.Fatal("the default paths must be set")
 	}
-	got, err := bindingFrom(BecknV2, []byte(realSelectPayload))
+	got, err := BindingFrom(BecknV2, []byte(realSelectPayload))
 	if err != nil {
-		t.Fatalf("bindingFrom() returned an unexpected error: %v", err)
+		t.Fatalf("BindingFrom() returned an unexpected error: %v", err)
 	}
 	if got.ParticipantID != "mausamgram" || got.CapabilityCode != "openagrinet:WeatherObservation" {
 		t.Errorf("binding = %+v, want the Beckn v2 convention's answer", got)
@@ -176,12 +176,12 @@ func TestFromReadsAnOverriddenPath(t *testing.T) {
 	t.Parallel()
 
 	body := `{"who":{"provider":"agmarknet"},"what":[{"type":"openagrinet:MandiPrice"}]}`
-	got, err := bindingFrom(Paths{
+	got, err := BindingFrom(Paths{
 		ProviderID:     "who.provider",
 		CapabilityCode: "what[].type",
 	}, []byte(body))
 	if err != nil {
-		t.Fatalf("bindingFrom() returned an unexpected error: %v", err)
+		t.Fatalf("BindingFrom() returned an unexpected error: %v", err)
 	}
 	if got.Key() != "agmarknet|openagrinet:MandiPrice" {
 		t.Errorf("binding key = %q, want it read from the overridden paths", got.Key())
@@ -193,7 +193,7 @@ func TestFromReadsAnOverriddenPath(t *testing.T) {
 func TestFromReportsNoBindingWhenAPathMatchesNothing(t *testing.T) {
 	t.Parallel()
 
-	_, err := bindingFrom(Paths{ProviderID: "nowhere.at.all", CapabilityCode: "what[].type"},
+	_, err := BindingFrom(Paths{ProviderID: "nowhere.at.all", CapabilityCode: "what[].type"},
 		[]byte(`{"what":[{"type":"x"}]}`))
 	if !errors.Is(err, errNoBinding) {
 		t.Errorf("expected errNoBinding, got %v", err)
@@ -205,7 +205,7 @@ func TestFromReportsNoBindingWhenAPathMatchesNothing(t *testing.T) {
 func TestFromStillRefusesSeveralValuesUnderAnOverride(t *testing.T) {
 	t.Parallel()
 
-	_, err := bindingFrom(Paths{ProviderID: "who[].provider", CapabilityCode: "what[].type"},
+	_, err := BindingFrom(Paths{ProviderID: "who[].provider", CapabilityCode: "what[].type"},
 		[]byte(`{"who":[{"provider":"a"},{"provider":"b"}],"what":[{"type":"x"}]}`))
 	if err == nil || errors.Is(err, errNoBinding) {
 		t.Errorf("expected a refusal naming both providers, got %v", err)
@@ -303,7 +303,7 @@ func TestFromRefusesSeveralCommitments(t *testing.T) {
 		 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]}
 	]}}}`
 
-	_, err := bindingFrom(BecknV2, []byte(body))
+	_, err := BindingFrom(BecknV2, []byte(body))
 	if err == nil {
 		t.Fatal("expected two commitments to be refused rather than halved")
 	}
@@ -319,7 +319,7 @@ func TestFromRefusesSeveralCommitments(t *testing.T) {
 		{"offer":{"provider":{"id":"mausamgram"}},
 		 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]}
 	]}}}`
-	binding, err := bindingFrom(BecknV2, []byte(single))
+	binding, err := BindingFrom(BecknV2, []byte(single))
 	if err != nil {
 		t.Fatalf("one commitment must still resolve: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestFromRefusesSeveralCommitmentsEvenWhenOneDoesNotResolve(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := bindingFrom(BecknV2, []byte(tt.payload))
+			_, err := BindingFrom(BecknV2, []byte(tt.payload))
 			if err == nil {
 				t.Fatal("two commitments must be refused, not half answered")
 			}
@@ -394,7 +394,7 @@ func TestFromStillPassesThroughASingleUnresolvableCommitment(t *testing.T) {
 		{"offer":{"provider":{}},
 		 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]}
 	]}}}`
-	_, err := bindingFrom(BecknV2, []byte(payload))
+	_, err := BindingFrom(BecknV2, []byte(payload))
 	if !errors.Is(err, errNoBinding) {
 		t.Errorf("err = %v, want errNoBinding so the payload passes through", err)
 	}

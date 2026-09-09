@@ -1,0 +1,4 @@
+# The schema pack is fetched from where it is published and cached here, rather
+# than vendored into the repo -- see schemacache_test.go. The cache is a local
+# build artifact: delete it to refresh against upstream.
+schema-cache/
