@@ -200,7 +200,11 @@ func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames
 	err := fmt.Errorf("the %s credential for %s is not configured", scheme, provider)
 	log.Errorf(ctx, err, "%s auth is configured for %s but %s is not set",
 		scheme, provider, envNames)
-	return err
+	// Marked here rather than at the call site in attempt, which cannot tell
+	// this apart from an oauth2 exchange that failed on the network. An unset
+	// environment variable is configuration: retrying reports an operator's
+	// missing variable as the provider being down.
+	return util.DoNotRetry(err)
 }
 
 // authenticate presents this provider's credentials, read from the environment

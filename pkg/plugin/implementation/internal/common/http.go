@@ -79,8 +79,11 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if err := s.authenticate(auth, req); err != nil {
-		// A missing or unreadable credential is configuration, not weather.
-		return nil, util.DoNotRetry(err)
+		// Already classified at the source. A missing environment variable is
+		// configuration and marked permanent there; an oauth2 exchange that
+		// could not reach the issuer is weather and is not, so the retry budget
+		// covers the token endpoint exactly as it covers the provider.
+		return nil, err
 	}
 
 	// The URL as it went on the wire, credential removed. At info because this
