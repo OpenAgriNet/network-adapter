@@ -116,6 +116,33 @@ request: |
       "Warehouse": "warehouse",
       "SoilTestingFacility": "soil_lab"
     };
+    /* THIS CALL'S OWN message_id, derived from the caller's by replacing its
+       last hex digit with a slot this facility type owns.
+
+       POCRA caches per message_id for PT10M and returns the UNION of
+       everything asked under it, so two calls sharing an id each come back
+       carrying the other's facilities. Worse, that cache IGNORES LOCATION:
+       verified live, the same id asked twice 350km apart returned the first
+       location's facility alongside the second's, which no type filter can
+       catch because the type matches. So the caller's own id cannot be sent
+       as it stands.
+
+       The last character of a v4 UUID is in the node field, not the version
+       or variant nibbles, so replacing it leaves a valid UUID -- which POCRA's
+       schema requires. Derived rather than random because this expression has
+       no random source: JSONata here has no $uuid.
+
+       The TYPE picks the slot, not a call index, because each payload reaching
+       here names exactly one type. That also makes a retry reuse its own slot
+       rather than take a fresh one. */
+    $slots := {
+      "CustomHiringCentre": "0",
+      "KrishiVigyanKendra": "1",
+      "Warehouse": "2",
+      "SoilTestingFacility": "3"
+    };
+    $callerId := beckn.context.messageId;
+    $messageId := $substring($callerId, 0, 35) & $lookup($slots, $requested);
     {
       "context": {
         "domain": "advisory:mh-vistaar",
@@ -124,16 +151,9 @@ request: |
         "version": "1.1.0",
         "bap_id": "bap.mahapocra.gov.in",
         "bap_uri": "https://middleware.mahapocra.gov.in/bap/",
-        /* This call's own id. POCRA keeps a message_id's answers for ten
-           minutes and returns the UNION of everything asked for under it, so
-           two calls sharing an id would each return the other's facilities
-           too.
-
-           Read straight off the payload: the plugin stamps a fresh UUID on
-           context.messageId of every single-type payload it splits out, for
-           exactly this reason, so each call already carries its own. POCRA's
-           schema refuses a message_id that is not a UUID. */
-        "message_id": beckn.context.messageId,
+        /* Derived above, one slot per facility type. NOT the caller's own id:
+           POCRA's cache is keyed on it and ignores location. */
+        "message_id": $messageId,
         "transaction_id": beckn.context.transactionId,
         "timestamp": $string($floor($millis() / 1000))
       },

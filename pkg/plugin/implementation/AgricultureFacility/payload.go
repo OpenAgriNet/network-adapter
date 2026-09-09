@@ -41,6 +41,14 @@ import (
 const DefaultFacilityTypesAt = "message.contract.commitments[].resources[]." +
 	"resourceAttributes.supportedFacilityTypes[]"
 
+// CommitmentsAt is where a Beckn contract carries its commitments -- the level
+// mergeAnswers appends one answer's resources onto another's.
+//
+// Not configurable, unlike DefaultFacilityTypesAt: this reads the answers this
+// package's own mapping produced, not a payload a caller wrote, so it moves
+// only when that mapping does and the two are edited together.
+const CommitmentsAt = "message.contract.commitments[]"
+
 // facilityTypesFrom returns the facility types a payload asks for, in the
 // order the payload wrote them -- one upstream call each.
 //
@@ -126,18 +134,64 @@ func facilityTypesFrom(beckn any, path string) ([]string, error) {
 // arrayMarker is common.ValuesAt's "look in each element" suffix.
 const arrayMarker = "[]"
 
-// dig walks a chain of object keys, returning nil the moment one is absent or
-// is not an object. Written out rather than reached for from a library because
-// a mistyped key must read as an absent field, which is a bad request, and not
-// as a panic.
-func dig(document map[string]any, keys ...string) any {
-	var current any = document
-	for _, key := range keys {
-		object, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		current = object[key]
+// setAt writes value at the leaf the path names, creating nothing.
+//
+// The mirror of common.ValuesAt, and the same grammar, so ONE configured path
+// -- facilityTypesAt -- both reads the types out of a payload and narrows them
+// in a part. Two paths that had to agree would be a way for them to disagree.
+//
+// Local to this package rather than in common: common's step reads a payload
+// and never rewrites one, and a write raises questions a read does not --
+// whether to create the intermediates, what an array segment means when
+// assigning. This answers both narrowly. It creates nothing, so a path that
+// does not already resolve is a refusal rather than a payload invented to fit,
+// and an array segment writes to EVERY element, which is what narrowing a
+// search to one type means when a payload carries several commitments.
+//
+// Reported as a bad request: the payload is what is wrong, and the caller is
+// the only one who can fix it.
+func setAt(document any, path string, value any) error {
+	segments := strings.Split(path, ".")
+	targets := containersAt(document, segments[:len(segments)-1])
+	if len(targets) == 0 {
+		return model.NewBadReqErr("", fmt.Errorf(
+			"agriculture facility: the payload has nothing at %s to narrow to one facility type",
+			strings.Join(segments[:len(segments)-1], ".")))
 	}
-	return current
+	leaf := strings.TrimSuffix(segments[len(segments)-1], arrayMarker)
+	for _, target := range targets {
+		target[leaf] = value
+	}
+	return nil
+}
+
+// containersAt collects every object the path reaches, so setAt has somewhere
+// to write. Absent or wrongly-typed reaches nothing, which setAt reports.
+func containersAt(node any, segments []string) []map[string]any {
+	object, ok := node.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if len(segments) == 0 {
+		return []map[string]any{object}
+	}
+
+	segment := segments[0]
+	child, present := object[strings.TrimSuffix(segment, arrayMarker)]
+	if !present {
+		return nil
+	}
+	if !strings.HasSuffix(segment, arrayMarker) {
+		return containersAt(child, segments[1:])
+	}
+
+	elements, ok := child.([]any)
+	if !ok {
+		return nil
+	}
+	var found []map[string]any
+	for _, element := range elements {
+		found = append(found, containersAt(element, segments[1:])...)
+	}
+	return found
 }
