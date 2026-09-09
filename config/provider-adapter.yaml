@@ -319,19 +319,27 @@ modules:
               #   header  a named header; headerName + headerValueEnv
               #   query   a named query parameter; queryName + queryValueEnv.
               #           Redacted from the URL the step logs.
-              authScheme: basic
-              usernameEnv: MAUSAMGRAM_USER
-              passwordEnv: MAUSAMGRAM_X_API_KEY
+              #   oauth2  a client id and secret exchanged for a bearer token;
+              #           tokenUrl + clientIdEnv + clientSecretEnv.
+              #
+              # AUTH IS PER PROVIDER, in a block named for the participant id --
+              # the left half of a binding key. A step serves several binding
+              # keys and the providers behind them need not authenticate alike,
+              # so there is no step-wide setting: every provider declares its
+              # own, and one that is served without a block is refused at
+              # startup rather than quietly sending nothing.
+              mausamgram:
+                authScheme: basic
+                usernameEnv: MAUSAMGRAM_USER
+                passwordEnv: MAUSAMGRAM_X_API_KEY
 
-              # The other two schemes, for reference:
+              # The other schemes, for reference. A second provider of this same
+              # capability goes beside the block above, with its own:
               #
-              #   authScheme: header
-              #   headerName: X-API-Key
-              #   headerValueEnv: MAUSAMGRAM_X_API_KEY
-              #
-              #   authScheme: query
-              #   queryName: token
-              #   queryValueEnv: MAUSAMGRAM_TOKEN
+              #   some-other-imd:
+              #     authScheme: header
+              #     headerName: X-API-Key
+              #     headerValueEnv: SOME_OTHER_IMD_KEY
 
               # A ceiling on the provider's RESPONSE, so one that streams or
               # misbehaves cannot exhaust memory. The body is rejected past
@@ -354,9 +362,10 @@ modules:
               # parameter's NAME and the name of the variable carrying the
               # value -- never the value -- and redacts it from the URL it
               # logs, so a token cannot reach the log by way of the request.
-              authScheme: query
-              queryName: token
-              queryValueEnv: MANDI_TOKEN
+              agmarknet:
+                authScheme: query
+                queryName: token
+                queryValueEnv: MANDI_TOKEN
 
               # MANDI_TOKEN MUST BE SET IN THE ADAPTER'S ENVIRONMENT. Without it
               # every mandi call fails immediately and permanently: the step
@@ -377,6 +386,55 @@ modules:
               # learning which variables this deployment reads. The variable name
               # is in the adapter's own log at error level.
 
+          # ------------------------------------------------------------------
+          # KnowledgeAdvisory -- the network's knowledge capability, answered
+          # from a provider's retrieval service.
+          #
+          # Same shape as the two above and for the same reason: the package
+          # supplies a name, and recognising the capability, resolving the call
+          # plan, authenticating and translating are all internal/upstream's.
+          # ------------------------------------------------------------------
+          - id: KnowledgeAdvisory
+            config:
+              bindingKeys: "knowledge-provider|openagrinet:KnowledgeAdvisory"
+
+              # THE ONLY CAPABILITY HERE THAT CANNOT USE A STATIC CREDENTIAL.
+              # Its provider sits behind an OAuth2 token endpoint whose tokens
+              # live ten hours, so a value pasted into an environment variable
+              # is wrong twice a day and every request 401s until someone
+              # pastes another. authScheme oauth2 exchanges the client
+              # credentials for a token, holds it until just before it expires,
+              # and exchanges a fresh one on the next request after that.
+              knowledge-provider:
+                authScheme: oauth2
+
+              # A PLACEHOLDER, because this is per-deployment and no host
+              # belongs in this file. Whatever goes here is the provider's
+              # token endpoint -- for a Keycloak realm, the openid-connect
+              # token path:
+              #
+              #   https://<issuer>/auth/realms/<realm>/protocol/openid-connect/token
+                tokenUrl: <>
+
+              # The VARIABLES holding the client credentials, never the values.
+              # Both must be set in the adapter's environment; with either
+              # missing the step refuses to call the upstream unauthenticated
+              # and the error names the scheme, not the variable -- a network
+              # peer has no business learning which variables we read. The
+              # variable names are in the adapter's own log at error level.
+              #
+              #   docker:     -e KNOWLEDGE_CLIENT_ID=... -e KNOWLEDGE_CLIENT_SECRET=...
+              #   kubernetes: a Secret, mounted as environment variables
+              #   local:      KNOWLEDGE_CLIENT_ID=... KNOWLEDGE_CLIENT_SECRET=... ./server
+                clientIdEnv: KNOWLEDGE_CLIENT_ID
+                clientSecretEnv: KNOWLEDGE_CLIENT_SECRET
+
+              # A retrieval answer is larger than a price row: four passages
+              # measured 15.7 KB against the live corpus, and top_k defaults to
+              # 12. The package default would truncate a full answer into
+              # something that no longer parses.
+              maxResponseBytes: 1048576
+
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
       # request falls through to the 404 above -- which looks like a registry
@@ -386,6 +444,7 @@ modules:
         - validateSchema   # the pinned Beckn v2 spec
         - WeatherObservation  # its binding key, or pass through
         - MandiPrice          # its binding key, or pass through
+        - KnowledgeAdvisory   # its binding key, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------

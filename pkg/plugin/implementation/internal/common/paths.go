@@ -1,4 +1,4 @@
-package capabilitybinding
+package common
 
 import (
 	"fmt"
@@ -7,14 +7,10 @@ import (
 
 // Paths says where the two halves of a binding key live in a payload.
 //
-// This is a NETWORK convention, not a deployment's preference: every participant
-// has to agree, or two adapters disagree about what a binding key is and
-// requests silently fail to match. So BecknV2 is the answer, and overriding is
-// something an operator has to type deliberately -- absent means correct.
-//
-// The override exists for one situation: the spec moves a field and a deployment
-// needs to track it without waiting for a release. It is deliberately not
-// something to reach for otherwise.
+// A NETWORK convention, not a deployment's preference: every participant must
+// agree or requests silently fail to match. BecknV2 is the answer, and absent
+// means correct. The override exists only for tracking a spec change without
+// waiting for a release.
 type Paths struct {
 	ProviderID     string
 	CapabilityCode string
@@ -26,23 +22,23 @@ var BecknV2 = Paths{
 	CapabilityCode: "message.contract.commitments[].resources[].resourceAttributes.@type",
 }
 
-// arrayMarker flattens an array at that segment. It is the only operator the
-// walk understands.
+// arrayMarker flattens an array at that segment -- the only operator walk
+// understands.
 const arrayMarker = "[]"
 
-// Validate refuses a pair that could never match, so a mistake surfaces where it
-// was configured rather than as every request quietly going unserved.
+// Validate refuses a pair that could never match, so a mistake surfaces at
+// startup rather than as every request quietly going unserved.
 func (p Paths) Validate() error {
 	for name, path := range map[string]string{
 		"providerIdAt":     p.ProviderID,
 		"capabilityCodeAt": p.CapabilityCode,
 	} {
 		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("capabilitybinding: %s is empty", name)
+			return fmt.Errorf("binding path %s is empty", name)
 		}
 		for _, segment := range strings.Split(path, ".") {
 			if strings.TrimSpace(strings.TrimSuffix(segment, arrayMarker)) == "" {
-				return fmt.Errorf("capabilitybinding: %s (%q) has a blank segment", name, path)
+				return fmt.Errorf("binding path %s (%q) has a blank segment", name, path)
 			}
 		}
 	}
@@ -52,22 +48,19 @@ func (p Paths) Validate() error {
 // valuesAt collects every string the path reaches.
 //
 // The grammar is two things: segments separated by ".", and a "[]" suffix
-// meaning "this is an array, look in each element". No wildcards, no filters, no
-// indices. Each of those would be another way to write something subtly wrong in
-// config nobody reviews, to buy an expressiveness a payload shape has never
-// needed.
+// meaning "look in each element". No wildcards, filters or indices -- each is
+// another way to write something subtly wrong in config nobody reviews.
 func valuesAt(node any, path string) []string {
 	return walk(node, strings.Split(path, "."))
 }
 
-// countAt reports how many elements the first array segment of path holds,
-// whether or not the leaf beyond it resolves to anything.
+// countAt reports how many elements the first array segment holds, whether or
+// not the leaf beyond it resolves.
 //
-// valuesAt cannot answer this. It returns resolved STRINGS, and walk drops a
-// leaf that is missing or is not a string -- so two commitments where one
-// carries no provider id yield one value, and a count of those values reads as
-// one commitment. That is the difference between refusing a request this
-// design cannot express and silently answering half of it.
+// valuesAt cannot answer this: it returns resolved STRINGS and drops a missing
+// leaf, so two commitments where one has no provider id yield one value and
+// count as one commitment -- silently answering half a request instead of
+// refusing it.
 func countAt(node any, path string) int {
 	for _, segment := range strings.Split(path, ".") {
 		fields, ok := node.(map[string]any)
@@ -92,8 +85,8 @@ func countAt(node any, path string) int {
 
 func walk(node any, segments []string) []string {
 	if len(segments) == 0 {
-		// The leaf. Only strings are binding-key material; a number or an
-		// object here means the path landed somewhere unintended.
+		// Only strings are binding-key material; anything else means the path
+		// landed somewhere unintended.
 		if value, ok := node.(string); ok {
 			return []string{value}
 		}

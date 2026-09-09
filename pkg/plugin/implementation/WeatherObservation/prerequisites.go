@@ -1,6 +1,6 @@
 package WeatherObservation
 
-import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
+import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 
 // prerequisites is what a weather capability needs that its payload does not
 // carry, keyed by binding key.
@@ -21,4 +21,4 @@ import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstr
 //
 //	request: |
 //	  { "station": _local.stationId }
-var prerequisites = upstream.Prerequisites{}
+var prerequisites = common.Prerequisites{}

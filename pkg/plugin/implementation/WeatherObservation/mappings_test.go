@@ -23,6 +23,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
@@ -143,7 +145,14 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 	}}
 
 	step, closeStep, err := WeatherObservation.New(context.Background(), registry, mapper,
-		&WeatherObservation.Config{BindingKeys: []string{shippedBindingKey}})
+		&WeatherObservation.Config{
+			BindingKeys: []string{shippedBindingKey},
+			// Auth is per provider; these upstreams are stubs needing
+			// no credential, and that is declared rather than defaulted.
+			AuthByProvider: map[string]*common.AuthProfile{
+				strings.Split(shippedBindingKey, "|")[0]: {Scheme: util.AuthSchemeNone},
+			},
+		})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}
