@@ -187,7 +187,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		return nil, nil, err
 	}
 
-	paths, err := bindingPaths(cfg)
+	paths, err := BindingPaths(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -213,12 +213,19 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	return step, closer, nil
 }
 
-// bindingPaths resolves where this step reads a binding key from.
+// BindingPaths resolves where this step reads a binding key from.
 //
 // Both halves or neither: overriding one and leaving the other on the default
 // is a half-configured deployment that would match nothing, and it would do so
 // silently on every request rather than once at startup.
-func bindingPaths(cfg *Config) (capabilitybinding.Paths, error) {
+//
+// EXPORTED DELIBERATELY, and it has to stay that way. A domain package that
+// wraps this step has to answer "is this payload mine?" the same way this
+// step does -- AgricultureFacility does, see its search.go -- and the only
+// alternative is reading the same two config fields a second time, which is
+// how the two drift apart. Unexporting it for consistency with this package's
+// other helpers stops that package compiling.
+func BindingPaths(cfg *Config) (capabilitybinding.Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
 		return capabilitybinding.BecknV2, nil
 	}
