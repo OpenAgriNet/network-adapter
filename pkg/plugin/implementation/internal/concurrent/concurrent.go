@@ -74,3 +74,48 @@ func Run[T any](ctx context.Context, n, limit int, work func(ctx context.Context
 	}
 	return results, nil
 }
+
+// FanOut is Run for the shape every fan-out has: a list of VALUES rather than
+// a count, one call per value, results in the order the values were given.
+//
+// The same bounded, ordered, fail-fast guarantees as Run -- it is Run, with
+// the index-to-value step done here instead of in every caller. Prefer it
+// whenever the work is "one call per thing in this list", which is what a
+// caller splitting one inbound request across several upstream calls has.
+//
+// values is []any rather than []V because the values come from a mapping
+// expression, which yields whatever JSON it yields. A caller that knows its
+// own value type can hand them over as-is; nothing here inspects them.
+//
+// What FanOut does NOT decide, on purpose: how many values are too many, and
+// what to tell a caller who asked for too many. A ceiling is a fact about the
+// provider being called and its refusal is that domain's error to write, so it
+// belongs to the package that knows the provider -- see
+// pkg/plugin/implementation/AgricultureFacility/fanout.go, which checks its
+// own MaxFanOut before calling this. Use Bound below for the other half of the
+// arithmetic, defaulting and clamping a configured concurrency.
+func FanOut[T any](ctx context.Context, values []any, limit int,
+	call func(ctx context.Context, value any) (T, error)) ([]T, error) {
+
+	return Run(ctx, len(values), limit, func(ctx context.Context, index int) (T, error) {
+		return call(ctx, values[index])
+	})
+}
+
+// Bound resolves a configured concurrency: fallback when it is unset or
+// non-positive, ceiling when it is over.
+//
+// Here rather than in each caller because every caller of Run or FanOut needs
+// the same three lines, and getting them wrong is quiet: a zero limit means
+// UNBOUNDED in errgroup, so a deployment that leaves the setting out would get
+// every call at once from a mistake that reads like a default.
+func Bound(configured, fallback, ceiling int) int {
+	limit := configured
+	if limit <= 0 {
+		limit = fallback
+	}
+	if limit > ceiling {
+		limit = ceiling
+	}
+	return limit
+}

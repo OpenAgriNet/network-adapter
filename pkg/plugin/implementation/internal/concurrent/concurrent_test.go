@@ -193,3 +193,96 @@ func TestRunCancelsTheContextItHandsToInFlightWork(t *testing.T) {
 		t.Error("the in-flight call's context was not cancelled after the other call failed")
 	}
 }
+
+// --- FanOut -----------------------------------------------------------------
+
+// FanOut hands each value to its own call and returns the answers in the
+// order the values were given, whatever order the calls finished in.
+func TestFanOutCallsOncePerValueInOrder(t *testing.T) {
+	t.Parallel()
+
+	values := []any{"kvk", "warehouse", "soil_lab"}
+	results, err := FanOut(context.Background(), values, 3, func(ctx context.Context, value any) (string, error) {
+		// The first value sleeps longest, so arrival order is the reverse of
+		// the order asked for. A caller relying on results[i] meaning "the
+		// answer for values[i]" has to hold regardless.
+		if value == "kvk" {
+			time.Sleep(40 * time.Millisecond)
+		}
+		return "answered:" + value.(string), nil
+	})
+	if err != nil {
+		t.Fatalf("FanOut() returned an unexpected error: %v", err)
+	}
+	want := []string{"answered:kvk", "answered:warehouse", "answered:soil_lab"}
+	if len(results) != len(want) {
+		t.Fatalf("results = %v, want %v", results, want)
+	}
+	for index := range want {
+		if results[index] != want[index] {
+			t.Errorf("results[%d] = %q, want %q -- value order, not arrival order",
+				index, results[index], want[index])
+		}
+	}
+}
+
+// An empty list makes no calls and is not an error: a caller deciding that an
+// empty selection is a bad request says so itself, in its own words.
+func TestFanOutOfNoValuesMakesNoCalls(t *testing.T) {
+	t.Parallel()
+
+	results, err := FanOut(context.Background(), nil, 2, func(ctx context.Context, value any) (int, error) {
+		t.Error("a call was made for an empty value list")
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("FanOut() returned an unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("results = %v, want empty", results)
+	}
+}
+
+// One value's failure fails the whole fan-out, and the value's own error is
+// what comes back -- the caller named which value it was and why.
+func TestFanOutFailsWhenOneValueFails(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("warehouse is unreachable")
+	_, err := FanOut(context.Background(), []any{"kvk", "warehouse"}, 1,
+		func(ctx context.Context, value any) (string, error) {
+			if value == "warehouse" {
+				return "", sentinel
+			}
+			return "ok", nil
+		})
+	if !errors.Is(err, sentinel) {
+		t.Errorf("error = %v, want the failing value's own error", err)
+	}
+}
+
+// --- Bound ------------------------------------------------------------------
+
+// Bound is the arithmetic every caller of Run and FanOut needs: a configured
+// limit, a fallback when it is unset, a ceiling when it is over. Zero must
+// become the fallback and not reach errgroup, where it means UNBOUNDED.
+func TestBoundDefaultsAndClamps(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name                                string
+		configured, fallback, ceiling, want int
+	}{
+		{"unset takes the fallback", 0, 1, 8, 1},
+		{"negative takes the fallback", -4, 2, 8, 2},
+		{"within range is honoured", 4, 1, 8, 4},
+		{"exactly the ceiling is honoured", 8, 1, 8, 8},
+		{"over the ceiling is clamped", 64, 1, 8, 8},
+		{"a fallback over the ceiling is clamped too", 0, 16, 8, 8},
+	} {
+		if got := Bound(tc.configured, tc.fallback, tc.ceiling); got != tc.want {
+			t.Errorf("%s: Bound(%d, %d, %d) = %d, want %d",
+				tc.name, tc.configured, tc.fallback, tc.ceiling, got, tc.want)
+		}
+	}
+}

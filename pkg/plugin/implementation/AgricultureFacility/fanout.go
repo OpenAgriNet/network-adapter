@@ -96,20 +96,23 @@ const (
 // applyFanOutDefaults resolves the deployment's fan-out concurrency, clamped
 // to MaxFanOut, defaulting to DefaultFanOutConcurrency when left unset or
 // non-positive.
+//
+// The arithmetic is internal/concurrent's, because every caller of it needs
+// the same clamp and a zero limit there means unbounded. The three NUMBERS
+// are this package's, because each one is a fact about POCRA.
 func applyFanOutDefaults(configured int) int {
-	concurrency := configured
-	if concurrency <= 0 {
-		concurrency = DefaultFanOutConcurrency
-	}
-	if concurrency > MaxFanOut {
-		concurrency = MaxFanOut
-	}
-	return concurrency
+	return concurrent.Bound(configured, DefaultFanOutConcurrency, MaxFanOut)
 }
 
-// gatherFacilities builds this capability's Gather: refuse a payload over
-// the ceiling, then hand internal/concurrent.Run one call per fan-out value,
+// gatherFacilities builds this capability's Gather: refuse a payload over the
+// ceiling, then hand internal/concurrent.FanOut one call per fan-out value,
 // bounded by concurrency.
+//
+// What is borrowed and what is owned, deliberately: the execution (bounded,
+// ordered, one call per value, cancel on the first failure) is
+// internal/concurrent's and is reusable by any capability that ever needs it.
+// What stays here is only what names POCRA -- the ceiling of 8 and its
+// refusal, the sequential default, and the per-call identity below.
 //
 // One failure fails the request. A partial answer is the defect this was
 // built to fix wearing a different hat: the caller asked for four facility
@@ -125,8 +128,7 @@ func gatherFacilities(concurrency int) Gather {
 					"split it across more than one request", len(fan), MaxFanOut))
 		}
 
-		return concurrent.Run(ctx, len(fan), concurrency, func(ctx context.Context, index int) (any, error) {
-			value := fan[index]
+		return concurrent.FanOut(ctx, fan, concurrency, func(ctx context.Context, value any) (any, error) {
 			// Each call gets its own identity. POCRA keeps a message_id's
 			// answers for ten minutes and returns the union of everything
 			// asked for under it, so reusing one id across the fan-out
