@@ -15,10 +15,17 @@
 #
 # WHERE THE QUERY LIVES, and why it is not in resourceAttributes.
 #
-# An inbound query resource is informationMode OnDemand, and the
-# AgricultureFacility v0.1 pack forbids an OnDemand resource from carrying
-# location, address or facilityType. So the search origin is read from the Beckn
-# fulfillment stop and the requested type from supportedFacilityTypes.
+# An inbound query resource is informationMode OnDemand. The search origin is
+# read from the Beckn fulfillment stop and the requested type from
+# supportedFacilityTypes, rather than from location/address/facilityType on
+# resourceAttributes -- a convention this file chooses to keep, not a schema
+# requirement: the AgricultureFacility v0.1 pack no longer forbids those
+# fields under OnDemand (it did until network-specs commit b76c9ad8a5 on
+# schema-packs-v0.1 quietly dropped that constraint; see
+# dev_docs/schema-onDemand-forbid-removed.md). Nothing here depends on the
+# constraint being back -- the search origin still has nowhere verified to go
+# in resourceAttributes, since POCRA returns no per-facility coordinate for
+# the searched point.
 #
 # PROVISIONAL. This convention was chosen on the design and has not been
 # confirmed against a payload captured from the network. Confirm it before the

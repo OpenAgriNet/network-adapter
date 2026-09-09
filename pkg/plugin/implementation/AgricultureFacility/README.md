@@ -87,11 +87,16 @@ precondition's list. No rebuild.
 
 ## Where the query lives
 
-An inbound query resource is `informationMode: OnDemand`, and the schema pack
-forbids an OnDemand resource from carrying `location`, `address` or
-`facilityType`. So the search origin is read from
-`message.contract.commitments[].fulfillment.stops[].location.geo` and the
-requested type from `resourceAttributes.supportedFacilityTypes`.
+An inbound query resource is `informationMode: OnDemand`. The search origin is
+read from `message.contract.commitments[].fulfillment.stops[].location.geo`
+and the requested type from `resourceAttributes.supportedFacilityTypes`,
+rather than from `location`/`address`/`facilityType` on `resourceAttributes` --
+a convention this plugin keeps, not a schema requirement. The pack forbade
+those fields under OnDemand until `network-specs` commit `b76c9ad8a5` on
+`schema-packs-v0.1` dropped that constraint (see
+`dev_docs/schema-onDemand-forbid-removed.md`); the plugin's behavior did not
+change when that happened, since POCRA has no verified per-facility
+coordinate to put there anyway.
 
 **This convention is provisional.** It was chosen on design and has not been
 confirmed against a payload captured from the network.

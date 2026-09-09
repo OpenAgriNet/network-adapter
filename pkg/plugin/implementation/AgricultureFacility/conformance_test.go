@@ -363,11 +363,20 @@ func propertyNames(section string) []string {
 
 // The INBOUND query resource must satisfy the pack too, in OnDemand mode.
 //
-// Every other conformance test here validates the answer. Nothing validated the
-// request, and the request is where this plugin made its most debatable choice:
-// the pack forbids an OnDemand resource from carrying location, address or
-// facilityType, so the search origin had to go somewhere else -- it is read from
-// the Beckn fulfillment stop.
+// Every other conformance test here validates the answer. Nothing validated
+// the request, and the request is where this plugin made its most debatable
+// choice: the search origin is read from the Beckn fulfillment stop rather
+// than from resourceAttributes, because an OnDemand resource used to be
+// schema-forbidden from carrying location, address or facilityType there.
+//
+// That forbid clause is gone as of network-specs commit b76c9ad8a5 on
+// schema-packs-v0.1 (see dev_docs/schema-onDemand-forbid-removed.md) --
+// OnDemand now permits, but does not require, all of those fields. This test
+// used to assert the forbid; it no longer can, because the schema no longer
+// enforces it. The convention -- origin in the fulfillment stop, not in
+// resourceAttributes -- is kept anyway, as a choice rather than a schema
+// requirement, so what is left to check is only that the fixture is still a
+// valid OnDemand AgricultureFacility at all.
 //
 // If the fixture the whole suite is built on is not a valid OnDemand
 // AgricultureFacility, then the convention is wrong and every test that uses it
@@ -388,22 +397,6 @@ func TestTheRequestResourceSatisfiesOnDemandMode(t *testing.T) {
 	if err := schema.Validate(attributes); err != nil {
 		t.Fatalf("the request resource does not satisfy AgricultureFacility v0.1 in OnDemand mode:\n%v\n%s",
 			err, mustIndent(t, attributes))
-	}
-
-	// And the reason the query lives in the fulfillment stop rather than here.
-	// OnDemand forbids each of these outright, so putting the search origin in
-	// resourceAttributes would make every request invalid.
-	for _, forbidden := range []string{"facilityType", "location", "address", "services",
-		"capacity", "publicContact", "website", "source", "lastUpdatedAt"} {
-		broken := map[string]any{}
-		for key, value := range attributes {
-			broken[key] = value
-		}
-		broken[forbidden] = map[string]any{"type": "Point", "coordinates": []any{74.5321, 19.5132}}
-		if err := schema.Validate(broken); err == nil {
-			t.Errorf("OnDemand accepted %q, but the pack forbids it -- if that is now allowed, "+
-				"the search origin could move into resourceAttributes", forbidden)
-		}
 	}
 }
 
