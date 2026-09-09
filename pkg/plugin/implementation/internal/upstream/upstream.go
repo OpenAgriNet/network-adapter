@@ -30,9 +30,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"golang.org/x/sync/errgroup"
-
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -66,36 +63,6 @@ const (
 	// than serving it with a sane budget and saying so in the log.
 	MaxTimeout  = 30 * time.Second
 	MaxRetryMax = 5
-
-	// MaxFanOut bounds how many upstream calls one inbound payload may become.
-	//
-	// Fan-out is amplification: one request in, N out, each with its own retry
-	// budget. The values come from the PAYLOAD, so without a ceiling a caller
-	// decides how much work this adapter and the provider do -- and the
-	// provider is a government API that takes eight seconds to answer.
-	//
-	// Refused rather than clamped, unlike the registry's budgets. A clamped
-	// timeout still answers the question asked; a clamped fan-out silently
-	// drops facility types from the answer, which is the exact defect fan-out
-	// was added to fix.
-	MaxFanOut = 8
-
-	// DefaultFanOutConcurrency is how many fan-out calls are in flight at once
-	// when a deployment does not say.
-	//
-	// One -- sequential. Fan-out exists for providers that answer one question
-	// at a time, and a provider built that way is not usually built to be asked
-	// several at once: POCRA's aggregator waits a fixed window for its BPPs to
-	// reply and returns whatever arrived, so a slow BPP that misses the window
-	// is reported as no results rather than as an error. Concurrency makes that
-	// more likely, and its failure mode is silent data loss -- the exact defect
-	// fan-out was added to fix.
-	//
-	// A provider that tolerates concurrency can say so per deployment, which is
-	// a config change rather than a code one. The cost of the safe default is
-	// latency: N calls take N times as long, and the operator can see that in
-	// the log line each call writes.
-	DefaultFanOutConcurrency = 1
 )
 
 // Auth schemes this step can present upstream. Credentials themselves are never
@@ -191,16 +158,6 @@ type Config struct {
 
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
-
-	// FanOutConcurrency is how many of a fan-out's calls may be in flight at
-	// once. Absent means DefaultFanOutConcurrency, which is sequential.
-	//
-	// Configuration rather than a constant because it is a fact about the
-	// PROVIDER, and this package serves several. Raising it for a provider that
-	// cannot take it does not fail loudly -- POCRA answers a call it could not
-	// service in time with 200 and an empty catalog -- so the default is the
-	// cautious one and raising it is a deliberate act.
-	FanOutConcurrency int `yaml:"fanOutConcurrency" json:"fanOutConcurrency"`
 }
 
 // Step serves whatever capabilities a domain package configures it for. It is
@@ -209,14 +166,44 @@ type Step struct {
 	config        *Config
 	paths         capabilitybinding.Paths
 	prerequisites Prerequisites
-	registry      definition.ProviderRecordLookup
-	mapper        definition.Mapper
-	httpClient    *http.Client
+	// gather is the domain package's fan-out hook, or nil. Spelled out
+	// rather than given a type name on purpose -- see New's doc comment.
+	gather     func(ctx context.Context, values []any, one func(ctx context.Context, fanValue any) (any, error)) (any, error)
+	registry   definition.ProviderRecordLookup
+	mapper     definition.Mapper
+	httpClient *http.Client
 }
 
 // New creates the step.
+//
+// gather is how a domain package says what a fan-out MEANS for its provider:
+// given the values the mapping's fan-out half selected, and a function that
+// makes exactly one upstream call, it decides how many calls to make, in
+// what order, how many at once, and what is too many -- then returns
+// whatever the response half should be handed. It is called once per
+// request, only when the mapping's fan-out half selects values.
+//
+// nil is valid, and is what every domain package but one passes: their
+// capabilities' mappings never declare a fan-out half, so there is nothing
+// to gather -- one payload is one call, unchanged since before fan-out
+// existed. A mapping that DOES declare one on a step configured with nil is
+// a mismatch between the mapping and the domain package that configured this
+// step, and is refused rather than silently defaulted: how many calls to
+// make at once and what ceiling is too many is a fact about the PROVIDER,
+// and this package has no opinion worth guessing on anyone's behalf.
+//
+// Deliberately an unnamed function type. The name for this idea is
+// "Gather", and it is declared in the one package that has one --
+// AgricultureFacility's fanout.go, whose gatherFacilities builds on
+// pkg/plugin/implementation/internal/concurrent's generic Run. Naming it
+// here would put a plugin's vocabulary in the generic machinery, and
+// referencing that package's type would be an import cycle; Go's structural
+// func typing means neither is necessary. See
+// pkg/plugin/implementation/internal/upstream/README.md.
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
-	prerequisites Prerequisites, cfg *Config) (*Step, func() error, error) {
+	prerequisites Prerequisites,
+	gather func(ctx context.Context, values []any, one func(ctx context.Context, fanValue any) (any, error)) (any, error),
+	cfg *Config) (*Step, func() error, error) {
 	if registry == nil {
 		return nil, nil, errors.New("upstream: a provider record lookup is required")
 	}
@@ -239,6 +226,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		config:        cfg,
 		paths:         paths,
 		prerequisites: prerequisites,
+		gather:        gather,
 		registry:      registry,
 		mapper:        mapper,
 		// Timeout is set per request from the registry's own budget, so the
@@ -296,12 +284,6 @@ func applyDefaults(cfg *Config) error {
 	}
 	if cfg.MaxResponseBytes <= 0 {
 		cfg.MaxResponseBytes = DefaultMaxResponseBytes
-	}
-	if cfg.FanOutConcurrency <= 0 {
-		cfg.FanOutConcurrency = DefaultFanOutConcurrency
-	}
-	if cfg.FanOutConcurrency > MaxFanOut {
-		cfg.FanOutConcurrency = MaxFanOut
 	}
 
 	switch cfg.AuthScheme {
@@ -438,7 +420,25 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	answer, err := s.gather(ctx, plan, call, beckn, local, fan)
+	// oneCall makes exactly one upstream call; s.gather (a domain package's
+	// choice, or none) decides how many times to use it. See New's doc
+	// comment for why this package does not decide that itself, and does not
+	// even name the shape.
+	oneCall := func(ctx context.Context, fanValue any) (any, error) {
+		return s.one(ctx, plan.BaseURL, call, beckn, local, fanValue)
+	}
+
+	var answer any
+	switch {
+	case fan == nil:
+		answer, err = oneCall(ctx, nil)
+	case s.gather != nil:
+		answer, err = s.gather(ctx, fan, oneCall)
+	default:
+		err = fmt.Errorf(
+			"upstream: %s's mapping declares a fan-out, but this step was configured with nothing to run it",
+			plan.BindingKey)
+	}
 	if err != nil {
 		return err
 	}
@@ -544,83 +544,7 @@ func (s *Step) fanOut(ctx context.Context, call model.ActionPlan, beckn any, loc
 			"upstream: the fan-out half of %s selected no values, so there is nothing to ask %s for",
 			call.Mappings, call.Path))
 	}
-	if len(values) > MaxFanOut {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"upstream: this payload asks for %d upstream calls and the ceiling is %d; "+
-				"split it across more than one request", len(values), MaxFanOut))
-	}
 	return values, nil
-}
-
-// gather makes the upstream calls this payload becomes and returns what the
-// response half is handed.
-//
-// With no fan-out that is one call and the provider's own answer, unchanged.
-// With fan-out it is one call per value and a LIST of answers, in the order the
-// fan-out half named them rather than the order they arrived -- an answer whose
-// content depends on which provider replied first is not reproducible, and the
-// suite could not assert it.
-func (s *Step) gather(ctx context.Context, plan *model.ProviderRecord, call model.ActionPlan,
-	beckn any, local map[string]any, fan []any) (any, error) {
-
-	if fan == nil {
-		body, err := s.one(ctx, plan.BaseURL, call, beckn, local, nil)
-		if err != nil {
-			return nil, err
-		}
-		return body, nil
-	}
-
-	// Bounded, and sequential unless the deployment raised it. These are
-	// independent questions, but a provider that answers one at a time is
-	// often not built to be asked several at once -- see
-	// DefaultFanOutConcurrency for what POCRA does when pushed, and why its
-	// failure mode is the reason not to default to parallel.
-	//
-	// The cost is latency: sequentially, N calls take N times as long.
-	//
-	// group's context is cancelled the moment any call fails, so a call not
-	// yet issued is skipped rather than made -- one failure already dooms the
-	// request, and letting the rest run out their own full retry budget (up to
-	// MaxTimeout * (MaxRetryMax+1) each) buys nothing but latency. An in-flight
-	// call is cancelled too: attempt's request context derives from groupCtx.
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(s.config.FanOutConcurrency)
-	answers := make([]any, len(fan))
-	for index, value := range fan {
-		group.Go(func() error {
-			if groupCtx.Err() != nil {
-				return nil
-			}
-			// Each call gets its own identity. A provider that caches or
-			// accumulates per request id -- POCRA keeps a message_id's answers
-			// for ten minutes and returns the union of everything asked for
-			// under it -- would otherwise blend these calls into each other,
-			// and the fan-out would return the same blended answer N times.
-			//
-			// Generated here rather than in the mapping because it has to be a
-			// fresh UUID, which JSONata cannot produce, and POCRA's schema
-			// refuses a message_id that is not one.
-			answer, err := s.one(groupCtx, plan.BaseURL, call, beckn, local, map[string]any{
-				"value":  value,
-				"callId": uuid.NewString(),
-			})
-			if err != nil {
-				return fmt.Errorf("upstream: the call for fan-out value %v failed: %w", value, err)
-			}
-			answers[index] = answer
-			return nil
-		})
-	}
-
-	// One failure fails the request. A partial answer is the defect this was
-	// built to fix wearing a different hat: the caller asked for four facility
-	// types, would receive three, and nothing in the payload would say that the
-	// fourth was asked for and lost.
-	if err := group.Wait(); err != nil {
-		return nil, err
-	}
-	return answers, nil
 }
 
 // one builds and makes a single upstream call, with fanValue bound as _fan for
