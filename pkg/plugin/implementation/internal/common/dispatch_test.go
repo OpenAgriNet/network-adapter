@@ -11,7 +11,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // dispatchMappingRef stands in for the one reference an action carries. This
@@ -85,7 +85,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 				// Auth is per provider, so each step declares its own even
 				// when neither upstream needs a credential.
 				AuthByProvider: map[string]*common.AuthProfile{
-					strings.Split(bindingKey, "|")[0]: {Scheme: httputil.AuthSchemeNone},
+					strings.Split(bindingKey, "|")[0]: {Scheme: util.AuthSchemeNone},
 				},
 			})
 		if err != nil {

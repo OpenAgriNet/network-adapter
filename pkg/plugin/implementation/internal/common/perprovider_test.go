@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // bodyFor builds a select naming a particular provider, so one step serving
@@ -81,8 +81,8 @@ func TestTwoProvidersOnOneStepAuthenticateDifferently(t *testing.T) {
 	cfg := &Config{
 		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
-			"alpha": {Scheme: httputil.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_PP_QUERY_TOKEN"},
-			"beta":  {Scheme: httputil.AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_PP_HEADER_TOKEN"},
+			"alpha": {Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_PP_QUERY_TOKEN"},
+			"beta":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_PP_HEADER_TOKEN"},
 		},
 	}
 	registry := &routingRegistry{plans: map[string]*model.ProviderRecord{
@@ -156,9 +156,9 @@ func TestTwoOAuth2ProvidersDoNotShareAToken(t *testing.T) {
 	cfg := &Config{
 		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
-			"alpha": {Scheme: httputil.AuthSchemeOAuth2, TokenURL: issuerA.URL,
+			"alpha": {Scheme: util.AuthSchemeOAuth2, TokenURL: issuerA.URL,
 				ClientIDEnv: "TEST_PP_ID_A", ClientSecretEnv: "TEST_PP_SECRET_A"},
-			"beta": {Scheme: httputil.AuthSchemeOAuth2, TokenURL: issuerB.URL,
+			"beta": {Scheme: util.AuthSchemeOAuth2, TokenURL: issuerB.URL,
 				ClientIDEnv: "TEST_PP_ID_B", ClientSecretEnv: "TEST_PP_SECRET_B"},
 		},
 	}
@@ -215,8 +215,8 @@ func TestRedactionCoversEveryProvidersSecret(t *testing.T) {
 	cfg := &Config{
 		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
-			"alpha": {Scheme: httputil.AuthSchemeHeader, HeaderName: "X-A", HeaderValueEnv: "TEST_PP_RED_A"},
-			"beta":  {Scheme: httputil.AuthSchemeHeader, HeaderName: "X-B", HeaderValueEnv: "TEST_PP_RED_B"},
+			"alpha": {Scheme: util.AuthSchemeHeader, HeaderName: "X-A", HeaderValueEnv: "TEST_PP_RED_A"},
+			"beta":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-B", HeaderValueEnv: "TEST_PP_RED_B"},
 		},
 	}
 	step, closer, err := New(context.Background(), &routingRegistry{}, &stubMapper{}, nil, cfg)
@@ -248,8 +248,8 @@ func TestRedactionSortsAcrossProvidersNotWithinOne(t *testing.T) {
 	cfg := &Config{
 		BindingKeys: []string{"shorty|" + capability, "longy|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
-			"shorty": {Scheme: httputil.AuthSchemeHeader, HeaderName: "X-S", HeaderValueEnv: "TEST_PP_SHORT"},
-			"longy":  {Scheme: httputil.AuthSchemeHeader, HeaderName: "X-L", HeaderValueEnv: "TEST_PP_LONG"},
+			"shorty": {Scheme: util.AuthSchemeHeader, HeaderName: "X-S", HeaderValueEnv: "TEST_PP_SHORT"},
+			"longy":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-L", HeaderValueEnv: "TEST_PP_LONG"},
 		},
 	}
 	step, closer, err := New(context.Background(), &routingRegistry{}, &stubMapper{}, nil, cfg)

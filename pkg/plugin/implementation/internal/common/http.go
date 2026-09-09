@@ -11,17 +11,17 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
-// call makes the upstream request the plan describes, retrying within httputil.Budget.
+// call makes the upstream request the plan describes, retrying within util.Budget.
 func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
-	endpoint, err := httputil.BuildEndpoint(baseURL, call, mapped)
+	endpoint, err := util.BuildEndpoint(baseURL, call, mapped)
 	if err != nil {
 		return nil, err
 	}
 
-	timeout, retries := httputil.Budget(call)
+	timeout, retries := util.Budget(call)
 	if d := time.Duration(call.TimeoutMs) * time.Millisecond; d > timeout {
 		log.Warnf(ctx, "registry asks for a %v timeout; using the %v ceiling", d, timeout)
 	}
@@ -52,16 +52,16 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 		// identically however often they are tried. Retrying the credential
 		// case is the worst: it reports a missing environment variable as the
 		// provider being down.
-		if httputil.IsPermanent(err) {
+		if util.IsPermanent(err) {
 			break
 		}
 		if attempt < attempts {
-			if err := httputil.Sleep(ctx, httputil.Backoff(attempt)); err != nil {
+			if err := util.Sleep(ctx, util.Backoff(attempt)); err != nil {
 				break
 			}
 		}
 	}
-	return nil, model.NewCodedErr(http.StatusBadGateway, httputil.CodeUpstreamUnavailable,
+	return nil, model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable,
 		fmt.Errorf("provider did not answer after %d attempts: %w", attempts, lastErr))
 }
 
@@ -70,17 +70,17 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	method := httputil.CanonicalMethod(call.Method)
-	req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, httputil.RequestBody(method, mapped))
+	method := util.CanonicalMethod(call.Method)
+	req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, util.RequestBody(method, mapped))
 	if err != nil {
-		return nil, httputil.DoNotRetry(fmt.Errorf("could not build the request: %w", err))
+		return nil, util.DoNotRetry(fmt.Errorf("could not build the request: %w", err))
 	}
-	if httputil.HasBody(method) {
+	if util.HasBody(method) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if err := s.authenticate(auth, req); err != nil {
 		// A missing or unreadable credential is configuration, not weather.
-		return nil, httputil.DoNotRetry(err)
+		return nil, util.DoNotRetry(err)
 	}
 
 	// The URL as it went on the wire, credential removed. At info because this
@@ -100,7 +100,7 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	log.Infof(ctx, "%s %s -> %s, %d bytes", method, requested, resp.Status, len(body))
 	if int64(len(body)) > s.config.MaxResponseBytes {
 		// Asking again will not make the answer smaller.
-		return nil, httputil.DoNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
+		return nil, util.DoNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
 	}
 	// Any 2xx, not 200 alone: 202, 204 and 201 are all legitimate answers. 3xx
 	// does not reach here, since the client follows redirects.
@@ -112,12 +112,12 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		// Redacted on the way to the log too: a rejected request is often
 		// quoted back, credential and all.
 		log.Warnf(ctx, "provider returned %s for %s %s: %s",
-			resp.Status, method, requested, s.redactString(httputil.Explain(body)))
+			resp.Status, method, requested, s.redactString(util.Explain(body)))
 		err := fmt.Errorf("provider returned %s", resp.Status)
 		// 5xx and 429 ask to be tried again. Every other 4xx is a statement
 		// about the request, which will not improve.
 		if resp.StatusCode < http.StatusInternalServerError && resp.StatusCode != http.StatusTooManyRequests {
-			return nil, httputil.DoNotRetry(err)
+			return nil, util.DoNotRetry(err)
 		}
 		return nil, err
 	}

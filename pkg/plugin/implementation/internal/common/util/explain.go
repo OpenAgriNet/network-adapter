@@ -1,5 +1,5 @@
 // Quoting a failed response body for a human.
-package httputil
+package util
 
 import "strings"
 

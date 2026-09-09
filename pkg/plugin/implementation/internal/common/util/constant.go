@@ -1,14 +1,8 @@
-// Every constant this machinery uses, in one file.
+// Every constant the package uses, in one file.
 //
-// Here rather than in common because common imports this package: a constant
-// read by anything under httputil could not live in common without an import
-// cycle, and splitting them across two files put the auth schemes in one place
-// and the retry budget in another.
-//
-// The consequence is that the package name undersells the contents -- the auth
-// schemes and the redaction marker are not about HTTP plumbing. One file that
-// can be found beats two that are each in the right place.
-package httputil
+// Here rather than in common because common imports this package, so a
+// constant read on this side could not live there without an import cycle.
+package util
 
 import (
 	"time"

@@ -1,6 +1,14 @@
-// The retry budget: how long an attempt may take, how many follow it, and
-// which failures are worth repeating.
-package httputil
+// Package util holds what the capability machinery needs but does not own: the
+// retry budget, the endpoint and body of a request, and every constant.
+//
+// It exists because these have no receiver on common's types, so they can sit
+// in their own package -- and because common imports it, the constants live
+// here too. Named plainly, since the contents are a mix rather than one
+// subject: the retry budget, the query rendering, the auth scheme names.
+//
+// Not a home for anything that will fit elsewhere. A helper belongs beside the
+// code that uses it unless a receiver forbids it.
+package util
 
 import (
 	"context"
