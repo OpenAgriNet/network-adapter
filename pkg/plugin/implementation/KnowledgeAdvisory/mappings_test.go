@@ -91,6 +91,7 @@ const providerResponse = `{
  "hits": [
   {
    "_id": "26860172-2762-4b0b-cabf-3c947846c2e1",
+   "section": "![House icon](a2bc7bb7c74e387ff445bcc6cf9b2a5a_1_img.webp)",
    "filename": "doc-379e706ade8b-rerun-1788847883",
    "_score": 0.77918214,
    "doc_id": "74b89b5f69dcd56f6566d4b1a9392ffd",
@@ -103,6 +104,7 @@ const providerResponse = `{
   },
   {
    "_id": "0e753c2b-040a-4af9-3dc4-c9fca3b01e4d",
+   "section": "![House icon](71c6c13ee057c1204dd8980597d79d5b_1_img.webp)",
    "filename": "doc-379e706ade8b-rerun-1788785422",
    "_score": 0.7783708,
    "doc_id": "74b89b5f69dcd56f6566d4b1a9392ffd",
@@ -117,6 +119,7 @@ const providerResponse = `{
   },
   {
    "_id": "b9ec5c75-7331-0424-f741-4b3294c6b75e",
+   "section": "- (d) Under the Anna Bhagya Scheme, from which state is the rice being brought",
    "filename": "doc-d7124029cb60-rerun-1788841718",
    "_score": 0.77453613,
    "doc_id": "2cc58f8a1c39a64fc132338be3547f52",
@@ -129,6 +132,7 @@ const providerResponse = `{
   },
   {
    "_id": "4c6466a5-6975-a3be-4a62-637ae1a611d3",
+   "section": "**Regarding the 'Jalashree' Scheme being implemented by KUIDFC in the State**",
    "filename": "doc-d7124029cb60-rerun-1788841718",
    "_score": 0.7743588,
    "doc_id": "2cc58f8a1c39a64fc132338be3547f52",
@@ -485,6 +489,40 @@ func TestShippedMappingReferencesEveryHitAndNothingElse(t *testing.T) {
 		}
 		if !returned[fmt.Sprint(id)] {
 			t.Errorf("offer references %q, which is not in resources[]", id)
+		}
+	}
+}
+
+// shortDesc is the passage's own section heading, and supportingResourceIds is
+// gone. The heading is the only per-hit short label the corpus offers --
+// doc_short_description, the field that looks right for it, is "" throughout.
+// supportingResourceIds named the document a passage came from, which
+// source.sourceId now does directly, and the ids it minted resolved to nothing.
+func TestShippedMappingDescribesEachPassageBySection(t *testing.T) {
+	_, answer := runShipped(t, selectRequest)
+	res := resourcesOf(t, answer)
+
+	wantSections := map[string]bool{
+		"![House icon](a2bc7bb7c74e387ff445bcc6cf9b2a5a_1_img.webp)":                     true,
+		"![House icon](71c6c13ee057c1204dd8980597d79d5b_1_img.webp)":                     true,
+		"- (d) Under the Anna Bhagya Scheme, from which state is the rice being brought": true,
+		"**Regarding the 'Jalashree' Scheme being implemented by KUIDFC in the State**":  true,
+	}
+	for i := range res {
+		d, _ := res[i].(map[string]any)["descriptor"].(map[string]any)
+		short, _ := d["shortDesc"].(string)
+		if short == "" {
+			t.Errorf("resource %d carries no shortDesc", i)
+			continue
+		}
+		if !wantSections[short] {
+			t.Errorf("resource %d shortDesc = %q, which is not that hit's section", i, short)
+		}
+
+		// supportingResourceIds must be gone from every advisory.
+		attrs := attributesOf(t, answer, i)
+		if v, present := attrs["supportingResourceIds"]; present {
+			t.Errorf("resource %d still carries supportingResourceIds = %v", i, v)
 		}
 	}
 }
