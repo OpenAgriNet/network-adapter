@@ -1,8 +1,5 @@
-// Constants only: the budgets a registry row is clamped to, the retry backoff,
-// the auth schemes, and the markers this package puts in text it returns.
-//
-// authFields is deliberately NOT here. It is a var -- Go has no constant maps --
-// and it belongs beside the parser in auth.go that reads it.
+// Constants only. authFields is not here: it is a var, since Go has no constant
+// maps, and it sits beside the parser in auth.go that reads it.
 package common
 
 import (
@@ -11,39 +8,29 @@ import (
 
 // Defaults applied when the registry or the operator leaves a setting out.
 const (
-	// DefaultTimeout and DefaultRetryMax are the registry contract's defaults
-	// for an action that leaves timeoutMs or retryMax out. Zero retries is
-	// deliberate: a provider that failed is retried only where the operator
-	// said so, because a retry on a non-idempotent action is a second booking.
+	// Zero retries is deliberate: a retry on a non-idempotent action is a
+	// second booking, so a provider is retried only where the operator said so.
 	DefaultTimeout  = 15 * time.Second
 	DefaultRetryMax = 0
-	// DefaultMaxResponseBytes caps what is read from the provider. The response
-	// is mapped in memory, so an unbounded one is an unbounded allocation.
+	// The response is mapped in memory, so an unbounded one is an unbounded
+	// allocation.
 	DefaultMaxResponseBytes = 4 << 20 // 4 MiB
 
-	// MaxTimeout and MaxRetryMax bound what a registry row may ask for.
+	// A ceiling on what a registry row may ask for, because the row is DATA and
+	// an attempt holds a goroutine and the inbound connection for its whole
+	// timeout. retryMax 1000 with timeoutMs 60000 would pin both for about
+	// seventeen hours.
 	//
-	// Both come from DATA, not from this deployment's config, and neither is
-	// cheap: an attempt holds a goroutine and the inbound connection for its
-	// whole timeout, and http.Server's write timeout does not cancel the
-	// request context. So a row reading retryMax 1000, timeoutMs 60000 pins
-	// both for roughly seventeen hours, and a handful of such requests is the
-	// adapter. The registry is trusted to say where a provider is; it is not a
-	// reason to let one row decide how long this process is busy.
-	//
-	// Clamped rather than refused. A row that overreaches is a configuration
-	// mistake, and failing every request for that capability is a worse answer
-	// than serving it with a sane budget and saying so in the log.
+	// Clamped rather than refused: a row that overreaches is a mistake, and
+	// serving it with a sane budget beats failing the capability outright.
 	MaxTimeout  = 30 * time.Second
 	MaxRetryMax = 5
 )
 
 // How long this step waits between attempts.
 const (
-	// RetryBackoffBase is the first wait between attempts, doubling from there
-	// up to RetryBackoffMax. Short, because the retry budget comes from the
-	// registry and an operator setting 5 retries did not ask for seconds of
-	// latency -- only for the provider's brief unavailability to be ridden out.
+	// The first wait, doubling up to the max. Short: an operator setting 5
+	// retries asked to ride out a brief outage, not for seconds of latency.
 	RetryBackoffBase = 50 * time.Millisecond
 	RetryBackoffMax  = 800 * time.Millisecond
 )
@@ -51,43 +38,35 @@ const (
 // redactedMarker stands in for a credential in anything logged or returned.
 const redactedMarker = "REDACTED"
 
-// Auth schemes this step can present upstream. Credentials themselves are never
-// configured here or held in the registry -- config names the environment
-// variable to read, so a secret reaches the process through its environment and
-// nothing else.
+// Auth schemes a step can present. Credentials are never in config or in the
+// registry: config names the environment variable to read.
 const (
 	AuthSchemeNone   = "none"
 	AuthSchemeBasic  = "basic"
 	AuthSchemeHeader = "header"
-	// AuthSchemeQuery puts the credential in the query string, which some
-	// upstreams are built around whatever anyone thinks of it. It is the least
-	// safe of the four -- a query string is logged by proxies and appears in a
-	// transport error -- so the value is redacted from anything this package
-	// logs or returns. See redact.
+	// The credential goes in the query string, which some upstreams require.
+	// The least safe scheme -- proxies log query strings and transport errors
+	// quote them -- so the value is redacted. See redact.
 	AuthSchemeQuery = "query"
 
-	// AuthSchemeOAuth2 exchanges a client id and secret for a short-lived
-	// bearer token, and sends that. For an upstream behind an OAuth2 token
-	// endpoint -- a Keycloak service account, say -- where a static token is not
-	// an option: the live one this was written against lives ten hours, so a
-	// value pasted into an environment variable is wrong twice a day.
+	// A client id and secret are exchanged for a short-lived bearer token. For
+	// an upstream where a static token is not an option: the live one this was
+	// written against expires every ten hours.
 	//
-	// Only the client_credentials grant. There is no user to redirect and no
-	// refresh token in that grant, so the other flows would be dead code.
+	// Only client_credentials. That grant has no user to redirect and no
+	// refresh token, so the other flows would be dead code.
 	AuthSchemeOAuth2 = "oauth2"
 )
 
-// codeUpstreamUnavailable reports a provider that could not be reached or
-// answered with a failure. It is not this adapter's fault and not the caller's.
+// codeUpstreamUnavailable: the provider could not be reached or failed. Not
+// this adapter's fault and not the caller's.
 const codeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
 
-// tokenRefreshSkew is how early an oauth2 token stops being trusted. It has to
-// exceed the round trip to the provider, so that a request which passes the
-// expiry check cannot arrive after the token has actually died. One extra
-// exchange per token lifetime is the whole cost.
+// How early an oauth2 token stops being trusted. Must exceed the round trip to
+// the provider, so a request that passed the expiry check cannot arrive after
+// the token died. Costs one extra exchange per lifetime.
 const tokenRefreshSkew = 60 * time.Second
 
-// explainLimit is how much of a failed response is quoted. Enough for a
-// provider's own message, short enough not to put a page of HTML in a log line
-// or a NACK.
+// How much of a failed response is quoted: enough for the provider's message,
+// not a page of HTML in a log line.
 const explainLimit = 300
