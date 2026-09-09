@@ -29,8 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-
-	"github.com/google/uuid"
+	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -131,7 +130,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 	// the fresh message id each part carries is what stops POCRA blending the
 	// answers, and a search of one still wants its own id rather than the
 	// caller's. See splitByType.
-	parts, err := splitByType(ctx.Body, types)
+	parts, err := splitByType(ctx.Body, types, s.facilityTypesAt)
 	if err != nil {
 		return err
 	}
@@ -163,7 +162,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 		return err
 	}
 
-	merged, err := mergeAnswers(answers, messageIDOf(beckn))
+	merged, err := mergeAnswers(answers)
 	if err != nil {
 		return err
 	}
@@ -218,7 +217,11 @@ func (s *Step) mine(body []byte) bool {
 // Re-decoded per part rather than deep-copied: the parts are mutated
 // independently and a shared nested map would have them overwrite each other's
 // type. A payload is a few kilobytes and this happens once per request.
-func splitByType(body []byte, types []string) ([][]byte, error) {
+func splitByType(body []byte, types []string, path string) ([][]byte, error) {
+	if path == "" {
+		path = DefaultFacilityTypesAt
+	}
+
 	parts := make([][]byte, 0, len(types))
 	for _, facilityType := range types {
 		var part map[string]any
@@ -227,44 +230,19 @@ func splitByType(body []byte, types []string) ([][]byte, error) {
 				"agriculture facility: the payload is not a JSON object: %w", err))
 		}
 
-		attributes, ok := dig(part, "message", "contract", "commitments").([]any)
-		if !ok || len(attributes) == 0 {
-			return nil, model.NewBadReqErr("", fmt.Errorf(
-				"agriculture facility: the payload carries no commitment to split"))
-		}
-		commitment, ok := attributes[0].(map[string]any)
-		if !ok {
-			return nil, model.NewBadReqErr("", fmt.Errorf(
-				"agriculture facility: the payload's first commitment is %T, not an object", attributes[0]))
-		}
-		resources, ok := commitment["resources"].([]any)
-		if !ok || len(resources) == 0 {
-			return nil, model.NewBadReqErr("", fmt.Errorf(
-				"agriculture facility: the payload's commitment carries no resource to split"))
-		}
-		resource, ok := resources[0].(map[string]any)
-		if !ok {
-			return nil, model.NewBadReqErr("", fmt.Errorf(
-				"agriculture facility: the payload's first resource is %T, not an object", resources[0]))
-		}
-		resourceAttributes, ok := resource["resourceAttributes"].(map[string]any)
-		if !ok {
-			return nil, model.NewBadReqErr("", fmt.Errorf(
-				"agriculture facility: the payload's first resource carries no resourceAttributes"))
-		}
-
 		// A list of one, not a bare string: the required: checks and the
 		// request half both read this through [] and a scalar would work, but
 		// a part that does not look like the payload it came from is a trap
 		// for whoever reads one in a log.
-		resourceAttributes["supportedFacilityTypes"] = []any{facilityType}
-
-		becknContext, ok := part["context"].(map[string]any)
-		if !ok {
-			return nil, model.NewBadReqErr("", fmt.Errorf(
-				"agriculture facility: the payload carries no context to stamp a message id on"))
+		//
+		// Written at the SAME path the types were read from, so the two cannot
+		// disagree about where they live. No message id is stamped here: the
+		// request half derives POCRA's own from the caller's id and this
+		// part's type, which leaves the caller's id on the part where a Beckn
+		// answer wants it.
+		if err := setAt(part, path, []any{facilityType}); err != nil {
+			return nil, err
 		}
-		becknContext["messageId"] = uuid.NewString()
 
 		encoded, err := json.Marshal(part)
 		if err != nil {
@@ -295,7 +273,7 @@ func splitByType(body []byte, types []string) ([][]byte, error) {
 // attribute and the mapping drops it before this sees the answers. A globally
 // ranked multi-type search would need the mapping to publish a distance this
 // could sort on, which the schema pack says it must not.
-func mergeAnswers(answers [][]byte, callerMessageID string) ([]byte, error) {
+func mergeAnswers(answers [][]byte) ([]byte, error) {
 	if len(answers) == 0 {
 		return nil, fmt.Errorf("agriculture facility: nothing to merge; this search made no calls")
 	}
@@ -353,10 +331,6 @@ func mergeAnswers(answers [][]byte, callerMessageID string) ([]byte, error) {
 		offer["resourceIds"] = ids
 	}
 
-	if becknContext, ok := merged["context"].(map[string]any); ok && callerMessageID != "" {
-		becknContext["messageId"] = callerMessageID
-	}
-
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return nil, fmt.Errorf("agriculture facility: could not encode the merged answer: %w", err)
@@ -366,28 +340,11 @@ func mergeAnswers(answers [][]byte, callerMessageID string) ([]byte, error) {
 
 // commitmentOf reaches the one commitment an answer carries.
 func commitmentOf(document map[string]any) (map[string]any, error) {
-	commitments, _ := dig(document, "message", "contract", "commitments").([]any)
+	commitments := containersAt(document, strings.Split(CommitmentsAt, "."))
 	if len(commitments) == 0 {
 		return nil, fmt.Errorf("agriculture facility: an answer carries no commitment to merge")
 	}
-	commitment, ok := commitments[0].(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("agriculture facility: an answer's commitment is %T, not an object", commitments[0])
-	}
-	return commitment, nil
-}
-
-// messageIDOf reads the caller's own message id, for the merged answer to
-// correlate with. Absent is not an error: the mapping copies whatever the
-// payload carried, so an absent one stays absent, as it did before splitting
-// existed.
-func messageIDOf(beckn any) string {
-	document, ok := beckn.(map[string]any)
-	if !ok {
-		return ""
-	}
-	id, _ := dig(document, "context", "messageId").(string)
-	return id
+	return commitments[0], nil
 }
 
 // searchConcurrency resolves the deployment's setting, clamped to
