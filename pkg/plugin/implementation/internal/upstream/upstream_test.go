@@ -52,7 +52,8 @@ const testBindingKey = "mausamgram|openagrinet:WeatherObservation"
 // provider, so a step config needs a profile under this key.
 const testProvider = "mausamgram"
 
-// setAuth gives every provider this config serves the same profile. Keyed off
+// setProviderAuth gives every provider this config serves the same profile.
+// Keyed off
 // BindingKeys rather than a constant, so a test that serves a different
 // provider does not also have to remember to move its auth.
 func (c *Config) setProviderAuth(a AuthProfile) {
