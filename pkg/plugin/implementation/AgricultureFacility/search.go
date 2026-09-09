@@ -11,12 +11,11 @@
 // one-payload-one-call step over each of them concurrently, and merge the
 // answers back into one.
 //
-// Nothing below this file knows any of that. internal/upstream serves one
-// payload with one call and has no notion of splitting; jsonmapper compiles
-// the two halves every mapping has and no third thing; internal/concurrent
-// runs N of anything, bounded and ordered, and has never heard of Beckn. The
-// mapping this runs is written for a single-type payload, which is what it is
-// always handed.
+// Nothing below this file knows any of that. internal/common serves one
+// payload with one call and has no notion of splitting, and jsonmapper
+// compiles the two halves every mapping has and no third thing. The mapping
+// this runs is written for a single-type payload, which is what it is always
+// handed.
 //
 // Separated from the package clause by a blank line on purpose: the package's
 // own doc comment is in AgricultureFacility.go, and this is a note about one
@@ -25,17 +24,17 @@
 package AgricultureFacility
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/concurrent"
 )
 
 const (
@@ -138,26 +137,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 	log.Debugf(ctx, "agriculture facility: serving %d facility type(s) as %d call(s), %d at a time",
 		len(types), len(parts), s.concurrency)
 
-	// Bounded, ordered and fail-fast, which is internal/concurrent's whole
-	// job. One failure fails the request: a partial answer is the defect this
-	// was built to fix wearing a different hat -- the caller asked for four
-	// facility types, would receive three, and nothing in the payload would
-	// say that the fourth was asked for and lost.
-	answers, err := concurrent.Map(ctx, parts, s.concurrency,
-		func(callCtx context.Context, part []byte) ([]byte, error) {
-			// Its own StepContext: inner reads Body and writes ResponseBody,
-			// so the parts must not share either. callCtx rather than ctx so a
-			// sibling's failure cancels this call too.
-			partCtx := *ctx
-			partCtx.Context = callCtx
-			partCtx.Body = part
-			partCtx.ResponseBody = nil
-
-			if err := s.runPart(&partCtx); err != nil {
-				return nil, err
-			}
-			return partCtx.ResponseBody, nil
-		})
+	answers, err := s.callEach(ctx, parts)
 	if err != nil {
 		return err
 	}
@@ -177,6 +157,46 @@ func (s *Step) Run(ctx *model.StepContext) error {
 // recognised can only be a mismatch between this step's binding keys and
 // inner's. Reported rather than merged, because merging nothing would answer
 // a four-type search with three types and no error.
+// callEach runs one upstream call per part, at most s.concurrency at a time,
+// and returns the answers in the parts' order.
+//
+// Fail-fast, and that is the point: one failure fails the whole request. A
+// partial answer is the defect this split was built to fix wearing a different
+// hat -- the caller asked for four facility types, would receive three, and
+// nothing in the payload would say the fourth was asked for and lost.
+func (s *Step) callEach(ctx *model.StepContext, parts [][]byte) ([][]byte, error) {
+	// Indexed rather than appended, so the answers keep the parts' order
+	// whichever call finishes first. Each slot is written by exactly one
+	// goroutine, which is what makes this safe without a lock.
+	answers := make([][]byte, len(parts))
+
+	group, callCtx := errgroup.WithContext(ctx.Context)
+	group.SetLimit(s.concurrency)
+
+	for index, part := range parts {
+		group.Go(func() error {
+			// Its own StepContext: inner reads Body and writes ResponseBody,
+			// so the parts must not share either. callCtx rather than
+			// ctx.Context so a sibling's failure cancels this call too.
+			partCtx := *ctx
+			partCtx.Context = callCtx
+			partCtx.Body = part
+			partCtx.ResponseBody = nil
+
+			if err := s.runPart(&partCtx); err != nil {
+				return err
+			}
+			answers[index] = partCtx.ResponseBody
+			return nil
+		})
+	}
+
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	return answers, nil
+}
+
 func (s *Step) runPart(partCtx *model.StepContext) error {
 	if err := s.inner.Run(partCtx); err != nil {
 		return err
@@ -351,9 +371,15 @@ func commitmentOf(document map[string]any) (map[string]any, error) {
 // MaxFacilityTypes and defaulting to DefaultSearchConcurrency when left unset
 // or non-positive.
 //
-// The arithmetic is internal/concurrent's, because every caller of it needs
-// the same clamp and a zero limit there means UNBOUNDED. The three numbers are
-// this package's, because each one is a fact about POCRA.
+// The clamp is not decoration: errgroup.SetLimit takes a non-positive limit to
+// mean UNBOUNDED, so a misread setting would fan out over every facility type
+// at once against a provider that rate-limits into silent empty answers.
 func searchConcurrency(configured int) int {
-	return concurrent.Bound(configured, DefaultSearchConcurrency, MaxFacilityTypes)
+	if configured <= 0 {
+		return DefaultSearchConcurrency
+	}
+	if configured > MaxFacilityTypes {
+		return MaxFacilityTypes
+	}
+	return configured
 }
