@@ -1,10 +1,10 @@
-// Package capabilitybinding derives the capability binding a Beckn request is asking
-// for, so a provider step can tell whether the request is its work and, if it
-// is, which registry row describes the call.
+// Deriving the capability binding a Beckn request is asking for, so a step can
+// tell whether the request is its work and, if it is, which registry row
+// describes the call.
 //
-// It is shared by every provider step rather than living in one, because the
-// binding is a property of the network's payloads and not of any provider.
-package capabilitybinding
+// The binding is a property of the network's payloads, not of any provider,
+// which is why it sits here rather than in one capability's package.
+package common
 
 import (
 	"encoding/json"
@@ -16,10 +16,10 @@ import (
 // separator joins a binding key's two halves.
 const separator = "|"
 
-// ErrNoBinding reports a payload that names no capability binding. It is not a
+// errNoBinding reports a payload that names no capability binding. It is not a
 // fault: a request for something else entirely reaches a provider step too, and
 // the step's answer is to do nothing.
-var ErrNoBinding = errors.New("capabilitybinding: payload names no capability binding")
+var errNoBinding = errors.New("upstream: payload names no capability binding")
 
 // Binding identifies one provider capability.
 type Binding struct {
@@ -34,7 +34,7 @@ func (b Binding) Key() string {
 
 // From derives the capability binding a payload is asking for.
 //
-// Returns ErrNoBinding when the payload names no provider or no type, which is
+// Returns errNoBinding when the payload names no provider or no type, which is
 // the ordinary case for a request a provider step is not meant to serve.
 //
 // A payload carrying more than one distinct provider or type is refused rather
@@ -44,10 +44,10 @@ func (b Binding) Key() string {
 //
 // Where the halves live is BecknV2 unless a deployment says otherwise -- see
 // Paths for why that is a default and not a setting.
-func From(paths Paths, body []byte) (Binding, error) {
+func bindingFrom(paths Paths, body []byte) (Binding, error) {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Binding{}, fmt.Errorf("capabilitybinding: payload could not be read: %w", err)
+		return Binding{}, fmt.Errorf("upstream: payload could not be read: %w", err)
 	}
 
 	// Before distinctness: N commitments naming the SAME provider and type
@@ -64,7 +64,7 @@ func From(paths Paths, body []byte) (Binding, error) {
 	// the paragraph above says is refused.
 	if commitments := countAt(payload, paths.ProviderID); commitments > 1 {
 		return Binding{}, fmt.Errorf(
-			"capabilitybinding: payload carries %d commitments; one request maps to one call, "+
+			"upstream: payload carries %d commitments; one request maps to one call, "+
 				"so send them separately rather than have all but the first dropped",
 			commitments)
 	}
@@ -73,14 +73,14 @@ func From(paths Paths, body []byte) (Binding, error) {
 	types := distinct(valuesAt(payload, paths.CapabilityCode))
 
 	if len(providers) == 0 || len(types) == 0 {
-		return Binding{}, ErrNoBinding
+		return Binding{}, errNoBinding
 	}
 	if len(providers) > 1 {
-		return Binding{}, fmt.Errorf("capabilitybinding: payload names %d providers (%s); one request maps to one call",
+		return Binding{}, fmt.Errorf("upstream: payload names %d providers (%s); one request maps to one call",
 			len(providers), strings.Join(providers, ", "))
 	}
 	if len(types) > 1 {
-		return Binding{}, fmt.Errorf("capabilitybinding: payload names %d resource types (%s); one request maps to one call",
+		return Binding{}, fmt.Errorf("upstream: payload names %d resource types (%s); one request maps to one call",
 			len(types), strings.Join(types, ", "))
 	}
 
