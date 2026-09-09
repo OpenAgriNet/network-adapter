@@ -58,6 +58,7 @@ response: |
     $ra    := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
     $ctx   := $ra.`@context`;
     $offer := beckn.message.contract.commitments[0].offer;
+    $sel   := beckn.message.contract.commitments[0].resources[0].id;
 
     /* DEPLOYMENT CONSTANT, like index_name in the request half: the
        network-stable participant id of the authority behind this corpus.
@@ -119,14 +120,20 @@ response: |
              by inventing a schema. */
           "commitments": [{
             "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
-            /* The offer is echoed, but its references are not: the request
-               named the OnDemand resource -- the question -- while the answer
-               returns the advisories. The selected id is NOT retained; it
-               resolves to nothing in resources[], and context.transactionId
-               already correlates the callback. With no hits this is []. */
+            /* The offer is echoed; its references are rebuilt as the guide
+               prescribes -- the OnDemand id the caller selected, RETAINED so it
+               can correlate the callback, plus the Direct id minted per
+               document. OnDemand and Direct require different fields, so the
+               answer cannot restate the selected resource; the caller resolves
+               that id against its own request, not against resources[] here.
+
+               $distinct because a re-selected advisory would otherwise appear
+               twice. With no hits this is just the selected id, and resources[]
+               is [] -- the offer still names the question it was asked. */
             "offer": $merge([
               $offer,
-              { "resourceIds": [$map($docIds, function($id) { "res:knowledge-advisory:" & $id })] }
+              { "resourceIds": $distinct($append([$sel],
+                  [$map($docIds, function($id) { "res:knowledge-advisory:" & $id })])) }
             ]),
             "resources": [$map($docIds, function($id) { (
               $h := $hitsOf($id);
