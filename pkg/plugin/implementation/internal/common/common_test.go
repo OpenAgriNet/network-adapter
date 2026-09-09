@@ -1644,6 +1644,50 @@ func TestRunRefusesAMappedQueryItCannotRender(t *testing.T) {
 
 // --- query rendering --------------------------------------------------------
 
+// asQueryValue carries the three JSON scalars and refuses everything else,
+// naming the field so a mapping that produced one is told which. null is in the
+// refused set on purpose: a parameter present but empty and a parameter absent
+// mean different things to some upstreams, and a mapping says which it wants by
+// omitting the field or setting "".
+func TestAsQueryRefusesWhatCannotBeAQueryParameter(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, mapped string }{
+		{"an object", `{"location":{"lat":19.9975}}`},
+		{"an array", `{"days":[1,2,3]}`},
+		{"null", `{"station":null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := asQuery([]byte(tc.mapped))
+			if err == nil {
+				t.Fatalf("asQuery(%s) was accepted; it cannot become a query parameter", tc.mapped)
+			}
+			// The field, so a mapping author knows which one to fix.
+			if !strings.Contains(err.Error(), "station") &&
+				!strings.Contains(err.Error(), "location") &&
+				!strings.Contains(err.Error(), "days") {
+				t.Errorf("error %q should name the offending field", err)
+			}
+		})
+	}
+}
+
+// An empty string IS carried: it is a scalar, and a mapping setting one is
+// asking for the parameter to be present and empty.
+func TestAsQueryCarriesAnEmptyString(t *testing.T) {
+	t.Parallel()
+
+	got, err := asQuery([]byte(`{"token":""}`))
+	if err != nil {
+		t.Fatalf("asQuery() returned an unexpected error: %v", err)
+	}
+	if got != "token=" {
+		t.Errorf("query = %q, want token= -- an empty string is a value, not an absence", got)
+	}
+}
+
 func TestAsQueryRendersScalarsWithoutInventingPrecision(t *testing.T) {
 	t.Parallel()
 

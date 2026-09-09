@@ -363,7 +363,7 @@ func asQuery(mapped []byte) (string, error) {
 
 	values := url.Values{}
 	for name, value := range fields {
-		rendered, ok := renderScalar(value)
+		rendered, ok := asQueryValue(value)
 		if !ok {
 			return "", fmt.Errorf("upstream: mapped field %q is not a scalar and cannot become a query parameter", name)
 		}
@@ -372,8 +372,21 @@ func asQuery(mapped []byte) (string, error) {
 	return values.Encode(), nil
 }
 
-// renderScalar renders a JSON scalar as a query parameter value.
-func renderScalar(value any) (string, bool) {
+// asQueryValue renders one mapped field as a query parameter value, reporting
+// false when the field cannot be one.
+//
+// The three JSON scalars and nothing else. An object or an array has no single
+// obvious encoding -- repeated keys, comma-joined, indexed, JSON-in-a-parameter
+// are all in use somewhere -- so choosing here would put a convention in Go
+// that belongs in the mapping, where the upstream's actual shape is known. The
+// caller turns false into an error naming the field, so a mapping that produces
+// one is told which.
+//
+// null is refused for the same reason rather than sent as empty: a parameter
+// present but empty and a parameter absent mean different things to some
+// upstreams, and a mapping says which it wants by omitting the field or setting
+// "". An empty string IS carried, being a scalar.
+func asQueryValue(value any) (string, bool) {
 	switch typed := value.(type) {
 	case string:
 		return typed, true
