@@ -14,6 +14,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/httputil"
 )
 
 // bearerToken returns a token to send, exchanging one if the held token has
@@ -99,7 +100,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 		// The status, not the body: a failure body routinely quotes the
 		// request back.
 		log.Warnf(ctx, "token endpoint %s returned %s: %s",
-			cfg.TokenURL, resp.Status, s.redactString(explain(body)))
+			cfg.TokenURL, resp.Status, s.redactString(httputil.Explain(body)))
 		return "", 0, s.tokenErr(fmt.Errorf("token endpoint returned %s", resp.Status))
 	}
 
