@@ -9,16 +9,11 @@ import (
 	"strings"
 )
 
-// redact removes a query-string credential from an error's text.
+// redact removes a credential from an error's text.
 //
 // Go's transport errors quote the whole URL -- `Get "http://host/p?token=..."
-// dial tcp: ...` -- so without this, one unreachable host writes the credential
-// into the log at warn level. Nothing else in this package puts a URL in a
-// message, which is why this is the only place it is needed.
-//
-// A plain string replacement, because the value is what leaks and the value is
-// what we hold. Parsing the error to find it would assume a shape net/http does
-// not promise.
+// dial tcp: ...` -- so an unreachable host would write the credential into the
+// log. Nothing else here puts a URL in a message.
 func (s *Step) redact(err error) error {
 	if err == nil {
 		return nil
@@ -30,23 +25,12 @@ func (s *Step) redact(err error) error {
 	return redactedErr{text: text, err: err}
 }
 
-// redactedErr reports a redacted message while keeping the original reachable
-// for errors.Is and errors.As.
+// redactedErr reports the redacted text from Error() and the original from
+// Unwrap(), so errors.Is and errors.As still match.
 //
-// errors.New(text) was the obvious thing and it broke the chain: the redacted
-// value is what gets %w-wrapped into the final 502, so under a query-string
-// scheme -- and only then, since nothing else redacts -- errors.Is(err,
-// context.DeadlineExceeded) silently stopped matching. Retry classification
-// was never affected, because isPermanent tests the error before redaction,
-// which is why nothing failed visibly.
-//
-// fmt.Errorf("%s: %w", text, err) would have restored the chain and undone the
-// redaction with it: %w formats the original, credential included. Reporting
-// the redacted text from Error() and the original from Unwrap() keeps both.
-//
-// The original's text is reachable through errors.Unwrap, which is a
-// deliberate act by a caller who wants the cause -- and %v, %s and %w on the
-// value itself all go through Error() and stay redacted.
+// Two simpler things do not work. errors.New(text) breaks the chain.
+// fmt.Errorf("%s: %w", text, err) restores it and undoes the redaction, because
+// %w formats the original.
 type redactedErr struct {
 	text string
 	err  error
@@ -56,21 +40,12 @@ func (e redactedErr) Error() string { return e.text }
 
 func (e redactedErr) Unwrap() error { return e.err }
 
-// redactString removes the configured credential from any text about to be
-// logged or returned -- an error, a provider's response body, or the URL that
-// was requested.
+// redactString removes every configured credential from text about to be logged
+// or returned -- an error, a response body, or a requested URL.
 //
-// Logging those is deliberate: they say what was asked of whom and what came
-// back, which is the first thing anyone wants when a provider misbehaves. This
-// is what makes that safe to do at info and warn level.
-//
-// EVERY scheme, not just query. This used to return early unless the scheme was
-// query, on the reasoning that only a query credential reaches a URL -- true of
-// the URL, and wrong about the body. A provider quoting the request it rejected
-// is the ordinary shape of a 401 or 403 body, an API gateway echoing the
-// Authorization header is routine, and a wrong-credential 4xx is not retried,
-// so it lands in the log once per request for as long as the credential is
-// wrong. basic is the scheme the reference config ships.
+// Every scheme, not only query. A provider quoting the request it rejected is
+// the ordinary shape of a 401 body, and gateways echo the Authorization header,
+// so a credential reaches a message under any scheme.
 func (s *Step) redactString(text string) string {
 	for _, secret := range s.secretForms() {
 		text = strings.ReplaceAll(text, secret, redactedMarker)
@@ -78,62 +53,32 @@ func (s *Step) redactString(text string) string {
 	return text
 }
 
-// secretForms returns every form the configured credential can appear in,
-// longest first so a value that contains another is replaced before its
-// substring turns the longer one into a partial redaction.
+// secretForms returns every credential this step could leak, longest first so a
+// value containing another is replaced before its substring.
 //
-// Per scheme, because the schemes leak differently and redacting the value we
-// hold is not enough on its own:
-//
-//   - basic wraps the pair: SetBasicAuth sends base64(user:pass), so the
-//     password alone does not appear on the wire and replacing it misses the
-//     echoed header entirely.
-//   - query escapes: authenticate goes through url.Values.Encode, so a base64
-//     token carrying "+", "/" or "=" appears as "a%2Bb%2Fc%3D". Escaping what
-//     we hold is exact -- same function Encode used, so the two agree by
-//     construction rather than by a guess about which characters matter.
-//   - header sends the value as-is.
-//
-// The raw form is kept alongside the wrapped one in both cases: an error built
-// from the config rather than from the request still quotes the credential
-// unwrapped.
+// EVERY profile, not the one being served: an error raised while serving one
+// provider can quote another's credential. Sorting spans the merged set for the
+// same reason -- one provider's token can be a substring of another's.
 func (s *Step) secretForms() []string {
-	// EVERY profile, not the one being served.
-	//
-	// Redaction is about what could appear in a piece of text, not about which
-	// provider a request happened to be for. An error or a log line built while
-	// serving one provider can quote another's credential -- a shared client
-	// echoing a header, an issuer naming the wrong caller -- and scoping this
-	// to the active profile would let that reach the log unredacted. There are
-	// a handful of profiles and this runs on a failure path, so walking all of
-	// them costs nothing worth measuring.
 	var forms []string
 	for _, auth := range s.auth {
 		forms = append(forms, auth.secretForms()...)
 	}
-	// Sorted across the merged set rather than per profile: one provider's
-	// short token can be a substring of another's, and replacing the short one
-	// first would leave the longer half-redacted.
 	return longestFirst(forms)
 }
 
 // secretForms returns every form this profile's credential can appear in.
 //
-// Per scheme, because the schemes leak differently and redacting the value we
-// hold is not enough on its own:
+// Per scheme, because redacting only the value we hold is not enough:
 //
-//   - basic wraps the pair: SetBasicAuth sends base64(user:pass), so the
-//     password alone does not appear on the wire and replacing it misses the
-//     echoed header entirely.
-//   - query escapes: authenticate goes through url.Values.Encode, so a base64
-//     token carrying "+", "/" or "=" appears as "a%2Bb%2Fc%3D". Escaping what
-//     we hold is exact -- same function Encode used, so the two agree by
-//     construction rather than by a guess about which characters matter.
-//   - header sends the value as-is.
+//   - basic: the wire form is base64(user:pass), so the password alone never
+//     appears in an echoed header.
+//   - query: Encode escapes, so a token with "+" or "=" appears as "%2B", "%3D".
+//     Escaping what we hold uses the same function, so the two always agree.
+//   - header: sent as-is.
 //
-// The raw form is kept alongside the wrapped one in both cases: an error built
-// from the config rather than from the request still quotes the credential
-// unwrapped.
+// The raw form is kept too, for an error built from config rather than from the
+// request.
 func (a *authenticator) secretForms() []string {
 	switch a.cfg.Scheme {
 	case AuthSchemeBasic:
@@ -147,10 +92,9 @@ func (a *authenticator) secretForms() []string {
 			forms = append(forms,
 				base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
 		}
-		// The username is deliberately NOT redacted. It identifies rather than
-		// authenticates, and it is routinely a short common word -- redacting
-		// "user" or "admin" would eat unrelated text and cost the operator the
-		// log line they came for. The pair and the password are the secrets.
+		// The username is NOT redacted: it identifies rather than
+		// authenticates, and words like "user" or "admin" would eat
+		// unrelated text.
 		return forms
 	case AuthSchemeHeader:
 		value := os.Getenv(a.cfg.HeaderValueEnv)
@@ -159,9 +103,8 @@ func (a *authenticator) secretForms() []string {
 		}
 		return []string{value}
 	case AuthSchemeOAuth2:
-		// Both halves: the client secret we send to the issuer, and the token
-		// it gave back. The token is the one that reaches the provider, so it
-		// is the one an echoing 401 body quotes.
+		// Both halves: the secret we send the issuer, and the token it gave
+		// back. The token is what reaches the provider.
 		var forms []string
 		if secret := os.Getenv(a.cfg.ClientSecretEnv); secret != "" {
 			forms = append(forms, secret)
@@ -171,8 +114,8 @@ func (a *authenticator) secretForms() []string {
 		if held := a.token.Load(); held != nil && held.value != "" {
 			forms = append(forms, held.value)
 		}
-		// The client id is deliberately NOT redacted: it identifies, it does
-		// not authenticate, and it is what makes a log line useful.
+		// The client id is NOT redacted: it identifies, it does not
+		// authenticate.
 		return forms
 	case AuthSchemeQuery:
 		value := os.Getenv(a.cfg.QueryValueEnv)
