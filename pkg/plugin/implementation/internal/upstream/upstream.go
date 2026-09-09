@@ -109,7 +109,7 @@ type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
 
 // Config holds configuration parameters for the step.
 type Config struct {
-	// BindingKeys are the capabilities this step answers to. A request for
+	// bindingKeys are the capabilities this step answers to. A request for
 	// anything else passes through untouched.
 	//
 	// A list because a provider can serve more than one: the registry contract
@@ -120,7 +120,7 @@ type Config struct {
 	//
 	// What differs per capability -- the endpoint, the mapping, the budget --
 	// comes from the registry, so one step serving several needs nothing else.
-	BindingKeys []string `yaml:"bindingKeys" json:"bindingKeys"`
+	bindingKeys []string `yaml:"bindingKeys" json:"bindingKeys"`
 
 	// ProviderIDAt and CapabilityCodeAt override where the two halves of a
 	// binding key sit in a payload. Absent means the Beckn v2 convention, which
@@ -172,13 +172,7 @@ type Step struct {
 }
 
 // New creates the step.
-//
-// One inbound payload is one upstream call. A capability whose provider
-// cannot answer a whole payload in one exchange -- POCRA's facility search
-// takes one category code at a time -- splits the payload itself, in the
-// domain package that knows the provider, and runs this step once per part:
-// see pkg/plugin/implementation/AgricultureFacility/search.go. Nothing about
-// that is this package's business, and nothing here is aware of it.
+
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	prerequisites Prerequisites, cfg *Config) (*Step, func() error, error) {
 	if registry == nil {
@@ -216,7 +210,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		return nil
 	}
 
-	log.Infof(ctx, "Upstream step created for %s", strings.Join(cfg.BindingKeys, ", "))
+	log.Infof(ctx, "Upstream step created for %s", strings.Join(cfg.bindingKeys, ", "))
 	return step, closer, nil
 }
 
@@ -225,10 +219,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 // Both halves or neither: overriding one and leaving the other on the default
 // is a half-configured deployment that would match nothing, and it would do so
 // silently on every request rather than once at startup.
-//
-// Exported so a domain package wrapping this step can answer "is this payload
-// mine?" the same way this step does, from the same two config fields, rather
-// than reading them a second time and drifting.
+
 func BindingPaths(cfg *Config) (capabilitybinding.Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
 		return capabilitybinding.BecknV2, nil
@@ -251,10 +242,10 @@ func applyDefaults(cfg *Config) error {
 	// No default. This package serves whatever a domain package configures it
 	// for, so a default would have to name one provider's capability -- wrong
 	// for every other domain built on it, and silently wrong rather than loudly.
-	if len(cfg.BindingKeys) == 0 {
+	if len(cfg.bindingKeys) == 0 {
 		return errors.New("upstream: bindingKeys is required: it is what this step answers to")
 	}
-	for _, key := range cfg.BindingKeys {
+	for _, key := range cfg.bindingKeys {
 		if strings.TrimSpace(key) == "" {
 			return errors.New("upstream: bindingKeys carries an empty entry")
 		}
@@ -355,7 +346,7 @@ func (s *Step) resolve(ctx context.Context, bindingKey string, beckn any) (map[s
 // the scan costs less than the map would, and the config order is preserved in
 // the log line above.
 func (s *Step) serves(key string) bool {
-	return slices.Contains(s.config.BindingKeys, key)
+	return slices.Contains(s.config.bindingKeys, key)
 }
 
 // serve runs the exchange this step exists for: resolve, map out, call, map back.
