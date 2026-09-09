@@ -64,8 +64,8 @@ func BindingFrom(paths Paths, body []byte) (Binding, error) {
 			commitments)
 	}
 
-	providers := distinct(valuesAt(payload, paths.ProviderID))
-	types := distinct(valuesAt(payload, paths.CapabilityCode))
+	providers := distinct(ValuesAt(payload, paths.ProviderID))
+	types := distinct(ValuesAt(payload, paths.CapabilityCode))
 
 	if len(providers) == 0 || len(types) == 0 {
 		return Binding{}, errNoBinding

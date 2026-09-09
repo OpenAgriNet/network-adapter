@@ -10,8 +10,11 @@ package AgricultureFacility
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 )
 
 // decode is what Step.Run works from: the payload, already decoded into
@@ -34,7 +37,7 @@ func TestFacilityTypesFromReadsThemInPayloadOrder(t *testing.T) {
 	beckn := decode(t, `{"message":{"contract":{"commitments":[{"resources":[{"resourceAttributes":{
 		"supportedFacilityTypes":["KrishiVigyanKendra","Warehouse","SoilTestingFacility"]}}]}]}}}`)
 
-	values, err := facilityTypesFrom(beckn)
+	values, err := facilityTypesFrom(beckn, "")
 	if err != nil {
 		t.Fatalf("facilityTypesFrom() returned an unexpected error: %v", err)
 	}
@@ -56,7 +59,7 @@ func TestFacilityTypesFromAcceptsASingleType(t *testing.T) {
 	beckn := decode(t, `{"message":{"contract":{"commitments":[{"resources":[{"resourceAttributes":{
 		"supportedFacilityTypes":["Warehouse"]}}]}]}}}`)
 
-	values, err := facilityTypesFrom(beckn)
+	values, err := facilityTypesFrom(beckn, "")
 	if err != nil {
 		t.Fatalf("facilityTypesFrom() returned an unexpected error: %v", err)
 	}
@@ -75,7 +78,7 @@ func TestFacilityTypesFromAcceptsABareString(t *testing.T) {
 	beckn := decode(t, `{"message":{"contract":{"commitments":[{"resources":[{"resourceAttributes":{
 		"supportedFacilityTypes":"KrishiVigyanKendra"}}]}]}}}`)
 
-	values, err := facilityTypesFrom(beckn)
+	values, err := facilityTypesFrom(beckn, "")
 	if err != nil {
 		t.Fatalf("facilityTypesFrom() returned an unexpected error: %v", err)
 	}
@@ -109,7 +112,7 @@ func TestFacilityTypesFromRefusesWhatItCannotRead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			values, err := facilityTypesFrom(decode(t, tc.body))
+			values, err := facilityTypesFrom(decode(t, tc.body), "")
 			if err == nil {
 				t.Fatalf("facilityTypesFrom() returned %v, want %s refused", values, tc.name)
 			}
@@ -126,8 +129,36 @@ func TestFacilityTypesFromRefusesANonObjectPayload(t *testing.T) {
 	t.Parallel()
 
 	for _, beckn := range []any{nil, "a string", 42.0, []any{"a", "list"}} {
-		if _, err := facilityTypesFrom(beckn); err == nil {
+		if _, err := facilityTypesFrom(beckn, ""); err == nil {
 			t.Errorf("facilityTypesFrom(%v) was accepted, want it refused", beckn)
 		}
+	}
+}
+
+// THE POINT OF THE PATH. A payload that carries the types somewhere else is a
+// config edit, not a rebuild: the same reading works against a different shape
+// when facilityTypesAt says where to look.
+//
+// This is what the hand-written walk could not do. It knew
+// message.contract.commitments[0].resources[0].resourceAttributes as Go code,
+// so a spec change meant editing and shipping a binary.
+func TestFacilityTypesFollowAConfiguredPath(t *testing.T) {
+	t.Parallel()
+
+	// A shape the default path would find nothing in.
+	body := `{"search":{"facilities":[
+		{"kinds":["Warehouse","KrishiVigyanKendra"]}]}}`
+
+	if got := common.LeavesAt(decode(t, body), DefaultFacilityTypesAt); len(got) != 0 {
+		t.Fatalf("the default path found %v in a payload it should not read", got)
+	}
+
+	values, err := facilityTypesFrom(decode(t, body), "search.facilities[].kinds[]")
+	if err != nil {
+		t.Fatalf("facilityTypesFrom() with a configured path: %v", err)
+	}
+	want := []string{"Warehouse", "KrishiVigyanKendra"}
+	if !reflect.DeepEqual(values, want) {
+		t.Errorf("values = %v, want %v", values, want)
 	}
 }

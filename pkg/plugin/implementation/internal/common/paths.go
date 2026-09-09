@@ -45,13 +45,28 @@ func (p Paths) Validate() error {
 	return nil
 }
 
-// valuesAt collects every string the path reaches.
+// ValuesAt collects every string the path reaches.
 //
 // The grammar is two things: segments separated by ".", and a "[]" suffix
 // meaning "look in each element". No wildcards, filters or indices -- each is
 // another way to write something subtly wrong in config nobody reviews.
-func valuesAt(node any, path string) []string {
-	return walk(node, strings.Split(path, "."))
+//
+// EXPORTED for a domain package that has to read its own field out of a
+// payload -- AgricultureFacility reads supportedFacilityTypes this way. The
+// alternative is hand-walking the document in Go, which compiles the payload's
+// shape into the binary: a spec change then needs a rebuild rather than a
+// config edit, and the traversal has to re-check every type assertion the
+// walker already checks.
+func ValuesAt(node any, path string) []string {
+	var found []string
+	for _, leaf := range walk(node, strings.Split(path, ".")) {
+		// Only strings are binding-key material; anything else means the path
+		// landed somewhere unintended.
+		if value, ok := leaf.(string); ok {
+			found = append(found, value)
+		}
+	}
+	return found
 }
 
 // countAt reports how many elements the first array segment holds, whether or
@@ -83,14 +98,24 @@ func countAt(node any, path string) int {
 	return 0
 }
 
-func walk(node any, segments []string) []string {
+// LeavesAt collects every value the path reaches, whatever its type.
+//
+// ValuesAt's sibling, and the one a caller wants when a non-string at the leaf
+// is a MISTAKE to report rather than a leaf to skip. ValuesAt drops it, which
+// is right for a binding key -- a number where a capability code belongs means
+// the path landed somewhere unintended, and there is nothing to say about it
+// beyond "no binding here". It is wrong for a list the caller wrote by hand:
+// dropping one entry of supportedFacilityTypes would search for the rest and
+// report success, which is a partial answer with nothing recording the loss.
+func LeavesAt(node any, path string) []any {
+	return walk(node, strings.Split(path, "."))
+}
+
+// walk collects the leaves a path reaches. Type policy is the caller's: this
+// returns what is there, ValuesAt keeps the strings, LeavesAt keeps everything.
+func walk(node any, segments []string) []any {
 	if len(segments) == 0 {
-		// Only strings are binding-key material; anything else means the path
-		// landed somewhere unintended.
-		if value, ok := node.(string); ok {
-			return []string{value}
-		}
-		return nil
+		return []any{node}
 	}
 
 	segment := segments[0]
@@ -114,7 +139,7 @@ func walk(node any, segments []string) []string {
 	if !ok {
 		return nil
 	}
-	var found []string
+	var found []any
 	for _, element := range elements {
 		found = append(found, walk(element, rest)...)
 	}
