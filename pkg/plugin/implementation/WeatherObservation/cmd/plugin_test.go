@@ -41,7 +41,7 @@ func TestParseConfig(t *testing.T) {
 			// rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &WeatherObservation.Config{Auth: map[string]*upstream.Auth{}},
+			expected: &WeatherObservation.Config{AuthByProvider: map[string]*upstream.AuthProfile{}},
 		},
 		{
 			name: "reads every supported setting",
@@ -56,7 +56,7 @@ func TestParseConfig(t *testing.T) {
 			},
 			expected: &WeatherObservation.Config{
 				BindingKeys: []string{"other|capability"},
-				Auth: map[string]*upstream.Auth{
+				AuthByProvider: map[string]*upstream.AuthProfile{
 					"other": {
 						Provider:       "other",
 						Scheme:         "basic",

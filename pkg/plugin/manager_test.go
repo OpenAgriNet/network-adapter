@@ -2588,7 +2588,7 @@ func TestApplyConstants_UnknownPlugin_NoChange(t *testing.T) {
 	m := makeManager(map[string]map[string]string{"dediregistry": {"url": "https://x.com"}}, nil)
 	c := cfg("cache", map[string]string{"addr": "redis:6379"})
 	require.NoError(t, m.applyConstants(context.Background(), c))
-	assert.Equal(t, Settings{"addr": "redis:6379"}, c.Config)
+	assert.Equal(t, ConfigBlock{"addr": "redis:6379"}, c.Config)
 }
 
 // --- nil constants ---

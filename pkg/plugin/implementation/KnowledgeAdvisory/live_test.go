@@ -103,7 +103,7 @@ func TestLiveEndToEnd(t *testing.T) {
 	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), registry, mapper,
 		&KnowledgeAdvisory.Config{
 			BindingKeys: []string{key},
-			Auth: map[string]*upstreamstep.Auth{
+			AuthByProvider: map[string]*upstreamstep.AuthProfile{
 				strings.Split(key, "|")[0]: {
 					Scheme:          "oauth2",
 					TokenURL:        issuer.URL + "/token",

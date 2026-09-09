@@ -50,11 +50,11 @@ func (p mandiProvider) parseConfig(config map[string]string) (*MandiPrice.Config
 	// authScheme-<participantId> settings. Shared with the other capability
 	// plugins: each used to copy the same field list, so a scheme added in one
 	// had to be remembered in three.
-	auth, err := upstream.ParseAuth(config)
+	auth, err := upstream.ParseProviderAuth(config)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Auth = auth
+	cfg.AuthByProvider = auth
 
 	return cfg, nil
 }

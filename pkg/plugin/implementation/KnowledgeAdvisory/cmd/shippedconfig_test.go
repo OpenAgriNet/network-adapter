@@ -10,7 +10,7 @@ import (
 )
 
 // The shipped config and this code move together: the nested per-provider
-// block is only valid if pkg/plugin flattens it and ParseAuth reads it back.
+// block is only valid if pkg/plugin flattens it and ParseProviderAuth reads it back.
 // This reads the real file rather than a copy, so the two cannot drift.
 //
 // Decoded with yaml.v2, the version cmd/adapter/main.go uses. A test on v3
@@ -68,7 +68,7 @@ func TestShippedConfigParsesIntoAProfilePerProvider(t *testing.T) {
 						break
 					}
 				}
-				profile, ok := cfg.Auth[provider]
+				profile, ok := cfg.AuthByProvider[provider]
 				if !ok {
 					t.Errorf("%s serves %q with no auth block", step.ID, provider)
 					continue
