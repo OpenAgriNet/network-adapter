@@ -22,7 +22,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
-	upstreamstep "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
@@ -212,8 +212,8 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing
 			// no credential, and that is declared rather than defaulted.
-			AuthByProvider: map[string]*upstreamstep.AuthProfile{
-				strings.Split(shippedBindingKey, "|")[0]: {Scheme: upstreamstep.AuthSchemeNone},
+			AuthByProvider: map[string]*common.AuthProfile{
+				strings.Split(shippedBindingKey, "|")[0]: {Scheme: common.AuthSchemeNone},
 			},
 		})
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 )
 
 type stubRegistry struct{}
@@ -41,7 +41,7 @@ func TestParseConfig(t *testing.T) {
 			// rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &MandiPrice.Config{AuthByProvider: map[string]*upstream.AuthProfile{}},
+			expected: &MandiPrice.Config{AuthByProvider: map[string]*common.AuthProfile{}},
 		},
 		{
 			// Query auth is why this capability has its own entry rather than
@@ -57,7 +57,7 @@ func TestParseConfig(t *testing.T) {
 			},
 			expected: &MandiPrice.Config{
 				BindingKeys: []string{"agmarknet|openagrinet:MandiPrice"},
-				AuthByProvider: map[string]*upstream.AuthProfile{
+				AuthByProvider: map[string]*common.AuthProfile{
 					"agmarknet": {
 						Provider:      "agmarknet",
 						Scheme:        "query",
@@ -82,7 +82,7 @@ func TestParseConfig(t *testing.T) {
 			},
 			expected: &MandiPrice.Config{
 				BindingKeys: []string{"other|capability"},
-				AuthByProvider: map[string]*upstream.AuthProfile{
+				AuthByProvider: map[string]*common.AuthProfile{
 					"other": {
 						Provider:       "other",
 						Scheme:         "basic",
@@ -113,7 +113,7 @@ func TestParseConfig(t *testing.T) {
 			// as "unset" rather than failing startup.
 			name:     "treats an empty response cap as unset",
 			config:   map[string]string{"maxResponseBytes": ""},
-			expected: &MandiPrice.Config{AuthByProvider: map[string]*upstream.AuthProfile{}},
+			expected: &MandiPrice.Config{AuthByProvider: map[string]*common.AuthProfile{}},
 		},
 	}
 

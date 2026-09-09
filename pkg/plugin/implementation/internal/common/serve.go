@@ -1,6 +1,6 @@
 // The request pipeline: recognise the capability, resolve its call plan,
 // translate out, call, translate back.
-package upstream
+package common
 
 import (
 	"context"

@@ -1,6 +1,6 @@
 // Talking HTTP to a provider: building the endpoint and body, the attempt and
 // its retry budget, and reading what came back.
-package upstream
+package common
 
 import (
 	"bytes"

@@ -1,6 +1,6 @@
 package KnowledgeAdvisory
 
-import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
+import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 
 // prerequisites is what a knowledge advisory capability needs that its payload
 // does not carry, keyed by binding key.
@@ -19,4 +19,4 @@ import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstr
 // mapping cannot obtain: a free-text topic resolved to a governed taxonomy id,
 // say. The corpus index is not one -- it is a deployment constant, and the
 // mapping file is itself per-deployment, named by the registry row.
-var prerequisites = upstream.Prerequisites{}
+var prerequisites = common.Prerequisites{}

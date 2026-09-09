@@ -1,6 +1,6 @@
 // Credentials: one profile per provider, how a profile is read from config,
 // and how it is presented on a request.
-package upstream
+package common
 
 import (
 	"context"

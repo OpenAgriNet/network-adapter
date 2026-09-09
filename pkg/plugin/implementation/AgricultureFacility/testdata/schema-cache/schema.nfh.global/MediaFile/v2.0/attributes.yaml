@@ -1,0 +1,32 @@
+openapi: 3.1.1
+info:
+  title: MediaFile
+  version: 2.0.0
+  description: "Container schemas fetched from beckn.yaml. This cannot be extended as it is a reserved schema in beckn protocol. Any additional properties added to this schema can only be made using its *Attributes property"
+  license:
+    name: CC-BY-NC-SA 4.0 International
+  contact:
+    name: Beckn Labs
+    url: https://beckn.io
+components:
+  schemas:
+    MediaFile:
+      x-iri: https://schema.nfh.global/MediaFile/v2.0
+      description: A image, audio, or video typically intended for display purposes
+      title: MediaFile
+      x-tags:
+      - common
+      type: object
+      properties:
+        label:
+          description: The display name of the media file
+          type: string
+        mimeType:
+          description: MIME type if 'data' is provided (application/pdf, image/png).
+          type: string
+          example: image/png
+        uri:
+          description: URL to the document
+          type: string
+          format: uri
+      additionalProperties: false
