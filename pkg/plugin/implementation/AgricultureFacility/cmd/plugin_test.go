@@ -43,32 +43,26 @@ func TestParseConfig(t *testing.T) {
 			expected: &AgricultureFacility.Config{},
 		},
 		{
-			// Every key upstream.Config accepts, including the query scheme
-			// added for Agmarknet. POCRA needs none of the credential pairs,
-			// but parseConfig is the only thing that reads them and a dropped
-			// field here is silent.
+			// Every key this plugin reads. POCRA needs no credential pair --
+			// authScheme: none -- so those upstream.Config fields aren't
+			// wired here. See the package README for why they still exist
+			// in upstream.Config.
 			name: "reads every supported setting",
 			config: map[string]string{
-				"bindingKeys":      "pocra|openagrinet:AgricultureFacility",
-				"authScheme":       "none",
-				"usernameEnv":      "U",
-				"passwordEnv":      "P",
-				"headerName":       "X-Key",
-				"headerValueEnv":   "V",
-				"queryName":        "token",
-				"queryValueEnv":    "Q",
-				"maxResponseBytes": "2048",
+				"bindingKeys":       "pocra|openagrinet:AgricultureFacility",
+				"providerIdAt":      "who.provider",
+				"capabilityCodeAt":  "what[].type",
+				"authScheme":        "none",
+				"maxResponseBytes":  "2048",
+				"fanOutConcurrency": "4",
 			},
 			expected: &AgricultureFacility.Config{
-				BindingKeys:      []string{"pocra|openagrinet:AgricultureFacility"},
-				AuthScheme:       "none",
-				UsernameEnv:      "U",
-				PasswordEnv:      "P",
-				HeaderName:       "X-Key",
-				HeaderValueEnv:   "V",
-				QueryName:        "token",
-				QueryValueEnv:    "Q",
-				MaxResponseBytes: 2048,
+				BindingKeys:       []string{"pocra|openagrinet:AgricultureFacility"},
+				ProviderIDAt:      "who.provider",
+				CapabilityCodeAt:  "what[].type",
+				AuthScheme:        "none",
+				MaxResponseBytes:  2048,
+				FanOutConcurrency: 4,
 			},
 		},
 		{
@@ -102,6 +96,16 @@ func TestParseConfig(t *testing.T) {
 		{
 			name:        "refuses a non-positive maxResponseBytes",
 			config:      map[string]string{"maxResponseBytes": "0"},
+			expectedErr: "must be positive",
+		},
+		{
+			name:        "refuses a non-numeric fanOutConcurrency",
+			config:      map[string]string{"fanOutConcurrency": "big"},
+			expectedErr: "invalid fanOutConcurrency",
+		},
+		{
+			name:        "refuses a non-positive fanOutConcurrency",
+			config:      map[string]string{"fanOutConcurrency": "0"},
 			expectedErr: "must be positive",
 		},
 	}

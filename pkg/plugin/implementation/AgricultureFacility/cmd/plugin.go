@@ -35,12 +35,6 @@ func (p agriFacilityProvider) parseConfig(config map[string]string) (*Agricultur
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
 		AuthScheme:       config["authScheme"],
-		UsernameEnv:      config["usernameEnv"],
-		PasswordEnv:      config["passwordEnv"],
-		HeaderName:       config["headerName"],
-		HeaderValueEnv:   config["headerValueEnv"],
-		QueryName:        config["queryName"],
-		QueryValueEnv:    config["queryValueEnv"],
 	}
 
 	if raw, exists := config["maxResponseBytes"]; exists && raw != "" {
@@ -52,6 +46,17 @@ func (p agriFacilityProvider) parseConfig(config map[string]string) (*Agricultur
 			return nil, fmt.Errorf("maxResponseBytes must be positive, got %d", value)
 		}
 		cfg.MaxResponseBytes = value
+	}
+
+	if raw, exists := config["fanOutConcurrency"]; exists && raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid fanOutConcurrency value '%s': %w", raw, err)
+		}
+		if value <= 0 {
+			return nil, fmt.Errorf("fanOutConcurrency must be positive, got %d", value)
+		}
+		cfg.FanOutConcurrency = value
 	}
 
 	return cfg, nil

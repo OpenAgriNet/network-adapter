@@ -2367,6 +2367,47 @@ func TestRunFailsWhenAnyFanOutCallFails(t *testing.T) {
 	}
 }
 
+// A call not yet issued when an earlier one fails is skipped, not made and
+// discarded. Sequential (the default) makes this deterministic: the first
+// value's failure cancels the shared context before the loop ever reaches
+// group.Go for the second, so the second's HTTP call must never happen.
+func TestFanOutSkipsCallsNotYetIssuedAfterAFailure(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		code := r.URL.Query().Get("code")
+		mu.Lock()
+		seen[code] = true
+		mu.Unlock()
+		if code == "kvk" {
+			http.Error(w, "no", http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, `{}`)
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{
+		fanOutResult:   []byte(`["kvk","warehouse","chc"]`),
+		responseResult: []byte(`{"context":{}}`),
+	}
+	mapper.requestFromFan = func(fan map[string]any) []byte {
+		return []byte(fmt.Sprintf(`{"code":%q}`, fan["value"]))
+	}
+	_, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody)
+	if err == nil {
+		t.Fatal("Run() served a partial answer")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if seen["warehouse"] || seen["chc"] {
+		t.Errorf("a later fan-out value was still called after an earlier one failed: %v", seen)
+	}
+}
+
 // A payload asking for more calls than the ceiling is refused, not clamped.
 //
 // Fan-out is amplification -- one request in, N out, each with its own retry

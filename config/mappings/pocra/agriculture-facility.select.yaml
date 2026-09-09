@@ -47,6 +47,12 @@ required:
         $count($requested) > 0 and $count($requested[$ in $governed]) = $count($requested)
       )
     message: "every entry in supportedFacilityTypes must name a governed facility type: CustomHiringCentre, KrishiVigyanKendra, Warehouse or SoilTestingFacility"
+  - check: |
+      (
+        $requested := [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes];
+        $count($requested) = $count($distinct($requested))
+      )
+    message: "supportedFacilityTypes must not repeat a facility type"
 
 # One upstream call per facility type the payload asks for.
 #
@@ -155,9 +161,11 @@ response: |
 
     /* The caller's own @context, echoed back rather than restated here.
        Hardcoding the pack URL meant this file had to know which one is current,
-       and could contradict what the request actually declared. The payload
-       always carries @context and @type on each resource, so there is nothing
-       to invent.
+       and could contradict what the request actually declared. Not enforced by
+       a required check above -- an absent @context here means an absent one on
+       the way out too, which degrades the JSON-LD rather than breaking pack
+       conformance (conformance_test.go treats @context as conventional, not a
+       schema property).
 
        Backticks because @ is an operator in JSONata. */
     $ctx := $selected.resources[0].resourceAttributes.`@context`;
@@ -180,7 +188,7 @@ response: |
     /* EVERY type the payload asked for, as a list. The answer is filtered to
        this set rather than to its first entry -- filtering to [0] is what made a
        two-type search drop a type. */
-    $requestedTypes := [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes];
+    $requestedTypes := [$selected.resources[0].resourceAttributes.supportedFacilityTypes];
 
     /* POCRA states a provider's facility type in the provider's own id:
        COMMON_PROVIDER_KVK, COMMON_PROVIDER_CHC, COMMON_PROVIDER_SOIL_LAB. That
@@ -271,7 +279,14 @@ response: |
         {
           "item": $item,
           "type": (
-            $tagged := $lookup($types, $item.tags.list[descriptor.code = "category"].value);
+            /* Same T0410 hazard as $fromFulfillment above: an item carrying
+               more than one category tag makes .value a SEQUENCE, and $lookup
+               throws on anything but a scalar key. Same fix -- look up each
+               code on its own and take the first that resolves. */
+            $tagged := (
+              $resolved := [$item.tags.list[descriptor.code = "category"].value].($lookup($types, $));
+              $resolved[$exists($)][0]
+            );
             $exists($fromProvider) ? $fromProvider
               : $exists($tagged) ? $tagged
               : $fromFulfillment
@@ -307,14 +322,23 @@ response: |
        downstream could detect. An item with no distance sorts last, which is
        what an absent ranking should mean. */
     $reading := function($item) {
-      $numericPrefix($item.tags.list[descriptor.code = "distance"].value)
+      (
+        /* A duplicated distance tag makes .value a sequence, and
+           $numericPrefix's $substringBefore throws on anything but a string
+           before the $type guard inside it is ever reached. Take the first. */
+        $values := [$item.tags.list[descriptor.code = "distance"].value];
+        $numericPrefix($values[0])
+      )
     };
     $sorted := $map($unique, function($entry) {
-      {
-        "facility": $entry.item,
-        "type": $entry.type,
-        "distance": $exists($reading($entry.item)) ? $reading($entry.item) : 1e9
-      }
+      (
+        $distance := $reading($entry.item);
+        {
+          "facility": $entry.item,
+          "type": $entry.type,
+          "distance": $exists($distance) ? $distance : 1e9
+        }
+      )
     })^(distance);
 
     /* POCRA reports a warehouse's capacity as one string with a unit --
@@ -327,14 +351,18 @@ response: |
        field. */
     $capacity := function($item) {
       (
-        $reported := $item.tags.list[descriptor.code = "capacity_estimate"].value;
+        /* A duplicated capacity_estimate tag makes .value a sequence -- same
+           T0410 hazard as distance, above. Take the first. */
+        $values := [$item.tags.list[descriptor.code = "capacity_estimate"].value];
+        $reported := $values[0];
         /* value guarded the same way distance is, above -- "Unknown" or any
            other placeholder must not reach $number. unit is left unguarded
            deliberately: it is only ever read when value parsed, and at that
            point substringAfter on the same string that just matched the
            numeric-prefix regex cannot itself throw. */
-        $exists($numericPrefix($reported)) ? {
-          "value": $numericPrefix($reported),
+        $value := $numericPrefix($reported);
+        $exists($value) ? {
+          "value": $value,
           "unit": $substringAfter($reported, " ")
         }
       )

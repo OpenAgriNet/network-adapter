@@ -28,10 +28,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -560,7 +560,7 @@ func (s *Step) fanOut(ctx context.Context, call model.ActionPlan, beckn any, loc
 // fan-out half named them rather than the order they arrived -- an answer whose
 // content depends on which provider replied first is not reproducible, and the
 // suite could not assert it.
-func (s *Step) gather(ctx *model.StepContext, plan *model.ProviderRecord, call model.ActionPlan,
+func (s *Step) gather(ctx context.Context, plan *model.ProviderRecord, call model.ActionPlan,
 	beckn any, local map[string]any, fan []any) (any, error) {
 
 	if fan == nil {
@@ -578,16 +578,20 @@ func (s *Step) gather(ctx *model.StepContext, plan *model.ProviderRecord, call m
 	// failure mode is the reason not to default to parallel.
 	//
 	// The cost is latency: sequentially, N calls take N times as long.
+	//
+	// group's context is cancelled the moment any call fails, so a call not
+	// yet issued is skipped rather than made -- one failure already dooms the
+	// request, and letting the rest run out their own full retry budget (up to
+	// MaxTimeout * (MaxRetryMax+1) each) buys nothing but latency. An in-flight
+	// call is cancelled too: attempt's request context derives from groupCtx.
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(s.config.FanOutConcurrency)
 	answers := make([]any, len(fan))
-	failures := make([]error, len(fan))
-	inFlight := make(chan struct{}, s.config.FanOutConcurrency)
-	var waiting sync.WaitGroup
 	for index, value := range fan {
-		waiting.Add(1)
-		inFlight <- struct{}{}
-		go func(index int, value any) {
-			defer func() { <-inFlight }()
-			defer waiting.Done()
+		group.Go(func() error {
+			if groupCtx.Err() != nil {
+				return nil
+			}
 			// Each call gets its own identity. A provider that caches or
 			// accumulates per request id -- POCRA keeps a message_id's answers
 			// for ten minutes and returns the union of everything asked for
@@ -597,30 +601,31 @@ func (s *Step) gather(ctx *model.StepContext, plan *model.ProviderRecord, call m
 			// Generated here rather than in the mapping because it has to be a
 			// fresh UUID, which JSONata cannot produce, and POCRA's schema
 			// refuses a message_id that is not one.
-			answers[index], failures[index] = s.one(ctx, plan.BaseURL, call, beckn, local, map[string]any{
+			answer, err := s.one(groupCtx, plan.BaseURL, call, beckn, local, map[string]any{
 				"value":  value,
-				"index":  index,
 				"callId": uuid.NewString(),
 			})
-		}(index, value)
+			if err != nil {
+				return fmt.Errorf("upstream: the call for fan-out value %v failed: %w", value, err)
+			}
+			answers[index] = answer
+			return nil
+		})
 	}
-	waiting.Wait()
 
 	// One failure fails the request. A partial answer is the defect this was
 	// built to fix wearing a different hat: the caller asked for four facility
 	// types, would receive three, and nothing in the payload would say that the
 	// fourth was asked for and lost.
-	for index, err := range failures {
-		if err != nil {
-			return nil, fmt.Errorf("upstream: the call for fan-out value %v failed: %w", fan[index], err)
-		}
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 	return answers, nil
 }
 
 // one builds and makes a single upstream call, with fanValue bound as _fan for
 // the request half when there is one.
-func (s *Step) one(ctx *model.StepContext, baseURL string, call model.ActionPlan,
+func (s *Step) one(ctx context.Context, baseURL string, call model.ActionPlan,
 	beckn any, local map[string]any, fanValue any) (any, error) {
 
 	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local, fanValue)

@@ -32,9 +32,13 @@ providerSteps:
 | Parameter | Required | Description | Default |
 |-----------|----------|-------------|---------|
 | `bindingKeys` | **Yes** | Comma-separated capabilities this step answers to. No default is possible: a package serving a family cannot guess which of them a deployment has providers for. | — |
+| `providerIdAt` | No | Path override for where the provider-id half of a binding key sits in a payload. Beckn v2 convention if absent. | Beckn v2 convention |
+| `capabilityCodeAt` | No | Path override for the capability-code half. Must be given together with `providerIdAt`. | Beckn v2 convention |
 | `authScheme` | No | `none`, `basic`, `header` or `query`. POCRA needs none. | `none` |
 | `maxResponseBytes` | No | Cap on what is read from the provider. | 4 MiB |
-| `fanOutConcurrency` | No | How many of a multi-type search's calls run at once, up to `internal/upstream.MaxFanOut` (8). 4 is every governed type at once -- full concurrency for this capability. **Trade-off:** `internal/upstream` defaults to 1 (sequential) because POCRA's failure mode when pushed is a 200 with an *empty* catalog, indistinguishable from "no results" -- a parallel search can silently drop a facility type with no error. Verify against the live API (`docs/agriculture-facility-testing.md` §4) before trusting this in production. | 1 (sequential) |
+| `fanOutConcurrency` | No | How many of a multi-type search's calls run at once, up to `internal/upstream.MaxFanOut` (8). 4 is every governed type at once -- full concurrency for this capability. **Trade-off:** `internal/upstream` defaults to 1 (sequential) because POCRA's failure mode when pushed is a 200 with an *empty* catalog, indistinguishable from "no results" -- a parallel search can silently drop a facility type with no error. Verify against the live API before raising it in production. | 1 (sequential) |
+
+`upstream.Config` also has the `basic`/`header`/`query` auth credential pairs (`usernameEnv`/`passwordEnv`, `headerName`/`headerValueEnv`, `queryName`/`queryValueEnv`). This plugin's `parseConfig` does not wire them through -- POCRA needs none of them. A second provider on `openagrinet:AgricultureFacility` (see "What lives here") that needs one adds the corresponding line to `parseConfig`, mirroring `maxResponseBytes`.
 
 The id must also appear in the module's `steps:` list, and must be unique across
 `steps` and `providerSteps` — a repeat is refused at startup, because both land
@@ -147,5 +151,3 @@ lets the validator resolve the pack's own `$ref`s, and caches each document
 under `testdata/schema-cache/` (gitignored). A cold run needs the network; every
 run after it is offline. With an empty cache **and** no network the schema tests
 skip rather than fail. To refresh, delete the cache directory and re-run.
-
-Full runbook: `docs/agriculture-facility-testing.md`.

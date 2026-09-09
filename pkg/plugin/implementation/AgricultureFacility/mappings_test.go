@@ -104,8 +104,8 @@ const selectRequest = `{
   }] } }
 }`
 
-// providerResponse is POCRA's own shape, trimmed from the body captured in
-// docs/POCRA-IMPLIMETATION-DETAILS.md.
+// providerResponse is POCRA's own shape, trimmed from a body captured against
+// the live API (not checked into this repo).
 //
 // TWO responses[] entries, because POCRA returns one per answering BPP and the
 // captured sample carried four. The second repeats COMMON-55043, which is what
@@ -1000,11 +1000,11 @@ func TestShippedMappingAnswersAnEmptySearch(t *testing.T) {
 // warehouse would be labelled as whatever was asked for and returned as one.
 //
 // And two providers that are not facilities at all. POCRA fans a search out to
-// every BPP on its network, so a warehouse search in
-// docs/POCRA-IMPLIMETATION-DETAILS.md came back with 20 responses[] holding 182
-// items: 5 warehouses, 132 mandi price records, 6 administrative hierarchy rows
-// and 4 weather station readings. apmcMandi is the awkward one -- its items have
-// no tags key at all, so every tag lookup on them is a miss rather than a value.
+// every BPP on its network, so a live warehouse search came back with 20
+// responses[] holding 182 items: 5 warehouses, 132 mandi price records, 6
+// administrative hierarchy rows and 4 weather station readings. apmcMandi is
+// the awkward one -- its items have no tags key at all, so every tag lookup on
+// them is a miss rather than a value.
 const mixedResponse = `{
   "context": { "action": "search", "version": "1.1.0" },
   "responses": [
@@ -1655,5 +1655,87 @@ func TestAProviderWithTwoFulfillmentCategoriesDoesNotFailTheSearch(t *testing.T)
 	if len(answerResources(t, answer)) != 1 {
 		t.Fatalf("got %d resources, want 1 -- a provider with two fulfillment categories "+
 			"must not fail the search", len(answerResources(t, answer)))
+	}
+}
+
+// An item carrying more than one category tag must not crash the search
+// either -- same T0410 hazard as the fulfillment-categories case above, but
+// for $item.tags.list[descriptor.code = "category"].value.
+//
+// providerID is deliberately not COMMON_PROVIDER_* and categoryCode is
+// deliberately ungoverned, so type resolution falls through to the item's own
+// tag -- the two sources tried first would otherwise mask the bug.
+func TestADuplicateCategoryTagDoesNotFailTheSearch(t *testing.T) {
+	body := pocraSingleWith("NOT_A_COMMON_PROVIDER", "not_governed", "DUP-CAT-1",
+		`{ "descriptor": {"code":"category"}, "value": "kvk" },
+		 { "descriptor": {"code":"category"}, "value": "chc" }`)
+	answer := runAgainst(t, requestFor(t, "KrishiVigyanKendra"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want 1 -- a duplicated category tag must not fail the search",
+			len(resources))
+	}
+	if got := dig(resources[0], "resourceAttributes", "facilityType"); got != "KrishiVigyanKendra" {
+		t.Errorf("facilityType = %v, want the first tag that resolves", got)
+	}
+}
+
+// A duplicated distance tag must not crash the search -- same T0410 hazard as
+// the placeholder-distance case above, but from two VALID values rather than
+// one placeholder.
+func TestADuplicateDistanceTagDoesNotFailTheSearch(t *testing.T) {
+	body := pocraSingleWith("COMMON_PROVIDER_KVK", "kvk", "DUP-DIST-1",
+		`{ "descriptor": {"code":"distance"}, "value": "12 Km" },
+		 { "descriptor": {"code":"distance"}, "value": "20 Km" }`)
+	answer := runAgainst(t, requestFor(t, "KrishiVigyanKendra"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want 1 -- a duplicated distance tag must not fail the search",
+			len(resources))
+	}
+}
+
+// A duplicated capacity_estimate tag must not crash the search, and the value
+// taken is the first, same as distance above.
+func TestADuplicateCapacityTagDoesNotFailTheSearch(t *testing.T) {
+	body := pocraSingleWith("WAREHOUSE001", "GSW", "DUP-CAP-1",
+		`{ "descriptor": {"code":"capacity_estimate"}, "value": "500 tons" },
+		 { "descriptor": {"code":"capacity_estimate"}, "value": "800 tons" }`)
+	answer := runAgainst(t, requestFor(t, "Warehouse"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want 1 -- a duplicated capacity_estimate tag must not fail the search",
+			len(resources))
+	}
+	capacity, ok := dig(resources[0], "resourceAttributes", "capacity").(map[string]any)
+	if !ok {
+		t.Fatalf("capacity = %v, want a parsed {value, unit}",
+			dig(resources[0], "resourceAttributes", "capacity"))
+	}
+	if capacity["value"] != float64(500) || capacity["unit"] != "tons" {
+		t.Errorf("capacity = %v, want the FIRST tag's {value: 500, unit: \"tons\"}", capacity)
+	}
+}
+
+// supportedFacilityTypes repeating a type is refused rather than absorbed --
+// it would otherwise pass both governed-type checks and make one duplicate
+// upstream call per repeat for nothing, up to the fan-out ceiling.
+func TestDuplicateFacilityTypesAreRefused(t *testing.T) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	attributes(t, payload)["supportedFacilityTypes"] = toAny([]string{"Warehouse", "Warehouse"})
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("could not rebuild the payload: %v", err)
+	}
+
+	_, _, runErr := runSelect(t, string(body))
+	if runErr == nil {
+		t.Fatal("the payload was served, want it refused for repeating a facility type")
+	}
+	if !strings.Contains(runErr.Error(), "not repeat") {
+		t.Errorf("error = %v, want the mapping's own explanation", runErr)
 	}
 }
