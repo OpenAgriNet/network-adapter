@@ -4,10 +4,16 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v2"
 )
 
 // decode is the path a real config takes: YAML -> Config.Config.
+//
+// yaml.v2 ON PURPOSE. cmd/adapter/main.go decodes the adapter config with v2,
+// and the two versions declare incompatible unmarshaler interfaces -- so a
+// test written against v3 passes while the adapter refuses the same file at
+// startup. That happened; these tests are the reason it cannot happen quietly
+// again.
 func decode(t *testing.T, body string) (Settings, error) {
 	t.Helper()
 	var c Config

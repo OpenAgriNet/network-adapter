@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v2"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin"
 )
@@ -12,6 +12,10 @@ import (
 // The shipped config and this code move together: the nested per-provider
 // block is only valid if pkg/plugin flattens it and ParseAuth reads it back.
 // This reads the real file rather than a copy, so the two cannot drift.
+//
+// Decoded with yaml.v2, the version cmd/adapter/main.go uses. A test on v3
+// passes while the adapter refuses the same file, because the two declare
+// incompatible unmarshaler interfaces.
 func TestShippedConfigParsesIntoAProfilePerProvider(t *testing.T) {
 	t.Parallel()
 
