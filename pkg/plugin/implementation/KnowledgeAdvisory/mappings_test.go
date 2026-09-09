@@ -206,14 +206,15 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 	return sent, answer
 }
 
-// attributesOf returns the single advisory the answer carries.
-func attributesOf(t *testing.T, answer map[string]any) map[string]any {
+// attributesOf returns the nth advisory's attributes. There is one resource per
+// DOCUMENT, so the fixture's four hits over two documents produce two.
+func attributesOf(t *testing.T, answer map[string]any, n int) map[string]any {
 	t.Helper()
 	res := resourcesOf(t, answer)
-	if len(res) != 1 {
-		t.Fatalf("expected one advisory resource, got %d", len(res))
+	if len(res) <= n {
+		t.Fatalf("wanted advisory %d, but the answer carries %d resources", n, len(res))
 	}
-	attrs, ok := res[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	attrs, ok := res[n].(map[string]any)["resourceAttributes"].(map[string]any)
 	if !ok {
 		t.Fatal("the resource carries no resourceAttributes")
 	}
@@ -253,7 +254,7 @@ func TestShippedMappingTurnsTopicsIntoTheQuery(t *testing.T) {
 // tell the caller to invoke a provider it just invoked.
 func TestShippedMappingAnswersWithADirectAdvisory(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
-	attrs := attributesOf(t, answer)
+	attrs := attributesOf(t, answer, 0)
 
 	if got := attrs["informationMode"]; got != "Direct" {
 		t.Errorf("informationMode = %v, want Direct", got)
@@ -274,24 +275,63 @@ func TestShippedMappingAnswersWithADirectAdvisory(t *testing.T) {
 // corpus indexes one chunk twice. Per-hit would say the same thing twice.
 func TestShippedMappingCollapsesHitsToDocuments(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
-	attrs := attributesOf(t, answer)
 
-	recs, _ := attrs["recommendations"].([]any)
-	if len(recs) != 2 {
-		t.Errorf("recommendations = %d, want 2 -- one per document, from 4 hits", len(recs))
+	res := resourcesOf(t, answer)
+	if len(res) != 2 {
+		t.Fatalf("resources = %d, want 2 -- one per document, from 4 hits", len(res))
 	}
-	// supportingResourceIds declares uniqueItems, so a per-hit mapping would
-	// emit the same id twice and be refused by the pack.
-	sup, _ := attrs["supportingResourceIds"].([]any)
-	if len(sup) != 2 {
-		t.Errorf("supportingResourceIds = %d, want 2 distinct documents", len(sup))
-	}
-	seen := map[any]bool{}
-	for _, id := range sup {
-		if seen[id] {
-			t.Errorf("supportingResourceIds repeats %v, which uniqueItems forbids", id)
+	ids := map[string]bool{}
+	for i := range res {
+		attrs := attributesOf(t, answer, i)
+		recs, _ := attrs["recommendations"].([]any)
+		if len(recs) != 1 {
+			t.Errorf("advisory %d carries %d recommendations, want 1 -- its own document's", i, len(recs))
 		}
-		seen[id] = true
+		// supportingResourceIds declares uniqueItems. One document per
+		// advisory means one id, and it must be that advisory's own.
+		sup, _ := attrs["supportingResourceIds"].([]any)
+		if len(sup) != 1 {
+			t.Errorf("advisory %d cites %d documents, want 1", i, len(sup))
+		}
+		id := fmt.Sprint(res[i].(map[string]any)["id"])
+		if ids[id] {
+			t.Errorf("two advisories share the id %q", id)
+		}
+		ids[id] = true
+		// The resource id and the document it cites name the same document.
+		if len(sup) == 1 && !strings.HasSuffix(id, strings.TrimPrefix(fmt.Sprint(sup[0]), "res:knowledge:")) {
+			t.Errorf("advisory %q cites %v, which is a different document", id, sup[0])
+		}
+	}
+}
+
+// AN ADVISORY MUST NOT BORROW ANOTHER DOCUMENT'S NAME. The first shape here
+// was one resource holding every document's text, which took its descriptor
+// from whichever hit happened to carry a scheme_name -- so on this fixture it
+// came back named "Telangana Gruha Jyoti" while carrying a recommendation from
+// an unrelated Karnataka legislative document. Per document, a name can only
+// come from the document it names.
+func TestShippedMappingNeverBorrowsAnotherDocumentsName(t *testing.T) {
+	_, answer := runShipped(t, selectRequest)
+	res := resourcesOf(t, answer)
+
+	named := 0
+	for i := range res {
+		d, _ := res[i].(map[string]any)["descriptor"].(map[string]any)
+		name, _ := d["name"].(string)
+		if name == "" {
+			continue
+		}
+		named++
+		// Only the scheme-typed hit carries a scheme_name, and it belongs to
+		// the first document. Any other advisory claiming a name is borrowing.
+		id := fmt.Sprint(res[i].(map[string]any)["id"])
+		if !strings.Contains(id, "74b89b5f69dcd56f6566d4b1a9392ffd") {
+			t.Errorf("advisory %q is named %q, but only the other document has a scheme name", id, name)
+		}
+	}
+	if named != 1 {
+		t.Errorf("%d advisories carry a name, want 1 -- exactly one document has a scheme_name", named)
 	}
 }
 
@@ -301,7 +341,7 @@ func TestShippedMappingCollapsesHitsToDocuments(t *testing.T) {
 // pack requires to be at least two characters.
 func TestShippedMappingTakesTopicsAndLanguageFromTheRequest(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
-	attrs := attributesOf(t, answer)
+	attrs := attributesOf(t, answer, 0)
 
 	topics, _ := attrs["topics"].([]any)
 	if len(topics) != 1 || topics[0] != "gruha jyoti scheme eligibility" {
@@ -324,7 +364,7 @@ func TestShippedMappingTakesTopicsAndLanguageFromTheRequest(t *testing.T) {
 // behind the knowledge.
 func TestShippedMappingNamesTheParticipantAsTheSource(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
-	attrs := attributesOf(t, answer)
+	attrs := attributesOf(t, answer, 0)
 
 	source, ok := attrs["source"].(map[string]any)
 	if !ok {
@@ -371,16 +411,24 @@ func TestShippedMappingKeepsBothResourceIds(t *testing.T) {
 	commitments := answer["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)
 	offer := commitments[0].(map[string]any)["offer"].(map[string]any)
 	ids, _ := offer["resourceIds"].([]any)
-	if len(ids) != 2 {
-		t.Fatalf("offer.resourceIds = %v, want the selected id and the minted one", ids)
+	res := resourcesOf(t, answer)
+	if len(ids) != len(res)+1 {
+		t.Fatalf("offer.resourceIds = %v, want the selected id plus one per advisory (%d)", ids, len(res))
 	}
 	if !strings.Contains(fmt.Sprint(ids[0]), "ondemand") {
 		t.Errorf("the selected id is missing from %v", ids)
 	}
-	minted := attributesOf(t, answer)
-	_ = minted
-	res := resourcesOf(t, answer)
-	if got := res[0].(map[string]any)["id"]; fmt.Sprint(ids[1]) != fmt.Sprint(got) {
-		t.Errorf("offer.resourceIds[1] = %v but the resource id is %v", ids[1], got)
+	// Every minted advisory has to appear, or a caller cannot resolve it.
+	for i := range res {
+		want := fmt.Sprint(res[i].(map[string]any)["id"])
+		found := false
+		for _, got := range ids[1:] {
+			if fmt.Sprint(got) == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("resource %q is missing from offer.resourceIds %v", want, ids)
+		}
 	}
 }

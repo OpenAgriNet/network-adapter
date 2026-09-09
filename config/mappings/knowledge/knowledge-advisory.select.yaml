@@ -98,55 +98,74 @@ response: |
               /* Only mint an id when there IS a document. With no hits the
                  old form emitted "res:knowledge-advisory:" -- a dangling id
                  pointing at nothing. */
-              "resourceIds": $exists($docIds)
-                ? [$sel, "res:knowledge-advisory:" & $docIds[0]]
-                : [$sel]
+              "resourceIds": $append([$sel],
+                [$map($docIds, function($id) { "res:knowledge-advisory:" & $id })])
             },
-            /* ONE advisory, every contributing document cited beneath it.
+              /* ONE RESOURCE PER DOCUMENT.
 
-               NO RESULTS IS AN ANSWER, NOT A FAILURE. With nothing above the
-               floor this emits resources: [] -- Commitment.resources is
-               required but carries no minItems, so an empty array is valid and
-               says "nothing matched" without inventing an advisory. Building
-               one anyway produced an empty resource id and no recommendations,
-               which is a malformed advisory the response leg never validates. */
-            "resources": $exists($docIds) ? [{
-              "id": "res:knowledge-advisory:" & $docIds[0],
-              "quantity": 1,
-              "descriptor": $merge([
-                { "code": "KNOWLEDGE_ADVISORY" },
-                $exists($distinct($usable.scheme_name)[0])
-                  ? { "name": $distinct($usable.scheme_name)[0] } : {}
-              ]),
-              "resourceAttributes": {
-                "@context": $ctx,
-                "@type": "openagrinet:KnowledgeAdvisory",
-                "informationMode": "Direct",
-                /* Echoed: category_tags is "" on every hit in this corpus. */
-                "topics": $ra.topics,
-                "languages": $ra.languages,
-                "issuedAt": $now(),
-                "recommendations": [$map($docIds, function($id) {
-                  { "message": $textOf($id), "language": $lang }
-                })],
-                /* Resource IDENTIFIERS, not raw doc hashes: the pack calls
-                   these "Beckn Resource identifiers of supporting
-                   KnowledgeResource information". Caveat worth knowing: they
-                   only resolve if those documents are also published as
-                   KnowledgeResource resources on the network. Today they are
-                   not, so a caller can correlate but not dereference them. */
-                "supportingResourceIds": [$map($docIds, function($id) {
-                  "res:knowledge:" & $id
-                })],
-                "rationale": $rationale,
-                /* NOT hits[].source -- that is "docs-pipeline", the ingestion
-                   pipeline name, not the authority behind the knowledge. */
-                "source": {
-                  "sourceId": "participant:bharat-vistaar",
-                  "sourceName": $distinct($usable.instance_name)[0]
+                 A single resource carrying every document's text was the first
+                 shape here, and it could not label itself honestly: it took
+                 its id from one doc_id and its descriptor from whichever hit
+                 happened to carry a scheme_name, then held recommendations
+                 from documents on entirely different subjects. On this corpus
+                 an advisory came back named "Telangana Gruha Jyoti" whose
+                 second recommendation was a Karnataka legislative question.
+
+                 Per document, each advisory covers exactly what its id names.
+                 It also matches how the other capabilities answer -- mandi
+                 emits one resource per market row, not one holding all of
+                 them.
+
+                 NO RESULTS IS AN ANSWER: with nothing to map this is [],
+                 which Commitment.resources allows -- required, but with no
+                 minItems. */
+              "resources": [$map($docIds, function($id) {
+                {
+                  "id": "res:knowledge-advisory:" & $id,
+                  "quantity": 1,
+                  "descriptor": $merge([
+                    { "code": "KNOWLEDGE_ADVISORY" },
+                    /* Only THIS document's scheme_name, and only when it has
+                       one. document-typed hits carry none, and borrowing
+                       another document's name is what made the old shape
+                       misleading. */
+                    $exists($distinct($forDoc($id).scheme_name)[0])
+                      ? { "name": $distinct($forDoc($id).scheme_name)[0] } : {}
+                  ]),
+                  "resourceAttributes": {
+                    "@context": $ctx,
+                    "@type": "openagrinet:KnowledgeAdvisory",
+                    "informationMode": "Direct",
+                    /* Echoed: category_tags is "" on every hit here. */
+                    "topics": $ra.topics,
+                    "languages": $ra.languages,
+                    "issuedAt": $now(),
+                    /* This document's passages, joined: the engine returns up
+                       to max_chunks_per_doc of them, and the same chunk can
+                       arrive twice under two type labels. */
+                    "recommendations": [{
+                      "message": $textOf($id),
+                      "language": $lang
+                    }],
+                    /* The document this advisory is drawn from, as a resource
+                       IDENTIFIER rather than the raw hash -- the pack calls
+                       these "Beckn Resource identifiers of supporting
+                       KnowledgeResource information". They resolve only if
+                       those documents are themselves published as
+                       KnowledgeResource resources, which today they are not,
+                       so a caller can correlate but not dereference them. */
+                    "supportingResourceIds": ["res:knowledge:" & $id],
+                    "rationale": $rationale,
+                    /* NOT hits[].source -- that is "docs-pipeline", the
+                       ingestion pipeline, not the authority behind the
+                       knowledge. */
+                    "source": {
+                      "sourceId": "participant:bharat-vistaar",
+                      "sourceName": $distinct($usable.instance_name)[0]
+                    }
+                  }
                 }
-              }
-            }] : []
+              })]
           }]
         }
       }
