@@ -49,6 +49,13 @@ type Config struct {
 	// schemes are defined and validated -- see common.AuthProfile.
 	AuthByProvider map[string]*common.AuthProfile `yaml:"-" json:"-"`
 
+	// FacilityTypesAt is where the payload carries the facility types a search
+	// asks for. Absent means DefaultFacilityTypesAt, which is the Beckn v2
+	// convention and what every deployment should be using -- the override is
+	// for tracking a spec change without waiting for a release, exactly as
+	// common.Config's providerIdAt and capabilityCodeAt are.
+	FacilityTypesAt string `yaml:"facilityTypesAt" json:"facilityTypesAt"`
+
 	// SearchConcurrency is how many of a multi-type search's calls may be in
 	// flight at once. See search.go's DefaultSearchConcurrency and
 	// MaxFacilityTypes for what absent and too-large mean.
@@ -96,9 +103,10 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	}
 
 	return &Step{
-		inner:       one,
-		paths:       paths,
-		bindingKeys: cfg.BindingKeys,
-		concurrency: searchConcurrency(cfg.SearchConcurrency),
+		inner:           one,
+		paths:           paths,
+		bindingKeys:     cfg.BindingKeys,
+		facilityTypesAt: cfg.FacilityTypesAt,
+		concurrency:     searchConcurrency(cfg.SearchConcurrency),
 	}, closer, nil
 }

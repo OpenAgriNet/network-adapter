@@ -35,6 +35,9 @@ func (p agriFacilityProvider) parseConfig(config map[string]string) (*Agricultur
 		// this is a default rather than something to set.
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
+		// Absent means the Beckn v2 convention. See
+		// AgricultureFacility.DefaultFacilityTypesAt.
+		FacilityTypesAt: config["facilityTypesAt"],
 	}
 
 	// One credential profile per provider, read from the flattened

@@ -92,6 +92,10 @@ type Step struct {
 	paths       common.Paths
 	bindingKeys []string
 
+	// facilityTypesAt is where the payload carries the types to search for.
+	// A path rather than a walk in Go, so the payload's shape stays config.
+	facilityTypesAt string
+
 	// concurrency is how many of a split search's calls run at once.
 	concurrency int
 }
@@ -113,7 +117,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 			"agriculture facility: the payload is not JSON: %w", err))
 	}
 
-	types, err := facilityTypesFrom(beckn)
+	types, err := facilityTypesFrom(beckn, s.facilityTypesAt)
 	if err != nil {
 		return err
 	}

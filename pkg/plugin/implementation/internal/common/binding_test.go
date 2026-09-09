@@ -248,13 +248,13 @@ func TestPathWalk(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := valuesAt(doc, tc.path)
+			got := ValuesAt(doc, tc.path)
 			if len(got) != len(tc.want) {
-				t.Fatalf("valuesAt(%q) = %v, want %v", tc.path, got, tc.want)
+				t.Fatalf("ValuesAt(%q) = %v, want %v", tc.path, got, tc.want)
 			}
 			for i, want := range tc.want {
 				if got[i] != want {
-					t.Errorf("valuesAt(%q)[%d] = %q, want %q", tc.path, i, got[i], want)
+					t.Errorf("ValuesAt(%q)[%d] = %q, want %q", tc.path, i, got[i], want)
 				}
 			}
 		})

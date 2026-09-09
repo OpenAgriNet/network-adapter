@@ -23,77 +23,83 @@ package AgricultureFacility
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 )
+
+// DefaultFacilityTypesAt is where a Beckn v2 select carries the facility types
+// a search asks for.
+//
+// A PATH rather than a walk written out in Go, for the same reason
+// common.Config's providerIdAt and capabilityCodeAt are paths: the payload's
+// shape is the network's convention, not this adapter's. Compiled in, a spec
+// change needs a rebuild; as a path, it needs a config edit. The default is
+// what every deployment should be using, and facilityTypesAt exists so a spec
+// change can be tracked without waiting for a release.
+const DefaultFacilityTypesAt = "message.contract.commitments[].resources[]." +
+	"resourceAttributes.supportedFacilityTypes[]"
 
 // facilityTypesFrom returns the facility types a payload asks for, in the
 // order the payload wrote them -- one upstream call each.
 //
+// The reading is common.ValuesAt's, the same walker that finds a binding key,
+// so the type assertions and the absent-field handling are in one place rather
+// than repeated here. It returns only the strings the path reaches: a missing
+// field, an object where a list belongs, or a number among the types all
+// arrive as "no value at that path", which is a bad request either way.
+//
 // Every failure is a bad request rather than an adapter fault: the payload is
 // the thing that is wrong, and the caller is the only one who can fix it. The
 // mapping's own required: checks refuse most of these first, with better
-// messages; these are what is left if a check is relaxed or a payload reaches
-// here another way, and they exist so that path is a refusal rather than a
-// panic on a nil map.
-func facilityTypesFrom(beckn any) ([]string, error) {
-	document, ok := beckn.(map[string]any)
-	if !ok {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"agriculture facility: the payload is %T, not an object, so it names no commitment to search from", beckn))
+// messages; these are what is left if a check is relaxed.
+func facilityTypesFrom(beckn any, path string) ([]string, error) {
+	if path == "" {
+		path = DefaultFacilityTypesAt
 	}
 
-	commitments, _ := dig(document, "message", "contract", "commitments").([]any)
-	if len(commitments) == 0 {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"agriculture facility: the payload carries no commitment to read a facility search from"))
-	}
-	commitment, ok := commitments[0].(map[string]any)
-	if !ok {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"agriculture facility: the payload's first commitment is %T, not an object", commitments[0]))
-	}
-
-	resources, _ := commitment["resources"].([]any)
-	if len(resources) == 0 {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"agriculture facility: the payload's commitment carries no resource to read a facility search from"))
-	}
-	resource, ok := resources[0].(map[string]any)
-	if !ok {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"agriculture facility: the payload's first resource is %T, not an object", resources[0]))
-	}
-
-	declared := dig(resource, "resourceAttributes", "supportedFacilityTypes")
+	// LeavesAt, not ValuesAt: a non-string here is the caller's mistake and has
+	// to be reported. ValuesAt would drop it, and dropping one entry of a
+	// hand-written list means searching for the rest and reporting success --
+	// a partial answer with nothing recording what was lost.
+	leaves := common.LeavesAt(beckn, path)
 
 	// A bare string is one value: the same instruction as a one-element list,
-	// which is what a caller writing a single type may well send.
-	var declaredList []any
-	switch typed := declared.(type) {
-	case nil:
-		declaredList = nil
-	case []any:
-		declaredList = typed
-	default:
-		declaredList = []any{typed}
+	// which is what a caller writing a single type may well send. The path's
+	// "[]" suffix wants a list, so the scalar form is a second read rather than
+	// a looser walker -- keeping "[]" meaning exactly "a list" everywhere.
+	//
+	// A list that is PRESENT and empty reads as zero leaves too, and the second
+	// read would then hand back the empty list itself as one value -- reported
+	// as "[] is not a facility type", which is true and useless. Skipping a
+	// leaf that is itself a list keeps that case on the "names no facility
+	// type" message, which is what an empty list means.
+	if len(leaves) == 0 {
+		for _, leaf := range common.LeavesAt(beckn, strings.TrimSuffix(path, arrayMarker)) {
+			if _, isList := leaf.([]any); isList {
+				continue
+			}
+			leaves = append(leaves, leaf)
+		}
 	}
-	if len(declaredList) == 0 {
+
+	if len(leaves) == 0 {
 		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"agriculture facility: the payload names no facility type in supportedFacilityTypes, "+
-				"so there is nothing to ask the provider for"))
+			"agriculture facility: the payload names no facility type at %s, "+
+				"so there is nothing to ask the provider for", path))
 	}
 
 	// Each value becomes a category code in the request half's $codes lookup,
 	// so a non-string is a request this capability cannot build -- refused
 	// here rather than sent as a null category POCRA answers with everything.
-	values := make([]string, 0, len(declaredList))
-	for _, value := range declaredList {
-		text, ok := value.(string)
+	values := make([]string, 0, len(leaves))
+	for _, leaf := range leaves {
+		text, ok := leaf.(string)
 		if !ok {
 			return nil, model.NewBadReqErr("", fmt.Errorf(
 				"agriculture facility: supportedFacilityTypes contains %v (%T), which is not a facility type",
-				value, value))
+				leaf, leaf))
 		}
 		values = append(values, text)
 	}
@@ -116,6 +122,9 @@ func facilityTypesFrom(beckn any) ([]string, error) {
 	}
 	return values, nil
 }
+
+// arrayMarker is common.ValuesAt's "look in each element" suffix.
+const arrayMarker = "[]"
 
 // dig walks a chain of object keys, returning nil the moment one is absent or
 // is not an object. Written out rather than reached for from a library because
