@@ -79,7 +79,7 @@ func TestTwoProvidersOnOneStepAuthenticateDifferently(t *testing.T) {
 
 	cfg := &Config{
 		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
-		Auth: map[string]*Auth{
+		AuthByProvider: map[string]*AuthProfile{
 			"alpha": {Scheme: AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_PP_QUERY_TOKEN"},
 			"beta":  {Scheme: AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_PP_HEADER_TOKEN"},
 		},
@@ -154,7 +154,7 @@ func TestTwoOAuth2ProvidersDoNotShareAToken(t *testing.T) {
 
 	cfg := &Config{
 		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
-		Auth: map[string]*Auth{
+		AuthByProvider: map[string]*AuthProfile{
 			"alpha": {Scheme: AuthSchemeOAuth2, TokenURL: issuerA.URL,
 				ClientIDEnv: "TEST_PP_ID_A", ClientSecretEnv: "TEST_PP_SECRET_A"},
 			"beta": {Scheme: AuthSchemeOAuth2, TokenURL: issuerB.URL,
@@ -213,7 +213,7 @@ func TestRedactionCoversEveryProvidersSecret(t *testing.T) {
 	const capability = "openagrinet:KnowledgeAdvisory"
 	cfg := &Config{
 		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
-		Auth: map[string]*Auth{
+		AuthByProvider: map[string]*AuthProfile{
 			"alpha": {Scheme: AuthSchemeHeader, HeaderName: "X-A", HeaderValueEnv: "TEST_PP_RED_A"},
 			"beta":  {Scheme: AuthSchemeHeader, HeaderName: "X-B", HeaderValueEnv: "TEST_PP_RED_B"},
 		},
@@ -246,7 +246,7 @@ func TestRedactionSortsAcrossProvidersNotWithinOne(t *testing.T) {
 	const capability = "openagrinet:KnowledgeAdvisory"
 	cfg := &Config{
 		BindingKeys: []string{"shorty|" + capability, "longy|" + capability},
-		Auth: map[string]*Auth{
+		AuthByProvider: map[string]*AuthProfile{
 			"shorty": {Scheme: AuthSchemeHeader, HeaderName: "X-S", HeaderValueEnv: "TEST_PP_SHORT"},
 			"longy":  {Scheme: AuthSchemeHeader, HeaderName: "X-L", HeaderValueEnv: "TEST_PP_LONG"},
 		},

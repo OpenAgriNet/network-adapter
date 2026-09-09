@@ -204,7 +204,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 		name           string
 		cfg            *Config
 		expectedID     string
-		expectedConfig plugin.Settings
+		expectedConfig plugin.ConfigBlock
 	}{
 		{
 			name: "Valid config with all fields",
@@ -221,7 +221,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 				TimeInterval:   5,
 			},
 			expectedID: "otelsetup",
-			expectedConfig: plugin.Settings{
+			expectedConfig: plugin.ConfigBlock{
 				"serviceName":       "test-service",
 				"serviceVersion":    "1.0.0",
 				"environment":       "test",
@@ -245,7 +245,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 				Environment:    "production",
 			},
 			expectedID: "otelsetup",
-			expectedConfig: plugin.Settings{
+			expectedConfig: plugin.ConfigBlock{
 				"serviceName":       "my-service",
 				"serviceVersion":    "2.0.0",
 				"environment":       "production",
@@ -272,7 +272,7 @@ func TestToPluginConfig_Success(t *testing.T) {
 				OtlpEndpoint:   "",
 			},
 			expectedID: "otelsetup",
-			expectedConfig: plugin.Settings{
+			expectedConfig: plugin.ConfigBlock{
 				"serviceName":       "",
 				"serviceVersion":    "",
 				"environment":       "",

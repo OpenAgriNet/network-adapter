@@ -39,10 +39,10 @@ func TestParseConfig(t *testing.T) {
 		{
 			// Everything absent is left zero: KnowledgeAdvisory.New defaults
 			// it, so the rules are defined in exactly one place. Auth is an
-			// empty map rather than nil -- ParseAuth always returns one.
+			// empty map rather than nil -- ParseProviderAuth always returns one.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &KnowledgeAdvisory.Config{Auth: map[string]*upstream.Auth{}},
+			expected: &KnowledgeAdvisory.Config{AuthByProvider: map[string]*upstream.AuthProfile{}},
 		},
 		{
 			// The scheme this capability exists to use. Its provider sits
@@ -58,7 +58,7 @@ func TestParseConfig(t *testing.T) {
 			},
 			expected: &KnowledgeAdvisory.Config{
 				BindingKeys: []string{"knowledge-provider|openagrinet:KnowledgeAdvisory"},
-				Auth: map[string]*upstream.Auth{
+				AuthByProvider: map[string]*upstream.AuthProfile{
 					"knowledge-provider": {
 						Provider:        "knowledge-provider",
 						Scheme:          "oauth2",
@@ -90,7 +90,7 @@ func TestParseConfig(t *testing.T) {
 					"knowledge-provider|openagrinet:KnowledgeAdvisory",
 					"vistaar-two|openagrinet:KnowledgeAdvisory",
 				},
-				Auth: map[string]*upstream.Auth{
+				AuthByProvider: map[string]*upstream.AuthProfile{
 					"knowledge-provider": {
 						Provider:        "knowledge-provider",
 						Scheme:          "oauth2",
@@ -119,7 +119,7 @@ func TestParseConfig(t *testing.T) {
 			},
 			expected: &KnowledgeAdvisory.Config{
 				BindingKeys: []string{"provider.oan.dev|openagrinet:KnowledgeAdvisory"},
-				Auth: map[string]*upstream.Auth{
+				AuthByProvider: map[string]*upstream.AuthProfile{
 					"provider.oan.dev": {
 						Provider:    "provider.oan.dev",
 						Scheme:      "basic",
@@ -174,7 +174,7 @@ func TestParseConfig(t *testing.T) {
 			},
 			expected: &KnowledgeAdvisory.Config{
 				BindingKeys: []string{"other|capability"},
-				Auth: map[string]*upstream.Auth{
+				AuthByProvider: map[string]*upstream.AuthProfile{
 					"other": {
 						Provider:        "other",
 						Scheme:          "basic",
@@ -207,7 +207,7 @@ func TestParseConfig(t *testing.T) {
 			// unset variable produces this, and it should read as "unset".
 			name:     "treats an empty response cap as unset",
 			config:   map[string]string{"maxResponseBytes": ""},
-			expected: &KnowledgeAdvisory.Config{Auth: map[string]*upstream.Auth{}},
+			expected: &KnowledgeAdvisory.Config{AuthByProvider: map[string]*upstream.AuthProfile{}},
 		},
 	}
 

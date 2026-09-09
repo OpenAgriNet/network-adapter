@@ -83,7 +83,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 				BindingKeys: []string{bindingKey},
 				// Auth is per provider, so each step declares its own even
 				// when neither upstream needs a credential.
-				Auth: map[string]*upstream.Auth{
+				AuthByProvider: map[string]*upstream.AuthProfile{
 					strings.Split(bindingKey, "|")[0]: {Scheme: upstream.AuthSchemeNone},
 				},
 			})

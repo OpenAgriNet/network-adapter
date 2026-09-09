@@ -212,7 +212,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing
 			// no credential, and that is declared rather than defaulted.
-			Auth: map[string]*upstreamstep.Auth{
+			AuthByProvider: map[string]*upstreamstep.AuthProfile{
 				strings.Split(shippedBindingKey, "|")[0]: {Scheme: upstreamstep.AuthSchemeNone},
 			},
 		})

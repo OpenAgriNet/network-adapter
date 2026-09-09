@@ -14,7 +14,7 @@ import (
 // test written against v3 passes while the adapter refuses the same file at
 // startup. That happened; these tests are the reason it cannot happen quietly
 // again.
-func decode(t *testing.T, body string) (Settings, error) {
+func decode(t *testing.T, body string) (ConfigBlock, error) {
 	t.Helper()
 	var c Config
 	err := yaml.Unmarshal([]byte("id: X\nconfig:\n"+body), &c)
@@ -33,7 +33,7 @@ func TestSettingsKeepsTheFlatFormUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	want := Settings{
+	want := ConfigBlock{
 		"bindingKeys": "a|cap,b|cap",
 		"authScheme":  "oauth2",
 		"clientIdEnv": "KNOWLEDGE_CLIENT_ID",
@@ -175,7 +175,7 @@ func TestSettingsAcceptsNoConfigAtAll(t *testing.T) {
 	}
 }
 
-// Settings must stay usable exactly where map[string]string was, because every
+// ConfigBlock must stay usable exactly where map[string]string was, because every
 // plugin's New takes one and none of them changed.
 func TestSettingsPassesWhereAPlainMapIsWanted(t *testing.T) {
 	got, err := decode(t, "  authScheme: oauth2\n")
@@ -184,10 +184,10 @@ func TestSettingsPassesWhereAPlainMapIsWanted(t *testing.T) {
 	}
 	takesPlainMap := func(m map[string]string) string { return m["authScheme"] }
 	if takesPlainMap(got) != "oauth2" {
-		t.Error("Settings no longer passes as a map[string]string")
+		t.Error("ConfigBlock no longer passes as a map[string]string")
 	}
 	var assigned map[string]string = got
 	if assigned["authScheme"] != "oauth2" {
-		t.Error("Settings no longer assigns to a map[string]string")
+		t.Error("ConfigBlock no longer assigns to a map[string]string")
 	}
 }

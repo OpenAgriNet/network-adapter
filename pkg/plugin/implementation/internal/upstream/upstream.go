@@ -152,7 +152,7 @@ type Config struct {
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
-	// Auth carries one credential profile PER PROVIDER, keyed by participant
+	// AuthByProvider carries one credential profile PER PROVIDER, keyed by participant
 	// id -- the left half of a binding key.
 	//
 	// Per provider rather than per step because a step serves several binding
@@ -168,17 +168,20 @@ type Config struct {
 	// profile is missing is refused at startup rather than quietly falling
 	// through to sending nothing.
 	//
-	// Built by ParseAuth from the flattened config, not decoded from YAML
+	// Built by ParseProviderAuth from the flattened config, not decoded from YAML
 	// directly: what an operator writes is a nested block per provider, which
 	// pkg/plugin flattens on the way in.
-	Auth map[string]*Auth `yaml:"-" json:"-"`
+	AuthByProvider map[string]*AuthProfile `yaml:"-" json:"-"`
 
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 }
 
-// Auth is how one provider's credentials are presented upstream.
-type Auth struct {
+// AuthProfile is how ONE provider's credentials are presented upstream.
+//
+// One per provider rather than one per step: a step serves several binding
+// keys, and the providers behind them need not authenticate alike.
+type AuthProfile struct {
 	// Provider is the participant id this profile belongs to. Held so an error
 	// can name it: with several profiles on one step, "authScheme query
 	// requires queryName" would otherwise leave an operator guessing which
@@ -224,7 +227,7 @@ type Auth struct {
 // authenticating as somebody else -- a failure no test of a single provider
 // can see.
 type authenticator struct {
-	cfg Auth
+	cfg AuthProfile
 
 	// Two mechanisms because there are two jobs. tokenMu serialises the
 	// EXCHANGE, so a cold start sends one request to the issuer rather than one
@@ -282,9 +285,9 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		// Timeout is set per request from the registry's own budget, so the
 		// client carries none of its own.
 		httpClient: &http.Client{},
-		auth:       make(map[string]*authenticator, len(cfg.Auth)),
+		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
 	}
-	for provider, profile := range cfg.Auth {
+	for provider, profile := range cfg.AuthByProvider {
 		step.auth[provider] = &authenticator{cfg: *profile}
 	}
 
@@ -336,8 +339,8 @@ func applyDefaults(cfg *Config) error {
 	if cfg.MaxResponseBytes <= 0 {
 		cfg.MaxResponseBytes = DefaultMaxResponseBytes
 	}
-	if cfg.Auth == nil {
-		cfg.Auth = map[string]*Auth{}
+	if cfg.AuthByProvider == nil {
+		cfg.AuthByProvider = map[string]*AuthProfile{}
 	}
 
 	// Both directions, because each catches a different mistake and both are
@@ -347,9 +350,9 @@ func applyDefaults(cfg *Config) error {
 	// us.
 	served := map[string]bool{}
 	for _, key := range cfg.BindingKeys {
-		served[participantOf(key)] = true
+		served[providerIDFrom(key)] = true
 	}
-	for provider := range cfg.Auth {
+	for provider := range cfg.AuthByProvider {
 		if !served[provider] {
 			return fmt.Errorf(
 				"upstream: auth is configured for %q, which is not a provider in bindingKeys (%s)",
@@ -357,7 +360,7 @@ func applyDefaults(cfg *Config) error {
 		}
 	}
 	for provider := range served {
-		profile, ok := cfg.Auth[provider]
+		profile, ok := cfg.AuthByProvider[provider]
 		if !ok {
 			return fmt.Errorf(
 				"upstream: %q is served but has no auth block; every provider declares its own, "+
@@ -374,7 +377,7 @@ func applyDefaults(cfg *Config) error {
 // validate refuses a profile whose scheme and fields disagree. Every message
 // names the provider: with several profiles on one step, the field alone would
 // leave an operator guessing which block to look at.
-func (a *Auth) validate() error {
+func (a *AuthProfile) validate() error {
 	switch a.Scheme {
 	case AuthSchemeNone:
 	case AuthSchemeBasic:
@@ -409,7 +412,7 @@ func (a *Auth) validate() error {
 	return nil
 }
 
-// ParseAuth builds one credential profile per provider from a plugin's
+// ParseProviderAuth builds one credential profile per provider from a plugin's
 // flattened settings.
 //
 // What an operator writes is a block per provider:
@@ -429,8 +432,8 @@ func (a *Auth) validate() error {
 // The split is on the FIRST dash, which is unambiguous because no setting name
 // contains one while a participant id routinely does -- knowledge-provider,
 // provider.oan.dev. So the field is always the part before it.
-func ParseAuth(config map[string]string) (map[string]*Auth, error) {
-	profiles := map[string]*Auth{}
+func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error) {
+	profiles := map[string]*AuthProfile{}
 
 	// Sorted so a config with two mistakes reports the same one every run.
 	keys := make([]string, 0, len(config))
@@ -464,7 +467,7 @@ func ParseAuth(config map[string]string) (map[string]*Auth, error) {
 
 		profile, seen := profiles[provider]
 		if !seen {
-			profile = &Auth{Provider: provider}
+			profile = &AuthProfile{Provider: provider}
 			profiles[provider] = profile
 		}
 		value := config[key]
@@ -511,10 +514,10 @@ var authFields = map[string]bool{
 	"clientSecretEnv": true,
 }
 
-// participantOf returns the provider half of a binding key. The format is
+// providerIDFrom returns the provider half of a binding key. The format is
 // "<participantId>|<capabilityCode>", and a participant id carries dashes and
 // dots but never a pipe, so the first one separates them.
-func participantOf(bindingKey string) string {
+func providerIDFrom(bindingKey string) string {
 	provider, _, _ := strings.Cut(bindingKey, "|")
 	return strings.TrimSpace(provider)
 }
@@ -633,7 +636,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// one step serving several providers authenticates each as its own.
 	// Startup guarantees a profile per served provider; this guards the case
 	// where a record arrives for a key the config never declared.
-	auth, configured := s.auth[participantOf(plan.BindingKey)]
+	auth, configured := s.auth[providerIDFrom(plan.BindingKey)]
 	if !configured {
 		return fmt.Errorf("upstream: no credential is configured for %s", plan.BindingKey)
 	}

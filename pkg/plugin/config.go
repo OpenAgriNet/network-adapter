@@ -8,7 +8,7 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
-// Settings is a plugin's own configuration block.
+// ConfigBlock is a plugin's own configuration block.
 //
 // It is map[string]string underneath, deliberately: every plugin's New takes a
 // map[string]string, and a named map type stays assignable to one, so widening
@@ -32,94 +32,93 @@ import (
 // plugin's settings in one place and make this file a dependency of all of
 // them. Rejecting an unknown field is the plugin's job, where the field is
 // already defined.
-type Settings map[string]string
+type ConfigBlock map[string]string
 
-// Settings must satisfy the unmarshaler of the SAME yaml package the adapter
+// ConfigBlock must satisfy the unmarshaler of the SAME yaml package the adapter
 // decodes its config with -- gopkg.in/yaml.v2, in cmd/adapter/main.go. The two
 // versions declare incompatible interfaces, and a mismatch is silent: the
 // method is simply never called and a nested block reaches the plain map,
 // failing with "cannot unmarshal !!map into string" at startup. This assertion
 // turns that into a compile error instead.
-var _ yaml.Unmarshaler = (*Settings)(nil)
+var _ yaml.Unmarshaler = (*ConfigBlock)(nil)
 
 // UnmarshalYAML accepts scalars at the top level and one level of nesting.
-func (s *Settings) UnmarshalYAML(unmarshal func(any) error) error {
-	var raw map[string]any
-	if err := unmarshal(&raw); err != nil {
+func (block *ConfigBlock) UnmarshalYAML(unmarshal func(any) error) error {
+	var written map[string]any
+	if err := unmarshal(&written); err != nil {
 		return err
 	}
 
-	out := Settings{}
-	// Sorted so that a duplicate is reported against the same pair whichever
-	// order the map happened to iterate in.
-	blocks := make([]string, 0, len(raw))
-	for key := range raw {
-		blocks = append(blocks, key)
+	flattened := ConfigBlock{}
+
+	// Sorted so a config with two mistakes reports the same one every run.
+	names := make([]string, 0, len(written))
+	for name := range written {
+		names = append(names, name)
 	}
-	sort.Strings(blocks)
+	sort.Strings(names)
 
-	for _, key := range blocks {
-		value := raw[key]
-
-		block, nested := asBlock(value)
-		if !nested {
-			out[key] = scalar(value)
+	for _, name := range names {
+		nested, isNested := asNestedBlock(written[name])
+		if !isNested {
+			flattened[name] = asString(written[name])
 			continue
 		}
-
-		// A block key carrying a dash would produce a flattened key that reads
-		// as another field's, so the split on the first dash could no longer
-		// tell them apart. Participant ids DO carry dashes, which is why the
-		// dash goes between field and key rather than inside either.
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("plugin config: a settings block has an empty name")
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("plugin config: a nested block has no name")
 		}
 
-		fields := make([]string, 0, len(block))
-		for field := range block {
-			fields = append(fields, field)
+		settings := make([]string, 0, len(nested))
+		for setting := range nested {
+			settings = append(settings, setting)
 		}
-		sort.Strings(fields)
+		sort.Strings(settings)
 
-		for _, field := range fields {
-			if _, deeper := asBlock(block[field]); deeper {
+		for _, setting := range settings {
+			if _, deeper := asNestedBlock(nested[setting]); deeper {
 				return fmt.Errorf(
-					"plugin config: %s.%s nests further; only one level is supported", key, field)
+					"plugin config: %s.%s nests further; only one level is supported",
+					name, setting)
 			}
-			if strings.Contains(field, "-") {
+			// A setting carrying a dash would flatten to <setting>-<name>-<name>
+			// and resolve to a block that does not exist. The block name
+			// already says what it belongs to, so inside one a setting is
+			// named plainly.
+			if strings.Contains(setting, "-") {
 				return fmt.Errorf(
 					"plugin config: %s.%s carries a dash; inside a block a setting is named "+
-						"plainly, and the block already says which one it belongs to", key, field)
+						"plainly, and the block already says which one it belongs to",
+					name, setting)
 			}
-			flat := field + "-" + key
-			if _, taken := out[flat]; taken {
+			flatName := setting + "-" + name
+			if _, alreadySet := flattened[flatName]; alreadySet {
 				return fmt.Errorf(
 					"plugin config: %s is set twice, once as %s.%s and once directly",
-					flat, key, field)
+					flatName, name, setting)
 			}
-			out[flat] = scalar(block[field])
+			flattened[flatName] = asString(nested[setting])
 		}
 	}
 
-	*s = out
+	*block = flattened
 	return nil
 }
 
-// asBlock recognises a nested mapping.
+// asNestedBlock recognises a nested mapping and normalises its keys.
 //
 // Two shapes because yaml.v2 decodes a mapping into map[interface{}]interface{}
 // unless the target says otherwise, so the top level arrives with string keys
 // and anything under it does not. Normalised here rather than at each use, and
 // the keys are rendered the same way values are so a non-string key cannot
 // silently become a different setting.
-func asBlock(v any) (map[string]any, bool) {
+func asNestedBlock(v any) (map[string]any, bool) {
 	switch typed := v.(type) {
 	case map[string]any:
 		return typed, true
 	case map[any]any:
 		out := make(map[string]any, len(typed))
 		for key, value := range typed {
-			out[scalar(key)] = value
+			out[asString(key)] = value
 		}
 		return out, true
 	}
@@ -129,7 +128,7 @@ func asBlock(v any) (map[string]any, bool) {
 // scalar renders a YAML scalar the way the flat form would have carried it.
 // %v on an int gives "1048576" rather than an exponent, which a float would;
 // YAML decodes an integer literal as int, so a byte count survives intact.
-func scalar(v any) string {
+func asString(v any) string {
 	if v == nil {
 		return ""
 	}
@@ -137,18 +136,18 @@ func scalar(v any) string {
 }
 
 type PublisherCfg struct {
-	ID     string   `yaml:"id"`
-	Config Settings `yaml:"config"`
+	ID     string      `yaml:"id"`
+	Config ConfigBlock `yaml:"config"`
 }
 
 type ValidatorCfg struct {
-	ID     string   `yaml:"id"`
-	Config Settings `yaml:"config"`
+	ID     string      `yaml:"id"`
+	Config ConfigBlock `yaml:"config"`
 }
 
 type Config struct {
-	ID     string   `yaml:"id"`
-	Config Settings `yaml:"config"`
+	ID     string      `yaml:"id"`
+	Config ConfigBlock `yaml:"config"`
 }
 
 type ManagerConfig struct {
