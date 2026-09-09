@@ -87,9 +87,6 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 			&stubRegistry{plan: plan},
 			fixedMapper{answer: answer},
 			nil,
-			// No fan-out hook: these capabilities' mappings declare no
-			// fan-out half, so there is nothing to gather.
-			nil,
 			&upstream.Config{BindingKeys: []string{bindingKey}})
 		if err != nil {
 			t.Fatal(err)

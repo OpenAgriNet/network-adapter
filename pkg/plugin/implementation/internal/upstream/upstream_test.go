@@ -153,7 +153,7 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	for _, apply := range tweak {
 		apply(cfg)
 	}
-	step, closer, err := New(context.Background(), registry, mapper, nil, sequentialGather, cfg)
+	step, closer, err := NewWithFanOut(context.Background(), registry, mapper, nil, sequentialGather, cfg)
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
 	}
@@ -163,8 +163,9 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 
 // oneCall is the shape upstream hands a fan-out hook. Named here, as an
 // alias, only so these tests read well -- upstream itself deliberately gives
-// it no name (see New's doc comment), and an alias rather than a defined
-// type so it stays interchangeable with the unnamed parameter New declares.
+// it no name (see NewWithFanOut's doc comment), and an alias rather than a
+// defined type so it stays interchangeable with the unnamed parameter
+// NewWithFanOut declares.
 type oneCall = func(ctx context.Context, fanValue any) (any, error)
 
 // sequentialGather is newStep's default fan-out hook: call one for every
@@ -198,10 +199,10 @@ func runStep(t *testing.T, step *Step, body string) (*model.StepContext, error) 
 func TestNewRequiresItsDependencies(t *testing.T) {
 	t.Parallel()
 
-	if _, _, err := New(context.Background(), nil, &stubMapper{}, nil, nil, minimalConfig()); err == nil {
+	if _, _, err := New(context.Background(), nil, &stubMapper{}, nil, minimalConfig()); err == nil {
 		t.Error("expected a missing registry to be refused")
 	}
-	if _, _, err := New(context.Background(), &stubRegistry{}, nil, nil, nil, minimalConfig()); err == nil {
+	if _, _, err := New(context.Background(), &stubRegistry{}, nil, nil, minimalConfig()); err == nil {
 		t.Error("expected a missing mapper to be refused")
 	}
 }
@@ -228,7 +229,7 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 			t.Parallel()
 
 			tc.config.BindingKeys = []string{testBindingKey}
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, tc.config)
+			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, tc.config)
 			if tc.valid && err != nil {
 				t.Errorf("expected the config to be accepted, got %v", err)
 			}
@@ -762,7 +763,7 @@ func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, tc.cfg)
+			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, tc.cfg)
 			if err == nil {
 				t.Fatal("expected a half-configured query scheme to be refused")
 			}
@@ -1195,7 +1196,7 @@ func TestRunReadsTheBindingKeyFromOverriddenPaths(t *testing.T) {
 func TestNewRefusesAHalfConfiguredOverride(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, &Config{
+	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{
 		BindingKeys:  []string{testBindingKey},
 		ProviderIDAt: "who.provider",
 	})
@@ -1293,7 +1294,7 @@ func minimalConfig() *Config {
 func TestNewRequiresBindingKeys(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, &Config{})
+	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{})
 	if err == nil {
 		t.Fatal("expected a step configured for no capability to be refused")
 	}
@@ -1307,7 +1308,7 @@ func TestNewRequiresBindingKeys(t *testing.T) {
 func TestNewRefusesAnEmptyBindingKey(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil,
+	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil,
 		&Config{BindingKeys: []string{testBindingKey, "  "}})
 	if err == nil {
 		t.Error("expected an empty binding key to be refused")
@@ -2147,7 +2148,7 @@ func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
 
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
 	step, closer, err := New(context.Background(),
-		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites, nil,
+		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
 		&Config{BindingKeys: []string{testBindingKey}})
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
@@ -2391,7 +2392,7 @@ func TestRunUsesTheConfiguredFanOutHook(t *testing.T) {
 	}
 
 	cfg := &Config{BindingKeys: []string{testBindingKey}}
-	step, closer, err := New(context.Background(),
+	step, closer, err := NewWithFanOut(context.Background(),
 		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, nil, gather, cfg)
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
@@ -2422,8 +2423,10 @@ func TestRunRefusesFanOutWhenNoHookIsConfigured(t *testing.T) {
 
 	mapper := &stubMapper{fanOutResult: []byte(`["a","b"]`)}
 	cfg := &Config{BindingKeys: []string{testBindingKey}}
+	// Plain New, which is a step with no fan-out hook at all -- what every
+	// capability that does not fan out is built with.
 	step, closer, err := New(context.Background(),
-		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, nil, nil, cfg)
+		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, nil, cfg)
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
 	}

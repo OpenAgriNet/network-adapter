@@ -162,10 +162,19 @@ func TestRunCancelsTheContextItHandsToInFlightWork(t *testing.T) {
 	t.Parallel()
 
 	var slowCtxDone int32
+	// inFlight is closed by index 1 once it is genuinely running, and index 0
+	// waits for that before failing. Without the handshake this test is a
+	// race: index 1's call may not have started when index 0 fails, and Run
+	// then SKIPS it rather than cancelling it -- correct behaviour, and what
+	// TestRunSkipsCallsNotYetIssuedAfterAFailureWhenSequential is for, but
+	// not what this test is about.
+	inFlight := make(chan struct{})
 	_, err := Run(context.Background(), 2, 2, func(ctx context.Context, i int) (struct{}, error) {
 		if i == 0 {
-			return struct{}{}, errors.New("fails immediately")
+			<-inFlight
+			return struct{}{}, errors.New("fails once the other call is in flight")
 		}
+		close(inFlight)
 		// In flight when index 0 fails: wait for our own ctx to be cancelled,
 		// or give up after a bound that would mean it never was. A bound
 		// rather than a bare receive so a broken Run fails this test instead

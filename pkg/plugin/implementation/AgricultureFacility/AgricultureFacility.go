@@ -29,9 +29,33 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 )
 
-// Config is upstream's, unchanged. Aliased here so a domain plugin's cmd package
-// need not know where the machinery lives.
-type Config = upstream.Config
+// Config carries everything upstream.Config does, plus this capability's own
+// fan-out concurrency -- which upstream.Config no longer has a field for, now
+// that upstream has no opinion on fan-out concurrency at all. A flat struct
+// with upstream.Config's fields repeated rather than an alias (which this
+// package used to be, and MandiPrice and WeatherObservation still are) or an
+// embedded upstream.Config (which would break every existing flat struct
+// literal, `&Config{BindingKeys: ..., AuthScheme: ...}`, since Go's composite
+// literal syntax does not promote an embedded struct's fields the way a
+// selector expression does).
+type Config struct {
+	BindingKeys      []string `yaml:"bindingKeys" json:"bindingKeys"`
+	ProviderIDAt     string   `yaml:"providerIdAt" json:"providerIdAt"`
+	CapabilityCodeAt string   `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
+	AuthScheme       string   `yaml:"authScheme" json:"authScheme"`
+	UsernameEnv      string   `yaml:"usernameEnv" json:"usernameEnv"`
+	PasswordEnv      string   `yaml:"passwordEnv" json:"passwordEnv"`
+	HeaderName       string   `yaml:"headerName" json:"headerName"`
+	HeaderValueEnv   string   `yaml:"headerValueEnv" json:"headerValueEnv"`
+	QueryName        string   `yaml:"queryName" json:"queryName"`
+	QueryValueEnv    string   `yaml:"queryValueEnv" json:"queryValueEnv"`
+	MaxResponseBytes int64    `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+
+	// FanOutConcurrency is how many of a fan-out's calls may be in flight at
+	// once. See fanout.go's DefaultFanOutConcurrency and MaxFanOut for what
+	// absent and too-large mean.
+	FanOutConcurrency int `yaml:"fanOutConcurrency" json:"fanOutConcurrency"`
+}
 
 // New creates the agriculture facility step.
 //
@@ -39,5 +63,25 @@ type Config = upstream.Config
 // serving a family cannot guess which of them a deployment has providers for.
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
-	return upstream.New(ctx, registry, mapper, prerequisites, cfg)
+	if cfg == nil {
+		cfg = &Config{}
+	}
+	concurrency := applyFanOutDefaults(cfg.FanOutConcurrency)
+
+	upstreamCfg := &upstream.Config{
+		BindingKeys:      cfg.BindingKeys,
+		ProviderIDAt:     cfg.ProviderIDAt,
+		CapabilityCodeAt: cfg.CapabilityCodeAt,
+		AuthScheme:       cfg.AuthScheme,
+		UsernameEnv:      cfg.UsernameEnv,
+		PasswordEnv:      cfg.PasswordEnv,
+		HeaderName:       cfg.HeaderName,
+		HeaderValueEnv:   cfg.HeaderValueEnv,
+		QueryName:        cfg.QueryName,
+		QueryValueEnv:    cfg.QueryValueEnv,
+		MaxResponseBytes: cfg.MaxResponseBytes,
+	}
+
+	return upstream.NewWithFanOut(ctx, registry, mapper, prerequisites,
+		gatherFacilities(concurrency), upstreamCfg)
 }
