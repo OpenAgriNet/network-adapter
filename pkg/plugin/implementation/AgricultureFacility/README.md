@@ -26,8 +26,37 @@ providerSteps:
     config:
       bindingKeys: "pocra|openagrinet:AgricultureFacility"
       authScheme: none
-      fanOutConcurrency: 4
+      searchConcurrency: 4
 ```
+
+## How a multi-type search is served
+
+POCRA's search takes exactly ONE category code: a comma-separated pair answers
+200 with no providers at all, and a category array is refused outright, both
+verified against the live API. A Beckn payload asking for three facility types
+therefore has to become three calls.
+
+That is this package's own job, and all of it lives here:
+
+- `search.go` is the step the adapter runs. It reads the facility types out of
+  the payload, splits one payload into one single-type payload per type -- each
+  with a fresh `context.messageId`, because POCRA returns the union of
+  everything asked for under one id -- runs the ordinary upstream step over
+  each part concurrently, and merges the answers into one.
+- `payload.go` is the one path read this package does in Go rather than in a
+  mapping, and the one place `supportedFacilityTypes` is located. Its own
+  comment says what that costs.
+- `internal/upstream` serves one payload with one call and knows none of this.
+  `jsonmapper` compiles the two halves every mapping has and no third thing.
+  `internal/concurrent` runs N of anything, bounded and ordered, and has never
+  heard of Beckn.
+
+**Ordering, worth knowing:** within one facility type the mapping ranks by
+POCRA's distance, and that ranking survives the merge. ACROSS types the answer
+is type-blocked -- every KrishiVigyanKendra, then every Warehouse -- rather
+than globally nearest-first, because the schema pack says query-relative
+distance is not a facility attribute, so the mapping drops it before the merge
+could sort on it.
 
 | Parameter | Required | Description | Default |
 |-----------|----------|-------------|---------|
@@ -36,9 +65,9 @@ providerSteps:
 | `capabilityCodeAt` | No | Path override for the capability-code half. Must be given together with `providerIdAt`. | Beckn v2 convention |
 | `authScheme` | No | `none`, `basic`, `header` or `query`. POCRA needs none. | `none` |
 | `maxResponseBytes` | No | Cap on what is read from the provider. | 4 MiB |
-| `fanOutConcurrency` | No | How many of a multi-type search's calls run at once, up to `MaxFanOut` (8, this package's own constant -- see `fanout.go`; the actual concurrent execution is `internal/concurrent.Run`, a generic engine this package is the only caller of). 4 is every governed type at once -- full concurrency for this capability. **Trade-off:** defaults to 1 (sequential) because POCRA's failure mode when pushed is a 200 with an *empty* catalog, indistinguishable from "no results" -- a parallel search can silently drop a facility type with no error. Verify against the live API before raising it in production. | 1 (sequential) |
+| `searchConcurrency` | No | How many of a multi-type search's calls run at once, up to `MaxFacilityTypes` (8, this package's own constant -- see `search.go`). 4 is every governed type at once -- full concurrency for this capability. **Trade-off:** defaults to 1 (sequential) because POCRA's failure mode when pushed is a 200 with an *empty* catalog, indistinguishable from "no results" -- a parallel search can silently drop a facility type with no error. Verify against the live API before raising it in production. | 1 (sequential) |
 
-This package's `Config` (`AgricultureFacility.go`, a flat struct of its own now that it carries `fanOutConcurrency`, which `upstream.Config` no longer has) also has the `basic`/`header`/`query` auth credential pairs (`usernameEnv`/`passwordEnv`, `headerName`/`headerValueEnv`, `queryName`/`queryValueEnv`). This plugin's `parseConfig` does not wire them through -- POCRA needs none of them. A second provider on `openagrinet:AgricultureFacility` (see "What lives here") that needs one adds the corresponding line to `parseConfig`, mirroring `maxResponseBytes`.
+This package's `Config` (`AgricultureFacility.go`, a flat struct of its own because it carries `searchConcurrency`, which `upstream.Config` has no field for) also has the `basic`/`header`/`query` auth credential pairs (`usernameEnv`/`passwordEnv`, `headerName`/`headerValueEnv`, `queryName`/`queryValueEnv`). This plugin's `parseConfig` does not wire them through -- POCRA needs none of them. A second provider on `openagrinet:AgricultureFacility` (see "What lives here") that needs one adds the corresponding line to `parseConfig`, mirroring `maxResponseBytes`.
 
 The id must also appear in the module's `steps:` list, and must be unique across
 `steps` and `providerSteps` — a repeat is refused at startup, because both land

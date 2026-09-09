@@ -59,11 +59,8 @@ type mappingFile struct {
 	// Required are the preconditions this binding-action imposes on a payload,
 	// verified before either half runs. Absent means none.
 	Required []requirement `yaml:"required"`
-	// FanOut yields the values this payload must be split across, one upstream
-	// call per value. Absent means one call, which is the common case.
-	FanOut   string `yaml:"fanOut"`
-	Request  string `yaml:"request"`
-	Response string `yaml:"response"`
+	Request  string        `yaml:"request"`
+	Response string        `yaml:"response"`
 }
 
 // requirement is one precondition: what must hold, and what to tell the caller
@@ -285,11 +282,10 @@ func applyDefaults(cfg *Config) {
 // Transform runs one direction of the mapping at mappingRef over input.
 func (m *Mapper) Transform(ctx context.Context, mappingRef string, direction definition.Direction, input any) ([]byte, error) {
 	switch direction {
-	case definition.DirectionRequest, definition.DirectionResponse, definition.DirectionFanOut:
+	case definition.DirectionRequest, definition.DirectionResponse:
 	default:
-		return nil, fmt.Errorf("jsonmapper: mapping %q: %q is not a direction; want %q, %q or %q",
-			mappingRef, direction, definition.DirectionRequest, definition.DirectionResponse,
-			definition.DirectionFanOut)
+		return nil, fmt.Errorf("jsonmapper: mapping %q: %q is not a direction; want %q or %q",
+			mappingRef, direction, definition.DirectionRequest, definition.DirectionResponse)
 	}
 
 	entry, err := m.compiled(ctx, mappingRef)
@@ -503,10 +499,9 @@ func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (
 	// Both halves are compiled now rather than on first use, so one fetch leaves
 	// the file ready in both directions. A compile failure is recorded against
 	// its own half and goes no further.
-	directions := make(map[definition.Direction]*compiledMapping, 3)
+	directions := make(map[definition.Direction]*compiledMapping, 2)
 	directions[definition.DirectionRequest] = m.compileMapping(ctx, mappingRef, definition.DirectionRequest, file.Request)
 	directions[definition.DirectionResponse] = m.compileMapping(ctx, mappingRef, definition.DirectionResponse, file.Response)
-	directions[definition.DirectionFanOut] = m.compileMapping(ctx, mappingRef, definition.DirectionFanOut, file.FanOut)
 	log.Debugf(ctx, "JSON mapper compiled mapping: %s (%d precondition(s))", mappingRef, len(checks))
 	return directions, checks, nil
 }

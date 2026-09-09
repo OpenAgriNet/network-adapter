@@ -1,13 +1,11 @@
 package AgricultureFacility_test
 
-// fanout_test.go covers the concurrency POLICY this package owns: how many
-// fan-out calls run at once, in what order, and what happens when one fails.
-// mappings_test.go already covers that fan-out happens at all and produces
-// the right facilities (TestATwoTypeSearchIsAnsweredWithBothTypes and
-// neighbours) and that each call carries its own identity
-// (TestEachFanOutCallCarriesItsOwnRequestId) -- this file is what moved out
-// of internal/upstream/upstream_test.go when fan-out concurrency moved into
-// this package's own fanout.go.
+// search_test.go covers the POLICY this package owns: how many of a
+// multi-type search's calls run at once, in what order, and what happens when
+// one fails. mappings_test.go already covers that splitting happens at all
+// and produces the right facilities (TestATwoTypeSearchIsAnsweredWithBothTypes
+// and neighbours) and that each call carries its own identity
+// (TestEachSearchCallCarriesItsOwnRequestId).
 
 import (
 	"context"
@@ -16,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,11 +23,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// runFanOutTimed is runFanOut's sibling: it hands the caller a raw HTTP
+// runSearchTimed is runSplitSearch's sibling: it hands the caller a raw HTTP
 // handler (so a test can measure timing or count in-flight calls) and an
-// explicit Config (so a test can set FanOutConcurrency), rather than a
-// canned per-category response map.
-func runFanOutTimed(t *testing.T, types []string, cfg *AgricultureFacility.Config, handler http.HandlerFunc) error {
+// explicit Config (so a test can set SearchConcurrency), rather than a canned
+// per-category response map.
+func runSearchTimed(t *testing.T, types []string, cfg *AgricultureFacility.Config, handler http.HandlerFunc) error {
 	t.Helper()
 
 	mappings := serveMappings(t)
@@ -71,7 +70,7 @@ func runFanOutTimed(t *testing.T, types []string, cfg *AgricultureFacility.Confi
 	return step.Run(&model.StepContext{Context: t.Context(), Body: body})
 }
 
-// Fan-out calls are sequential unless the deployment raised the limit.
+// A search's calls are sequential unless the deployment raised the limit.
 //
 // The default is not a performance choice. A provider that answers one
 // question at a time is often not built to be asked several at once, and
@@ -79,7 +78,7 @@ func runFanOutTimed(t *testing.T, types []string, cfg *AgricultureFacility.Confi
 // indistinguishable from having no results, so the loss is silent. Parallel
 // is opt-in per deployment for that reason, and this pins the default so it
 // cannot drift.
-func TestFanOutCallsAreSequentialByDefault(t *testing.T) {
+func TestSearchCallsAreSequentialByDefault(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -104,19 +103,19 @@ func TestFanOutCallsAreSequentialByDefault(t *testing.T) {
 	}
 
 	types := []string{"KrishiVigyanKendra", "CustomHiringCentre", "Warehouse"}
-	if err := runFanOutTimed(t, types, &AgricultureFacility.Config{}, handler); err != nil {
+	if err := runSearchTimed(t, types, &AgricultureFacility.Config{}, handler); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if peak != 1 {
-		t.Errorf("%d fan-out calls were in flight at once, want 1 by default", peak)
+		t.Errorf("%d calls were in flight at once, want 1 by default", peak)
 	}
 }
 
 // A deployment that raises the limit gets calls in parallel, bounded by it.
-func TestFanOutHonoursTheConfiguredConcurrency(t *testing.T) {
+func TestSearchHonoursTheConfiguredConcurrency(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -136,8 +135,8 @@ func TestFanOutHonoursTheConfiguredConcurrency(t *testing.T) {
 	}
 
 	types := []string{"KrishiVigyanKendra", "CustomHiringCentre", "Warehouse", "SoilTestingFacility"}
-	cfg := &AgricultureFacility.Config{FanOutConcurrency: 2}
-	if err := runFanOutTimed(t, types, cfg, handler); err != nil {
+	cfg := &AgricultureFacility.Config{SearchConcurrency: 2}
+	if err := runSearchTimed(t, types, cfg, handler); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}
 
@@ -150,9 +149,9 @@ func TestFanOutHonoursTheConfiguredConcurrency(t *testing.T) {
 
 // A call not yet issued when an earlier one fails is skipped, not made and
 // discarded. Sequential (the default) makes this deterministic: the first
-// value's failure cancels the shared context before the second value's call
-// is ever issued.
-func TestFanOutSkipsCallsNotYetIssuedAfterAFailure(t *testing.T) {
+// type's failure cancels the shared context before the second type's call is
+// ever issued.
+func TestSearchSkipsCallsNotYetIssuedAfterAFailure(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -165,40 +164,76 @@ func TestFanOutSkipsCallsNotYetIssuedAfterAFailure(t *testing.T) {
 	}
 
 	types := []string{"KrishiVigyanKendra", "CustomHiringCentre", "Warehouse"}
-	err := runFanOutTimed(t, types, &AgricultureFacility.Config{}, handler)
+	err := runSearchTimed(t, types, &AgricultureFacility.Config{}, handler)
 	if err == nil {
 		t.Fatal("Run() served a partial answer, want it refused")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Sequential (limit 1): the first value fails and cancels the shared
-	// context before the loop ever reaches the second or third value's call.
+	// Sequential (limit 1): the first type fails and cancels the shared
+	// context before the loop ever reaches the second or third type's call.
 	if calls != 1 {
-		t.Errorf("the provider was called %d times, want 1 -- later fan-out values "+
+		t.Errorf("the provider was called %d times, want 1 -- later facility types "+
 			"must be skipped once an earlier one fails", calls)
 	}
 }
 
 // A payload asking for more calls than the ceiling is refused, not clamped.
 //
-// Uses a repeated governed type to exceed MaxFanOut, which the mapping's own
-// duplicate-type required check ALSO refuses -- both guards agree the
-// payload is bad, so the assertion that matters is that the provider was
-// never called, not which guard fired first.
-func TestFanOutRefusesOverTheCeiling(t *testing.T) {
+// Uses a repeated governed type to exceed MaxFacilityTypes, which the
+// mapping's own duplicate-type required check ALSO refuses -- both guards
+// agree the payload is bad, so the assertion that matters is that the provider
+// was never called, not which guard fired first.
+func TestSearchRefusesOverTheCeiling(t *testing.T) {
 	t.Parallel()
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
-		t.Error("the provider was called for a fan-out that should have been refused")
+		t.Error("the provider was called for a search that should have been refused")
 	}
 
-	types := make([]string, AgricultureFacility.MaxFanOut+1)
+	types := make([]string, AgricultureFacility.MaxFacilityTypes+1)
 	for i := range types {
 		types[i] = "KrishiVigyanKendra"
 	}
-	err := runFanOutTimed(t, types, &AgricultureFacility.Config{}, handler)
+	err := runSearchTimed(t, types, &AgricultureFacility.Config{}, handler)
 	if err == nil {
-		t.Fatal("a fan-out over the ceiling was served, want it refused")
+		t.Fatal("a search over the ceiling was served, want it refused")
+	}
+}
+
+// A payload naming one type is one call.
+func TestSearchOfOneTypeIsOneCall(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		fmt.Fprint(w, providerResponse)
+	}
+
+	if err := runSearchTimed(t, []string{"KrishiVigyanKendra"}, &AgricultureFacility.Config{}, handler); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("the provider saw %d calls, want 1 for a one-type search", got)
+	}
+}
+
+// A payload naming no types at all is refused before the provider is called.
+//
+// The mapping's own required checks refuse this first, with a better message.
+// This asserts the Go read refuses it too, because a payload with nothing to
+// split across would otherwise become zero calls and an empty answer -- the
+// silent-loss failure this whole facility exists to prevent.
+func TestSearchRefusesAPayloadNamingNoTypes(t *testing.T) {
+	t.Parallel()
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the provider was called for a payload naming no facility types")
+	}
+
+	if err := runSearchTimed(t, []string{}, &AgricultureFacility.Config{}, handler); err == nil {
+		t.Fatal("a payload naming no facility types was served, want it refused")
 	}
 }

@@ -43,15 +43,7 @@ type fixedMapper struct{ answer string }
 
 func (m fixedMapper) Verify(context.Context, string, any) error { return nil }
 
-func (m fixedMapper) Transform(_ context.Context, mappingRef string,
-	direction definition.Direction, _ any) ([]byte, error) {
-
-	// These capabilities declare no fan-out half, which is what an empty
-	// result means. Said explicitly because the canned answer below is a
-	// response body, and would otherwise be read as a fan-out too.
-	if direction == definition.DirectionFanOut {
-		return nil, nil
-	}
+func (m fixedMapper) Transform(_ context.Context, mappingRef string, _ definition.Direction, _ any) ([]byte, error) {
 	if strings.Contains(mappingRef, "request") {
 		return []byte(`{}`), nil
 	}

@@ -54,7 +54,7 @@ func TestParseConfig(t *testing.T) {
 				"capabilityCodeAt":  "what[].type",
 				"authScheme":        "none",
 				"maxResponseBytes":  "2048",
-				"fanOutConcurrency": "4",
+				"searchConcurrency": "4",
 			},
 			expected: &AgricultureFacility.Config{
 				BindingKeys:       []string{"pocra|openagrinet:AgricultureFacility"},
@@ -62,7 +62,7 @@ func TestParseConfig(t *testing.T) {
 				CapabilityCodeAt:  "what[].type",
 				AuthScheme:        "none",
 				MaxResponseBytes:  2048,
-				FanOutConcurrency: 4,
+				SearchConcurrency: 4,
 			},
 		},
 		{
@@ -99,13 +99,13 @@ func TestParseConfig(t *testing.T) {
 			expectedErr: "must be positive",
 		},
 		{
-			name:        "refuses a non-numeric fanOutConcurrency",
-			config:      map[string]string{"fanOutConcurrency": "big"},
-			expectedErr: "invalid fanOutConcurrency",
+			name:        "refuses a non-numeric searchConcurrency",
+			config:      map[string]string{"searchConcurrency": "big"},
+			expectedErr: "invalid searchConcurrency",
 		},
 		{
-			name:        "refuses a non-positive fanOutConcurrency",
-			config:      map[string]string{"fanOutConcurrency": "0"},
+			name:        "refuses a non-positive searchConcurrency",
+			config:      map[string]string{"searchConcurrency": "0"},
 			expectedErr: "must be positive",
 		},
 	}

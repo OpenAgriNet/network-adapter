@@ -166,61 +166,21 @@ type Step struct {
 	config        *Config
 	paths         capabilitybinding.Paths
 	prerequisites Prerequisites
-	// gather is the domain package's fan-out hook, or nil. Spelled out
-	// rather than given a type name on purpose -- see NewWithFanOut's doc
-	// comment.
-	gather     func(ctx context.Context, values []any, one func(ctx context.Context, fanValue any) (any, error)) (any, error)
-	registry   definition.ProviderRecordLookup
-	mapper     definition.Mapper
-	httpClient *http.Client
+	registry      definition.ProviderRecordLookup
+	mapper        definition.Mapper
+	httpClient    *http.Client
 }
 
-// New creates the step for a capability that does not fan out: one inbound
-// payload is one upstream call, which is every capability whose mapping
-// declares no fan-out half.
+// New creates the step.
 //
-// The signature every domain package has always called, kept unchanged so
-// that adding fan-out to one of them did not touch the rest. A capability
-// whose mapping DOES declare a fan-out half needs NewWithFanOut, because
-// this package has no built-in policy for turning selected values into
-// calls -- see that function's doc comment.
+// One inbound payload is one upstream call. A capability whose provider
+// cannot answer a whole payload in one exchange -- POCRA's facility search
+// takes one category code at a time -- splits the payload itself, in the
+// domain package that knows the provider, and runs this step once per part:
+// see pkg/plugin/implementation/AgricultureFacility/search.go. Nothing about
+// that is this package's business, and nothing here is aware of it.
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	prerequisites Prerequisites, cfg *Config) (*Step, func() error, error) {
-	return NewWithFanOut(ctx, registry, mapper, prerequisites, nil, cfg)
-}
-
-// NewWithFanOut creates the step for a capability that fans one payload out
-// into several upstream calls, and supplies the hook that decides what that
-// means for its provider.
-//
-// gather is how a domain package says what a fan-out MEANS for its provider:
-// given the values the mapping's fan-out half selected, and a function that
-// makes exactly one upstream call, it decides how many calls to make, in
-// what order, how many at once, and what is too many -- then returns
-// whatever the response half should be handed. It is called once per
-// request, only when the mapping's fan-out half selects values.
-//
-// nil is valid and is exactly what New passes: a capability whose mappings
-// never declare a fan-out half has nothing to gather -- one payload is one
-// call, unchanged since before fan-out existed. A mapping that DOES declare
-// one on a step configured with nil is
-// a mismatch between the mapping and the domain package that configured this
-// step, and is refused rather than silently defaulted: how many calls to
-// make at once and what ceiling is too many is a fact about the PROVIDER,
-// and this package has no opinion worth guessing on anyone's behalf.
-//
-// Deliberately an unnamed function type. The name for this idea is
-// "Gather", and it is declared in the one package that has one --
-// AgricultureFacility's fanout.go, whose gatherFacilities builds on
-// pkg/plugin/implementation/internal/concurrent's generic Run. Naming it
-// here would put a plugin's vocabulary in the generic machinery, and
-// referencing that package's type would be an import cycle; Go's structural
-// func typing means neither is necessary. See
-// pkg/plugin/implementation/internal/upstream/README.md.
-func NewWithFanOut(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
-	prerequisites Prerequisites,
-	gather func(ctx context.Context, values []any, one func(ctx context.Context, fanValue any) (any, error)) (any, error),
-	cfg *Config) (*Step, func() error, error) {
 	if registry == nil {
 		return nil, nil, errors.New("upstream: a provider record lookup is required")
 	}
@@ -234,7 +194,7 @@ func NewWithFanOut(ctx context.Context, registry definition.ProviderRecordLookup
 		return nil, nil, err
 	}
 
-	paths, err := bindingPaths(cfg)
+	paths, err := BindingPaths(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -243,7 +203,6 @@ func NewWithFanOut(ctx context.Context, registry definition.ProviderRecordLookup
 		config:        cfg,
 		paths:         paths,
 		prerequisites: prerequisites,
-		gather:        gather,
 		registry:      registry,
 		mapper:        mapper,
 		// Timeout is set per request from the registry's own budget, so the
@@ -261,12 +220,16 @@ func NewWithFanOut(ctx context.Context, registry definition.ProviderRecordLookup
 	return step, closer, nil
 }
 
-// bindingPaths resolves where this step reads a binding key from.
+// BindingPaths resolves where this step reads a binding key from.
 //
 // Both halves or neither: overriding one and leaving the other on the default
 // is a half-configured deployment that would match nothing, and it would do so
 // silently on every request rather than once at startup.
-func bindingPaths(cfg *Config) (capabilitybinding.Paths, error) {
+//
+// Exported so a domain package wrapping this step can answer "is this payload
+// mine?" the same way this step does, from the same two config fields, rather
+// than reading them a second time and drifting.
+func BindingPaths(cfg *Config) (capabilitybinding.Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
 		return capabilitybinding.BecknV2, nil
 	}
@@ -429,33 +392,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	// What this payload has to be split across, if anything. A provider that
-	// answers a whole payload in one exchange declares no fan-out and is called
-	// once, exactly as before.
-	fan, err := s.fanOut(ctx, call, beckn, local)
-	if err != nil {
-		return err
-	}
-
-	// oneCall makes exactly one upstream call; s.gather (a domain package's
-	// choice, or none) decides how many times to use it. See New's doc
-	// comment for why this package does not decide that itself, and does not
-	// even name the shape.
-	oneCall := func(ctx context.Context, fanValue any) (any, error) {
-		return s.one(ctx, plan.BaseURL, call, beckn, local, fanValue)
-	}
-
-	var answer any
-	switch {
-	case fan == nil:
-		answer, err = oneCall(ctx, nil)
-	case s.gather != nil:
-		answer, err = s.gather(ctx, fan, oneCall)
-	default:
-		err = fmt.Errorf(
-			"upstream: %s's mapping declares a fan-out, but this step was configured with nothing to run it",
-			plan.BindingKey)
-	}
+	answer, err := s.one(ctx, plan.BaseURL, call, beckn, local)
 	if err != nil {
 		return err
 	}
@@ -497,17 +434,12 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 // that. It meant the choice of which payload fields reach the provider lived in
 // Go, so adding a parameter -- a date range, say -- was a rebuild. Now it is a
 // mapping edit and nothing else.
-func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn any, local map[string]any,
-	fanValue any) ([]byte, error) {
+func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan,
+	beckn any, local map[string]any) ([]byte, error) {
 
 	input := map[string]any{
 		"beckn":  beckn,
 		"_local": local,
-	}
-	// Bound only when fanning out, so a mapping without fan-out sees exactly
-	// the input it always has.
-	if fanValue != nil {
-		input["_fan"] = fanValue
 	}
 	mapped, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionRequest, input)
 	if err != nil {
@@ -519,57 +451,11 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 	return mapped, nil
 }
 
-// fanOut evaluates the mapping's fan-out half: the values this payload must be
-// split across, one upstream call each.
-//
-// Returns nil when the mapping declares no fan-out, which means one call with
-// no fan value bound -- the behaviour of every mapping written before this
-// existed, and of every provider that can answer a whole payload at once.
-func (s *Step) fanOut(ctx context.Context, call model.ActionPlan, beckn any, local map[string]any) ([]any, error) {
-	declared, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionFanOut, map[string]any{
-		"beckn":  beckn,
-		"_local": local,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(declared) == 0 {
-		return nil, nil
-	}
-
-	decoded, err := decodeBody(declared)
-	if err != nil {
-		return nil, fmt.Errorf("upstream: the fan-out half of %s produced something that is not JSON: %w",
-			call.Mappings, err)
-	}
-
-	// A single value rather than a list is the same instruction: one call.
-	// JSONata collapses a one-element sequence to a bare value, so a mapping
-	// that maps over a one-entry list arrives here as a scalar whether or not
-	// it meant to.
-	values, isList := decoded.([]any)
-	if !isList {
-		values = []any{decoded}
-	}
-
-	if len(values) == 0 {
-		// The half ran and selected nothing. Distinct from declaring no
-		// fan-out: this payload asked for something the mapping recognised as
-		// empty, and calling once with no fan value bound would send whatever
-		// the request half builds from an unset one.
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"upstream: the fan-out half of %s selected no values, so there is nothing to ask %s for",
-			call.Mappings, call.Path))
-	}
-	return values, nil
-}
-
-// one builds and makes a single upstream call, with fanValue bound as _fan for
-// the request half when there is one.
+// one builds and makes the upstream call and returns its decoded answer.
 func (s *Step) one(ctx context.Context, baseURL string, call model.ActionPlan,
-	beckn any, local map[string]any, fanValue any) (any, error) {
+	beckn any, local map[string]any) (any, error) {
 
-	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local, fanValue)
+	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local)
 	if err != nil {
 		return nil, err
 	}

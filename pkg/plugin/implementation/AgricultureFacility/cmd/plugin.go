@@ -48,15 +48,15 @@ func (p agriFacilityProvider) parseConfig(config map[string]string) (*Agricultur
 		cfg.MaxResponseBytes = value
 	}
 
-	if raw, exists := config["fanOutConcurrency"]; exists && raw != "" {
+	if raw, exists := config["searchConcurrency"]; exists && raw != "" {
 		value, err := strconv.Atoi(raw)
 		if err != nil {
-			return nil, fmt.Errorf("invalid fanOutConcurrency value '%s': %w", raw, err)
+			return nil, fmt.Errorf("invalid searchConcurrency value '%s': %w", raw, err)
 		}
 		if value <= 0 {
-			return nil, fmt.Errorf("fanOutConcurrency must be positive, got %d", value)
+			return nil, fmt.Errorf("searchConcurrency must be positive, got %d", value)
 		}
-		cfg.FanOutConcurrency = value
+		cfg.SearchConcurrency = value
 	}
 
 	return cfg, nil

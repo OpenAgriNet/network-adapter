@@ -61,24 +61,25 @@ required:
       )
     message: "supportedFacilityTypes must not repeat a facility type"
 
-# One upstream call per facility type the payload asks for.
+# ONE call per payload, and this file is written for exactly that.
 #
-# POCRA's search takes exactly ONE category code. A comma-separated pair
+# POCRA's search takes exactly ONE category code: a comma-separated pair
 # ("kvk,warehouse") answers 200 with no providers at all, and a category array
 # is refused with "Schema validation failed" -- both verified against the live
-# API. So a payload asking for two types cannot be served by one call, however
-# this file is written, and the step makes one call per value yielded here.
+# API. So a payload asking for two facility types cannot be served by one call,
+# however this file is written.
 #
-# Before this existed the request half sent supportedFacilityTypes[0] and the
-# response half filtered to that same first entry, so a two-type search returned
-# the first type and silently dropped the rest. Nothing in the answer said a
-# type had been asked for and lost.
+# The plugin handles that before this file is reached. It reads
+# supportedFacilityTypes out of the payload, splits a multi-type search into
+# one single-type payload per type, runs each of them concurrently and merges
+# the answers -- see AgricultureFacility/search.go. So what arrives here always
+# names exactly one facility type, and both halves below read it straight off
+# the payload with no variable injected from Go.
 #
-# Wrapped in [] because JSONata collapses a one-element sequence to a bare
-# value: a one-type search would otherwise yield a string where every other
-# count yields a list. The step accepts either, but the list is what this means.
-fanOut: |
-  [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes]
+# The cost of that, for whoever edits this file next: the required: checks
+# above read supportedFacilityTypes in JSONata, and search.go reads the same
+# path in Go. If the Beckn payload moves that field, BOTH change, and only
+# this one is a config edit.
 
 # The upstream is a POST, so this object becomes the request body.
 #
@@ -104,10 +105,11 @@ request: |
   (
     $commitment := beckn.message.contract.commitments[0];
     $stop := $commitment.fulfillment.stops[0];
-    /* This call's own facility type, from the fan-out half above -- not the
-       payload's first entry, which is what made a multi-type search return one
-       type. */
-    $requested := _fan.value;
+    /* This call's own facility type. The payload names exactly one, because
+       the plugin split a multi-type search into one payload per type before
+       this ran -- reading [0] of a multi-type list here is what made such a
+       search return one type and silently drop the rest. */
+    $requested := [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes][0];
     $codes := {
       "CustomHiringCentre": "chc",
       "KrishiVigyanKendra": "kvk",
@@ -122,13 +124,16 @@ request: |
         "version": "1.1.0",
         "bap_id": "bap.mahapocra.gov.in",
         "bap_uri": "https://middleware.mahapocra.gov.in/bap/",
-        /* This call's own id, not the caller's messageId. POCRA keeps a
-           message_id's answers for ten minutes and returns the UNION of
-           everything asked for under it, so reusing one id across the fan-out
-           would make every call return every other call's facilities too. The
-           step supplies a fresh UUID per call; POCRA's schema refuses a
-           message_id that is not one. */
-        "message_id": _fan.callId,
+        /* This call's own id. POCRA keeps a message_id's answers for ten
+           minutes and returns the UNION of everything asked for under it, so
+           two calls sharing an id would each return the other's facilities
+           too.
+
+           Read straight off the payload: the plugin stamps a fresh UUID on
+           context.messageId of every single-type payload it splits out, for
+           exactly this reason, so each call already carries its own. POCRA's
+           schema refuses a message_id that is not a UUID. */
+        "message_id": beckn.context.messageId,
         "transaction_id": beckn.context.transactionId,
         "timestamp": $string($floor($millis() / 1000))
       },

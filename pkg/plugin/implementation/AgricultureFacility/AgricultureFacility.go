@@ -30,14 +30,14 @@ import (
 )
 
 // Config carries everything upstream.Config does, plus this capability's own
-// fan-out concurrency -- which upstream.Config no longer has a field for, now
-// that upstream has no opinion on fan-out concurrency at all. A flat struct
-// with upstream.Config's fields repeated rather than an alias (which this
-// package used to be, and MandiPrice and WeatherObservation still are) or an
-// embedded upstream.Config (which would break every existing flat struct
-// literal, `&Config{BindingKeys: ..., AuthScheme: ...}`, since Go's composite
-// literal syntax does not promote an embedded struct's fields the way a
-// selector expression does).
+// search concurrency -- which upstream.Config has no field for, because how
+// many calls one payload becomes is not something that package knows about at
+// all. A flat struct with upstream.Config's fields repeated rather than an
+// alias (which this package used to be, and MandiPrice and WeatherObservation
+// still are) or an embedded upstream.Config (which would break every existing
+// flat struct literal, `&Config{BindingKeys: ..., AuthScheme: ...}`, since
+// Go's composite literal syntax does not promote an embedded struct's fields
+// the way a selector expression does).
 type Config struct {
 	BindingKeys      []string `yaml:"bindingKeys" json:"bindingKeys"`
 	ProviderIDAt     string   `yaml:"providerIdAt" json:"providerIdAt"`
@@ -51,22 +51,29 @@ type Config struct {
 	QueryValueEnv    string   `yaml:"queryValueEnv" json:"queryValueEnv"`
 	MaxResponseBytes int64    `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 
-	// FanOutConcurrency is how many of a fan-out's calls may be in flight at
-	// once. See fanout.go's DefaultFanOutConcurrency and MaxFanOut for what
-	// absent and too-large mean.
-	FanOutConcurrency int `yaml:"fanOutConcurrency" json:"fanOutConcurrency"`
+	// SearchConcurrency is how many of a multi-type search's calls may be in
+	// flight at once. See search.go's DefaultSearchConcurrency and
+	// MaxFacilityTypes for what absent and too-large mean.
+	SearchConcurrency int `yaml:"searchConcurrency" json:"searchConcurrency"`
 }
 
 // New creates the agriculture facility step.
 //
 // Which capabilities it answers to is configuration, with no default: a package
 // serving a family cannot guess which of them a deployment has providers for.
+//
+// Two steps, one returned. The inner one is internal/upstream's, which serves
+// one payload with one call and knows nothing about facility types. The outer
+// one is this package's own (see search.go): it splits a multi-type search
+// into one single-type payload per type, runs the inner step over each of them
+// concurrently, and merges the answers. Everything POCRA-specific about that
+// is in the outer step, which is why the inner one is the same step
+// MandiPrice and WeatherObservation use unchanged.
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
 	if cfg == nil {
 		cfg = &Config{}
 	}
-	concurrency := applyFanOutDefaults(cfg.FanOutConcurrency)
 
 	upstreamCfg := &upstream.Config{
 		BindingKeys:      cfg.BindingKeys,
@@ -82,6 +89,24 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		MaxResponseBytes: cfg.MaxResponseBytes,
 	}
 
-	return upstream.NewWithFanOut(ctx, registry, mapper, prerequisites,
-		gatherFacilities(concurrency), upstreamCfg)
+	one, closer, err := upstream.New(ctx, registry, mapper, prerequisites, upstreamCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// The same paths the inner step resolved from the same config, so both
+	// answer "is this payload mine?" identically. Resolved through upstream
+	// rather than duplicated here: a second reading of the same two config
+	// fields could drift from the first.
+	paths, err := upstream.BindingPaths(upstreamCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &Step{
+		inner:       one,
+		paths:       paths,
+		bindingKeys: cfg.BindingKeys,
+		concurrency: searchConcurrency(cfg.SearchConcurrency),
+	}, closer, nil
 }

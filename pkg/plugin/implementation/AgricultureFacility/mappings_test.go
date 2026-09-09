@@ -1283,9 +1283,9 @@ func (p *pocraByCategory) asked() []string {
 	return sorted
 }
 
-// runFanOut runs the shipped mapping against a fake POCRA that answers per
+// runSplitSearch runs the shipped mapping against a fake POCRA that answers per
 // category, and returns the answer with the fake for inspection.
-func runFanOut(t *testing.T, types []string, byCode map[string]string) (map[string]any, *pocraByCategory) {
+func runSplitSearch(t *testing.T, types []string, byCode map[string]string) (map[string]any, *pocraByCategory) {
 	t.Helper()
 
 	mappings := serveMappings(t)
@@ -1361,7 +1361,7 @@ func typesIn(t *testing.T, answer map[string]any) map[string]int {
 // This is the case that was broken. It returned KrishiVigyanKendra alone, and
 // the Warehouse the caller also asked for was dropped without a word.
 func TestATwoTypeSearchIsAnsweredWithBothTypes(t *testing.T) {
-	answer, pocra := runFanOut(t,
+	answer, pocra := runSplitSearch(t,
 		[]string{"KrishiVigyanKendra", "Warehouse"},
 		map[string]string{"kvk": providerResponse, "warehouse": warehouseResponse})
 
@@ -1382,7 +1382,7 @@ func TestATwoTypeSearchIsAnsweredWithBothTypes(t *testing.T) {
 // All four, because they do not all state their type the same way -- three
 // carry a category tag and a COMMON_PROVIDER_ id, a warehouse carries neither.
 func TestEveryGovernedTypeCanBeAskedForAtOnce(t *testing.T) {
-	answer, pocra := runFanOut(t,
+	answer, pocra := runSplitSearch(t,
 		[]string{"KrishiVigyanKendra", "CustomHiringCentre", "SoilTestingFacility", "Warehouse"},
 		map[string]string{
 			"kvk":       providerResponse,
@@ -1416,8 +1416,8 @@ func TestEveryGovernedTypeCanBeAskedForAtOnce(t *testing.T) {
 // the chc facilities and the warehouse ones -- not the kvk that leaked into the
 // chc answer, and not the mandi or administrative providers, which are not
 // facilities at all.
-func TestFanningOutStillDropsWhatWasNotAskedFor(t *testing.T) {
-	answer, _ := runFanOut(t,
+func TestASplitSearchStillDropsWhatWasNotAskedFor(t *testing.T) {
+	answer, _ := runSplitSearch(t,
 		[]string{"CustomHiringCentre", "Warehouse"},
 		map[string]string{"chc": mixedResponse, "warehouse": warehouseResponse})
 
@@ -1444,8 +1444,8 @@ func TestFanningOutStillDropsWhatWasNotAskedFor(t *testing.T) {
 // facilities. Sending one id across the fan-out would make every call return
 // every other call's facilities, so this is what stops the adapter causing the
 // leak it also filters.
-func TestEachFanOutCallCarriesItsOwnRequestId(t *testing.T) {
-	_, pocra := runFanOut(t,
+func TestEachSearchCallCarriesItsOwnRequestId(t *testing.T) {
+	_, pocra := runSplitSearch(t,
 		[]string{"KrishiVigyanKendra", "Warehouse"},
 		map[string]string{"kvk": providerResponse, "warehouse": warehouseResponse})
 

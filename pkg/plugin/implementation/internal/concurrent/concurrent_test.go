@@ -194,25 +194,25 @@ func TestRunCancelsTheContextItHandsToInFlightWork(t *testing.T) {
 	}
 }
 
-// --- FanOut -----------------------------------------------------------------
+// --- Map --------------------------------------------------------------------
 
-// FanOut hands each value to its own call and returns the answers in the
-// order the values were given, whatever order the calls finished in.
-func TestFanOutCallsOncePerValueInOrder(t *testing.T) {
+// Map hands each value to its own call and returns the answers in the order
+// the values were given, whatever order the calls finished in.
+func TestMapCallsOncePerValueInOrder(t *testing.T) {
 	t.Parallel()
 
-	values := []any{"kvk", "warehouse", "soil_lab"}
-	results, err := FanOut(context.Background(), values, 3, func(ctx context.Context, value any) (string, error) {
+	values := []string{"kvk", "warehouse", "soil_lab"}
+	results, err := Map(context.Background(), values, 3, func(ctx context.Context, value string) (string, error) {
 		// The first value sleeps longest, so arrival order is the reverse of
 		// the order asked for. A caller relying on results[i] meaning "the
 		// answer for values[i]" has to hold regardless.
 		if value == "kvk" {
 			time.Sleep(40 * time.Millisecond)
 		}
-		return "answered:" + value.(string), nil
+		return "answered:" + value, nil
 	})
 	if err != nil {
-		t.Fatalf("FanOut() returned an unexpected error: %v", err)
+		t.Fatalf("Map() returned an unexpected error: %v", err)
 	}
 	want := []string{"answered:kvk", "answered:warehouse", "answered:soil_lab"}
 	if len(results) != len(want) {
@@ -227,30 +227,30 @@ func TestFanOutCallsOncePerValueInOrder(t *testing.T) {
 }
 
 // An empty list makes no calls and is not an error: a caller deciding that an
-// empty selection is a bad request says so itself, in its own words.
-func TestFanOutOfNoValuesMakesNoCalls(t *testing.T) {
+// empty list is a bad request says so itself, in its own words.
+func TestMapOfNoValuesMakesNoCalls(t *testing.T) {
 	t.Parallel()
 
-	results, err := FanOut(context.Background(), nil, 2, func(ctx context.Context, value any) (int, error) {
+	results, err := Map(context.Background(), nil, 2, func(ctx context.Context, value string) (int, error) {
 		t.Error("a call was made for an empty value list")
 		return 0, nil
 	})
 	if err != nil {
-		t.Fatalf("FanOut() returned an unexpected error: %v", err)
+		t.Fatalf("Map() returned an unexpected error: %v", err)
 	}
 	if len(results) != 0 {
 		t.Errorf("results = %v, want empty", results)
 	}
 }
 
-// One value's failure fails the whole fan-out, and the value's own error is
-// what comes back -- the caller named which value it was and why.
-func TestFanOutFailsWhenOneValueFails(t *testing.T) {
+// One value's failure fails the whole call, and the value's own error is what
+// comes back -- the caller named which value it was and why.
+func TestMapFailsWhenOneValueFails(t *testing.T) {
 	t.Parallel()
 
 	sentinel := errors.New("warehouse is unreachable")
-	_, err := FanOut(context.Background(), []any{"kvk", "warehouse"}, 1,
-		func(ctx context.Context, value any) (string, error) {
+	_, err := Map(context.Background(), []string{"kvk", "warehouse"}, 1,
+		func(ctx context.Context, value string) (string, error) {
 			if value == "warehouse" {
 				return "", sentinel
 			}
@@ -263,7 +263,7 @@ func TestFanOutFailsWhenOneValueFails(t *testing.T) {
 
 // --- Bound ------------------------------------------------------------------
 
-// Bound is the arithmetic every caller of Run and FanOut needs: a configured
+// Bound is the arithmetic every caller of Run and Map needs: a configured
 // limit, a fallback when it is unset, a ceiling when it is over. Zero must
 // become the fallback and not reach errgroup, where it means UNBOUNDED.
 func TestBoundDefaultsAndClamps(t *testing.T) {
