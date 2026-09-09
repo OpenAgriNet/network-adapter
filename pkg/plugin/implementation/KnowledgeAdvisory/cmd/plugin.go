@@ -1,7 +1,9 @@
-// Command plugin builds the mandi provider step as a loadable plugin.
+// Command plugin builds the knowledge advisory provider step as a loadable
+// plugin.
 //
 // The filename of the built .so is the id a deployment names in providerSteps,
-// so this package is mandi's whole public surface: a config map in, a step out.
+// so this package is KnowledgeAdvisory's whole public surface: a config map in,
+// a step out.
 package main
 
 import (
@@ -13,21 +15,21 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 )
 
-// mandiProvider implements definition.ProviderStepProvider.
-type mandiProvider struct{}
+// knowledgeAdvisoryProvider implements definition.ProviderStepProvider.
+type knowledgeAdvisoryProvider struct{}
 
 // newStepFunc creates a new step. Indirected for tests.
-var newStepFunc = MandiPrice.New
+var newStepFunc = KnowledgeAdvisory.New
 
 // parseConfig turns the plugin config map into a typed Config. Anything absent
-// is left zero: MandiPrice.New applies the defaults and validates the auth scheme,
-// so those rules live in one place.
-func (p mandiProvider) parseConfig(config map[string]string) (*MandiPrice.Config, error) {
-	cfg := &MandiPrice.Config{
+// is left zero: KnowledgeAdvisory.New applies the defaults and validates the
+// auth scheme, so those rules live in one place.
+func (p knowledgeAdvisoryProvider) parseConfig(config map[string]string) (*KnowledgeAdvisory.Config, error) {
+	cfg := &KnowledgeAdvisory.Config{
 		BindingKeys: splitList(config["bindingKeys"]),
 		// Absent means the Beckn v2 convention. See common.Config for why
 		// this is a default rather than something to set.
@@ -59,25 +61,25 @@ func (p mandiProvider) parseConfig(config map[string]string) (*MandiPrice.Config
 	return cfg, nil
 }
 
-// New creates a new mandi provider step instance.
-func (p mandiProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
+// New creates a new knowledge advisory provider step instance.
+func (p knowledgeAdvisoryProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("context cannot be nil")
 	}
 
 	cfg, err := p.parseConfig(config)
 	if err != nil {
-		log.Errorf(ctx, err, "Failed to parse mandi configuration")
-		return nil, nil, fmt.Errorf("failed to parse mandi configuration: %w", err)
+		log.Errorf(ctx, err, "Failed to parse knowledge advisory configuration")
+		return nil, nil, fmt.Errorf("failed to parse knowledge advisory configuration: %w", err)
 	}
 
 	step, closer, err := newStepFunc(ctx, registry, mapper, cfg)
 	if err != nil {
-		log.Errorf(ctx, err, "Failed to create mandi step")
+		log.Errorf(ctx, err, "Failed to create knowledge advisory step")
 		return nil, nil, err
 	}
 
-	log.Infof(ctx, "Mandi step created successfully")
+	log.Infof(ctx, "Knowledge advisory step created successfully")
 	return step, closer, nil
 }
 
@@ -101,7 +103,7 @@ func splitList(raw string) []string {
 }
 
 // Provider is the exported plugin instance.
-var Provider = mandiProvider{}
+var Provider = knowledgeAdvisoryProvider{}
 
 // Compile-time proof the provider satisfies the interface the manager asserts
 // against. A mismatch is otherwise a runtime cast failure at startup.

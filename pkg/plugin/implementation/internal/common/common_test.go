@@ -1,4 +1,4 @@
-package upstream
+package common
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/capabilitybinding"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 const selectBody = `{
@@ -47,6 +48,40 @@ func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderR
 // testBindingKey is what these tests configure the step for. There is no
 // default any more: this package serves whatever a domain package points it at.
 const testBindingKey = "mausamgram|openagrinet:WeatherObservation"
+
+// testProvider is the participant half of testBindingKey. Auth is per
+// provider, so a step config needs a profile under this key.
+const testProvider = "mausamgram"
+
+// setProviderAuth gives every provider this config serves the same profile.
+// Keyed off
+// BindingKeys rather than a constant, so a test that serves a different
+// provider does not also have to remember to move its auth.
+func (c *Config) setProviderAuth(a AuthProfile) {
+	c.AuthByProvider = map[string]*AuthProfile{}
+	for _, key := range c.BindingKeys {
+		provider := providerIDFrom(key)
+		profile := a
+		profile.Provider = provider
+		c.AuthByProvider[provider] = &profile
+	}
+}
+
+// authForTestProvider is setProviderAuth for a Config literal.
+func authForTestProvider(a AuthProfile) map[string]*AuthProfile {
+	a.Provider = testProvider
+	return map[string]*AuthProfile{testProvider: &a}
+}
+
+// stepWithProviderAuth builds a Step directly, for the handful of tests that exercise
+// redaction without a request. New() is the path everything else takes.
+func stepWithProviderAuth(a AuthProfile) *Step {
+	a.Provider = testProvider
+	return &Step{
+		config: &Config{BindingKeys: []string{testBindingKey}, AuthByProvider: authForTestProvider(a)},
+		auth:   map[string]*authenticator{testProvider: {cfg: a}},
+	}
+}
 
 const testMappingRef = "https://mappings.example.com/mausamgram/weather-observation.select.yaml"
 
@@ -110,6 +145,12 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	for _, apply := range tweak {
 		apply(cfg)
 	}
+	// There is no step-wide default, so a served provider without a profile is
+	// refused at startup. Filled in after the tweaks, because a tweak may
+	// replace BindingKeys and the profile has to follow.
+	if len(cfg.AuthByProvider) == 0 {
+		cfg.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
+	}
 	step, closer, err := New(context.Background(), registry, mapper, nil, cfg)
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
@@ -145,13 +186,26 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 		config *Config
 		valid  bool
 	}{
-		{"none by default", &Config{}, true},
-		{"basic with both variables", &Config{AuthScheme: AuthSchemeBasic, UsernameEnv: "U", PasswordEnv: "P"}, true},
-		{"basic missing the password variable", &Config{AuthScheme: AuthSchemeBasic, UsernameEnv: "U"}, false},
-		{"basic missing the username variable", &Config{AuthScheme: AuthSchemeBasic, PasswordEnv: "P"}, false},
-		{"header with both settings", &Config{AuthScheme: AuthSchemeHeader, HeaderName: "X-Key", HeaderValueEnv: "V"}, true},
-		{"header missing the value variable", &Config{AuthScheme: AuthSchemeHeader, HeaderName: "X-Key"}, false},
-		{"an unknown scheme", &Config{AuthScheme: "oauth"}, false},
+		{"none, declared", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeNone})}, true},
+		{"no profile at all for a served provider", &Config{}, false},
+		{"an empty scheme", &Config{AuthByProvider: authForTestProvider(AuthProfile{})}, false},
+		{"basic with both variables", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "U", PasswordEnv: "P"})}, true},
+		{"basic missing the password variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "U"})}, false},
+		{"basic missing the username variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeBasic, PasswordEnv: "P"})}, false},
+		{"header with both settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeHeader, HeaderName: "X-Key", HeaderValueEnv: "V"})}, true},
+		{"header missing the value variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeHeader, HeaderName: "X-Key"})}, false},
+		{"query with both settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "t", QueryValueEnv: "V"})}, true},
+		{"an unknown scheme", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: "oauth"})}, false},
+		{"oauth2 with all three settings", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID", ClientSecretEnv: "SECRET"})}, true},
+		{"oauth2 missing the token url", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeOAuth2,
+			ClientIDEnv: "ID", ClientSecretEnv: "SECRET"})}, false},
+		{"oauth2 missing the client id variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientSecretEnv: "SECRET"})}, false},
+		{"oauth2 missing the client secret variable", &Config{AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeOAuth2,
+			TokenURL: "https://issuer.invalid/token", ClientIDEnv: "ID"})}, false},
+		{"a profile for a provider not in bindingKeys", &Config{
+			AuthByProvider: map[string]*AuthProfile{"someone-else": {Scheme: util.AuthSchemeNone}}}, false},
 	}
 
 	for _, tc := range testCases {
@@ -285,9 +339,7 @@ func TestRunDoesNotRetryAMissingCredential(t *testing.T) {
 	}
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper, func(c *Config) {
-		c.AuthScheme = AuthSchemeBasic
-		c.UsernameEnv = "TEST_ABSENT_USER_FOR_RETRY"
-		c.PasswordEnv = "TEST_ABSENT_PASS_FOR_RETRY"
+		c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "TEST_ABSENT_USER_FOR_RETRY", PasswordEnv: "TEST_ABSENT_PASS_FOR_RETRY"})
 	})
 
 	_, err := runStep(t, step, selectBody)
@@ -455,38 +507,6 @@ func TestRunKeepsTheProvidersBodyOffTheWire(t *testing.T) {
 	}
 }
 
-// explain still collapses whitespace, because the body it prepares now goes to
-// a log line rather than an error -- an indented body would spread one failure
-// over several lines either way.
-func TestExplainCollapsesWhitespace(t *testing.T) {
-	t.Parallel()
-
-	got := explain([]byte("{\n  \"message\": \"no data available\"\n}"))
-	if strings.Contains(got, "\n") {
-		t.Errorf("explain(%q) left a newline in", got)
-	}
-	if !strings.Contains(got, "no data available") {
-		t.Errorf("explain = %q, want the provider's message preserved", got)
-	}
-}
-
-// A body is quoted, not dumped: a provider answering with a page of HTML must
-// not put all of it in a log line or a NACK.
-func TestExplainTruncatesAndHandlesAnEmptyBody(t *testing.T) {
-	t.Parallel()
-
-	if got := explain(nil); got != "(no body)" {
-		t.Errorf("explain(nil) = %q, want a marker rather than an empty string", got)
-	}
-	long := explain([]byte(strings.Repeat("x", explainLimit+50)))
-	if len(long) > explainLimit+len("... (truncated)") {
-		t.Errorf("explain kept %d characters, want it truncated near %d", len(long), explainLimit)
-	}
-	if !strings.HasSuffix(long, "(truncated)") {
-		t.Errorf("a truncated body should say so, got %q", long[len(long)-20:])
-	}
-}
-
 // The quoted body goes through the same redaction as everything else, or a
 // provider that echoes the query string back would defeat it.
 func TestRunRedactsACredentialEchoedInABody(t *testing.T) {
@@ -503,9 +523,7 @@ func TestRunRedactsACredentialEchoedInABody(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeQuery
-			c.QueryName = "token"
-			c.QueryValueEnv = "TEST_ECHO_TOKEN"
+			c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_ECHO_TOKEN"})
 		})
 
 	_, err := runStep(t, step, selectBody)
@@ -521,7 +539,7 @@ func TestRunRedactsACredentialEchoedInABody(t *testing.T) {
 	// token turns up. Assert on the same expression the code logs, so moving
 	// the body from the error to the log cannot quietly move the leak with it.
 	echoed := `{"rejected":"token=s3cr3t"}`
-	logged := step.redactString(explain([]byte(echoed)))
+	logged := step.redactString(util.Explain([]byte(echoed)))
 	if strings.Contains(logged, "s3cr3t") {
 		t.Errorf("the credential survives into the log line: %s", logged)
 	}
@@ -549,9 +567,7 @@ func TestRunSendsTheCredentialAsAQueryParameter(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{"statecode":"CG"}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeQuery
-			c.QueryName = "token"
-			c.QueryValueEnv = "TEST_MANDI_TOKEN"
+			c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -581,9 +597,7 @@ func TestRunRedactsAQueryCredentialFromAnError(t *testing.T) {
 	}
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper, func(c *Config) {
-		c.AuthScheme = AuthSchemeQuery
-		c.QueryName = "token"
-		c.QueryValueEnv = "TEST_MANDI_TOKEN"
+		c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	})
 
 	_, err := runStep(t, step, selectBody)
@@ -605,11 +619,7 @@ func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_MANDI_TOKEN", "s3cr3t")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_MANDI_TOKEN",
-	}}
+	step := stepWithProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	got := step.redactString("http://host/v1/x?statecode=CG&token=s3cr3t")
 	if strings.Contains(got, "s3cr3t") {
 		t.Errorf("the credential survived redaction: %s", got)
@@ -619,7 +629,7 @@ func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	}
 
 	// Any other scheme has nothing to hide in a URL, so the text is untouched.
-	plain := &Step{config: &Config{AuthScheme: AuthSchemeNone}}
+	plain := stepWithProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
 	if out := plain.redactString("http://host/v1/x?statecode=CG"); out != "http://host/v1/x?statecode=CG" {
 		t.Errorf("a url with no credential must pass through unchanged, got %q", out)
 	}
@@ -635,11 +645,7 @@ func TestRedactStringRemovesThePercentEncodedCredential(t *testing.T) {
 	const token = "a+b/c=d e" // every character Encode treats specially
 	t.Setenv("TEST_MANDI_TOKEN", token)
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_MANDI_TOKEN",
-	}}
+	step := stepWithProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 
 	// Exactly how the credential appears once authenticate has run: Encode
 	// escapes it, so this is the string a transport error quotes.
@@ -665,11 +671,7 @@ func TestRedactStringStillRemovesAnUnescapedCredential(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_MANDI_TOKEN", "plaintoken123")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_MANDI_TOKEN",
-	}}
+	step := stepWithProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_MANDI_TOKEN"})
 	got := step.redactString("http://host/v1/x?token=plaintoken123")
 	if strings.Contains(got, "plaintoken123") {
 		t.Errorf("the credential survived redaction: %s", got)
@@ -686,9 +688,9 @@ func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
 		cfg  *Config
 	}{
 		{"no queryName", &Config{BindingKeys: []string{testBindingKey},
-			AuthScheme: AuthSchemeQuery, QueryValueEnv: "TEST_MANDI_TOKEN"}},
+			AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeQuery, QueryValueEnv: "TEST_MANDI_TOKEN"})}},
 		{"no queryValueEnv", &Config{BindingKeys: []string{testBindingKey},
-			AuthScheme: AuthSchemeQuery, QueryName: "token"}},
+			AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token"})}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1054,39 +1056,11 @@ func TestRunKeepsATrailingSlashOnThePath(t *testing.T) {
 	}
 }
 
-// The join itself: baseUrl cannot end in a slash and path must begin with one,
-// so exactly one separator appears between them. Asserted so a change to either
-// side cannot quietly produce a doubled or missing slash.
-func TestBuildEndpointJoinsWithOneSlash(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct{ base, path, want string }{
-		{"http://host:9100", "/get-daily", "http://host:9100/get-daily"},
-		{"http://host:9100/api", "/get-daily", "http://host:9100/api/get-daily"},
-		{"http://host:9100/", "/get-daily", "http://host:9100/get-daily"},
-	} {
-		got, err := buildEndpoint(tc.base, model.ActionPlan{Method: http.MethodPost, Path: tc.path}, nil)
-		if err != nil {
-			t.Fatalf("buildEndpoint(%q, %q) returned an unexpected error: %v", tc.base, tc.path, err)
-		}
-		if got != tc.want {
-			t.Errorf("buildEndpoint(%q, %q) = %q, want %q", tc.base, tc.path, got, tc.want)
-		}
-	}
-}
-
-// --- where the binding key lives ----------------------------------------------
-//
-// A default, not a setting: every participant must agree where the halves of a
-// binding key sit, or two adapters disagree about what a binding key is and
-// requests silently fail to match. The override exists so a spec change can be
-// tracked without waiting for a release, and has to be typed deliberately.
-
 func TestNewUsesTheBecknConventionByDefault(t *testing.T) {
 	t.Parallel()
 
 	step := newStep(t, &stubRegistry{}, &stubMapper{})
-	if step.paths != capabilitybinding.BecknV2 {
+	if step.paths != BecknV2 {
 		t.Errorf("paths = %+v, want the Beckn v2 convention", step.paths)
 	}
 }
@@ -1125,8 +1099,9 @@ func TestNewRefusesAHalfConfiguredOverride(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{
-		BindingKeys:  []string{testBindingKey},
-		ProviderIDAt: "who.provider",
+		BindingKeys:    []string{testBindingKey},
+		ProviderIDAt:   "who.provider",
+		AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeNone}),
 	})
 	if err == nil {
 		t.Fatal("expected one path without the other to be refused")
@@ -1375,9 +1350,7 @@ func TestRunPresentsBasicCredentialsFromTheEnvironment(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeBasic
-			c.UsernameEnv = "TEST_MAUSAMGRAM_USER"
-			c.PasswordEnv = "TEST_MAUSAMGRAM_KEY"
+			c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_USER", PasswordEnv: "TEST_MAUSAMGRAM_KEY"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -1401,9 +1374,7 @@ func TestRunPresentsAHeaderCredentialFromTheEnvironment(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeHeader
-			c.HeaderName = "X-Api-Key"
-			c.HeaderValueEnv = "TEST_MAUSAMGRAM_TOKEN"
+			c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_MAUSAMGRAM_TOKEN"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err != nil {
@@ -1425,9 +1396,7 @@ func TestRunFailsWhenAConfiguredCredentialIsAbsent(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeBasic
-			c.UsernameEnv = "TEST_MAUSAMGRAM_ABSENT_USER"
-			c.PasswordEnv = "TEST_MAUSAMGRAM_ABSENT_KEY"
+			c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "TEST_MAUSAMGRAM_ABSENT_USER", PasswordEnv: "TEST_MAUSAMGRAM_ABSENT_KEY"})
 		})
 
 	if _, err := runStep(t, step, selectBody); err == nil {
@@ -1617,111 +1586,6 @@ func TestRunRefusesAMappedQueryItCannotRender(t *testing.T) {
 
 // --- query rendering --------------------------------------------------------
 
-func TestAsQueryRendersScalarsWithoutInventingPrecision(t *testing.T) {
-	t.Parallel()
-
-	got, err := asQuery([]byte(`{"lat":19.9975,"count":3,"name":"imd","live":true}`))
-	if err != nil {
-		t.Fatalf("asQuery() returned an unexpected error: %v", err)
-	}
-	for _, want := range []string{"lat=19.9975", "count=3", "name=imd", "live=true"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("query %q is missing %q", got, want)
-		}
-	}
-}
-
-func TestAsQueryHandlesAnEmptyMapping(t *testing.T) {
-	t.Parallel()
-
-	got, err := asQuery([]byte(`{}`))
-	if err != nil || got != "" {
-		t.Errorf("asQuery({}) = (%q, %v), want an empty query and no error", got, err)
-	}
-}
-
-// Both bounds come from a registry row, so both are data. An attempt holds a
-// goroutine and the inbound connection for its whole timeout, and the server's
-// write timeout does not cancel the request context -- so retryMax 1000 with
-// timeoutMs 60000 is one row deciding this process is busy for seventeen hours.
-func TestBudgetClampsWhatTheRegistryAsksFor(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		timeoutMs   int
-		retryMax    int
-		wantTimeout time.Duration
-		wantRetries int
-	}{
-		{"absent uses the contract's defaults", 0, 0, DefaultTimeout, DefaultRetryMax},
-		{"within the ceilings is honoured", 2000, 3, 2 * time.Second, 3},
-		{"exactly at the ceilings is honoured", int(MaxTimeout / time.Millisecond), MaxRetryMax, MaxTimeout, MaxRetryMax},
-		{"a timeout past the ceiling is clamped", 600000, 0, MaxTimeout, DefaultRetryMax},
-		{"retries past the ceiling are clamped", 0, 1000, DefaultTimeout, MaxRetryMax},
-		{"both past the ceiling are clamped", 600000, 1000, MaxTimeout, MaxRetryMax},
-		{"negative values fall back to the defaults", -1, -1, DefaultTimeout, DefaultRetryMax},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			gotTimeout, gotRetries := budget(model.ActionPlan{
-				TimeoutMs: tt.timeoutMs, RetryMax: tt.retryMax,
-			})
-			if gotTimeout != tt.wantTimeout {
-				t.Errorf("timeout = %v, want %v", gotTimeout, tt.wantTimeout)
-			}
-			if gotRetries != tt.wantRetries {
-				t.Errorf("retries = %d, want %d", gotRetries, tt.wantRetries)
-			}
-		})
-	}
-}
-
-// The shift this replaced overflowed int64 once it reached 38 at a 50ms base.
-// The wrapped value is NEGATIVE, so it passed the ceiling check and was
-// returned, and a sleep on a negative duration returns immediately -- the
-// retry loop then spun as fast as the provider could refuse. Past 64 it
-// yielded 0, with the same effect. Worse, it was not monotonic: attempt 40
-// wrapped back to a sane 800ms, so the symptom came and went by attempt count.
-//
-// The clamp on retryMax now keeps attempts to MaxRetryMax+1, which puts the
-// overflow out of reach through call(). This is asserted anyway, because
-// backoff is a package function and a ceiling somewhere else is not a
-// property of this one.
-func TestBackoffNeverReturnsANonPositiveDuration(t *testing.T) {
-	t.Parallel()
-
-	for _, attempt := range []int{0, 1, 2, 3, 4, 5, 6, 37, 38, 39, 40, 63, 64, 65, 100, 1000} {
-		got := backoff(attempt)
-		if got <= 0 {
-			t.Errorf("backoff(%d) = %v; a non-positive wait makes the retry loop spin", attempt, got)
-		}
-		if got > RetryBackoffMax {
-			t.Errorf("backoff(%d) = %v, above the %v ceiling", attempt, got, RetryBackoffMax)
-		}
-	}
-}
-
-// The doubling itself, which the overflow fix must not have changed.
-func TestBackoffDoublesToTheCeiling(t *testing.T) {
-	t.Parallel()
-
-	want := []time.Duration{
-		50 * time.Millisecond,  // attempt 1
-		100 * time.Millisecond, // 2
-		200 * time.Millisecond, // 3
-		400 * time.Millisecond, // 4
-		800 * time.Millisecond, // 5, at the ceiling
-		800 * time.Millisecond, // 6, held there
-	}
-	for i, w := range want {
-		if got := backoff(i + 1); got != w {
-			t.Errorf("backoff(%d) = %v, want %v", i+1, got, w)
-		}
-	}
-}
-
 // redact used to return errors.New(text), which reported the right thing and
 // broke errors.Is. The redacted value is what gets %w-wrapped into the final
 // 502, so under a query-string scheme -- and only then -- a caller testing for
@@ -1731,11 +1595,7 @@ func TestRedactKeepsTheErrorChainMatchable(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_CHAIN_TOKEN", "s3cr3t")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_CHAIN_TOKEN",
-	}}
+	step := stepWithProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN"})
 
 	// The shape net/http produces: the cause wrapped behind text that quotes
 	// the whole URL, credential and all.
@@ -1753,7 +1613,7 @@ func TestRedactKeepsTheErrorChainMatchable(t *testing.T) {
 	}
 	// And wrapping it again, which is what the 502 does, must not undo either
 	// property.
-	wrapped := fmt.Errorf("upstream: provider did not answer: %w", got)
+	wrapped := fmt.Errorf("provider did not answer: %w", got)
 	if strings.Contains(wrapped.Error(), "s3cr3t") {
 		t.Errorf("the credential reappeared once wrapped: %v", wrapped)
 	}
@@ -1769,45 +1629,13 @@ func TestRedactLeavesAnUnchangedErrorAlone(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_CHAIN_TOKEN_2", "s3cr3t")
 
-	step := &Step{config: &Config{
-		AuthScheme:    AuthSchemeQuery,
-		QueryName:     "token",
-		QueryValueEnv: "TEST_CHAIN_TOKEN_2",
-	}}
+	step := stepWithProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_CHAIN_TOKEN_2"})
 	original := errors.New("nothing sensitive here")
 	if got := step.redact(original); got != original {
 		t.Errorf("redact returned a different error for text it did not change: %v", got)
 	}
 	if step.redact(nil) != nil {
 		t.Error("redact(nil) must stay nil")
-	}
-}
-
-// hasBody upper-cased privately, which made the method look case-insensitive
-// when it is not: NewRequestWithContext transmits it verbatim, so a registry
-// row reading `method: "post"` sent `post /path HTTP/1.1`. The body was
-// attached correctly, and nginx answered 405 -- classified permanent, and
-// surfacing as a 502 "provider did not answer".
-func TestCanonicalMethodFixesTheCaseTheRowWasWrittenIn(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct{ in, want string }{
-		{"post", http.MethodPost},
-		{"PoSt", http.MethodPost},
-		{"POST", http.MethodPost},
-		{"get", http.MethodGet},
-		{"delete", http.MethodDelete},
-		{"patch", http.MethodPatch},
-		// Left alone: upper-casing everything would restrict an upstream
-		// entitled to a method this list has not heard of.
-		{"FrobNicate", "FrobNicate"},
-		// Empty stays empty; net/http documents "" as GET and substitutes it.
-		{"", ""},
-	}
-	for _, tt := range tests {
-		if got := canonicalMethod(tt.in); got != tt.want {
-			t.Errorf("canonicalMethod(%q) = %q, want %q", tt.in, got, tt.want)
-		}
 	}
 }
 
@@ -1835,64 +1663,6 @@ func TestRunSendsTheMethodInCanonicalCase(t *testing.T) {
 	}
 	if seen != http.MethodPost {
 		t.Errorf("the provider saw method %q, want %q", seen, http.MethodPost)
-	}
-}
-
-// The registry publishes two urls per action and only one of them was checked.
-// jsonmapper has always validated its mapping reference this way; this is the
-// same check on the base url beside it.
-func TestVerifyBaseURL(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		baseURL string
-		wantErr bool
-	}{
-		{"http is fine", "http://provider:9100", false},
-		{"https is fine", "https://provider.example.com/api", false},
-		{"empty is refused", "", true},
-		// The case from the review: a scheme left off. Without this check it
-		// failed inside NewRequestWithContext and arrived as a 502.
-		{"a host and port with no scheme is refused", "registry:8081", true},
-		{"a bare host is refused", "provider", true},
-		{"a scheme that is not http is refused", "file:///etc/passwd", true},
-		{"a scheme with no host is refused", "http://", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := verifyBaseURL(tt.baseURL)
-			if tt.wantErr && err == nil {
-				t.Errorf("verifyBaseURL(%q) = nil, want an error", tt.baseURL)
-			}
-			if !tt.wantErr && err != nil {
-				t.Errorf("verifyBaseURL(%q) = %v, want nil", tt.baseURL, err)
-			}
-		})
-	}
-}
-
-// A dot segment would be resolved by net/url, so the request that left would
-// not be the request the row described. A fragment is never sent at all.
-func TestVerifyPathRefusesDotSegmentsAndFragments(t *testing.T) {
-	t.Parallel()
-
-	for _, path := range []string{
-		"/../admin",
-		"/v1/../../etc",
-		"/v1/./get-daily",
-		"/get-daily#section",
-	} {
-		if err := verifyPath(path); err == nil {
-			t.Errorf("verifyPath(%q) = nil, want it refused", path)
-		}
-	}
-	// A dot inside a segment is an ordinary character and must still pass.
-	for _, path := range []string{"/v1/get-daily", "/v1/data.json", "/a..b"} {
-		if err := verifyPath(path); err != nil {
-			t.Errorf("verifyPath(%q) = %v, want nil", path, err)
-		}
 	}
 }
 
@@ -1948,8 +1718,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "basic, the wire form a gateway echoes",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeBasic
-				c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+				c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 			},
 			body:   `{"error":"invalid Authorization: Basic ` + wire + `"}`,
 			secret: wire,
@@ -1957,8 +1726,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "basic, the password quoted raw",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeBasic
-				c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+				c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 			},
 			body:   `{"error":"bad password s3cr3t"}`,
 			secret: "s3cr3t",
@@ -1966,8 +1734,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "header, the value as sent",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeHeader
-				c.HeaderName, c.HeaderValueEnv = "X-API-Key", "TEST_HDR"
+				c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeHeader, HeaderName: "X-API-Key", HeaderValueEnv: "TEST_HDR"})
 			},
 			body:   `{"error":"bad X-API-Key: hdr-k3y"}`,
 			secret: "hdr-k3y",
@@ -1975,8 +1742,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "query, still covered, raw form",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeQuery
-				c.QueryName, c.QueryValueEnv = "token", "TEST_QRY"
+				c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
 			},
 			body:   `{"rejected":"token=a+b/c="}`,
 			secret: "a+b/c=",
@@ -1984,8 +1750,7 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 		{
 			name: "query, still covered, percent-encoded form",
 			tweak: func(c *Config) {
-				c.AuthScheme = AuthSchemeQuery
-				c.QueryName, c.QueryValueEnv = "token", "TEST_QRY"
+				c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_QRY"})
 			},
 			body:   `{"rejected":"token=` + url.QueryEscape("a+b/c=") + `"}`,
 			secret: url.QueryEscape("a+b/c="),
@@ -1996,12 +1761,12 @@ func TestRedactStringCoversEveryScheme(t *testing.T) {
 				&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}, tc.tweak)
 
 			// The same expression the non-2xx path logs.
-			logged := step.redactString(explain([]byte(tc.body)))
+			logged := step.redactString(util.Explain([]byte(tc.body)))
 
 			if strings.Contains(logged, tc.secret) {
 				t.Errorf("the credential survives into the log line: %s", logged)
 			}
-			if !strings.Contains(logged, redactedMarker) {
+			if !strings.Contains(logged, util.RedactedMarker) {
 				t.Errorf("logged = %q, want the credential replaced", logged)
 			}
 		})
@@ -2019,8 +1784,7 @@ func TestRedactStringLeavesTheBasicUsername(t *testing.T) {
 	step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 		func(c *Config) {
-			c.AuthScheme = AuthSchemeBasic
-			c.UsernameEnv, c.PasswordEnv = "TEST_USER", "TEST_PASS"
+			c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeBasic, UsernameEnv: "TEST_USER", PasswordEnv: "TEST_PASS"})
 		})
 
 	got := step.redactString(`user mausam failed to authenticate with s3cr3t`)
@@ -2035,17 +1799,22 @@ func TestRedactStringLeavesTheBasicUsername(t *testing.T) {
 // Nothing configured, nothing to hide: an unset credential must not turn every
 // empty string in the text into a redaction marker.
 func TestRedactStringWithNoCredentialConfigured(t *testing.T) {
-	for _, scheme := range []string{AuthSchemeNone, AuthSchemeBasic, AuthSchemeHeader, AuthSchemeQuery} {
+	for _, scheme := range []string{util.AuthSchemeNone, util.AuthSchemeBasic, util.AuthSchemeHeader, util.AuthSchemeQuery} {
 		t.Run(scheme, func(t *testing.T) {
 			const text = `{"error":"provider said no"}`
 			step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
 				&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
 				func(c *Config) {
-					c.AuthScheme = scheme
 					// Env vars named but deliberately unset.
-					c.UsernameEnv, c.PasswordEnv = "TEST_UNSET_U", "TEST_UNSET_P"
-					c.HeaderName, c.HeaderValueEnv = "X-K", "TEST_UNSET_H"
-					c.QueryName, c.QueryValueEnv = "t", "TEST_UNSET_Q"
+					c.setProviderAuth(AuthProfile{
+						Scheme:         scheme,
+						UsernameEnv:    "TEST_UNSET_U",
+						PasswordEnv:    "TEST_UNSET_P",
+						HeaderName:     "X-K",
+						HeaderValueEnv: "TEST_UNSET_H",
+						QueryName:      "t",
+						QueryValueEnv:  "TEST_UNSET_Q",
+					})
 				})
 
 			if got := step.redactString(text); got != text {
@@ -2077,7 +1846,8 @@ func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
 	step, closer, err := New(context.Background(),
 		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
-		&Config{BindingKeys: []string{testBindingKey}})
+		&Config{BindingKeys: []string{testBindingKey},
+			AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeNone})})
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
 	}
@@ -2136,5 +1906,427 @@ func TestRunPassesAnEmptyLocalWhenThereAreNoPrerequisites(t *testing.T) {
 	}
 	if len(local) != 0 {
 		t.Errorf("_local = %v, want it empty", local)
+	}
+}
+
+// A token's lifetime comes from the token response, never from our config: the
+// issuer owns it, and a configured copy drifts the moment a realm is retuned.
+//
+// Pure so the edge cases need no clock and no sleeping -- the same shape as
+// budget() above.
+func TestTokenLifetime(t *testing.T) {
+	t.Parallel()
+
+	const skew = 60 * time.Second
+
+	testCases := []struct {
+		name      string
+		expiresIn int
+		want      time.Duration
+		usable    bool
+	}{
+		{
+			// The live Keycloak realm: 10 hours, so we stop trusting it a
+			// minute early and refresh on the next request through.
+			name: "the ordinary case", expiresIn: 36000,
+			want: 36000*time.Second - skew, usable: true,
+		},
+		{
+			// SHORTER THAN THE SKEW. now + 30s - 60s is in the past, so the
+			// naive arithmetic makes every single request fetch a new token.
+			// Half the lifetime is still ahead of expiry and still refreshes.
+			name: "shorter than the skew", expiresIn: 30,
+			want: 15 * time.Second, usable: true,
+		},
+		{name: "exactly the skew", expiresIn: 60, want: 30 * time.Second, usable: true},
+		{name: "one second", expiresIn: 1, want: 500 * time.Millisecond, usable: true},
+		// A response that does not say how long its token lives is refused
+		// rather than cached for a guessed duration or re-fetched forever.
+		{name: "absent", expiresIn: 0, usable: false},
+		{name: "negative", expiresIn: -1, usable: false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := tokenLifetime(tc.expiresIn, skew)
+			if ok != tc.usable {
+				t.Fatalf("tokenLifetime(%d) usable = %v, want %v", tc.expiresIn, ok, tc.usable)
+			}
+			if ok && got != tc.want {
+				t.Errorf("tokenLifetime(%d) = %v, want %v", tc.expiresIn, got, tc.want)
+			}
+		})
+	}
+}
+
+// tokenServer stands in for an OAuth2 token endpoint. It records what it was
+// asked and answers with whatever the test needs.
+type tokenServer struct {
+	calls     atomic.Int32
+	expiresIn int    // 0 omits the field entirely
+	token     string // rotates per call when empty
+	status    int
+	body      string // overrides the JSON when set
+	gotGrant  string
+	gotID     string
+	gotSecret string
+}
+
+func (ts *tokenServer) start(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := ts.calls.Add(1)
+		_ = r.ParseForm()
+		ts.gotGrant, ts.gotID, ts.gotSecret =
+			r.PostFormValue("grant_type"), r.PostFormValue("client_id"), r.PostFormValue("client_secret")
+		if ts.status != 0 {
+			w.WriteHeader(ts.status)
+		}
+		if ts.body != "" {
+			fmt.Fprint(w, ts.body)
+			return
+		}
+		token := ts.token
+		if token == "" {
+			token = fmt.Sprintf("tok-%d", n)
+		}
+		if ts.expiresIn == 0 {
+			fmt.Fprintf(w, `{"access_token":%q,"token_type":"Bearer"}`, token)
+			return
+		}
+		fmt.Fprintf(w, `{"access_token":%q,"token_type":"Bearer","expires_in":%d}`, token, ts.expiresIn)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/token"
+}
+
+// oauth2Step wires a step whose provider records the Authorization it received.
+func oauth2Step(t *testing.T, tokenURL string, seen *[]string) *Step {
+	t.Helper()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(provider.Close)
+
+	return newStep(t, &stubRegistry{plan: testPlan(provider.URL, http.MethodGet)},
+		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"a":1}`)},
+		func(c *Config) {
+			c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeOAuth2, TokenURL: tokenURL, ClientIDEnv: "TEST_OAUTH_ID", ClientSecretEnv: "TEST_OAUTH_SECRET"})
+		})
+}
+
+// A3: the exchanged token has to reach the provider, and the client
+// credentials have to reach the token endpoint the way the grant specifies.
+func TestOAuth2SendsTheExchangedTokenAsABearer(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{expiresIn: 36000, token: "the-token"}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != "Bearer the-token" {
+		t.Errorf("provider saw Authorization %q, want %q", seen, "Bearer the-token")
+	}
+	if ts.gotGrant != "client_credentials" {
+		t.Errorf("grant_type = %q, want client_credentials", ts.gotGrant)
+	}
+	if ts.gotID != "svc-client" || ts.gotSecret != "svc-secret" {
+		t.Errorf("token endpoint saw id/secret %q/%q, want the configured pair", ts.gotID, ts.gotSecret)
+	}
+}
+
+// A4: a token good for ten hours must be exchanged ONCE, not per request.
+// Without this the provider's issuer takes one extra round trip per call.
+func TestOAuth2ReusesTheTokenWithinItsLifetime(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{expiresIn: 36000}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	for i := 0; i < 5; i++ {
+		if _, err := runStep(t, step, selectBody); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if got := ts.calls.Load(); got != 1 {
+		t.Errorf("token endpoint called %d times for 5 requests, want 1", got)
+	}
+	for i, h := range seen {
+		if h != "Bearer tok-1" {
+			t.Errorf("request %d sent %q, want the cached token", i, h)
+		}
+	}
+}
+
+// A5: and once it expires, the next request exchanges a fresh one. expires_in
+// of 1s halves to 500ms under the skew, so this needs no long sleep.
+func TestOAuth2RefreshesAnExpiredToken(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{expiresIn: 1}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("second request: %v", err)
+	}
+	if got := ts.calls.Load(); got != 2 {
+		t.Errorf("token endpoint called %d times, want 2 -- the second token was not fetched", got)
+	}
+	if len(seen) == 2 && seen[0] == seen[1] {
+		t.Errorf("both requests sent %q, want a rotated token", seen[0])
+	}
+}
+
+// A6: the token endpoint failing is the UPSTREAM exchange failing, so 502.
+// Unclassified it becomes a 500, which tells a peer this adapter broke.
+func TestOAuth2ClassifiesATokenFailureAsUpstream(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ts   *tokenServer
+	}{
+		{"the endpoint refuses", &tokenServer{status: http.StatusInternalServerError, body: `{"error":"boom"}`}},
+		{"the endpoint says unauthorized", &tokenServer{status: http.StatusUnauthorized, body: `{"error":"invalid_client"}`}},
+		{"the response is not JSON", &tokenServer{body: `<html>nope</html>`}},
+		{"the response carries no token", &tokenServer{body: `{"token_type":"Bearer","expires_in":36000}`}},
+		{"the response omits expires_in", &tokenServer{expiresIn: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TEST_OAUTH_ID", "svc-client")
+			t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+			var seen []string
+			step := oauth2Step(t, tc.ts.start(t), &seen)
+
+			_, err := runStep(t, step, selectBody)
+			if err == nil {
+				t.Fatal("expected the request to fail when no token could be obtained")
+			}
+			var coded *model.CodedErr
+			if !errors.As(err, &coded) {
+				t.Fatalf("error %v (%T) is unclassified, so it becomes a 500", err, err)
+			}
+			if coded.HTTPStatus() != http.StatusBadGateway {
+				t.Errorf("status = %d, want 502: the token exchange is upstream's failure", coded.HTTPStatus())
+			}
+			// The status alone does not prove this classification: the retry
+			// loop wraps its terminal failure in a 502 too, so an unclassified
+			// token error would still surface as one. The message is what says
+			// the exchange is where it broke, rather than the provider call.
+			if !strings.Contains(err.Error(), "oauth2 token exchange failed") {
+				t.Errorf("error %v does not identify the token exchange as the failure", err)
+			}
+			if len(seen) != 0 {
+				t.Errorf("the provider was called %d times without a token", len(seen))
+			}
+		})
+	}
+}
+
+// A6b: a failed exchange must not be cached. One transient failure would
+// otherwise poison the step for the whole lifetime it never obtained.
+func TestOAuth2DoesNotCacheAFailedExchange(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	ts := &tokenServer{status: http.StatusInternalServerError, body: `{"error":"boom"}`}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	for i := 0; i < 3; i++ {
+		if _, err := runStep(t, step, selectBody); err == nil {
+			t.Fatalf("request %d unexpectedly succeeded", i)
+		}
+	}
+	// Two per request, not one: RetryMax is 1, and a 500 from the issuer is
+	// weather, so the retry budget covers the exchange. What matters here is
+	// that the count RISES with the requests -- a cached failure would leave it
+	// at 2 for all three.
+	if got := ts.calls.Load(); got != 6 {
+		t.Errorf("token endpoint called %d times for 3 failing requests, want 6 "+
+			"(2 attempts each) -- fewer means a failure was cached", got)
+	}
+}
+
+// A7: neither the client secret nor the token may reach a log or an error,
+// in any form. A provider echoing the request it rejected is the ordinary
+// shape of a 401 body.
+func TestOAuth2RedactsTheSecretAndTheToken(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", `s3cr3t"quoted`)
+
+	ts := &tokenServer{expiresIn: 36000, token: "the-token"}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	// warm the cache so the step holds a token to redact
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+
+	for _, secret := range []string{`s3cr3t"quoted`, "the-token"} {
+		body := fmt.Sprintf(`{"error":"rejected %s"}`, secret)
+		got := step.redactString(util.Explain([]byte(body)))
+		if strings.Contains(got, secret) {
+			t.Errorf("%q survived redaction: %s", secret, got)
+		}
+		if !strings.Contains(got, util.RedactedMarker) {
+			t.Errorf("nothing was redacted from %q", got)
+		}
+	}
+	// the client id identifies rather than authenticates, so it stays
+	if got := step.redactString("client svc-client failed"); !strings.Contains(got, "svc-client") {
+		t.Errorf("the client id was redacted (%q); it identifies, it does not authenticate", got)
+	}
+}
+
+// A8: an unset credential names the VARIABLE in our log and only the scheme on
+// the wire -- a peer has no business learning which variables we read.
+func TestOAuth2ReportsAMissingCredential(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "")
+	t.Setenv("TEST_OAUTH_SECRET", "")
+
+	ts := &tokenServer{expiresIn: 36000}
+	var seen []string
+	step := oauth2Step(t, ts.start(t), &seen)
+
+	_, err := runStep(t, step, selectBody)
+	if err == nil {
+		t.Fatal("expected a missing credential to fail the request")
+	}
+	if strings.Contains(err.Error(), "TEST_OAUTH_ID") || strings.Contains(err.Error(), "TEST_OAUTH_SECRET") {
+		t.Errorf("the error names the environment variables, which goes to the peer: %v", err)
+	}
+	if ts.calls.Load() != 0 {
+		t.Error("the token endpoint was called with no credentials")
+	}
+}
+
+// Every setting in authFields must actually reach a field on the profile.
+//
+// This is the check the old shape could not make. The name and the assignment
+// lived apart -- a set of valid names, and a switch that filled the fields --
+// so a setting present in the set but missing from the switch parsed, validated
+// and was then discarded, leaving a provider on a credential the operator
+// thought they had configured. One map of setters makes that impossible by
+// construction; this test pins it anyway, since the map is what a new scheme
+// gets added to.
+func TestEveryAuthFieldReachesTheProfile(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "SENTINEL_VALUE"
+	for name, set := range authFields {
+		var profile AuthProfile
+		set(&profile, sentinel)
+
+		// Reflect over the profile rather than naming the fields, so a field
+		// added to AuthProfile cannot be missed here either.
+		found := false
+		value := reflect.ValueOf(profile)
+		for i := 0; i < value.NumField(); i++ {
+			if value.Field(i).Kind() == reflect.String &&
+				value.Field(i).String() == sentinel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("authFields[%q] set nothing on the profile", name)
+		}
+	}
+}
+
+// The vocabulary is what makes the dash split decidable, so no setting name may
+// contain a dash -- it would flatten to <setting>-<id> ambiguously.
+func TestNoAuthFieldNameCarriesADash(t *testing.T) {
+	t.Parallel()
+
+	for name := range authFields {
+		if strings.Contains(name, "-") {
+			t.Errorf("setting %q carries a dash, which makes the split ambiguous", name)
+		}
+	}
+}
+
+// A 5xx from the token issuer is weather, so the retry budget covers it -- the
+// same rule the provider's own 5xx gets a few lines below in attempt.
+//
+// This was the defect a reviewer found on #24: authenticate's error was wrapped
+// in DoNotRetry wholesale, which was right when the only way to fail was an
+// unset environment variable. oauth2 made that path do network I/O to a third
+// party, and the blanket wrap then swallowed a transient issuer failure.
+func TestOAuth2RetriesATransientIssuerFailure(t *testing.T) {
+	t.Setenv("TEST_OAUTH_ID", "svc-client")
+	t.Setenv("TEST_OAUTH_SECRET", "svc-secret")
+
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   int32
+	}{
+		{"500 is retried", http.StatusInternalServerError, 2},
+		{"503 is retried", http.StatusServiceUnavailable, 2},
+		{"429 is retried", http.StatusTooManyRequests, 2},
+		// A 4xx that is not 429 says the client credentials are wrong, which
+		// another attempt will not change.
+		{"401 is not retried", http.StatusUnauthorized, 1},
+		{"400 is not retried", http.StatusBadRequest, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := &tokenServer{status: tc.status, body: `{"error":"no"}`}
+			var seen []string
+			step := oauth2Step(t, ts.start(t), &seen)
+
+			if _, err := runStep(t, step, selectBody); err == nil {
+				t.Fatal("expected the request to fail")
+			}
+			if got := ts.calls.Load(); got != tc.want {
+				t.Errorf("token endpoint called %d times, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// An unset credential is configuration, not weather: retrying reports an
+// operator's missing environment variable as the provider being down.
+func TestOAuth2DoesNotRetryAMissingCredential(t *testing.T) {
+	// Deliberately unset, so authenticate fails before any network I/O.
+	t.Setenv("TEST_OAUTH_ABSENT_ID", "")
+	t.Setenv("TEST_OAUTH_ABSENT_SECRET", "")
+
+	ts := &tokenServer{status: http.StatusOK, body: `{"access_token":"t","expires_in":3600}`}
+	tokenURL := ts.start(t)
+	step := newStep(t, &stubRegistry{plan: testPlan("http://provider.invalid", http.MethodGet)},
+		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)},
+		func(c *Config) {
+			c.setProviderAuth(AuthProfile{
+				Scheme:          util.AuthSchemeOAuth2,
+				TokenURL:        tokenURL,
+				ClientIDEnv:     "TEST_OAUTH_ABSENT_ID",
+				ClientSecretEnv: "TEST_OAUTH_ABSENT_SECRET",
+			})
+		})
+
+	if _, err := runStep(t, step, selectBody); err == nil {
+		t.Fatal("expected an unset credential to fail")
+	}
+	// Never dialled: the credential is missing before the exchange, and the
+	// failure must not be repeated.
+	if got := ts.calls.Load(); got != 0 {
+		t.Errorf("token endpoint called %d times, want 0", got)
 	}
 }
