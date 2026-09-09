@@ -91,6 +91,7 @@ const providerResponse = `{
  "hits": [
   {
    "_id": "26860172-2762-4b0b-cabf-3c947846c2e1",
+   "filename": "doc-379e706ade8b-rerun-1788847883",
    "_score": 0.77918214,
    "doc_id": "74b89b5f69dcd56f6566d4b1a9392ffd",
    "text": "![House icon](a2bc7bb7c74e387ff445bcc6cf9b2a5a_1_img.webp)\n# Gruha Jyoti Scheme:\n1. 200 units of free electricity per family per month\n1.1. Your monthly household electricity consumption:\n0-100 Units\n100-200 Units\nAbove 200 Units\n1.2. Household consumption electricity meter connection number _____\n![Hand icon](a2bc7bb7c74e387ff445bcc6cf9b2a5a_7_img.webp)\n# Chayata Scheme:\nTo receive Rs.4000 per month under Chayata Scheme and Rs.6000 Disability Pension, provide the following details.\n( Those currently receiving pension do not need to apply )\n1. Disability Certificate Number: _____\n2. Others:\nOld Age\nWidow\nWeavers\nCotton Workers\nDiabetics\nAIDS Affected\nBeedi Workers' Livelihood Pension\nFilariasis Affected\nSingle Woman Livelihood Pension\nBeedi Contractor Livelihood Pension\nPath of Progress.. Welfare of All.. Our People's Government\n![Government of Telangana logo](a2bc7bb7c74e387ff445bcc6cf9b2a5a_16_img.webp)\nGovernment of Telangana\n![Circular graphic with Nirmala Sitharaman's portrait and icons for various schemes: Mahalaxmi, Rashtra Janjane, Grahajyoti, Chayata, Yuvavikasan, and Indiramandir](a2bc7bb7c74e387ff445bcc6cf9b2a5a_18_img.webp)![Portrait of Nirmala Sitharaman and N. Chandrababu Naidu](a2bc7bb7c74e387ff445bcc6cf9b2a5a_19_img.webp)\nPeople's Governance\nFrom 28.12.2023 to 06.01.2024",
@@ -102,6 +103,7 @@ const providerResponse = `{
   },
   {
    "_id": "0e753c2b-040a-4af9-3dc4-c9fca3b01e4d",
+   "filename": "doc-379e706ade8b-rerun-1788785422",
    "_score": 0.7783708,
    "doc_id": "74b89b5f69dcd56f6566d4b1a9392ffd",
    "text": "![House icon](71c6c13ee057c1204dd8980597d79d5b_1_img.webp)\n# Gruha Jyoti Scheme:\n1. 200 units of free electricity per family per month\n1.1. Your monthly household electricity consumption:\n0-100 Units\n100-200 Units\nAbove 200 Units\n1.2. Household consumption electricity meter connection number _____\n![Hand icon](71c6c13ee057c1204dd8980597d79d5b_7_img.webp)\n# Chayatha Scheme:\nTo receive Rs.4000 per month under Chayatha Scheme and Rs.6000 pension for disabled persons, provide the following details.\n(Those currently receiving pension do not need to apply)\n1. Disabled person certificate number: _____\n2. Others:\nOld Age\nWidow\nGita Workers\nAgricultural Laborers\nDiabetes Affected\nAIDS Affected\nBeedi Workers' Livelihood Pension\nFilaria Affected\nBantali Women Livelihood Pension\nBeedi Contractors' Livelihood Pension\nPath of Progress.. Welfare of All.. Our People's Government\n![Government of Telangana logo](71c6c13ee057c1204dd8980597d79d5b_16_img.webp)\nGovernment of Telangana\n![Circular graphic with Nirmala Sitharaman's portrait and icons for various schemes: Mahalaxmi, Rashtra Janjane, Grahajyoti, Chayath, Yuvavikasan, and Indiramandir](71c6c13ee057c1204dd8980597d79d5b_18_img.webp)![Portrait of Nirmala Sitharaman and N. Chandrababu Naidu](71c6c13ee057c1204dd8980597d79d5b_19_img.webp)\nPeople's Governance\nFrom 28.12.2023 to 06.01.2024",
@@ -115,6 +117,7 @@ const providerResponse = `{
   },
   {
    "_id": "b9ec5c75-7331-0424-f741-4b3294c6b75e",
+   "filename": "doc-d7124029cb60-rerun-1788841718",
    "_score": 0.77453613,
    "doc_id": "2cc58f8a1c39a64fc132338be3547f52",
    "text": "- (d) Under the Anna Bhagya Scheme, from which state is the rice being brought; what is the rate of this rice; what is the transportation and other cost? (Details to be provided)\n- (e) Following what standard has the rice brought from outside the state been entrusted for transportation; and which company/agency is currently transporting the rice?\n- (f) At what rate is the levy quantity of rice being collected in the state for the Anna Bhagya Scheme being purchased; for how many months is this collected rice sufficient? (Detailed information to be provided)\n**Smart City Scheme**\n**Shri Kavatagi Matha Mahantesh Mallikarjuna (Local Institutions Department):-**\n1053 (1274) Will the Hon'ble Minister of Urban Development kindly inform the following matters :-\n- (a) Has the fact that the ambitious Smart City Scheme of the Central Government is not being implemented properly in the state come to the government's notice;\n- (b) If it has come to notice, what steps has the government taken to implement the Smart City Scheme in the state and complete it at a rapid pace; for the delay",
@@ -126,6 +129,7 @@ const providerResponse = `{
   },
   {
    "_id": "4c6466a5-6975-a3be-4a62-637ae1a611d3",
+   "filename": "doc-d7124029cb60-rerun-1788841718",
    "_score": 0.7743588,
    "doc_id": "2cc58f8a1c39a64fc132338be3547f52",
    "text": "**Regarding the 'Jalashree' Scheme being implemented by KUIDFC in the State, Shri N. Appajigaoud (Local Institutions Department) :-**\n1031 (1244) Hon'ble Urban Development Minister, please inform on these matters :-\n- (a) What are the urban areas selected under the 24 x 7 drinking water supply scheme under the 'Jalashree' scheme being implemented by KUIDFC in the State, and what is the financial assistance allocated for their implementation; (Provide complete information)\n- (b) On what criteria were the urban areas included in this scheme selected; (Provide details)\n- (c) At what stage is the implementation of works in the urban areas selected under this scheme; (Provide complete information)\n- (d) Many urban areas selected under this scheme have been taken up under the drinking water development program under the Central Government's 'AMRUT' scheme, is it correct to include these urban areas again under the 'Jalashree' scheme; (Provide complete information)\n\n(d) Has the Government considered including the taluks in the districts where drought occurs frequently and the groundwater level is depleting in the state under the earlier 'Jalashree' scheme; if so, provide complete information?\n**Regarding Industrial Clusters in the state and industries established therein, Shri N. Appajigaoud (Local Bodies Department) :-**\n1032 (1248) Hon'ble Minister of Large and Medium Industries, please inform on these matters :-\n- (a) How many Industrial Clusters are there in the state; (Provide district-wise information including area)\n- (b) Out of these Industrial Clusters, in how many clusters has the Automobile industry been established; Provide complete information for each cluster including factories/enterprises;\n- (c) In several Small and Medium Industrial Estates located in the state for several decades such as Peethya Industrial Estate, Bidadi Industrial Estate, Mysore-Hebbal Industrial Estate, Belur-Hubballi Industrial Estate, etc., due to recent economic recession",
@@ -283,77 +287,73 @@ func TestShippedMappingAnswersWithADirectAdvisory(t *testing.T) {
 	}
 }
 
-// ONE recommendation per DOCUMENT, not per hit. Four hits arrive over two
-// documents, because the engine returns several chunks per document and this
-// corpus indexes one chunk twice. Per-hit would say the same thing twice.
-func TestShippedMappingCollapsesHitsToDocuments(t *testing.T) {
+// ONE RESOURCE PER HIT, keyed on hits[]._id. Four hits carry four distinct
+// passages in this corpus -- no two share a text checksum -- so each becomes
+// its own advisory. Two hits can share a doc_id and still be separate
+// passages from different ingestion runs, which is why _id and not doc_id
+// identifies a resource.
+func TestShippedMappingEmitsOneResourcePerHit(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 
 	res := resourcesOf(t, answer)
-	if len(res) != 2 {
-		t.Fatalf("resources = %d, want 2 -- one per document, from 4 hits", len(res))
+	if len(res) != 4 {
+		t.Fatalf("resources = %d, want 4 -- one per hit", len(res))
 	}
-	ids := map[string]bool{}
+
+	wantIDs := []string{
+		"26860172-2762-4b0b-cabf-3c947846c2e1",
+		"0e753c2b-040a-4af9-3dc4-c9fca3b01e4d",
+		"b9ec5c75-7331-0424-f741-4b3294c6b75e",
+		"4c6466a5-6975-a3be-4a62-637ae1a611d3",
+	}
+	got := map[string]bool{}
+	for i := range res {
+		got[fmt.Sprint(res[i].(map[string]any)["id"])] = true
+	}
+	for _, want := range wantIDs {
+		if !got[want] {
+			t.Errorf("no resource carries hit id %q", want)
+		}
+	}
+
+	// Every advisory holds exactly its own passage, and they are all different.
+	messages := map[string]bool{}
 	for i := range res {
 		attrs := attributesOf(t, answer, i)
 		recs, _ := attrs["recommendations"].([]any)
 		if len(recs) != 1 {
-			t.Errorf("advisory %d carries %d recommendations, want 1 -- its own document's", i, len(recs))
+			t.Fatalf("resource %d has %d recommendations, want exactly 1", i, len(recs))
 		}
-		// supportingResourceIds declares uniqueItems. One document per
-		// advisory means one id, and it must be that advisory's own.
-		sup, _ := attrs["supportingResourceIds"].([]any)
-		if len(sup) != 1 {
-			t.Errorf("advisory %d cites %d documents, want 1", i, len(sup))
+		msg, _ := recs[0].(map[string]any)["message"].(string)
+		if strings.TrimSpace(msg) == "" {
+			t.Errorf("resource %d carries no message", i)
 		}
-		id := fmt.Sprint(res[i].(map[string]any)["id"])
-		if ids[id] {
-			t.Errorf("two advisories share the id %q", id)
+		if messages[msg] {
+			t.Errorf("resource %d repeats another advisory's passage", i)
 		}
-		ids[id] = true
-		// The resource id and the document it cites name the same document.
-		if len(sup) == 1 && !strings.HasSuffix(id, strings.TrimPrefix(fmt.Sprint(sup[0]), "res:knowledge:")) {
-			t.Errorf("advisory %q cites %v, which is a different document", id, sup[0])
-		}
+		messages[msg] = true
 	}
 }
 
-// AN ADVISORY MUST NOT BORROW ANOTHER DOCUMENT'S NAME. The first shape here
-// was one resource holding every document's text, which took its descriptor
-// from whichever hit happened to carry a scheme_name -- so on this fixture it
-// came back named "Telangana Gruha Jyoti" while carrying a recommendation from
-// an unrelated Karnataka legislative document. Per document, a name can only
-// come from the document it names.
-func TestShippedMappingNeverBorrowsAnotherDocumentsName(t *testing.T) {
+// No advisory may take a label from a hit other than its own. Only the
+// scheme-typed hit carries a scheme_name, so exactly one advisory may show it;
+// anything else naming itself "Telangana Gruha Jyoti" is borrowing.
+func TestShippedMappingNeverBorrowsAnotherHitsName(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 	res := resourcesOf(t, answer)
 
-	named := 0
+	scheme := 0
 	for i := range res {
 		d, _ := res[i].(map[string]any)["descriptor"].(map[string]any)
 		name, _ := d["name"].(string)
-		if name == "" {
-			continue
-		}
-		named++
-		// Only the scheme-typed hit carries a scheme_name, and it belongs to
-		// the first document. Any other advisory claiming a name is borrowing.
-		id := fmt.Sprint(res[i].(map[string]any)["id"])
-		if !strings.Contains(id, "74b89b5f69dcd56f6566d4b1a9392ffd") {
-			t.Errorf("advisory %q is named %q, but only the other document has a scheme name", id, name)
+		if strings.Contains(name, "Telangana Gruha Jyoti") {
+			scheme++
 		}
 	}
-	if named != 1 {
-		t.Errorf("%d advisories carry a name, want 1 -- exactly one document has a scheme_name", named)
+	if scheme != 1 {
+		t.Errorf("%d advisories claim the scheme name, want 1 -- only one hit carries scheme_name", scheme)
 	}
 }
-
-// topics and language are DERIVED FROM THE RESPONSE, never echoed from the
-// request. This corpus returns category_tags and doc_language blank on every
-// hit, so topics falls back to effective_config.query -- the engine reporting
-// the query it actually ran -- and language to the implementation guide's "en".
-// A value copied from the request would read as provider data in the answer,
-// and a consumer could not tell the difference.
 func TestShippedMappingDerivesTopicsAndLanguageFromTheResponse(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 	attrs := attributesOf(t, answer, 0)
@@ -386,33 +386,60 @@ func TestShippedMappingDerivesTopicsAndLanguageFromTheResponse(t *testing.T) {
 func TestShippedMappingOmitsTopicsWhenNothingSuppliesThem(t *testing.T) {
 	_, answer := runShippedWith(t, selectRequest,
 		`{"candidate_count":1,"final_count":1,"hits":[
-		   {"doc_id":"d1","_score":0.5,"text":"some passage","instance_name":"Bharat Vistaar"}]}`)
+		   {"_id":"h1","doc_id":"d1","_score":0.5,"text":"some passage","filename":"doc-d1","instance_name":"Bharat Vistaar"}]}`)
 	attrs := attributesOf(t, answer, 0)
 	if v, present := attrs["topics"]; present {
 		t.Errorf("topics = %v, want the key absent when no source supplies it", v)
 	}
 }
-func TestShippedMappingNamesTheParticipantAsTheSource(t *testing.T) {
-	_, answer := runShipped(t, selectRequest)
-	attrs := attributesOf(t, answer, 0)
 
-	source, ok := attrs["source"].(map[string]any)
-	if !ok {
-		t.Fatal("the advisory carries no source")
+// The document behind a passage IS its source: doc_id identifies it, filename
+// labels it. Both come from the hit, so no participant id is hardcoded here.
+// The two upstream fields that look like better candidates are traps --
+// hits[].instance is a provider-internal code and hits[].source names the
+// ingestion pipeline.
+func TestShippedMappingNamesTheDocumentAsTheSource(t *testing.T) {
+	_, answer := runShipped(t, selectRequest)
+	res := resourcesOf(t, answer)
+
+	// doc_id per hit, in the fixture's order.
+	wantDocIDs := []string{
+		"74b89b5f69dcd56f6566d4b1a9392ffd",
+		"74b89b5f69dcd56f6566d4b1a9392ffd",
+		"2cc58f8a1c39a64fc132338be3547f52",
+		"2cc58f8a1c39a64fc132338be3547f52",
 	}
-	id, _ := source["sourceId"].(string)
-	if id == "" {
-		t.Error("source carries no sourceId")
+	seenIDs := map[string]bool{}
+	for i := range res {
+		attrs := attributesOf(t, answer, i)
+		source, ok := attrs["source"].(map[string]any)
+		if !ok {
+			t.Fatalf("resource %d carries no source", i)
+		}
+		id, _ := source["sourceId"].(string)
+		if id == "" {
+			t.Errorf("resource %d source carries no sourceId", i)
+		}
+		if strings.Contains(id, "docs-pipeline") || id == "bv" {
+			t.Errorf("sourceId = %q, which is the pipeline or the instance code, not the document", id)
+		}
+		seenIDs[id] = true
+
+		// sourceName is the document's filename, never the instance name.
+		name, _ := source["sourceName"].(string)
+		if name == "" {
+			t.Errorf("resource %d source carries no sourceName", i)
+		}
+		if name == "Bharat Vistaar" {
+			t.Errorf("sourceName = %q, which is the instance, not the document", name)
+		}
 	}
-	if strings.Contains(id, "docs-pipeline") {
-		t.Errorf("sourceId = %q, which is the ingestion pipeline, not the source", id)
+	for _, want := range wantDocIDs {
+		if !seenIDs[want] {
+			t.Errorf("no advisory names doc_id %q as its source", want)
+		}
 	}
 }
-
-// NO RESULTS IS AN ANSWER, not a failure. Commitment.resources is required but
-// carries no minItems, so an empty array says "nothing matched" without
-// inventing an advisory -- and without the dangling resource id that building
-// one anyway produced.
 func TestShippedMappingAnswersAnEmptyResultWithNoResources(t *testing.T) {
 	_, answer := runShippedWith(t, selectRequest,
 		`{"candidate_count":0,"final_count":0,"effective_config":{"query":"gruha jyoti scheme eligibility"},"hits":[]}`)
@@ -423,56 +450,41 @@ func TestShippedMappingAnswersAnEmptyResultWithNoResources(t *testing.T) {
 	commitments := answer["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)
 	offer := commitments[0].(map[string]any)["offer"].(map[string]any)
 	ids, _ := offer["resourceIds"].([]any)
-	if len(ids) != 1 || fmt.Sprint(ids[0]) != selectedResourceID {
-		t.Fatalf("offer.resourceIds = %v, want just the selected id %q", ids, selectedResourceID)
+	if len(ids) != 0 {
+		t.Fatalf("offer.resourceIds = %v, want none: the offer covers no resource", ids)
 	}
 }
 
-// The offer is echoed and its references are rebuilt, per the implementation
-// guide: the OnDemand id the caller selected is RETAINED so it can correlate
-// the callback, alongside the Direct id minted for each document. The selected
-// id deliberately does not resolve inside resources[] -- OnDemand and Direct
-// require different fields, so the answer cannot restate it, and the caller
-// matches it against its own request. $distinct guards a re-selected advisory
-// appearing twice.
-func TestShippedMappingRetainsTheSelectedIdAlongsideTheMintedOnes(t *testing.T) {
+// The offer is echoed and its references rebuilt to name exactly the resources
+// this answer carries -- one per hit. The OnDemand id the caller selected is
+// NOT retained: it resolves to nothing in resources[], and correlation is
+// context.transactionId's job.
+func TestShippedMappingReferencesEveryHitAndNothingElse(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 
 	commitments := answer["message"].(map[string]any)["contract"].(map[string]any)["commitments"].([]any)
 	offer := commitments[0].(map[string]any)["offer"].(map[string]any)
 
-	// The request's own offer id, carried through rather than minted.
 	if got := fmt.Sprint(offer["id"]); got != requestOfferID {
 		t.Errorf("offer.id = %q, want the request's %q echoed", got, requestOfferID)
 	}
 
 	ids, _ := offer["resourceIds"].([]any)
 	res := resourcesOf(t, answer)
-	if len(ids) != len(res)+1 {
-		t.Fatalf("offer.resourceIds = %v, want the selected id plus one per advisory (%d)", ids, len(res))
+	if len(ids) != len(res) {
+		t.Fatalf("offer.resourceIds = %v, want exactly one per resource (%d)", ids, len(res))
 	}
-	if fmt.Sprint(ids[0]) != selectedResourceID {
-		t.Errorf("offer.resourceIds[0] = %v, want the selected id %q", ids[0], selectedResourceID)
-	}
-	// Every minted advisory must appear, or a caller cannot resolve it.
+
+	returned := map[string]bool{}
 	for i := range res {
-		want := fmt.Sprint(res[i].(map[string]any)["id"])
-		found := false
-		for _, got := range ids[1:] {
-			if fmt.Sprint(got) == want {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("resource %q is missing from offer.resourceIds %v", want, ids)
-		}
+		returned[fmt.Sprint(res[i].(map[string]any)["id"])] = true
 	}
-	// No duplicates: $distinct has to be doing its job.
-	seen := map[string]bool{}
 	for _, id := range ids {
-		if seen[fmt.Sprint(id)] {
-			t.Errorf("offer.resourceIds repeats %v", id)
+		if fmt.Sprint(id) == selectedResourceID {
+			t.Errorf("offer retains the selected id %q, which resolves to nothing here", id)
 		}
-		seen[fmt.Sprint(id)] = true
+		if !returned[fmt.Sprint(id)] {
+			t.Errorf("offer references %q, which is not in resources[]", id)
+		}
 	}
 }
