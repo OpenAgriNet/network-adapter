@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -2207,5 +2208,51 @@ func TestOAuth2ReportsAMissingCredential(t *testing.T) {
 	}
 	if ts.calls.Load() != 0 {
 		t.Error("the token endpoint was called with no credentials")
+	}
+}
+
+// Every setting in authFields must actually reach a field on the profile.
+//
+// This is the check the old shape could not make. The name and the assignment
+// lived apart -- a set of valid names, and a switch that filled the fields --
+// so a setting present in the set but missing from the switch parsed, validated
+// and was then discarded, leaving a provider on a credential the operator
+// thought they had configured. One map of setters makes that impossible by
+// construction; this test pins it anyway, since the map is what a new scheme
+// gets added to.
+func TestEveryAuthFieldReachesTheProfile(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "SENTINEL_VALUE"
+	for name, set := range authFields {
+		var profile AuthProfile
+		set(&profile, sentinel)
+
+		// Reflect over the profile rather than naming the fields, so a field
+		// added to AuthProfile cannot be missed here either.
+		found := false
+		value := reflect.ValueOf(profile)
+		for i := 0; i < value.NumField(); i++ {
+			if value.Field(i).Kind() == reflect.String &&
+				value.Field(i).String() == sentinel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("authFields[%q] set nothing on the profile", name)
+		}
+	}
+}
+
+// The vocabulary is what makes the dash split decidable, so no setting name may
+// contain a dash -- it would flatten to <setting>-<id> ambiguously.
+func TestNoAuthFieldNameCarriesADash(t *testing.T) {
+	t.Parallel()
+
+	for name := range authFields {
+		if strings.Contains(name, "-") {
+			t.Errorf("setting %q carries a dash, which makes the split ambiguous", name)
+		}
 	}
 }
