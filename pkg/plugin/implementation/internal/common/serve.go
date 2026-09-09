@@ -34,7 +34,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 		return model.NewBadReqErr("", err)
 	}
 	if !s.serves(binding.Key()) {
-		log.Debugf(ctx, "upstream: %s is not one of this step's capabilities, passing through", binding.Key())
+		log.Debugf(ctx, "%s is not one of this step's capabilities, passing through", binding.Key())
 		return nil
 	}
 
@@ -49,9 +49,9 @@ func (s *Step) Run(ctx *model.StepContext) error {
 			// %w, not %v: the sentinel has to stay unwrappable, or anything
 			// upstream testing errors.Is against it silently stops matching.
 			return model.NewNotFoundErr("", fmt.Errorf(
-				"upstream: the registry publishes no active binding for %s: %w", binding.Key(), err))
+				"the registry publishes no active binding for %s: %w", binding.Key(), err))
 		}
-		return fmt.Errorf("upstream: no call plan for %s: %w", binding.Key(), err)
+		return fmt.Errorf("no call plan for %s: %w", binding.Key(), err)
 	}
 
 	return s.serve(ctx, plan)
@@ -69,7 +69,7 @@ func (s *Step) resolve(ctx context.Context, bindingKey string, beckn any) (map[s
 	}
 	local, err := prerequisite(ctx, beckn)
 	if err != nil {
-		return nil, fmt.Errorf("upstream: %s could not resolve what it needs before the call: %w", bindingKey, err)
+		return nil, fmt.Errorf("%s could not resolve what it needs before the call: %w", bindingKey, err)
 	}
 	if local == nil {
 		return map[string]any{}, nil
@@ -96,7 +96,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		// happened to be on the record -- naming what it does serve turns a
 		// registry mistake into a one-line fix.
 		return model.NewBadReqErr("", fmt.Errorf(
-			"upstream: %s does not serve action %q; it serves %s",
+			"%s does not serve action %q; it serves %s",
 			plan.BindingKey, action, strings.Join(plan.ServedActions(), ", ")))
 	}
 
@@ -131,7 +131,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// where a record arrives for a key the config never declared.
 	auth, configured := s.auth[providerIDFrom(plan.BindingKey)]
 	if !configured {
-		return fmt.Errorf("upstream: no credential is configured for %s", plan.BindingKey)
+		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
 	}
 
 	upstreamResponse, err := s.call(ctx, auth, plan.BaseURL, call, upstreamRequest)
@@ -141,7 +141,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	answer, err := decodeBody(upstreamResponse)
 	if err != nil {
-		return fmt.Errorf("upstream: provider answered with something that is not JSON: %w", err)
+		return fmt.Errorf("provider answered with something that is not JSON: %w", err)
 	}
 
 	// The same mapping reference as the request, other half: one file carries
@@ -162,12 +162,12 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		// in this answer. Both leave no Beckn response to return, and returning
 		// the provider's own shape instead would be worse than failing. The
 		// message says what was observed rather than guessing which it was.
-		return fmt.Errorf("upstream: the response half of %s produced nothing, so %s cannot be answered",
+		return fmt.Errorf("the response half of %s produced nothing, so %s cannot be answered",
 			call.Mappings, plan.BindingKey)
 	}
 
 	ctx.ResponseBody = becknResponse
-	log.Infof(ctx, "upstream: served %s in %d bytes", plan.BindingKey, len(becknResponse))
+	log.Infof(ctx, "served %s in %d bytes", plan.BindingKey, len(becknResponse))
 	return nil
 }
 
@@ -190,7 +190,7 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 		return nil, err
 	}
 	if len(mapped) == 0 {
-		log.Debugf(ctx, "upstream: the request half of %s produced nothing; sending an empty request", call.Mappings)
+		log.Debugf(ctx, "the request half of %s produced nothing; sending an empty request", call.Mappings)
 	}
 	return mapped, nil
 }
@@ -212,7 +212,7 @@ func extractAction(body []byte) string {
 func decodeBody(body []byte) (any, error) {
 	var decoded any
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, fmt.Errorf("upstream: could not read JSON: %w", err)
+		return nil, fmt.Errorf("could not read JSON: %w", err)
 	}
 	return decoded, nil
 }
