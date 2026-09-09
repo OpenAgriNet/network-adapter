@@ -81,7 +81,7 @@ func (s *Step) resolve(ctx context.Context, bindingKey string, beckn any) (map[s
 //
 // A slice rather than a set: a step serves a handful of capabilities at most, so
 // the scan costs less than the map would, and the config order is preserved in
-// the log line above.
+// the line New logs on startup.
 func (s *Step) serves(key string) bool {
 	return slices.Contains(s.config.BindingKeys, key)
 }
