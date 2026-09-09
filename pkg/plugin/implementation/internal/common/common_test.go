@@ -1820,7 +1820,7 @@ func TestRedactKeepsTheErrorChainMatchable(t *testing.T) {
 	}
 	// And wrapping it again, which is what the 502 does, must not undo either
 	// property.
-	wrapped := fmt.Errorf("upstream: provider did not answer: %w", got)
+	wrapped := fmt.Errorf("provider did not answer: %w", got)
 	if strings.Contains(wrapped.Error(), "s3cr3t") {
 		t.Errorf("the credential reappeared once wrapped: %v", wrapped)
 	}

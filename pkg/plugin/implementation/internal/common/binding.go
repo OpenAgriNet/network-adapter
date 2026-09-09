@@ -19,7 +19,7 @@ const separator = "|"
 // errNoBinding reports a payload that names no capability binding. It is not a
 // fault: a request for something else entirely reaches a provider step too, and
 // the step's answer is to do nothing.
-var errNoBinding = errors.New("upstream: payload names no capability binding")
+var errNoBinding = errors.New("payload names no capability binding")
 
 // Binding identifies one provider capability.
 type Binding struct {
@@ -47,7 +47,7 @@ func (b Binding) Key() string {
 func bindingFrom(paths Paths, body []byte) (Binding, error) {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Binding{}, fmt.Errorf("upstream: payload could not be read: %w", err)
+		return Binding{}, fmt.Errorf("payload could not be read: %w", err)
 	}
 
 	// Before distinctness: N commitments naming the SAME provider and type
@@ -64,7 +64,7 @@ func bindingFrom(paths Paths, body []byte) (Binding, error) {
 	// the paragraph above says is refused.
 	if commitments := countAt(payload, paths.ProviderID); commitments > 1 {
 		return Binding{}, fmt.Errorf(
-			"upstream: payload carries %d commitments; one request maps to one call, "+
+			"payload carries %d commitments; one request maps to one call, "+
 				"so send them separately rather than have all but the first dropped",
 			commitments)
 	}
@@ -76,11 +76,11 @@ func bindingFrom(paths Paths, body []byte) (Binding, error) {
 		return Binding{}, errNoBinding
 	}
 	if len(providers) > 1 {
-		return Binding{}, fmt.Errorf("upstream: payload names %d providers (%s); one request maps to one call",
+		return Binding{}, fmt.Errorf("payload names %d providers (%s); one request maps to one call",
 			len(providers), strings.Join(providers, ", "))
 	}
 	if len(types) > 1 {
-		return Binding{}, fmt.Errorf("upstream: payload names %d resource types (%s); one request maps to one call",
+		return Binding{}, fmt.Errorf("payload names %d resource types (%s); one request maps to one call",
 			len(types), strings.Join(types, ", "))
 	}
 

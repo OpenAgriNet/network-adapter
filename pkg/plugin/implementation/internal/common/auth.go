@@ -86,30 +86,30 @@ func (a *AuthProfile) validate() error {
 	case AuthSchemeBasic:
 		if a.UsernameEnv == "" || a.PasswordEnv == "" {
 			return fmt.Errorf(
-				"upstream: %s: authScheme basic requires usernameEnv and passwordEnv", a.Provider)
+				"%s: authScheme basic requires usernameEnv and passwordEnv", a.Provider)
 		}
 	case AuthSchemeHeader:
 		if a.HeaderName == "" || a.HeaderValueEnv == "" {
 			return fmt.Errorf(
-				"upstream: %s: authScheme header requires headerName and headerValueEnv", a.Provider)
+				"%s: authScheme header requires headerName and headerValueEnv", a.Provider)
 		}
 	case AuthSchemeQuery:
 		if a.QueryName == "" || a.QueryValueEnv == "" {
 			return fmt.Errorf(
-				"upstream: %s: authScheme query requires queryName and queryValueEnv", a.Provider)
+				"%s: authScheme query requires queryName and queryValueEnv", a.Provider)
 		}
 	case AuthSchemeOAuth2:
 		if a.TokenURL == "" || a.ClientIDEnv == "" || a.ClientSecretEnv == "" {
 			return fmt.Errorf(
-				"upstream: %s: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv",
+				"%s: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv",
 				a.Provider)
 		}
 	case "":
-		return fmt.Errorf("upstream: %s: authScheme is required, "+
+		return fmt.Errorf("%s: authScheme is required, "+
 			"and is none where the upstream needs no credential", a.Provider)
 	default:
 		return fmt.Errorf(
-			"upstream: %s: unknown authScheme %q: must be none, basic, header, query or oauth2",
+			"%s: unknown authScheme %q: must be none, basic, header, query or oauth2",
 			a.Provider, a.Scheme)
 	}
 	return nil
@@ -153,7 +153,7 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 			// credential at all, which reads as the provider rejecting us.
 			if authFields[key] {
 				return nil, fmt.Errorf(
-					"upstream: %q is set for the whole step; auth is per provider now, "+
+					"%q is set for the whole step; auth is per provider now, "+
 						"so it belongs in a block named for the participant id", key)
 			}
 			continue
@@ -162,10 +162,10 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 			// Not an auth setting, and nothing else on a provider step carries
 			// a dash -- so this is a misspelled field rather than something to
 			// pass through.
-			return nil, fmt.Errorf("upstream: %q is not a credential setting", key)
+			return nil, fmt.Errorf("%q is not a credential setting", key)
 		}
 		if strings.TrimSpace(provider) == "" {
-			return nil, fmt.Errorf("upstream: %q names no provider after the dash", key)
+			return nil, fmt.Errorf("%q names no provider after the dash", key)
 		}
 
 		profile, seen := profiles[provider]
@@ -237,8 +237,8 @@ func providerIDFrom(bindingKey string) string {
 // the fix is entirely the operator's. So the name goes to the log, where the
 // operator is, and the wire gets the scheme that failed.
 func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames string) error {
-	err := fmt.Errorf("upstream: the %s credential for %s is not configured", scheme, provider)
-	log.Errorf(ctx, err, "upstream: %s auth is configured for %s but %s is not set",
+	err := fmt.Errorf("the %s credential for %s is not configured", scheme, provider)
+	log.Errorf(ctx, err, "%s auth is configured for %s but %s is not set",
 		scheme, provider, envNames)
 	return err
 }

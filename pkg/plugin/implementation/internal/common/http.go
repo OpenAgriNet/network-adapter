@@ -56,10 +56,10 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 
 	timeout, retries := budget(call)
 	if d := time.Duration(call.TimeoutMs) * time.Millisecond; d > timeout {
-		log.Warnf(ctx, "upstream: registry asks for a %v timeout; using the %v ceiling", d, timeout)
+		log.Warnf(ctx, "registry asks for a %v timeout; using the %v ceiling", d, timeout)
 	}
 	if call.RetryMax > retries {
-		log.Warnf(ctx, "upstream: registry asks for %d retries; using the %d ceiling",
+		log.Warnf(ctx, "registry asks for %d retries; using the %d ceiling",
 			call.RetryMax, retries)
 	}
 	attempts := retries + 1
@@ -81,7 +81,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 			return body, nil
 		}
 		lastErr = s.redact(err)
-		log.Warnf(ctx, "upstream: attempt %d/%d failed: %v", attempt, attempts, lastErr)
+		log.Warnf(ctx, "attempt %d/%d failed: %v", attempt, attempts, lastErr)
 
 		// Only some failures are worth repeating. A 4xx, a request this step
 		// could not build and a credential it could not read will fail
@@ -98,7 +98,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 		}
 	}
 	return nil, model.NewCodedErr(http.StatusBadGateway, codeUpstreamUnavailable,
-		fmt.Errorf("upstream: provider did not answer after %d attempts: %w", attempts, lastErr))
+		fmt.Errorf("provider did not answer after %d attempts: %w", attempts, lastErr))
 }
 
 // permanentErr marks a failure no retry can fix. Kept unexported and detected
@@ -188,7 +188,7 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	if err != nil {
 		return nil, fmt.Errorf("could not read the response: %w", err)
 	}
-	log.Infof(ctx, "upstream: %s %s -> %s, %d bytes", method, requested, resp.Status, len(body))
+	log.Infof(ctx, "%s %s -> %s, %d bytes", method, requested, resp.Status, len(body))
 	if int64(len(body)) > s.config.MaxResponseBytes {
 		// Asking again will not make the answer smaller.
 		return nil, doNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
@@ -207,7 +207,7 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		// request often quotes it back, credential and all -- so the body is
 		// exactly where a query-string token turns up, and moving it from the
 		// error to the log would only move the leak.
-		log.Warnf(ctx, "upstream: provider returned %s for %s %s: %s",
+		log.Warnf(ctx, "provider returned %s for %s %s: %s",
 			resp.Status, method, requested, s.redactString(explain(body)))
 		err := fmt.Errorf("provider returned %s", resp.Status)
 		// 5xx and 429 are the provider asking to be tried again. Every other
@@ -286,15 +286,15 @@ func buildEndpoint(baseURL string, call model.ActionPlan, mapped []byte) (string
 // the URL the operator published.
 func verifyPath(path string) error {
 	if path == "" {
-		return model.NewBadReqErr("", errors.New("upstream: the registry publishes no path for this action"))
+		return model.NewBadReqErr("", errors.New("the registry publishes no path for this action"))
 	}
 	if !strings.HasPrefix(path, "/") {
 		return model.NewBadReqErr("", fmt.Errorf(
-			"upstream: path %q does not begin with a slash, so it cannot be joined to a base url", path))
+			"path %q does not begin with a slash, so it cannot be joined to a base url", path))
 	}
 	if strings.Contains(path, "//") {
 		return model.NewBadReqErr("", fmt.Errorf(
-			"upstream: path %q has an empty segment; write it with single slashes", path))
+			"path %q has an empty segment; write it with single slashes", path))
 	}
 	// A dot segment is refused rather than resolved. The registry says which
 	// path answers an action, and a row that climbs out of it is either a
@@ -304,7 +304,7 @@ func verifyPath(path string) error {
 	for _, segment := range strings.Split(path, "/") {
 		if segment == ".." || segment == "." {
 			return model.NewBadReqErr("", fmt.Errorf(
-				"upstream: path %q contains the %q segment; publish the path it resolves to instead",
+				"path %q contains the %q segment; publish the path it resolves to instead",
 				path, segment))
 		}
 	}
@@ -313,7 +313,7 @@ func verifyPath(path string) error {
 	// transport, which would make the row look honoured.
 	if strings.Contains(path, "#") {
 		return model.NewBadReqErr("", fmt.Errorf(
-			"upstream: path %q contains a fragment, which is never sent to a server", path))
+			"path %q contains a fragment, which is never sent to a server", path))
 	}
 	return nil
 }
@@ -330,18 +330,18 @@ func verifyPath(path string) error {
 // same check on the other url the registry publishes.
 func verifyBaseURL(baseURL string) error {
 	if baseURL == "" {
-		return model.NewBadReqErr("", errors.New("upstream: the registry publishes no base url for this provider"))
+		return model.NewBadReqErr("", errors.New("the registry publishes no base url for this provider"))
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
-		return model.NewBadReqErr("", fmt.Errorf("upstream: invalid base url %q: %w", baseURL, err))
+		return model.NewBadReqErr("", fmt.Errorf("invalid base url %q: %w", baseURL, err))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return model.NewBadReqErr("", fmt.Errorf(
-			"upstream: base url %q must be http or https", baseURL))
+			"base url %q must be http or https", baseURL))
 	}
 	if parsed.Host == "" {
-		return model.NewBadReqErr("", fmt.Errorf("upstream: base url %q names no host", baseURL))
+		return model.NewBadReqErr("", fmt.Errorf("base url %q names no host", baseURL))
 	}
 	return nil
 }
@@ -358,14 +358,14 @@ func asQuery(mapped []byte) (string, error) {
 	}
 	var fields map[string]any
 	if err := json.Unmarshal(mapped, &fields); err != nil {
-		return "", fmt.Errorf("upstream: mapped request is not an object, so it cannot become a query: %w", err)
+		return "", fmt.Errorf("mapped request is not an object, so it cannot become a query: %w", err)
 	}
 
 	values := url.Values{}
 	for name, value := range fields {
 		rendered, ok := asQueryValue(value)
 		if !ok {
-			return "", fmt.Errorf("upstream: mapped field %q is not a scalar and cannot become a query parameter", name)
+			return "", fmt.Errorf("mapped field %q is not a scalar and cannot become a query parameter", name)
 		}
 		values.Set(name, rendered)
 	}

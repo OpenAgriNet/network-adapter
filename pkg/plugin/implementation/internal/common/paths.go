@@ -38,11 +38,11 @@ func (p Paths) Validate() error {
 		"capabilityCodeAt": p.CapabilityCode,
 	} {
 		if strings.TrimSpace(path) == "" {
-			return fmt.Errorf("upstream: binding path %s is empty", name)
+			return fmt.Errorf("binding path %s is empty", name)
 		}
 		for _, segment := range strings.Split(path, ".") {
 			if strings.TrimSpace(strings.TrimSuffix(segment, arrayMarker)) == "" {
-				return fmt.Errorf("upstream: binding path %s (%q) has a blank segment", name, path)
+				return fmt.Errorf("binding path %s (%q) has a blank segment", name, path)
 			}
 		}
 	}

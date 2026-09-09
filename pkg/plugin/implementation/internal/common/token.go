@@ -103,7 +103,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// The status, not the body: what an issuer puts in a failure body is its
 		// own business, and it routinely quotes the request back.
-		log.Warnf(ctx, "upstream: token endpoint %s returned %s: %s",
+		log.Warnf(ctx, "token endpoint %s returned %s: %s",
 			cfg.TokenURL, resp.Status, s.redactString(explain(body)))
 		return "", 0, s.tokenErr(fmt.Errorf("token endpoint returned %s", resp.Status))
 	}
@@ -130,7 +130,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 // provider's issuer, so its failure is upstream's, never the caller's.
 func (s *Step) tokenErr(err error) error {
 	return model.NewCodedErr(http.StatusBadGateway, codeUpstreamUnavailable,
-		fmt.Errorf("upstream: oauth2 token exchange failed: %w", err))
+		fmt.Errorf("oauth2 token exchange failed: %w", err))
 }
 
 // tokenLifetime turns a token response's expires_in into how long we may hold

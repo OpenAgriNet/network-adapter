@@ -1,28 +1,17 @@
 // Package common serves a Beckn capability by calling an ordinary API that has
-// never heard of Beckn.
+// never heard of Beckn: recognise the capability, resolve the call plan,
+// translate out, call, translate back.
 //
-// Common to every capability plugin, and to nothing else: WeatherObservation,
-// MandiPrice and KnowledgeAdvisory are each a name, a set of binding keys and a
-// credential profile over this machinery. Recognise the capability, resolve the
-// call plan, translate out, call, translate back.
+// Common to the three capability plugins and to nothing else. Each of them --
+// WeatherObservation, MandiPrice, KnowledgeAdvisory -- is a name, a set of
+// binding keys and a credential profile over this machinery. Something shared
+// by fewer than all three belongs in its own package, not here on the strength
+// of the name.
 //
-// "UPSTREAM" IS STILL THE WORD FOR THE API BEING CALLED. It is the registry's
-// own -- a Participant of type upstream, as against a node that speaks Beckn --
-// so it stays in the errors, the logs and the comments here even though the
-// package no longer carries it. An operator reading "upstream: provider did not
-// answer" is being told which leg of the call failed, and "common:" would tell
-// them nothing.
-//
-// It holds nothing about any provider or any domain. What varies per capability
-// comes from the registry (endpoint, method, budget, which mapping) and from the
-// mapping itself (what the payload must satisfy, what to send, what to return).
-// A domain package wraps this, supplying only its name and whatever prerequisite
-// work a mapping cannot express.
-//
-// NOT A DUMPING GROUND. Everything here is one subject -- calling an upstream on
-// a capability's behalf. Something shared by fewer than all three plugins, or
-// unrelated to that call, belongs in its own package rather than here on the
-// strength of the name.
+// Nothing about any provider or domain is held here. What varies per capability
+// comes from the registry (endpoint, method, budget, which mapping) and from
+// the mapping itself. "Upstream" is the registry's word for the API being
+// called, and stays the word for it throughout.
 package common
 
 import (
@@ -120,10 +109,10 @@ type Step struct {
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	prerequisites Prerequisites, cfg *Config) (*Step, func() error, error) {
 	if registry == nil {
-		return nil, nil, errors.New("upstream: a provider record lookup is required")
+		return nil, nil, errors.New("a provider record lookup is required")
 	}
 	if mapper == nil {
-		return nil, nil, errors.New("upstream: a mapper is required")
+		return nil, nil, errors.New("a mapper is required")
 	}
 	if cfg == nil {
 		cfg = &Config{}
@@ -172,10 +161,10 @@ func bindingPaths(cfg *Config) (Paths, error) {
 		return BecknV2, nil
 	}
 	if cfg.ProviderIDAt == "" {
-		return Paths{}, errors.New("upstream: capabilityCodeAt is set without providerIdAt")
+		return Paths{}, errors.New("capabilityCodeAt is set without providerIdAt")
 	}
 	if cfg.CapabilityCodeAt == "" {
-		return Paths{}, errors.New("upstream: providerIdAt is set without capabilityCodeAt")
+		return Paths{}, errors.New("providerIdAt is set without capabilityCodeAt")
 	}
 	paths := Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
 	if err := paths.Validate(); err != nil {
@@ -190,11 +179,11 @@ func applyDefaults(cfg *Config) error {
 	// for, so a default would have to name one provider's capability -- wrong
 	// for every other domain built on it, and silently wrong rather than loudly.
 	if len(cfg.BindingKeys) == 0 {
-		return errors.New("upstream: bindingKeys is required: it is what this step answers to")
+		return errors.New("bindingKeys is required: it is what this step answers to")
 	}
 	for _, key := range cfg.BindingKeys {
 		if strings.TrimSpace(key) == "" {
-			return errors.New("upstream: bindingKeys carries an empty entry")
+			return errors.New("bindingKeys carries an empty entry")
 		}
 	}
 	if cfg.MaxResponseBytes <= 0 {
@@ -216,7 +205,7 @@ func applyDefaults(cfg *Config) error {
 	for provider := range cfg.AuthByProvider {
 		if !served[provider] {
 			return fmt.Errorf(
-				"upstream: auth is configured for %q, which is not a provider in bindingKeys (%s)",
+				"auth is configured for %q, which is not a provider in bindingKeys (%s)",
 				provider, strings.Join(cfg.BindingKeys, ", "))
 		}
 	}
@@ -224,7 +213,7 @@ func applyDefaults(cfg *Config) error {
 		profile, ok := cfg.AuthByProvider[provider]
 		if !ok {
 			return fmt.Errorf(
-				"upstream: %q is served but has no auth block; every provider declares its own, "+
+				"%q is served but has no auth block; every provider declares its own, "+
 					"using authScheme none where the upstream needs no credential", provider)
 		}
 		profile.Provider = provider
