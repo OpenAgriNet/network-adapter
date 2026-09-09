@@ -54,9 +54,16 @@ request: |
 #   in the live corpus the four hits carry four DISTINCT passages (no two share
 #   a text checksum), so collapsing them loses content.
 #
-#   hits[]._id and hits[].filename ARE mapped, though the guide lists both as
-#   never-mapped. _id is the only per-hit identifier, and filename is the only
-#   per-hit human label for the document a passage came from.
+#   hits[]._id, hits[].filename and hits[].section ARE mapped, though the guide
+#   lists all three as never-mapped. _id is the only per-hit identifier,
+#   filename the only per-hit label for the document a passage came from, and
+#   section the only per-hit short label -- doc_short_description, the field
+#   that looks right for it, is "" on every hit.
+#
+#   supportingResourceIds is NOT emitted. It named the document a passage came
+#   from, which source.sourceId now does directly, and the ids it minted
+#   resolved to nothing: those documents are not published as KnowledgeResource
+#   resources.
 #
 # Also divergent, each marked at its site: hits[].text IS the recommendation
 # message, since nothing in this path synthesizes; no $assert, because an empty
@@ -173,9 +180,14 @@ response: |
                             : "KNOWLEDGE_ADVISORY"
                   },
                   $exists($label) ? { "name": $label & " advisory" } : {},
-                  /* Blank on every hit here, so both drop out today. */
-                  $exists($text($h.doc_short_description))
-                    ? { "shortDesc": $text($h.doc_short_description) } : {},
+                  /* The heading the passage sits under. doc_short_description
+                     is the field this looks like it should read, but that is ""
+                     on every hit in the corpus while section is always
+                     populated -- so section is the only per-hit short label
+                     there is. Note it carries the passage's raw ingested
+                     markdown, images included. */
+                  $exists($text($h.section))
+                    ? { "shortDesc": $text($h.section) } : {},
                   $exists($text($h.doc_llm_description))
                     ? { "longDesc": $text($h.doc_llm_description) }
                     : ($exists($text($h.description))
@@ -201,12 +213,6 @@ response: |
                       "message": $h.text,
                       "language": $lang
                     }],
-                    /* The document this passage was drawn from, as a resource
-                       IDENTIFIER rather than the raw hash. doc_id never
-                       chunk_id. It resolves only once those documents are
-                       themselves published as KnowledgeResource resources,
-                       which today they are not. */
-                    "supportingResourceIds": ["res:knowledge:" & $h.doc_id],
                     "rationale": $exists($text($h.instance_name))
                       ? $counts & " from the " & $text($h.instance_name) & " corpus."
                       : $counts & ".",
