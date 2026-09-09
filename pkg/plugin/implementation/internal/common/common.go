@@ -29,60 +29,45 @@ import (
 // carry, keyed by binding key.
 //
 // A mapping cannot produce them: a station id comes from a spatial lookup, a
-// session token from an exchange, a market code from a table. That is real I/O,
-// and no expression language should be able to do it.
-//
-// Whatever a function returns is handed to the mapping as _local, so the mapping
-// still decides what the provider is finally asked for. A capability with no
-// entry needs nothing, which is the common case.
+// market code from a table. That is real I/O, and no expression language should
+// do it. What a function returns reaches the mapping as _local, so the mapping
+// still decides what the provider is asked for. Most capabilities need none.
 type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
 
 // Config holds configuration parameters for the step.
 type Config struct {
-	// BindingKeys are the capabilities this step answers to. A request for
-	// anything else passes through untouched.
+	// The capabilities this step answers to. A request for anything else
+	// passes through untouched.
 	//
-	// A list because a provider can serve more than one: the registry contract
-	// says a provider serving two capabilities is one Participant and two
-	// ProviderSchema rows. Configuring a second entry with the same plugin id
-	// instead would collide in the handler's id-keyed step map, and one
-	// capability would be lost with no error anywhere.
-	//
-	// What differs per capability -- the endpoint, the mapping, the budget --
-	// comes from the registry, so one step serving several needs nothing else.
+	// A list because a provider can serve several, and a second config entry
+	// with the same plugin id would collide in the handler's step map -- losing
+	// a capability with no error anywhere. What differs per capability comes
+	// from the registry, so one step serving several needs nothing more.
 	BindingKeys []string `yaml:"bindingKeys" json:"bindingKeys"`
 
-	// ProviderIDAt and CapabilityCodeAt override where the two halves of a
-	// binding key sit in a payload. Absent means the Beckn v2 convention, which
-	// is what every deployment should be using.
+	// Override where the two halves of a binding key sit in a payload. Absent
+	// means the Beckn v2 convention, which every deployment should use.
 	//
-	// This is a network convention rather than a deployment's preference --
-	// every participant must agree, or two adapters disagree about what a
-	// binding key is and requests silently fail to match. It is configurable
-	// only so that a spec change can be tracked without waiting for a release,
-	// and both must be given together.
+	// A network convention, not a preference: every participant must agree or
+	// requests silently fail to match. Configurable only so a spec change can
+	// be tracked without waiting for a release. Both or neither.
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
-	// AuthByProvider carries one credential profile PER PROVIDER, keyed by participant
-	// id -- the left half of a binding key.
+	// One credential profile per provider, keyed by participant id -- the left
+	// half of a binding key.
 	//
-	// Per provider rather than per step because a step serves several binding
-	// keys and the providers behind them need not authenticate alike: one may
-	// take an oauth2 client id and secret, the next a token in a query
-	// parameter. Everything else that differs per provider already comes from
-	// the registry -- the endpoint, the path, the mapping -- so auth was the
-	// only thing pinned to the step, and the only thing that made a second
-	// provider of the same capability impossible to configure.
+	// Per provider because a step serves several binding keys and the providers
+	// behind them need not authenticate alike: one may take oauth2 client
+	// credentials, the next a token in a query parameter. Everything else that
+	// differs per provider already comes from the registry, so auth was the one
+	// thing pinned to the step.
 	//
-	// There is deliberately NO step-wide default. A profile per provider means
-	// there is never a question of which setting applies, and a provider whose
-	// profile is missing is refused at startup rather than quietly falling
-	// through to sending nothing.
+	// NO step-wide default: a missing profile is refused at startup rather than
+	// quietly falling through to sending nothing.
 	//
-	// Built by ParseProviderAuth from the flattened config, not decoded from YAML
-	// directly: what an operator writes is a nested block per provider, which
-	// pkg/plugin flattens on the way in.
+	// Built by ParseProviderAuth, not decoded from YAML -- an operator writes a
+	// nested block per provider, which pkg/plugin flattens on the way in.
 	AuthByProvider map[string]*AuthProfile `yaml:"-" json:"-"`
 
 	// MaxResponseBytes caps what is read from the provider.
@@ -99,9 +84,8 @@ type Step struct {
 	mapper        definition.Mapper
 	httpClient    *http.Client
 
-	// One authenticator per provider, keyed by participant id. Built once at
-	// startup, so a request only looks one up -- and each holds its own token,
-	// so two oauth2 providers cannot share one.
+	// One per provider, built at startup so a request only looks one up. Each
+	// holds its own token, so two oauth2 providers cannot share one.
 	auth map[string]*authenticator
 }
 
@@ -132,8 +116,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		prerequisites: prerequisites,
 		registry:      registry,
 		mapper:        mapper,
-		// Timeout is set per request from the registry's own budget, so the
-		// client carries none of its own.
+		// The timeout is per request, from the registry's budget.
 		httpClient: &http.Client{},
 		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
 	}
@@ -153,9 +136,8 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 
 // bindingPaths resolves where this step reads a binding key from.
 //
-// Both halves or neither: overriding one and leaving the other on the default
-// is a half-configured deployment that would match nothing, and it would do so
-// silently on every request rather than once at startup.
+// Both halves or neither: one overridden and one defaulted would match nothing,
+// silently, on every request.
 func bindingPaths(cfg *Config) (Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
 		return BecknV2, nil
@@ -175,9 +157,9 @@ func bindingPaths(cfg *Config) (Paths, error) {
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.
 func applyDefaults(cfg *Config) error {
-	// No default. This package serves whatever a domain package configures it
-	// for, so a default would have to name one provider's capability -- wrong
-	// for every other domain built on it, and silently wrong rather than loudly.
+	// No default: this package serves whatever a domain package points it at,
+	// so any default would name one provider's capability and be silently
+	// wrong for every other.
 	if len(cfg.BindingKeys) == 0 {
 		return errors.New("bindingKeys is required: it is what this step answers to")
 	}
@@ -193,11 +175,9 @@ func applyDefaults(cfg *Config) error {
 		cfg.AuthByProvider = map[string]*AuthProfile{}
 	}
 
-	// Both directions, because each catches a different mistake and both are
-	// silent at runtime. A profile for a provider this step does not serve is a
-	// typo that would apply to nothing; a served provider with no profile would
-	// fall through to sending no credential and read as the provider rejecting
-	// us.
+	// Both directions, because each catches a different silent mistake: a
+	// profile for an unserved provider is a typo applying to nothing, and a
+	// served provider with no profile would send no credential at all.
 	served := map[string]bool{}
 	for _, key := range cfg.BindingKeys {
 		served[providerIDFrom(key)] = true

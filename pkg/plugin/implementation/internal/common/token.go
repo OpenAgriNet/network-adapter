@@ -16,18 +16,15 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 )
 
-// bearerToken returns a token to send, exchanging one if what we hold has
-// expired or if we hold none.
+// bearerToken returns a token to send, exchanging one if the held token has
+// expired or there is none.
 //
-// The lock spans the fetch on purpose. Without it a cold start sends every
-// concurrent request to the token endpoint, and the provider's issuer sees a
-// burst of identical exchanges. Serialising them costs one wait per token
-// lifetime and nothing after that, which is a better trade than a second
-// caching layer.
+// The lock spans the fetch on purpose: without it a cold start sends every
+// concurrent request to the issuer at once. It costs one wait per token
+// lifetime.
 //
-// NOTHING IS CACHED ON FAILURE. A transient outage at the token endpoint must
-// not leave this step holding a failure for the lifetime it never obtained --
-// the next request tries again.
+// NOTHING IS CACHED ON FAILURE, so a brief outage at the token endpoint does
+// not leave this step holding a failure for a lifetime it never obtained.
 func (s *Step) bearerToken(ctx context.Context, auth *authenticator) (string, error) {
 	if held := auth.token.Load(); held != nil && time.Now().Before(held.expiry) {
 		return held.value, nil
@@ -36,8 +33,7 @@ func (s *Step) bearerToken(ctx context.Context, auth *authenticator) (string, er
 	auth.tokenMu.Lock()
 	defer auth.tokenMu.Unlock()
 
-	// Re-checked after acquiring: while this caller waited, whoever held the
-	// mutex may already have exchanged a fresh token.
+	// Re-checked: whoever held the mutex may already have exchanged one.
 	if held := auth.token.Load(); held != nil && time.Now().Before(held.expiry) {
 		return held.value, nil
 	}
@@ -64,9 +60,9 @@ type tokenResponse struct {
 
 // exchangeToken performs the client_credentials grant.
 //
-// Every failure here is the UPSTREAM exchange failing, so all of them carry
-// 502. Unclassified they would surface as a 500, which tells a network peer
-// this adapter broke when in fact the provider's issuer did.
+// Every failure carries 502, because it is the exchange with the provider's
+// issuer that failed. Unclassified they would surface as 500, telling a peer
+// this adapter broke when it did not.
 func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	cfg := auth.cfg
 	clientID, clientSecret := os.Getenv(cfg.ClientIDEnv), os.Getenv(cfg.ClientSecretEnv)
@@ -94,15 +90,14 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 	}
 	defer resp.Body.Close()
 
-	// Bounded like any other upstream read: a token response is small, and an
-	// unbounded read here would be a hole in the same wall.
+	// Bounded like any other upstream read.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, s.config.MaxResponseBytes+1))
 	if err != nil {
 		return "", 0, s.tokenErr(fmt.Errorf("token response could not be read: %w", err))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// The status, not the body: what an issuer puts in a failure body is its
-		// own business, and it routinely quotes the request back.
+		// The status, not the body: a failure body routinely quotes the
+		// request back.
 		log.Warnf(ctx, "token endpoint %s returned %s: %s",
 			cfg.TokenURL, resp.Status, s.redactString(explain(body)))
 		return "", 0, s.tokenErr(fmt.Errorf("token endpoint returned %s", resp.Status))
@@ -126,36 +121,30 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 	return parsed.AccessToken, lifetime, nil
 }
 
-// tokenErr classifies a failed exchange. Always 502: the exchange is with the
-// provider's issuer, so its failure is upstream's, never the caller's.
+// tokenErr classifies a failed exchange. Always 502: the failure is the
+// issuer's, never the caller's.
 func (s *Step) tokenErr(err error) error {
 	return model.NewCodedErr(http.StatusBadGateway, codeUpstreamUnavailable,
 		fmt.Errorf("oauth2 token exchange failed: %w", err))
 }
 
-// tokenLifetime turns a token response's expires_in into how long we may hold
-// that token, or reports that we may not hold it at all.
+// tokenLifetime turns expires_in into how long the token may be held, or
+// reports that it may not be held at all.
 //
-// The issuer owns this number, so it is read from the response and never from
-// our config: a configured copy is a second version of the same fact, and it
-// is wrong the moment a realm's token lifetime is retuned -- silently, with
-// every request 401ing until someone edits a file.
+// Read from the response, never from config: the issuer owns this number, and a
+// configured copy is wrong the moment a realm is retuned -- silently, with
+// every request 401ing.
 //
-// skew is subtracted so a request that passes the check cannot arrive at the
-// provider after expiry. It has to exceed the round trip, and costs one extra
-// refresh per token lifetime.
-//
-// Two answers rather than one duration, because "we were not told" is not a
-// lifetime. A response with no expires_in is refused rather than cached for a
-// guessed period or re-fetched on every single request.
+// skew is subtracted so a request that passed the check cannot arrive after
+// expiry. The false return says "we were not told", which is not a lifetime:
+// no expires_in is refused rather than cached for a guessed period.
 func tokenLifetime(expiresIn int, skew time.Duration) (time.Duration, bool) {
 	if expiresIn <= 0 {
 		return 0, false
 	}
 	lifetime := time.Duration(expiresIn) * time.Second
-	// A lifetime at or under the skew would put the expiry in the past, and
-	// then every request fetches a fresh token. Half is still early enough to
-	// refresh before the real expiry.
+	// A lifetime at or under the skew would put the expiry in the past, making
+	// every request fetch a fresh token. Half is still early enough.
 	if lifetime <= skew {
 		return lifetime / 2, true
 	}
