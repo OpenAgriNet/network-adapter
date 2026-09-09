@@ -3,7 +3,6 @@ package upstream
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -63,7 +62,12 @@ type stubMapper struct {
 	fanOutErr    error
 	// requestFromFan builds the request result from this call's fan value, for
 	// a test that has to tell the calls apart. Nil falls back to requestResult.
-	requestFromFan func(map[string]any) []byte
+	//
+	// Takes the fan value as-is: upstream binds _fan to whatever the fan-out
+	// hook handed it, and these tests' hook (sequentialGather) hands the value
+	// itself. A hook that wraps it -- AgricultureFacility's does, to carry a
+	// per-call id -- is that hook's business, and is tested where it lives.
+	requestFromFan func(fanValue any) []byte
 	err            error
 	requestErr     error
 
@@ -121,8 +125,7 @@ func (s *stubMapper) Transform(_ context.Context, mappingRef string, direction d
 		}
 		s.requestInputs = append(s.requestInputs, input)
 		if s.requestFromFan != nil {
-			fan, _ := input.(map[string]any)["_fan"].(map[string]any)
-			return s.requestFromFan(fan), nil
+			return s.requestFromFan(input.(map[string]any)["_fan"]), nil
 		}
 		return s.requestResult, nil
 	}
@@ -156,6 +159,32 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	}
 	t.Cleanup(func() { _ = closer() })
 	return step
+}
+
+// oneCall is the shape upstream hands a fan-out hook. Named here, as an
+// alias, only so these tests read well -- upstream itself deliberately gives
+// it no name (see New's doc comment), and an alias rather than a defined
+// type so it stays interchangeable with the unnamed parameter New declares.
+type oneCall = func(ctx context.Context, fanValue any) (any, error)
+
+// sequentialGather is newStep's default fan-out hook: call one for every
+// value, in order, one at a time, and fail the whole thing the moment any
+// one call does. It exists so the handful of tests below that exercise a
+// fan-out at all don't each need to supply their own hook just to prove
+// something about fanOut or about the wiring itself -- it is deliberately
+// not a stand-in for AgricultureFacility.gatherFacilities, which is what
+// actually tests concurrency policy, in
+// pkg/plugin/implementation/AgricultureFacility/fanout_test.go.
+func sequentialGather(ctx context.Context, values []any, one oneCall) (any, error) {
+	answers := make([]any, len(values))
+	for index, value := range values {
+		answer, err := one(ctx, value)
+		if err != nil {
+			return nil, fmt.Errorf("the call for fan-out value %v failed: %w", value, err)
+		}
+		answers[index] = answer
+	}
+	return answers, nil
 }
 
 func runStep(t *testing.T, step *Step, body string) (*model.StepContext, error) {
@@ -2242,8 +2271,8 @@ func TestRunFailsWhenAnyFanOutCallFails(t *testing.T) {
 		fanOutResult:   []byte(`["kvk","warehouse"]`),
 		responseResult: []byte(`{"context":{}}`),
 	}
-	mapper.requestFromFan = func(fan map[string]any) []byte {
-		return []byte(fmt.Sprintf(`{"code":%q}`, fan["value"]))
+	mapper.requestFromFan = func(fanValue any) []byte {
+		return []byte(fmt.Sprintf(`{"code":%q}`, fanValue))
 	}
 	ctx, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody)
 	if err == nil {
@@ -2309,9 +2338,8 @@ func TestRunAcceptsAScalarFanOutValue(t *testing.T) {
 		t.Errorf("provider saw %d calls, want 1 for a scalar fan-out", seen)
 	}
 	input := mapper.requestInputs[0].(map[string]any)
-	fan := input["_fan"].(map[string]any)
-	if fan["value"] != "kvk" {
-		t.Errorf("_fan.value = %v, want the scalar itself", fan["value"])
+	if input["_fan"] != "kvk" {
+		t.Errorf("_fan = %v, want the scalar itself", input["_fan"])
 	}
 }
 
@@ -2331,6 +2359,82 @@ func TestRunRefusesWhenTheFanOutHalfFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fan-out half is broken") {
 		t.Errorf("error = %v, want the fan-out half's own failure", err)
+	}
+}
+
+// The configured Gather is what decides whether a fan-out becomes many
+// upstream calls at all -- proven here with a Gather that deliberately does
+// NOT call one for every value, to distinguish "upstream ran the Gather it
+// was given" from "upstream ran its own fan-out logic".
+func TestRunUsesTheConfiguredFanOutHook(t *testing.T) {
+	t.Parallel()
+
+	var seen int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen++
+		fmt.Fprint(w, `{}`)
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{
+		fanOutResult:   []byte(`["a","b","c"]`),
+		responseResult: []byte(`{"context":{}}`),
+	}
+	var gatherSawValues []any
+	gather := func(ctx context.Context, values []any, one oneCall) (any, error) {
+		gatherSawValues = values
+		// Deliberately calls one only for the FIRST value, so a pass here
+		// can only mean the configured hook ran, not upstream's own idea
+		// of what a fan-out means.
+		answer, err := one(ctx, values[0])
+		return []any{answer}, err
+	}
+
+	cfg := &Config{BindingKeys: []string{testBindingKey}}
+	step, closer, err := New(context.Background(),
+		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, nil, gather, cfg)
+	if err != nil {
+		t.Fatalf("New() returned an unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if seen != 1 {
+		t.Errorf("provider saw %d calls, want 1 -- the configured Gather only calls one() once", seen)
+	}
+	if len(gatherSawValues) != 3 {
+		t.Errorf("Gather was handed %d values, want all 3 the fan-out half selected", len(gatherSawValues))
+	}
+}
+
+// A mapping that fans out on a step configured with no Gather is a mismatch
+// between the mapping and whoever configured the step -- refused, not
+// silently defaulted to some built-in policy this package does not have.
+func TestRunRefusesFanOutWhenNoHookIsConfigured(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("the provider was called although no Gather was configured to run the fan-out")
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{fanOutResult: []byte(`["a","b"]`)}
+	cfg := &Config{BindingKeys: []string{testBindingKey}}
+	step, closer, err := New(context.Background(),
+		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, nil, nil, cfg)
+	if err != nil {
+		t.Fatalf("New() returned an unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+
+	_, runErr := runStep(t, step, selectBody)
+	if runErr == nil {
+		t.Fatal("Run() served a fan-out with no hook configured, want it refused")
+	}
+	if !strings.Contains(runErr.Error(), "nothing to run it") {
+		t.Errorf("error = %v, want it to say nothing was configured to run the fan-out", runErr)
 	}
 }
 

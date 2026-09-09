@@ -43,7 +43,15 @@ type fixedMapper struct{ answer string }
 
 func (m fixedMapper) Verify(context.Context, string, any) error { return nil }
 
-func (m fixedMapper) Transform(_ context.Context, mappingRef string, _ definition.Direction, _ any) ([]byte, error) {
+func (m fixedMapper) Transform(_ context.Context, mappingRef string,
+	direction definition.Direction, _ any) ([]byte, error) {
+
+	// These capabilities declare no fan-out half, which is what an empty
+	// result means. Said explicitly because the canned answer below is a
+	// response body, and would otherwise be read as a fan-out too.
+	if direction == definition.DirectionFanOut {
+		return nil, nil
+	}
 	if strings.Contains(mappingRef, "request") {
 		return []byte(`{}`), nil
 	}
@@ -78,6 +86,9 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 		step, closer, err := upstream.New(context.Background(),
 			&stubRegistry{plan: plan},
 			fixedMapper{answer: answer},
+			nil,
+			// No fan-out hook: these capabilities' mappings declare no
+			// fan-out half, so there is nothing to gather.
 			nil,
 			&upstream.Config{BindingKeys: []string{bindingKey}})
 		if err != nil {

@@ -167,14 +167,31 @@ type Step struct {
 	paths         capabilitybinding.Paths
 	prerequisites Prerequisites
 	// gather is the domain package's fan-out hook, or nil. Spelled out
-	// rather than given a type name on purpose -- see New's doc comment.
+	// rather than given a type name on purpose -- see NewWithFanOut's doc
+	// comment.
 	gather     func(ctx context.Context, values []any, one func(ctx context.Context, fanValue any) (any, error)) (any, error)
 	registry   definition.ProviderRecordLookup
 	mapper     definition.Mapper
 	httpClient *http.Client
 }
 
-// New creates the step.
+// New creates the step for a capability that does not fan out: one inbound
+// payload is one upstream call, which is every capability whose mapping
+// declares no fan-out half.
+//
+// The signature every domain package has always called, kept unchanged so
+// that adding fan-out to one of them did not touch the rest. A capability
+// whose mapping DOES declare a fan-out half needs NewWithFanOut, because
+// this package has no built-in policy for turning selected values into
+// calls -- see that function's doc comment.
+func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
+	prerequisites Prerequisites, cfg *Config) (*Step, func() error, error) {
+	return NewWithFanOut(ctx, registry, mapper, prerequisites, nil, cfg)
+}
+
+// NewWithFanOut creates the step for a capability that fans one payload out
+// into several upstream calls, and supplies the hook that decides what that
+// means for its provider.
 //
 // gather is how a domain package says what a fan-out MEANS for its provider:
 // given the values the mapping's fan-out half selected, and a function that
@@ -183,10 +200,10 @@ type Step struct {
 // whatever the response half should be handed. It is called once per
 // request, only when the mapping's fan-out half selects values.
 //
-// nil is valid, and is what every domain package but one passes: their
-// capabilities' mappings never declare a fan-out half, so there is nothing
-// to gather -- one payload is one call, unchanged since before fan-out
-// existed. A mapping that DOES declare one on a step configured with nil is
+// nil is valid and is exactly what New passes: a capability whose mappings
+// never declare a fan-out half has nothing to gather -- one payload is one
+// call, unchanged since before fan-out existed. A mapping that DOES declare
+// one on a step configured with nil is
 // a mismatch between the mapping and the domain package that configured this
 // step, and is refused rather than silently defaulted: how many calls to
 // make at once and what ceiling is too many is a fact about the PROVIDER,
@@ -200,7 +217,7 @@ type Step struct {
 // referencing that package's type would be an import cycle; Go's structural
 // func typing means neither is necessary. See
 // pkg/plugin/implementation/internal/upstream/README.md.
-func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
+func NewWithFanOut(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	prerequisites Prerequisites,
 	gather func(ctx context.Context, values []any, one func(ctx context.Context, fanValue any) (any, error)) (any, error),
 	cfg *Config) (*Step, func() error, error) {
