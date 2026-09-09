@@ -10,6 +10,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 )
 
 // weatherProvider implements definition.ProviderStepProvider.
@@ -28,13 +29,6 @@ func (p weatherProvider) parseConfig(config map[string]string) (*WeatherObservat
 		// this is a default rather than something to set.
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
-		AuthScheme:       config["authScheme"],
-		UsernameEnv:      config["usernameEnv"],
-		PasswordEnv:      config["passwordEnv"],
-		HeaderName:       config["headerName"],
-		HeaderValueEnv:   config["headerValueEnv"],
-		QueryName:        config["queryName"],
-		QueryValueEnv:    config["queryValueEnv"],
 	}
 
 	if raw, exists := config["maxResponseBytes"]; exists && raw != "" {
@@ -47,6 +41,16 @@ func (p weatherProvider) parseConfig(config map[string]string) (*WeatherObservat
 		}
 		cfg.MaxResponseBytes = value
 	}
+
+	// One credential profile per provider, read from the flattened
+	// authScheme-<participantId> settings. Shared with the other capability
+	// plugins: each used to copy the same field list, so a scheme added in one
+	// had to be remembered in three.
+	auth, err := upstream.ParseAuth(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Auth = auth
 
 	return cfg, nil
 }

@@ -22,6 +22,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
+	upstreamstep "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
@@ -207,7 +208,14 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 	}}
 
 	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), registry, mapper,
-		&KnowledgeAdvisory.Config{BindingKeys: []string{shippedBindingKey}})
+		&KnowledgeAdvisory.Config{
+			BindingKeys: []string{shippedBindingKey},
+			// Auth is per provider; these upstreams are stubs needing
+			// no credential, and that is declared rather than defaulted.
+			Auth: map[string]*upstreamstep.Auth{
+				strings.Split(shippedBindingKey, "|")[0]: {Scheme: upstreamstep.AuthSchemeNone},
+			},
+		})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}

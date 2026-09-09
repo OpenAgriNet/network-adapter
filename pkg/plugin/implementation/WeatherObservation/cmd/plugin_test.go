@@ -10,6 +10,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/upstream"
 )
 
 type stubRegistry struct{}
@@ -40,26 +41,31 @@ func TestParseConfig(t *testing.T) {
 			// rules are defined in exactly one place.
 			name:     "leaves everything unset for New to default",
 			config:   map[string]string{},
-			expected: &WeatherObservation.Config{},
+			expected: &WeatherObservation.Config{Auth: map[string]*upstream.Auth{}},
 		},
 		{
 			name: "reads every supported setting",
 			config: map[string]string{
-				"bindingKeys":      "other|capability",
-				"authScheme":       "basic",
-				"usernameEnv":      "U",
-				"passwordEnv":      "P",
-				"headerName":       "X-Key",
-				"headerValueEnv":   "V",
-				"maxResponseBytes": "2048",
+				"bindingKeys":          "other|capability",
+				"authScheme-other":     "basic",
+				"usernameEnv-other":    "U",
+				"passwordEnv-other":    "P",
+				"headerName-other":     "X-Key",
+				"headerValueEnv-other": "V",
+				"maxResponseBytes":     "2048",
 			},
 			expected: &WeatherObservation.Config{
-				BindingKeys:      []string{"other|capability"},
-				AuthScheme:       "basic",
-				UsernameEnv:      "U",
-				PasswordEnv:      "P",
-				HeaderName:       "X-Key",
-				HeaderValueEnv:   "V",
+				BindingKeys: []string{"other|capability"},
+				Auth: map[string]*upstream.Auth{
+					"other": {
+						Provider:       "other",
+						Scheme:         "basic",
+						UsernameEnv:    "U",
+						PasswordEnv:    "P",
+						HeaderName:     "X-Key",
+						HeaderValueEnv: "V",
+					},
+				},
 				MaxResponseBytes: 2048,
 			},
 		},
@@ -182,7 +188,10 @@ func TestNew(t *testing.T) {
 		t.Parallel()
 
 		_, _, err := weatherProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
-			map[string]string{"authScheme": "oauth"})
+			map[string]string{
+				"bindingKeys":           "mausamgram|openagrinet:WeatherObservation",
+				"authScheme-mausamgram": "oauth",
+			})
 		if err == nil {
 			t.Fatal("expected an unknown auth scheme to be refused")
 		}
@@ -204,7 +213,10 @@ func TestNew(t *testing.T) {
 		t.Parallel()
 
 		step, closer, err := weatherProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
-			map[string]string{"bindingKeys": "imd|openagrinet:WeatherObservation"})
+			map[string]string{
+				"bindingKeys":    "imd|openagrinet:WeatherObservation",
+				"authScheme-imd": "none",
+			})
 		if err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
