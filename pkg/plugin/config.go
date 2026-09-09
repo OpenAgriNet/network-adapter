@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v2"
 )
 
 // Settings is a plugin's own configuration block.
@@ -34,10 +34,18 @@ import (
 // already defined.
 type Settings map[string]string
 
+// Settings must satisfy the unmarshaler of the SAME yaml package the adapter
+// decodes its config with -- gopkg.in/yaml.v2, in cmd/adapter/main.go. The two
+// versions declare incompatible interfaces, and a mismatch is silent: the
+// method is simply never called and a nested block reaches the plain map,
+// failing with "cannot unmarshal !!map into string" at startup. This assertion
+// turns that into a compile error instead.
+var _ yaml.Unmarshaler = (*Settings)(nil)
+
 // UnmarshalYAML accepts scalars at the top level and one level of nesting.
-func (s *Settings) UnmarshalYAML(node *yaml.Node) error {
+func (s *Settings) UnmarshalYAML(unmarshal func(any) error) error {
 	var raw map[string]any
-	if err := node.Decode(&raw); err != nil {
+	if err := unmarshal(&raw); err != nil {
 		return err
 	}
 
@@ -53,7 +61,7 @@ func (s *Settings) UnmarshalYAML(node *yaml.Node) error {
 	for _, key := range blocks {
 		value := raw[key]
 
-		block, nested := value.(map[string]any)
+		block, nested := asBlock(value)
 		if !nested {
 			out[key] = scalar(value)
 			continue
@@ -74,7 +82,7 @@ func (s *Settings) UnmarshalYAML(node *yaml.Node) error {
 		sort.Strings(fields)
 
 		for _, field := range fields {
-			if _, deeper := block[field].(map[string]any); deeper {
+			if _, deeper := asBlock(block[field]); deeper {
 				return fmt.Errorf(
 					"plugin config: %s.%s nests further; only one level is supported", key, field)
 			}
@@ -95,6 +103,27 @@ func (s *Settings) UnmarshalYAML(node *yaml.Node) error {
 
 	*s = out
 	return nil
+}
+
+// asBlock recognises a nested mapping.
+//
+// Two shapes because yaml.v2 decodes a mapping into map[interface{}]interface{}
+// unless the target says otherwise, so the top level arrives with string keys
+// and anything under it does not. Normalised here rather than at each use, and
+// the keys are rendered the same way values are so a non-string key cannot
+// silently become a different setting.
+func asBlock(v any) (map[string]any, bool) {
+	switch typed := v.(type) {
+	case map[string]any:
+		return typed, true
+	case map[any]any:
+		out := make(map[string]any, len(typed))
+		for key, value := range typed {
+			out[scalar(key)] = value
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // scalar renders a YAML scalar the way the flat form would have carried it.
