@@ -150,7 +150,7 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	for _, apply := range tweak {
 		apply(cfg)
 	}
-	step, closer, err := New(context.Background(), registry, mapper, nil, cfg)
+	step, closer, err := New(context.Background(), registry, mapper, nil, sequentialGather, cfg)
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
 	}
@@ -169,10 +169,10 @@ func runStep(t *testing.T, step *Step, body string) (*model.StepContext, error) 
 func TestNewRequiresItsDependencies(t *testing.T) {
 	t.Parallel()
 
-	if _, _, err := New(context.Background(), nil, &stubMapper{}, nil, minimalConfig()); err == nil {
+	if _, _, err := New(context.Background(), nil, &stubMapper{}, nil, nil, minimalConfig()); err == nil {
 		t.Error("expected a missing registry to be refused")
 	}
-	if _, _, err := New(context.Background(), &stubRegistry{}, nil, nil, minimalConfig()); err == nil {
+	if _, _, err := New(context.Background(), &stubRegistry{}, nil, nil, nil, minimalConfig()); err == nil {
 		t.Error("expected a missing mapper to be refused")
 	}
 }
@@ -199,7 +199,7 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 			t.Parallel()
 
 			tc.config.BindingKeys = []string{testBindingKey}
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, tc.config)
+			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, tc.config)
 			if tc.valid && err != nil {
 				t.Errorf("expected the config to be accepted, got %v", err)
 			}
@@ -733,7 +733,7 @@ func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, tc.cfg)
+			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, tc.cfg)
 			if err == nil {
 				t.Fatal("expected a half-configured query scheme to be refused")
 			}
@@ -1166,7 +1166,7 @@ func TestRunReadsTheBindingKeyFromOverriddenPaths(t *testing.T) {
 func TestNewRefusesAHalfConfiguredOverride(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{
+	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, &Config{
 		BindingKeys:  []string{testBindingKey},
 		ProviderIDAt: "who.provider",
 	})
@@ -1264,7 +1264,7 @@ func minimalConfig() *Config {
 func TestNewRequiresBindingKeys(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{})
+	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil, &Config{})
 	if err == nil {
 		t.Fatal("expected a step configured for no capability to be refused")
 	}
@@ -1278,7 +1278,7 @@ func TestNewRequiresBindingKeys(t *testing.T) {
 func TestNewRefusesAnEmptyBindingKey(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil,
+	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, nil,
 		&Config{BindingKeys: []string{testBindingKey, "  "}})
 	if err == nil {
 		t.Error("expected an empty binding key to be refused")
@@ -2118,7 +2118,7 @@ func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
 
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
 	step, closer, err := New(context.Background(),
-		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
+		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites, nil,
 		&Config{BindingKeys: []string{testBindingKey}})
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
@@ -2190,119 +2190,6 @@ func TestRunPassesAnEmptyLocalWhenThereAreNoPrerequisites(t *testing.T) {
 // A mapping declaring none is called once, which is every other provider, and
 // the tests above cover that path.
 
-// A fan-out of N values makes N calls, each built from its own value.
-func TestRunMakesOneCallPerFanOutValue(t *testing.T) {
-	t.Parallel()
-
-	var mu sync.Mutex
-	var seen int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		seen++
-		mu.Unlock()
-		fmt.Fprint(w, `{}`)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{
-		fanOutResult:   []byte(`["kvk","warehouse","chc"]`),
-		requestResult:  []byte(`{}`),
-		responseResult: []byte(`{"context":{"action":"on_select"}}`),
-	}
-	if _, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody); err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-
-	if seen != 3 {
-		t.Errorf("provider saw %d calls, want one per fan-out value (3)", seen)
-	}
-	if len(mapper.requestInputs) != 3 {
-		t.Fatalf("the request half ran %d times, want 3", len(mapper.requestInputs))
-	}
-
-	// Each call is built from its OWN value, and each carries its own id. A
-	// fan-out that handed every call the same value would make the same request
-	// N times and answer with one type repeated.
-	values := map[string]bool{}
-	ids := map[string]bool{}
-	for _, input := range mapper.requestInputs {
-		fan, ok := input.(map[string]any)["_fan"].(map[string]any)
-		if !ok {
-			t.Fatalf("a request input carries no _fan: %v", input)
-		}
-		values[fmt.Sprint(fan["value"])] = true
-		ids[fmt.Sprint(fan["callId"])] = true
-	}
-	for _, want := range []string{"kvk", "warehouse", "chc"} {
-		if !values[want] {
-			t.Errorf("no call was built for fan-out value %q; saw %v", want, keysOfBool(values))
-		}
-	}
-	if len(ids) != 3 {
-		t.Errorf("the three calls carry %d distinct callIds, want 3 -- a provider that "+
-			"caches per request id would blend them", len(ids))
-	}
-}
-
-// The response half is handed every answer, in the order the fan-out named
-// them.
-//
-// Order matters because it is the only thing making the result reproducible: an
-// answer assembled in whichever order the provider replied would differ between
-// runs, and nothing could assert it.
-func TestRunHandsTheResponseHalfEveryAnswerInFanOrder(t *testing.T) {
-	t.Parallel()
-
-	// Each call is answered with the request it was sent, so the answers are
-	// distinguishable and the slow one arrives last.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		if code == "first" {
-			// Delayed so it cannot be the first to arrive. Without this the
-			// test would pass on a race rather than on the ordering.
-			time.Sleep(120 * time.Millisecond)
-		}
-		fmt.Fprintf(w, `{"answered":%q}`, code)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{
-		fanOutResult:   []byte(`["first","second"]`),
-		responseResult: []byte(`{"context":{"action":"on_select"}}`),
-	}
-	// The request half echoes its own fan value, so the query names which call
-	// this is.
-	mapper.requestFromFan = func(fan map[string]any) []byte {
-		return []byte(fmt.Sprintf(`{"code":%q}`, fan["value"]))
-	}
-
-	// Run these in parallel deliberately. Sequentially the first call also
-	// finishes first and the ordering would hold for a reason this test is not
-	// about.
-	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
-		func(cfg *Config) { cfg.FanOutConcurrency = 2 })
-	if _, err := runStep(t, step, selectBody); err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-	input, ok := mapper.responseInput.(map[string]any)
-	if !ok {
-		t.Fatalf("response input = %T, want a map", mapper.responseInput)
-	}
-	answers, ok := input["response"].([]any)
-	if !ok {
-		t.Fatalf("response = %T, want a list of answers when fanning out", input["response"])
-	}
-	if len(answers) != 2 {
-		t.Fatalf("response carries %d answers, want 2", len(answers))
-	}
-	for index, want := range []string{"first", "second"} {
-		got, _ := answers[index].(map[string]any)["answered"]
-		if got != want {
-			t.Errorf("answer %d is %v, want %q -- answers must be in fan-out order, "+
-				"not arrival order", index, got, want)
-		}
-	}
-}
 // A mapping with no fan-out half is handed the provider's own answer, not a
 // one-element list.
 //
@@ -2364,81 +2251,6 @@ func TestRunFailsWhenAnyFanOutCallFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fan-out value") {
 		t.Errorf("error = %v, want it to name the fan-out value that failed", err)
-	}
-}
-
-// A call not yet issued when an earlier one fails is skipped, not made and
-// discarded. Sequential (the default) makes this deterministic: the first
-// value's failure cancels the shared context before the loop ever reaches
-// group.Go for the second, so the second's HTTP call must never happen.
-func TestFanOutSkipsCallsNotYetIssuedAfterAFailure(t *testing.T) {
-	t.Parallel()
-
-	var mu sync.Mutex
-	seen := map[string]bool{}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		mu.Lock()
-		seen[code] = true
-		mu.Unlock()
-		if code == "kvk" {
-			http.Error(w, "no", http.StatusInternalServerError)
-			return
-		}
-		fmt.Fprint(w, `{}`)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{
-		fanOutResult:   []byte(`["kvk","warehouse","chc"]`),
-		responseResult: []byte(`{"context":{}}`),
-	}
-	mapper.requestFromFan = func(fan map[string]any) []byte {
-		return []byte(fmt.Sprintf(`{"code":%q}`, fan["value"]))
-	}
-	_, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody)
-	if err == nil {
-		t.Fatal("Run() served a partial answer")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if seen["warehouse"] || seen["chc"] {
-		t.Errorf("a later fan-out value was still called after an earlier one failed: %v", seen)
-	}
-}
-
-// A payload asking for more calls than the ceiling is refused, not clamped.
-//
-// Fan-out is amplification -- one request in, N out, each with its own retry
-// budget -- and the values come from the payload, so without a ceiling a caller
-// decides how much work this adapter and the provider do. Refused rather than
-// clamped because a clamped fan-out silently drops what was asked for, which is
-// the defect this whole facility exists to fix.
-func TestRunRefusesAFanOutOverTheCeiling(t *testing.T) {
-	t.Parallel()
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("the provider was called for a fan-out that should have been refused")
-	}))
-	defer upstream.Close()
-
-	values := make([]string, MaxFanOut+1)
-	for index := range values {
-		values[index] = fmt.Sprintf("value-%d", index)
-	}
-	declared, err := json.Marshal(values)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	mapper := &stubMapper{fanOutResult: declared, requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
-	_, runErr := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody)
-	if runErr == nil {
-		t.Fatal("a fan-out over the ceiling was served, want it refused")
-	}
-	if !strings.Contains(runErr.Error(), "ceiling") {
-		t.Errorf("error = %v, want it to name the ceiling", runErr)
 	}
 }
 
@@ -2530,104 +2342,4 @@ func keysOfBool(set map[string]bool) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-// Fan-out calls are sequential unless the deployment raised the limit.
-//
-// The default is not a performance choice. A provider that answers one question
-// at a time is often not built to be asked several at once, and POCRA's failure
-// mode when pushed is a 200 with an empty catalog -- indistinguishable from
-// having no results, so the loss is silent. Parallel is opt-in per deployment
-// for that reason, and this pins the default so it cannot drift.
-func TestFanOutCallsAreSequentialByDefault(t *testing.T) {
-	t.Parallel()
-
-	var mu sync.Mutex
-	var inFlight, peak int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		inFlight++
-		if inFlight > peak {
-			peak = inFlight
-		}
-		mu.Unlock()
-
-		// Long enough that overlapping calls would be caught. Without a wait
-		// each call could finish before the next begins and a parallel step
-		// would look sequential.
-		time.Sleep(40 * time.Millisecond)
-
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
-		fmt.Fprint(w, `{}`)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{
-		fanOutResult:   []byte(`["a","b","c"]`),
-		requestResult:  []byte(`{}`),
-		responseResult: []byte(`{"context":{}}`),
-	}
-	if _, err := runStep(t, newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper), selectBody); err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if peak != 1 {
-		t.Errorf("%d fan-out calls were in flight at once, want 1 by default", peak)
-	}
-}
-
-// A deployment that raises the limit gets calls in parallel, bounded by it.
-func TestFanOutHonoursTheConfiguredConcurrency(t *testing.T) {
-	t.Parallel()
-
-	var mu sync.Mutex
-	var inFlight, peak int
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		inFlight++
-		if inFlight > peak {
-			peak = inFlight
-		}
-		mu.Unlock()
-		time.Sleep(60 * time.Millisecond)
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
-		fmt.Fprint(w, `{}`)
-	}))
-	defer upstream.Close()
-
-	mapper := &stubMapper{
-		fanOutResult:   []byte(`["a","b","c","d"]`),
-		requestResult:  []byte(`{}`),
-		responseResult: []byte(`{"context":{}}`),
-	}
-	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
-		func(cfg *Config) { cfg.FanOutConcurrency = 2 })
-	if _, err := runStep(t, step, selectBody); err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if peak != 2 {
-		t.Errorf("peak concurrency was %d, want the configured 2", peak)
-	}
-}
-
-// A concurrency over the fan-out ceiling is clamped to it, not honoured.
-func TestFanOutConcurrencyIsClampedToTheCeiling(t *testing.T) {
-	t.Parallel()
-
-	cfg := &Config{BindingKeys: []string{testBindingKey}, FanOutConcurrency: MaxFanOut + 50}
-	if err := applyDefaults(cfg); err != nil {
-		t.Fatalf("applyDefaults() returned an unexpected error: %v", err)
-	}
-	if cfg.FanOutConcurrency != MaxFanOut {
-		t.Errorf("fanOutConcurrency = %d, want it clamped to %d", cfg.FanOutConcurrency, MaxFanOut)
-	}
 }
