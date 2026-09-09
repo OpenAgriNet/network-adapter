@@ -73,11 +73,17 @@ const requestOfferID = "offer:knowledge-advisory:schemes"
 // fields the mapping reads. Four hits over TWO documents: the engine returns
 // several chunks per document, and this corpus indexes one chunk twice, once
 // as type "document" and once as "scheme". Note doc_language and
-// category_tags come back BLANK -- which is why the mapping takes languages
-// and topics from the request instead.
+// category_tags come back BLANK on every hit, so the mapping derives topics
+// from effective_config.query and falls back to the guide's "en" for language.
 const providerResponse = `{
  "candidate_count": 51,
  "final_count": 4,
+ "effective_config": {
+  "index_name": "test_doc_pipeline",
+  "query": "gruha jyoti scheme eligibility",
+  "max_chunks_per_doc": 2,
+  "exclude_reference": true
+ },
  "hits": [
   {
    "_id": "26860172-2762-4b0b-cabf-3c947846c2e1",
@@ -338,23 +344,30 @@ func TestShippedMappingNeverBorrowsAnotherDocumentsName(t *testing.T) {
 	}
 }
 
-// topics and the recommendation language come from the REQUEST. This corpus
-// returns category_tags and doc_language BLANK on every hit, so reading them
-// from upstream would emit an advisory with an empty language -- which the
-// pack requires to be at least two characters.
-func TestShippedMappingTakesTopicsAndLanguageFromTheRequest(t *testing.T) {
+// topics and language are DERIVED FROM THE RESPONSE, never echoed from the
+// request. This corpus returns category_tags and doc_language blank on every
+// hit, so topics falls back to effective_config.query -- the engine reporting
+// the query it actually ran -- and language to the implementation guide's "en".
+// A value copied from the request would read as provider data in the answer,
+// and a consumer could not tell the difference.
+func TestShippedMappingDerivesTopicsAndLanguageFromTheResponse(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 	attrs := attributesOf(t, answer, 0)
 
 	topics, _ := attrs["topics"].([]any)
 	if len(topics) != 1 || topics[0] != "gruha jyoti scheme eligibility" {
-		t.Errorf("topics = %v, want the caller's own", topics)
+		t.Errorf("topics = %v, want effective_config.query", topics)
+	}
+	if langs, _ := attrs["languages"].([]any); len(langs) != 1 || langs[0] != "en" {
+		t.Errorf("languages = %v, want the derived [en]", langs)
 	}
 	recs, _ := attrs["recommendations"].([]any)
+	if len(recs) == 0 {
+		t.Fatal("no recommendations")
+	}
 	for i, r := range recs {
-		lang := r.(map[string]any)["language"]
-		if lang != "en" {
-			t.Errorf("recommendation %d language = %v, want the request's en", i, lang)
+		if lang := r.(map[string]any)["language"]; lang != "en" {
+			t.Errorf("recommendation %d language = %v, want en", i, lang)
 		}
 		if msg, _ := r.(map[string]any)["message"].(string); strings.TrimSpace(msg) == "" {
 			t.Errorf("recommendation %d carries no message", i)
@@ -362,9 +375,19 @@ func TestShippedMappingTakesTopicsAndLanguageFromTheRequest(t *testing.T) {
 	}
 }
 
-// source names the PARTICIPANT, never the provider's own `source` field --
-// that one reads "docs-pipeline", the ingestion pipeline, not the authority
-// behind the knowledge.
+// With no source for topics at all -- category_tags blank AND no
+// effective_config.query -- the key is omitted rather than emitted as an empty
+// array. [] would assert "this advisory covers no topics"; absence reports that
+// nothing was available to say.
+func TestShippedMappingOmitsTopicsWhenNothingSuppliesThem(t *testing.T) {
+	_, answer := runShippedWith(t, selectRequest,
+		`{"candidate_count":1,"final_count":1,"hits":[
+		   {"doc_id":"d1","_score":0.5,"text":"some passage","instance_name":"Bharat Vistaar"}]}`)
+	attrs := attributesOf(t, answer, 0)
+	if v, present := attrs["topics"]; present {
+		t.Errorf("topics = %v, want the key absent when no source supplies it", v)
+	}
+}
 func TestShippedMappingNamesTheParticipantAsTheSource(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 	attrs := attributesOf(t, answer, 0)
@@ -388,7 +411,7 @@ func TestShippedMappingNamesTheParticipantAsTheSource(t *testing.T) {
 // one anyway produced.
 func TestShippedMappingAnswersAnEmptyResultWithNoResources(t *testing.T) {
 	_, answer := runShippedWith(t, selectRequest,
-		`{"candidate_count":0,"final_count":0,"hits":[]}`)
+		`{"candidate_count":0,"final_count":0,"effective_config":{"query":"gruha jyoti scheme eligibility"},"hits":[]}`)
 
 	if res := resourcesOf(t, answer); len(res) != 0 {
 		t.Errorf("resources = %d, want 0 for a query nothing matched", len(res))
