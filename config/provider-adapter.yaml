@@ -394,9 +394,9 @@ modules:
                 authScheme: tokenQuery
                 tokenUrl: <>
                 tokenUserField: access_name
-                tokenUserEnv: MANDI_ACCESS_NAME
+                tokenUserEnv: AGMARKNET_ACCESS_NAME
                 tokenSecretField: password
-                tokenSecretEnv: MANDI_PASSWORD
+                tokenSecretEnv: AGMARKNET_PASSWORD
                 tokenResponseField: token
                 queryName: token
                 tokenTtl: 10m
@@ -411,9 +411,9 @@ modules:
               # loads cleanly, registers cleanly, passes startup validation, and
               # then fails 100% of requests. Worth knowing before deploying:
               #
-              #   docker:     -e MANDI_ACCESS_NAME=... -e MANDI_PASSWORD=...
+              #   docker:     -e AGMARKNET_ACCESS_NAME=... -e AGMARKNET_PASSWORD=...
               #   kubernetes: a Secret, mounted as environment variables
-              #   local:      MANDI_ACCESS_NAME=... MANDI_PASSWORD=... ./server
+              #   local:      AGMARKNET_ACCESS_NAME=... AGMARKNET_PASSWORD=... ./server
               #
               # The error names the SCHEME rather than the variable, deliberately:
               # this runs behind a signed network call and a peer has no business
@@ -427,7 +427,7 @@ modules:
               #
               # A STATIC TOKEN IS STILL POSSIBLE, for a mock or a deployment
               # issued one directly: authScheme query, queryName token,
-              # queryValueEnv MANDI_TOKEN.
+              # queryValueEnv MOCKAGMARKNET_TOKEN.
 
           # ------------------------------------------------------------------
           # KnowledgeAdvisory -- the network's knowledge capability, answered
@@ -439,7 +439,7 @@ modules:
           # ------------------------------------------------------------------
           - id: KnowledgeAdvisory
             config:
-              bindingKeys: "knowledge-provider|openagrinet:KnowledgeAdvisory"
+              bindingKeys: "bharat-vistaar|openagrinet:KnowledgeAdvisory"
 
               # THE ONLY CAPABILITY HERE THAT CANNOT USE A STATIC CREDENTIAL.
               # Its provider sits behind an OAuth2 token endpoint whose tokens
@@ -448,7 +448,7 @@ modules:
               # pastes another. authScheme oauth2 exchanges the client
               # credentials for a token, holds it until just before it expires,
               # and exchanges a fresh one on the next request after that.
-              knowledge-provider:
+              bharat-vistaar:
                 authScheme: oauth2
 
               # A PLACEHOLDER, because this is per-deployment and no host
@@ -466,11 +466,11 @@ modules:
               # peer has no business learning which variables we read. The
               # variable names are in the adapter's own log at error level.
               #
-              #   docker:     -e KNOWLEDGE_CLIENT_ID=... -e KNOWLEDGE_CLIENT_SECRET=...
+              #   docker:     -e VISTAAR_CLIENT_ID=... -e VISTAAR_CLIENT_SECRET=...
               #   kubernetes: a Secret, mounted as environment variables
-              #   local:      KNOWLEDGE_CLIENT_ID=... KNOWLEDGE_CLIENT_SECRET=... ./server
-                clientIdEnv: KNOWLEDGE_CLIENT_ID
-                clientSecretEnv: KNOWLEDGE_CLIENT_SECRET
+              #   local:      VISTAAR_CLIENT_ID=... VISTAAR_CLIENT_SECRET=... ./server
+                clientIdEnv: VISTAAR_CLIENT_ID
+                clientSecretEnv: VISTAAR_CLIENT_SECRET
 
               # A retrieval answer is larger than a price row: four passages
               # measured 15.7 KB against the live corpus, and top_k defaults to
