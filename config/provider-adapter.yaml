@@ -328,18 +328,36 @@ modules:
               # so there is no step-wide setting: every provider declares its
               # own, and one that is served without a block is refused at
               # startup rather than quietly sending nothing.
+              # header, NOT basic. IMD Mausamgram is called with one ready-made
+              # credential:
+              #
+              #   curl '.../nwpapi/get-daily?lat=..&lon=..' \
+              #        --header 'Authorization: Basic <token>'
+              #
+              # authScheme basic would BUILD that header itself, as
+              # Basic base64(usernameEnv + ":" + passwordEnv), so it needs the
+              # credential split in two. IMD issues a single opaque token and
+              # there is no username to put left of the colon; splitting one on
+              # a guess sends a header the upstream rejects, which surfaces as
+              # 401 and reads like a wrong password.
+              #
+              # The whole header VALUE therefore lives in MAUSAMGRAM_AUTH,
+              # prefix included ("Basic eyJ..."), and goes out verbatim -- which
+              # stays correct whether the token is base64 of user:key or opaque.
               mausamgram:
-                authScheme: basic
-                usernameEnv: MAUSAMGRAM_USER
-                passwordEnv: MAUSAMGRAM_X_API_KEY
+                authScheme: header
+                headerName: Authorization
+                headerValueEnv: MAUSAMGRAM_AUTH
 
               # The other schemes, for reference. A second provider of this same
-              # capability goes beside the block above, with its own:
+              # capability goes beside the block above, with its own -- and one
+              # that DOES hand out a username and password pair (mockimd, for
+              # instance, which takes -user and -pass) is the case for basic:
               #
               #   some-other-imd:
-              #     authScheme: header
-              #     headerName: X-API-Key
-              #     headerValueEnv: SOME_OTHER_IMD_KEY
+              #     authScheme: basic
+              #     usernameEnv: SOME_OTHER_IMD_USER
+              #     passwordEnv: SOME_OTHER_IMD_PASSWORD
 
               # A ceiling on the provider's RESPONSE, so one that streams or
               # misbehaves cannot exhaust memory. The body is rejected past
@@ -357,34 +375,59 @@ modules:
             config:
               bindingKeys: "agmarknet|openagrinet:MandiPrice"
 
-              # Agmarknet's Vistaar API takes its token as a QUERY parameter,
-              # which is what authScheme query is for. The adapter holds the
-              # parameter's NAME and the name of the variable carrying the
-              # value -- never the value -- and redacts it from the URL it
-              # logs, so a token cannot reach the log by way of the request.
+              # Agmarknet's Vistaar API ISSUES ITS OWN short-lived tokens rather
+              # than accepting a static one, which is what tokenQuery is for: the
+              # credentials are POSTed as JSON to the endpoint below and the token
+              # that comes back travels in the query string. The adapter redacts
+              # it from the URL it logs, escaped form included.
+              #
+              # The JSON keys are named here because access_name and password are
+              # this provider's spelling, not a standard. The VALUES are
+              # environment variables, as everywhere else.
+              #
+              # tokenTtl is required and it is an ESTIMATE: the token response
+              # carries no expiry at all, so there is nothing to read. Ten minutes
+              # is conservative. Too long is not an outage -- a 401 or 403 from the
+              # provider drops the held token and the next call exchanges a fresh
+              # one -- but it does cost one failed request when the guess is wrong.
               agmarknet:
-                authScheme: query
+                authScheme: tokenQuery
+                tokenUrl: <>
+                tokenUserField: access_name
+                tokenUserEnv: MANDI_ACCESS_NAME
+                tokenSecretField: password
+                tokenSecretEnv: MANDI_PASSWORD
+                tokenResponseField: token
                 queryName: token
-                queryValueEnv: MANDI_TOKEN
+                tokenTtl: 10m
 
-              # MANDI_TOKEN MUST BE SET IN THE ADAPTER'S ENVIRONMENT. Without it
-              # every mandi call fails immediately and permanently: the step
-              # refuses to call an upstream unauthenticated, and marks the failure
-              # as one no retry can fix.
+              # BOTH VARIABLES MUST BE SET IN THE ADAPTER'S ENVIRONMENT. Without
+              # either, every mandi call fails immediately and permanently: the
+              # step refuses to call an upstream unauthenticated, and marks the
+              # failure as one no retry can fix.
               #
               # There is no default and there cannot be one -- a credential is not
               # something this file may hold. So the failure mode is a plugin that
               # loads cleanly, registers cleanly, passes startup validation, and
               # then fails 100% of requests. Worth knowing before deploying:
               #
-              #   docker:     -e MANDI_TOKEN=...   or an env_file
-              #   kubernetes: a Secret, mounted as an environment variable
-              #   local:      MANDI_TOKEN=... ./server --config=...
+              #   docker:     -e MANDI_ACCESS_NAME=... -e MANDI_PASSWORD=...
+              #   kubernetes: a Secret, mounted as environment variables
+              #   local:      MANDI_ACCESS_NAME=... MANDI_PASSWORD=... ./server
               #
               # The error names the SCHEME rather than the variable, deliberately:
               # this runs behind a signed network call and a peer has no business
               # learning which variables this deployment reads. The variable name
               # is in the adapter's own log at error level.
+              #
+              # tokenUrl is a PLACEHOLDER, like knowledge's below: a host is a
+              # per-deployment fact and none belongs in this file. Startup does
+              # not parse it, so this comes up as it stands and every mandi
+              # request then fails at the token exchange.
+              #
+              # A STATIC TOKEN IS STILL POSSIBLE, for a mock or a deployment
+              # issued one directly: authScheme query, queryName token,
+              # queryValueEnv MANDI_TOKEN.
 
           # ------------------------------------------------------------------
           # KnowledgeAdvisory -- the network's knowledge capability, answered
