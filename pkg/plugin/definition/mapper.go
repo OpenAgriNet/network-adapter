@@ -48,6 +48,24 @@ type Mapper interface {
 	// is no document to send.
 	Transform(ctx context.Context, mappingRef string, direction Direction, input any) ([]byte, error)
 
+	// Extract runs the mapping's extract half over input and returns what it
+	// yields, as JSON for the caller to decode.
+	//
+	// It exists because a mapping's other output is bytes for a wire -- the
+	// request half's goes to the provider, the response half's to the caller,
+	// and Go inspects neither. Work that must happen BEFORE either leg needs
+	// the values themselves, and splitting one payload across several upstream
+	// calls is the case: how many calls a payload becomes is a fact about the
+	// payload, so it is read from the payload rather than compiled in.
+	//
+	// Not a Direction, deliberately: the two directions are legs of an
+	// exchange, and this runs before both.
+	//
+	// A mapping declaring no extract half produces nothing, with no error, so a
+	// capability that serves one payload with one call declares nothing and
+	// needs to know nothing about this.
+	Extract(ctx context.Context, mappingRef string, input any) ([]byte, error)
+
 	// Verify checks the preconditions the mapping at mappingRef declares, and
 	// returns an error carrying the mapping's own explanation when one fails.
 	//

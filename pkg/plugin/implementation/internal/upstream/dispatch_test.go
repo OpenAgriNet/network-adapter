@@ -43,6 +43,8 @@ type fixedMapper struct{ answer string }
 
 func (m fixedMapper) Verify(context.Context, string, any) error { return nil }
 
+func (m fixedMapper) Extract(context.Context, string, any) ([]byte, error) { return nil, nil }
+
 func (m fixedMapper) Transform(_ context.Context, mappingRef string, _ definition.Direction, _ any) ([]byte, error) {
 	if strings.Contains(mappingRef, "request") {
 		return []byte(`{}`), nil

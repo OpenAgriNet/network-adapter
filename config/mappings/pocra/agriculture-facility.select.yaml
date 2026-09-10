@@ -61,7 +61,7 @@ required:
       )
     message: "supportedFacilityTypes must not repeat a facility type"
 
-# ONE call per payload, and this file is written for exactly that.
+# What one payload must be split across, one upstream call per value.
 #
 # POCRA's search takes exactly ONE category code: a comma-separated pair
 # ("kvk,warehouse") answers 200 with no providers at all, and a category array
@@ -69,17 +69,24 @@ required:
 # API. So a payload asking for two facility types cannot be served by one call,
 # however this file is written.
 #
-# The plugin handles that before this file is reached. It reads
-# supportedFacilityTypes out of the payload, splits a multi-type search into
-# one single-type payload per type, runs each of them concurrently and merges
-# the answers -- see AgricultureFacility/search.go. So what arrives here always
-# names exactly one facility type, and both halves below read it straight off
-# the payload with no variable injected from Go.
+# This half is what tells the plugin so. It yields the facility types the
+# payload asks for, in the order the payload wrote them; the plugin makes one
+# single-type payload per value, runs them concurrently and merges the answers
+# -- see AgricultureFacility/search.go. What arrives at the halves below
+# therefore always names exactly one facility type.
 #
-# The cost of that, for whoever edits this file next: the required: checks
-# above read supportedFacilityTypes in JSONata, and search.go reads the same
-# path in Go. If the Beckn payload moves that field, BOTH change, and only
-# this one is a config edit.
+# The point of declaring it HERE rather than reading it in Go: this path now
+# appears once in configuration instead of once here and once compiled in. If
+# the Beckn payload moves supportedFacilityTypes, this file changes and nothing
+# is rebuilt.
+#
+# The wrapping [] is load-bearing. JSONata yields a bare value for a
+# single-entry list, and the plugin splits on whatever this produces -- so
+# without it a one-type search would hand back a string where the plugin reads
+# a list. It also makes a caller who wrote a scalar rather than a list mean the
+# same thing, which is what the required: checks above already assume.
+extract: |
+  [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes]
 
 # The upstream is a POST, so this object becomes the request body.
 #

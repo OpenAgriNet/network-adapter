@@ -6,17 +6,23 @@
 // outright, both verified against the live API. So a payload asking for three
 // facility types cannot be served by one call, however the mapping is written.
 //
-// What this file does about that: read the types out of the payload, split one
-// inbound payload into one single-type payload per type, run the ordinary
-// one-payload-one-call step over each of them concurrently, and merge the
-// answers back into one.
+// What this file does about that: ask the mapping which types the payload asks
+// for, split one inbound payload into one single-type payload per type, run the
+// ordinary one-payload-one-call step over each of them concurrently, and merge
+// the answers back into one.
 //
-// Nothing below this file knows any of that. internal/upstream serves one
-// payload with one call and has no notion of splitting; jsonmapper compiles
-// the two halves every mapping has and no third thing; internal/concurrent
-// runs N of anything, bounded and ordered, and has never heard of Beckn. The
-// mapping this runs is written for a single-type payload, which is what it is
-// always handed.
+// The types come from the mapping's extract half, not from a path compiled in
+// here. Which field of a Beckn payload names them is a fact about the payload
+// rather than about POCRA, and the mapping states it already for its own
+// required: checks -- so stating it twice meant a payload shape change touched
+// a config file and a build, and only one of those is a config edit.
+//
+// Nothing below this file knows what a split is. internal/upstream serves one
+// payload with one call; jsonmapper runs whatever half it is asked for and
+// never learns why; internal/concurrent runs N of anything, bounded and
+// ordered, and has never heard of Beckn. The count, the ceiling, the split and
+// the merge are all here. The two halves that translate an exchange are handed
+// a single-type payload, which is what they are always written for.
 //
 // Separated from the package clause by a blank line on purpose: the package's
 // own doc comment is in AgricultureFacility.go, and this is a note about one
@@ -27,8 +33,10 @@ package AgricultureFacility
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -92,6 +100,17 @@ type Step struct {
 	paths       capabilitybinding.Paths
 	bindingKeys []string
 
+	// registry and mapper are what reading the split from configuration costs.
+	//
+	// The values to split on are declared by the mapping's extract half, and
+	// the reference to the mapping is on the registry record -- so this step
+	// resolves the record itself rather than reading a path out of the payload
+	// in Go. inner resolves the same record again for the parts it is handed;
+	// the second lookup is the price of leaving inner a step that serves one
+	// payload with one call and knows nothing about splitting.
+	registry definition.ProviderRecordLookup
+	mapper   definition.Mapper
+
 	// concurrency is how many of a split search's calls run at once.
 	concurrency int
 }
@@ -113,7 +132,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 			"agriculture facility: the payload is not JSON: %w", err))
 	}
 
-	types, err := facilityTypesFrom(beckn)
+	types, err := s.facilityTypes(ctx, beckn)
 	if err != nil {
 		return err
 	}
@@ -185,6 +204,105 @@ func (s *Step) runPart(partCtx *model.StepContext) error {
 				"with the same binding keys")
 	}
 	return nil
+}
+
+// facilityTypes returns the facility types this payload must be split across,
+// in the order the mapping yielded them -- one upstream call each.
+//
+// Read from the mapping rather than from a path compiled in here. The path into
+// a Beckn payload is a fact about the payload, and the mapping already states
+// it in its required: checks; stating it a second time in Go meant a payload
+// shape change touched both, and only one of them was a config edit.
+//
+// What a bad payload is stays the mapping's business too: inner asks the
+// mapping's preconditions about every part it is handed, so nothing here
+// judges the values. They are the split, whatever they say.
+func (s *Step) facilityTypes(ctx *model.StepContext, beckn any) ([]string, error) {
+	mappingRef, err := s.mappingRef(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Asked HERE, of the whole payload, and not left to the parts.
+	//
+	// inner asks the same preconditions of every part it is handed, but a part
+	// names exactly one facility type -- so a rule about the SET of them, and
+	// "must not repeat" is one, cannot see a repeat by then. It was a check
+	// that could never fail. This is the only point at which the payload is
+	// still whole, so it is the only place such a rule can be enforced.
+	//
+	// The caller gets the mapping's own words either way: nothing here decides
+	// what a bad payload is.
+	if err := s.mapper.Verify(ctx, mappingRef, map[string]any{"beckn": beckn}); err != nil {
+		return nil, err
+	}
+
+	declared, err := s.mapper.Extract(ctx, mappingRef, map[string]any{"beckn": beckn})
+	if err != nil {
+		return nil, err
+	}
+	if len(declared) == 0 {
+		// The mapping declares no extract half, so it does not describe a
+		// search that splits. Nothing here can serve such a payload: this step
+		// exists only to split one.
+		return nil, fmt.Errorf(
+			"agriculture facility: mapping %q declares no extract half, so there is nothing to "+
+				"split this search across", mappingRef)
+	}
+
+	var values []string
+	if err := json.Unmarshal(declared, &values); err != nil {
+		return nil, fmt.Errorf(
+			"agriculture facility: mapping %q yielded %s, want a list of facility types: %w",
+			mappingRef, declared, err)
+	}
+	return values, nil
+}
+
+// mappingRef resolves which mapping serves this payload.
+//
+// Resolved the way inner resolves it -- binding key from the payload, record
+// from the registry, action from the payload -- because the two have to agree
+// about which file describes this exchange. A second reading that drifted would
+// split a payload by one mapping and then call the provider by another.
+func (s *Step) mappingRef(ctx *model.StepContext) (string, error) {
+	binding, err := capabilitybinding.From(s.paths, ctx.Body)
+	if err != nil {
+		return "", model.NewBadReqErr("", err)
+	}
+
+	plan, err := s.registry.ProviderRecord(ctx, binding.Key())
+	if err != nil {
+		if errors.Is(err, definition.ErrProviderRecordNotFound) {
+			return "", model.NewNotFoundErr("", fmt.Errorf(
+				"agriculture facility: the registry publishes no active binding for %s: %w",
+				binding.Key(), err))
+		}
+		return "", fmt.Errorf("agriculture facility: no call plan for %s: %w", binding.Key(), err)
+	}
+
+	action := actionOf(ctx.Body)
+	call, served := plan.Actions[action]
+	if !served {
+		return "", model.NewBadReqErr("", fmt.Errorf(
+			"agriculture facility: %s does not serve action %q; it serves %s",
+			plan.BindingKey, action, strings.Join(plan.ServedActions(), ", ")))
+	}
+	return call.Mappings, nil
+}
+
+// actionOf reads which action a payload names. Absent reads as empty, which no
+// record serves, so it is refused above rather than here.
+func actionOf(body []byte) string {
+	var payload struct {
+		Context struct {
+			Action string `json:"action"`
+		} `json:"context"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	return payload.Context.Action
 }
 
 // mine reports whether this payload names one of the capabilities this step
@@ -377,6 +495,22 @@ func commitmentOf(document map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("agriculture facility: an answer's commitment is %T, not an object", commitments[0])
 	}
 	return commitment, nil
+}
+
+// dig walks a chain of object keys, returning nil the moment one is absent or
+// is not an object. Written out rather than reached for from a library because
+// a mistyped key must read as an absent field, which is a bad request, and not
+// as a panic.
+func dig(document map[string]any, keys ...string) any {
+	var current any = document
+	for _, key := range keys {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = object[key]
+	}
+	return current
 }
 
 // messageIDOf reads the caller's own message id, for the merged answer to

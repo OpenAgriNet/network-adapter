@@ -13,6 +13,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +26,105 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/AgricultureFacility"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
+
+// runSearchWithExtract runs a search against the SHIPPED mapping with only its
+// extract half replaced, so a test can make the mapping name values the payload
+// does not and see which of the two the split follows.
+//
+// Everything else is the published file: patching one half rather than writing
+// a mapping from scratch keeps the request and response halves honest, so the
+// exchange completes and the assertion is about the split alone.
+func runSearchWithExtract(t *testing.T, types []string, extract string, byCode map[string]string) *pocraByCategory {
+	t.Helper()
+
+	source, err := os.ReadFile(filepath.Join(mappingsDir, shippedMapping))
+	if err != nil {
+		t.Fatalf("could not read the shipped mapping: %v", err)
+	}
+	patched, err := withExtractHalf(string(source), extract)
+	if err != nil {
+		t.Fatalf("could not patch the shipped mapping: %v", err)
+	}
+
+	mappings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, patched)
+	}))
+	defer mappings.Close()
+
+	pocra := &pocraByCategory{byCode: byCode}
+	upstream := httptest.NewServer(pocra)
+	defer upstream.Close()
+
+	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
+	if err != nil {
+		t.Fatalf("failed to build the mapper: %v", err)
+	}
+	defer closeMapper()
+
+	registry := &stubRegistry{plan: &model.ProviderRecord{
+		BindingKey: shippedBindingKey, BaseURL: upstream.URL,
+		Actions: map[string]model.ActionPlan{
+			"select": {Method: http.MethodPost, Path: "/search",
+				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
+		},
+	}}
+
+	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+		&AgricultureFacility.Config{BindingKeys: []string{shippedBindingKey}})
+	if err != nil {
+		t.Fatalf("failed to build the step: %v", err)
+	}
+	defer closeStep()
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	attributes(t, payload)["supportedFacilityTypes"] = toAny(types)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("could not rebuild the payload: %v", err)
+	}
+
+	stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+	if err := step.Run(stepCtx); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	return pocra
+}
+
+// withExtractHalf swaps the mapping's extract half for the given expression,
+// leaving every other half as published.
+//
+// The half is found by its key and replaced up to the next top-level key, so
+// this does not depend on how many lines the shipped expression spans. A
+// mapping with no extract half at all is an error rather than a silent
+// no-op: the test that patches one is asserting about the half, so its absence
+// is the thing worth failing on.
+func withExtractHalf(source, expression string) (string, error) {
+	const key = "extract: |"
+	start := strings.Index(source, key)
+	if start < 0 {
+		return "", fmt.Errorf("the mapping declares no %q half to replace", key)
+	}
+	rest := source[start+len(key):]
+	// The next line that starts in column one is the next key, so the half ends
+	// there. Every line of an expression is indented.
+	end := len(rest)
+	for offset := 0; offset < len(rest); {
+		lineEnd := strings.IndexByte(rest[offset:], '\n')
+		if lineEnd < 0 {
+			break
+		}
+		next := offset + lineEnd + 1
+		if next < len(rest) && rest[next] != ' ' && rest[next] != '\n' && rest[next] != '\t' {
+			end = next
+			break
+		}
+		offset = next
+	}
+	return source[:start] + key + "\n  " + expression + "\n\n" + rest[end:], nil
+}
 
 // runSearchTimed is runSplitSearch's sibling: it hands the caller a raw HTTP
 // handler (so a test can measure timing or count in-flight calls) and an
@@ -68,6 +171,30 @@ func runSearchTimed(t *testing.T, types []string, cfg *AgricultureFacility.Confi
 	}
 
 	return step.Run(&model.StepContext{Context: t.Context(), Body: body})
+}
+
+// The values a search splits on come from the MAPPING, not from a path
+// compiled into this package.
+//
+// The payload here names one facility type and the mapping's extract half names
+// two. What reaches POCRA has to follow the mapping: that is the whole point of
+// declaring the split in configuration, and it is what lets a provider whose
+// payload puts the types somewhere else ship a mapping rather than a build.
+//
+// Written this way round -- mapping and payload deliberately disagreeing --
+// because a test where they agree passes whichever one the code actually reads.
+func TestSearchSplitsOnWhatTheMappingExtracts(t *testing.T) {
+	t.Parallel()
+
+	pocra := runSearchWithExtract(t,
+		[]string{"Warehouse"},
+		`["KrishiVigyanKendra","Warehouse"]`,
+		map[string]string{"kvk": providerResponse, "warehouse": warehouseResponse})
+
+	if want := []string{"kvk", "warehouse"}; !slices.Equal(pocra.asked(), want) {
+		t.Errorf("POCRA was asked for %v, want %v -- the split did not follow the mapping",
+			pocra.asked(), want)
+	}
 }
 
 // A search's calls are sequential unless the deployment raised the limit.

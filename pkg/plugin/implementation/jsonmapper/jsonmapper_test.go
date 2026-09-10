@@ -449,6 +449,152 @@ func TestVerifyCompilesWithTheRestOfTheFile(t *testing.T) {
 	}
 }
 
+// --- extraction -------------------------------------------------------------
+
+// withExtract is a mapping that also declares what a caller must read out of a
+// payload before either half runs.
+const withExtract = `extract: |
+  [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes]
+
+request: |
+  { "txn": beckn.context.transactionId }
+
+response: |
+  { "txn": beckn.context.transactionId }
+`
+
+func extractInput() map[string]any {
+	return map[string]any{
+		"beckn": map[string]any{
+			"context": map[string]any{"transactionId": "txn-123"},
+			"message": map[string]any{"contract": map[string]any{"commitments": []any{
+				map[string]any{"resources": []any{
+					map[string]any{"resourceAttributes": map[string]any{
+						"supportedFacilityTypes": []any{"KrishiVigyanKendra", "Warehouse"},
+					}},
+				}},
+			}}},
+		},
+	}
+}
+
+// The extract half is the only output of a mapping that comes back to Go as
+// values rather than bytes for a wire, so what it yields has to survive the
+// round trip as JSON.
+func TestExtractRunsTheExtractHalf(t *testing.T) {
+	t.Parallel()
+
+	srv := newMappingServer(t, withExtract, nil)
+	defer srv.Close()
+
+	got, err := newTestMapper(t).Extract(context.Background(), ref(srv.URL), extractInput())
+	if err != nil {
+		t.Fatalf("Extract() returned an unexpected error: %v", err)
+	}
+
+	var values []string
+	if err := json.Unmarshal(got, &values); err != nil {
+		t.Fatalf("failed to decode the result %q: %v", got, err)
+	}
+	want := []string{"KrishiVigyanKendra", "Warehouse"}
+	if len(values) != len(want) {
+		t.Fatalf("Extract() = %v, want %v", values, want)
+	}
+	for index, value := range want {
+		if values[index] != value {
+			t.Errorf("value %d = %q, want %q -- the payload's order was not kept", index, values[index], value)
+		}
+	}
+}
+
+// A single value still yields a list, because the half wraps what it reads.
+// Splitting on a bare string is what the wrapping exists to prevent.
+func TestExtractYieldsAListForOneValue(t *testing.T) {
+	t.Parallel()
+
+	srv := newMappingServer(t, withExtract, nil)
+	defer srv.Close()
+
+	input := extractInput()
+	becknOf(input)["message"] = map[string]any{"contract": map[string]any{"commitments": []any{
+		map[string]any{"resources": []any{
+			map[string]any{"resourceAttributes": map[string]any{"supportedFacilityTypes": "Warehouse"}},
+		}},
+	}}}
+
+	got, err := newTestMapper(t).Extract(context.Background(), ref(srv.URL), input)
+	if err != nil {
+		t.Fatalf("Extract() returned an unexpected error: %v", err)
+	}
+	if string(got) != `["Warehouse"]` {
+		t.Errorf("Extract() = %s, want [\"Warehouse\"]", got)
+	}
+}
+
+// A mapping with nothing to extract is the common case: most capabilities serve
+// one payload with one call and read no values in Go at all. Nothing is an
+// answer, not a failure -- what it means belongs to the caller.
+func TestExtractProducesNothingWithoutAnExtractHalf(t *testing.T) {
+	t.Parallel()
+
+	srv := newMappingServer(t, bothDirections, nil)
+	defer srv.Close()
+
+	got, err := newTestMapper(t).Extract(context.Background(), ref(srv.URL), requestInput())
+	if err != nil {
+		t.Fatalf("Extract() returned an unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("Extract() = %q, want nothing", got)
+	}
+}
+
+// A broken extract half is the mapping's fault and is reported as one, without
+// taking the halves that do compile down with it.
+func TestExtractIsolatesABrokenExtractHalf(t *testing.T) {
+	t.Parallel()
+
+	mapping := `extract: |
+  [beckn.message.(
+
+request: |
+  { "txn": beckn.context.transactionId }
+`
+	srv := newMappingServer(t, mapping, nil)
+	defer srv.Close()
+	mapper := newTestMapper(t)
+
+	if _, err := mapper.Extract(context.Background(), ref(srv.URL), requestInput()); err == nil {
+		t.Error("Extract() was accepted, want the broken half reported")
+	}
+	if _, err := mapper.Transform(context.Background(), ref(srv.URL),
+		definition.DirectionRequest, requestInput()); err != nil {
+		t.Errorf("Transform() returned an unexpected error: %v -- a broken extract half took the request half down", err)
+	}
+}
+
+// The extract half compiles with the rest of the file, so reading values costs
+// no extra fetch.
+func TestExtractCompilesWithTheRestOfTheFile(t *testing.T) {
+	t.Parallel()
+
+	var fetches atomic.Int32
+	srv := newMappingServer(t, withExtract, &fetches)
+	defer srv.Close()
+	mapper := newTestMapper(t)
+
+	if _, err := mapper.Extract(context.Background(), ref(srv.URL), extractInput()); err != nil {
+		t.Fatalf("Extract() returned an unexpected error: %v", err)
+	}
+	if _, err := mapper.Transform(context.Background(), ref(srv.URL),
+		definition.DirectionRequest, extractInput()); err != nil {
+		t.Fatalf("Transform() returned an unexpected error: %v", err)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("fetched %d times, want 1 -- extraction refetched the file", got)
+	}
+}
+
 // --- direction validation ---------------------------------------------------
 
 // A direction outside the two is a caller bug, not a mapping problem, and must

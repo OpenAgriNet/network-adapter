@@ -44,6 +44,11 @@ const (
 // rather than a fault of this adapter.
 const codeAdaptationFailed = "SCH_SCHEMA_ADAPTATION_FAILED"
 
+// halfExtract names the extract half in a log line or an error, where the two
+// directions name themselves. A constant of its own because it is not a
+// definition.Direction and must not become one -- see mappingFile.Extract.
+const halfExtract = "extract"
+
 // mappingFile is the published form of a mapping: one binding-action, both
 // directions.
 //
@@ -59,8 +64,18 @@ type mappingFile struct {
 	// Required are the preconditions this binding-action imposes on a payload,
 	// verified before either half runs. Absent means none.
 	Required []requirement `yaml:"required"`
-	Request  string        `yaml:"request"`
-	Response string        `yaml:"response"`
+	// Extract is what a caller must read out of a payload before either half
+	// runs, for work a mapping cannot do itself -- splitting one payload across
+	// several upstream calls is the case this exists for. Absent means there is
+	// nothing to read, which is every capability that serves a payload with one
+	// call.
+	//
+	// Not a direction, deliberately. Request and Response are legs of an
+	// exchange and their output goes on a wire; this runs before both and its
+	// output never leaves the process.
+	Extract  string `yaml:"extract"`
+	Request  string `yaml:"request"`
+	Response string `yaml:"response"`
 }
 
 // requirement is one precondition: what must hold, and what to tell the caller
@@ -181,6 +196,9 @@ type cacheEntry struct {
 	directions map[definition.Direction]*compiledMapping
 	// checks are the file's preconditions, in the order it declared them.
 	checks []*compiledRequirement
+	// extract is the file's extract half. Held beside directions rather than in
+	// it because it is not one: see mappingFile.Extract.
+	extract *compiledMapping
 	// err is a failure that applies to the whole file -- it could not be
 	// fetched, or not parsed -- as opposed to one action failing to compile.
 	err       error
@@ -304,7 +322,28 @@ func (m *Mapper) Transform(ctx context.Context, mappingRef string, direction def
 		log.Debugf(ctx, "JSON mapping %s carries no %s transform", mappingRef, direction)
 		return nil, nil
 	}
-	return m.evaluate(ctx, mapping, mappingRef, direction, input)
+	return m.evaluate(ctx, mapping, mappingRef, string(direction), input)
+}
+
+// Extract runs the extract half of the mapping at mappingRef over input.
+//
+// The result is JSON for the caller to decode, not bytes for a wire: this is
+// the only output of a mapping that comes back to Go as values. Nothing, with
+// no error, is what a mapping declaring no extract half produces -- and what
+// that means belongs to the caller.
+func (m *Mapper) Extract(ctx context.Context, mappingRef string, input any) ([]byte, error) {
+	entry, err := m.compiled(ctx, mappingRef)
+	if err != nil {
+		return nil, err
+	}
+	if entry.extract.err != nil {
+		return nil, entry.extract.err
+	}
+	if !entry.extract.hasTransform() {
+		log.Debugf(ctx, "JSON mapping %s carries no extract half", mappingRef)
+		return nil, nil
+	}
+	return m.evaluate(ctx, entry.extract, mappingRef, halfExtract, input)
 }
 
 // Verify checks the preconditions the mapping declares, in the order declared.
@@ -394,8 +433,8 @@ func (m *Mapper) compiled(ctx context.Context, mappingRef string) (cacheEntry, e
 		if entry, found := m.cached(mappingRef); found {
 			return entry, entry.err
 		}
-		directions, checks, err := m.fetchAndCompile(ctx, mappingRef)
-		return m.remember(mappingRef, directions, checks, err), err
+		compiled, err := m.fetchAndCompile(ctx, mappingRef)
+		return m.remember(mappingRef, compiled, err), err
 	})
 	entry, _ := shared.(cacheEntry)
 	return entry, err
@@ -416,18 +455,14 @@ func (m *Mapper) cached(mappingRef string) (cacheEntry, bool) {
 // remember caches a compiled mapping, or the failure that stopped it compiling.
 // A failure gets the shorter TTL: it should stop hammering a broken reference
 // without outlasting the fix.
-func (m *Mapper) remember(mappingRef string, directions map[definition.Direction]*compiledMapping,
-	checks []*compiledRequirement, err error) cacheEntry {
+func (m *Mapper) remember(mappingRef string, compiled cacheEntry, err error) cacheEntry {
 	ttl := m.config.CacheTTL
 	if err != nil {
 		ttl = m.config.NegativeTTL
 	}
-	entry := cacheEntry{
-		directions: directions,
-		checks:     checks,
-		err:        err,
-		expiresAt:  time.Now().Add(ttl),
-	}
+	entry := compiled
+	entry.err = err
+	entry.expiresAt = time.Now().Add(ttl)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -476,15 +511,14 @@ func (m *Mapper) cachedCount() int {
 }
 
 // fetchAndCompile retrieves a mapping and turns it into a runnable expression.
-func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (
-	map[definition.Direction]*compiledMapping, []*compiledRequirement, error) {
+func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (cacheEntry, error) {
 	body, err := m.fetch(ctx, mappingRef)
 	if err != nil {
-		return nil, nil, err
+		return cacheEntry{}, err
 	}
 	file, err := parseMapping(body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
+		return cacheEntry{}, fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
 	}
 
 	// Preconditions compile with the halves, so one round trip leaves the whole
@@ -498,10 +532,14 @@ func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (
 	// the file ready in both directions. A compile failure is recorded against
 	// its own half and goes no further.
 	directions := make(map[definition.Direction]*compiledMapping, 2)
-	directions[definition.DirectionRequest] = m.compileMapping(ctx, mappingRef, definition.DirectionRequest, file.Request)
-	directions[definition.DirectionResponse] = m.compileMapping(ctx, mappingRef, definition.DirectionResponse, file.Response)
+	directions[definition.DirectionRequest] = m.compileMapping(ctx, mappingRef, string(definition.DirectionRequest), file.Request)
+	directions[definition.DirectionResponse] = m.compileMapping(ctx, mappingRef, string(definition.DirectionResponse), file.Response)
 	log.Debugf(ctx, "JSON mapper compiled mapping: %s (%d precondition(s))", mappingRef, len(checks))
-	return directions, checks, nil
+	return cacheEntry{
+		directions: directions,
+		checks:     checks,
+		extract:    m.compileMapping(ctx, mappingRef, halfExtract, file.Extract),
+	}, nil
 }
 
 // compileRequirement compiles one precondition, keeping any failure local to it.
@@ -527,16 +565,20 @@ func (m *Mapper) compileRequirement(ctx context.Context, mappingRef string, decl
 }
 
 // compileMapping compiles one half, keeping any failure local to it.
-func (m *Mapper) compileMapping(ctx context.Context, mappingRef string, direction definition.Direction, source string) *compiledMapping {
+//
+// half names which one for the log and the error, as a plain string rather than
+// a definition.Direction: the extract half compiles the same way and is not a
+// direction.
+func (m *Mapper) compileMapping(ctx context.Context, mappingRef string, half string, source string) *compiledMapping {
 	if strings.TrimSpace(source) == "" {
-		// No transform for this direction. Not an error: a request half is
+		// No transform for this half. Not an error: a request half is
 		// legitimately empty when the caller builds its own request.
 		return &compiledMapping{}
 	}
 	expression, err := m.instance.Compile(source, false)
 	if err != nil {
-		log.Errorf(ctx, err, "JSON mapper could not compile the %s half of %s: %v", direction, mappingRef, err)
-		return &compiledMapping{err: fmt.Errorf("jsonmapper: mapping %q %s half failed to compile: %w", mappingRef, direction, err)}
+		log.Errorf(ctx, err, "JSON mapper could not compile the %s half of %s: %v", half, mappingRef, err)
+		return &compiledMapping{err: fmt.Errorf("jsonmapper: mapping %q %s half failed to compile: %w", mappingRef, half, err)}
 	}
 	return &compiledMapping{expression: expression}
 }
@@ -628,7 +670,7 @@ func marshalInput(input any) ([]byte, error) {
 }
 
 // evaluate runs a compiled mapping over the input document.
-func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mappingRef string, direction definition.Direction, input any) ([]byte, error) {
+func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mappingRef string, half string, input any) ([]byte, error) {
 	document, err := marshalInput(input)
 	if err != nil {
 		return nil, fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
@@ -639,9 +681,9 @@ func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mapping
 	// Marshalling above is deliberately outside the lock.
 	result, err := evaluateLocked(mapping.expression, document)
 	if err != nil {
-		log.Errorf(ctx, err, "JSON mapping %s %s half failed to evaluate: %v", mappingRef, direction, err)
-		wrapped := fmt.Errorf("mapping %q %s half could not be applied: %w", mappingRef, direction, err)
-		if direction == definition.DirectionResponse {
+		log.Errorf(ctx, err, "JSON mapping %s %s half failed to evaluate: %v", mappingRef, half, err)
+		wrapped := fmt.Errorf("mapping %q %s half could not be applied: %w", mappingRef, half, err)
+		if half == string(definition.DirectionResponse) {
 			// The input here is the PROVIDER's answer, not the caller's
 			// request. A provider that changed shape, or a bug in the response
 			// half, is nothing the caller did -- reporting 400 sends them off

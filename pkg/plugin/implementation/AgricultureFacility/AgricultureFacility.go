@@ -113,6 +113,8 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		inner:       one,
 		paths:       paths,
 		bindingKeys: cfg.BindingKeys,
+		registry:    registry,
+		mapper:      mapper,
 		concurrency: searchConcurrency(cfg.SearchConcurrency),
 	}, closer, nil
 }

@@ -22,6 +22,8 @@ type stubMapper struct{}
 
 func (stubMapper) Verify(context.Context, string, any) error { return nil }
 
+func (stubMapper) Extract(context.Context, string, any) ([]byte, error) { return nil, nil }
+
 func (stubMapper) Transform(context.Context, string, definition.Direction, any) ([]byte, error) {
 	return nil, nil
 }

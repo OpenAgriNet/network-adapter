@@ -45,6 +45,8 @@ type stubProviderMapper struct{}
 
 func (stubProviderMapper) Verify(context.Context, string, any) error { return nil }
 
+func (stubProviderMapper) Extract(context.Context, string, any) ([]byte, error) { return nil, nil }
+
 func (stubProviderMapper) Transform(context.Context, string, definition.Direction, any) ([]byte, error) {
 	return nil, nil
 }

@@ -73,6 +73,13 @@ func (s *stubMapper) Verify(_ context.Context, mappingRef string, input any) err
 	return s.verifyErr
 }
 
+// Nothing to extract. This package serves one payload with one call, so no
+// mapping it runs declares an extract half -- the caller that reads one is the
+// domain step that wraps this.
+func (s *stubMapper) Extract(context.Context, string, any) ([]byte, error) {
+	return nil, nil
+}
+
 func (s *stubMapper) Transform(_ context.Context, mappingRef string, direction definition.Direction, input any) ([]byte, error) {
 	s.directions = append(s.directions, direction)
 	s.refs = append(s.refs, mappingRef)
