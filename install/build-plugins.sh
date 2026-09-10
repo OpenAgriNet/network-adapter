@@ -35,6 +35,7 @@ plugins=(
     "WeatherObservation"
     "MandiPrice"
     "KnowledgeAdvisory"
+    "AgricultureFacility"
     "manifestloader"
     "reqpreprocessor"
     "otelsetup"

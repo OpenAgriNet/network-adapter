@@ -106,7 +106,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		return nil, nil, err
 	}
 
-	paths, err := bindingPaths(cfg)
+	paths, err := BindingPaths(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -135,11 +135,16 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	return step, closer, nil
 }
 
-// bindingPaths resolves where this step reads a binding key from.
+// BindingPaths resolves where this step reads a binding key from.
 //
 // Both halves or neither: one overridden and one defaulted would match nothing,
 // silently, on every request.
-func bindingPaths(cfg *Config) (Paths, error) {
+//
+// EXPORTED for a domain package that has to answer "is this payload mine?" the
+// same way this step does -- AgricultureFacility, whose search.go fans one
+// request out over several capability types. The alternative is reading the
+// same two config fields a second time, which is how the two drift apart.
+func BindingPaths(cfg *Config) (Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
 		return BecknV2, nil
 	}

@@ -116,6 +116,19 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		// quoted back, credential and all.
 		log.Warnf(ctx, "provider returned %s for %s %s: %s",
 			resp.Status, method, requested, s.redactString(util.Explain(body)))
+
+		// A held token the provider has stopped accepting is dropped, so the
+		// next call exchanges a fresh one.
+		//
+		// This is what keeps a wrong tokenTtl from being an outage. The
+		// lifetime is an operator's ESTIMATE -- the endpoint states no expiry
+		// -- so a too-generous one leaves a dead token cached, and without this
+		// every call would fail until it lapsed. One request pays; the next
+		// recovers.
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			s.forgetToken(auth)
+		}
+
 		err := fmt.Errorf("provider returned %s", resp.Status)
 		// 5xx and 429 ask to be tried again. Every other 4xx is a statement
 		// about the request, which will not improve.
