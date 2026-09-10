@@ -1,0 +1,59 @@
+# Agmarknet Vistaar market-commodity mapping, one state at a time.
+#
+# THIS CALL ALREADY CARRIES EVERY CODE A SELECT NEEDS, pre-joined -- which is
+# why the tool does not fetch master data options 4 and 5 for districts and
+# then match them by name:
+#
+#   market_id             -> the price call's marketcode
+#   district_id           -> its districtcode
+#   state_code            -> its statecode
+#   cmdt_details[].cmdt_id -> its commoditycode
+#
+# The master rows carry agm_district_code and agm_market_center_code as well.
+# They are DIFFERENT NUMBERS and are not what the price call takes.
+#
+# option=6 here is not the same enumeration as option=6 on master-data. It is
+# kept exactly as observed against the live service rather than inferred from
+# the other call.
+#
+# $count(...) > 0 RATHER THAN $exists($match(...)): this engine returns an EMPTY
+# ARRAY from $match when nothing matches, and $exists([]) is true -- so the
+# $exists form silently accepts everything and the guard does nothing. The same
+# trap is documented in the adapter's mandi-price.select.yaml, where it was
+# caught by a test rather than by reading.
+required:
+  - check: |
+      $count($match(_local.stateCode, /^[A-Za-z]{2,4}$/)) > 0
+    message: "stateCode must be Agmarknet's short alphabetic state code, such as MH"
+  - check: |
+      $count($match(_local.fromDate, /^[0-9]{2}-[0-9]{2}-[0-9]{4}$/)) > 0
+        and $count($match(_local.toDate, /^[0-9]{2}-[0-9]{2}-[0-9]{4}$/)) > 0
+    message: "fromDate and toDate must be dd-MM-yyyy, which is what this upstream reads"
+
+request: |
+  {
+    "token":     _local.token,
+    "statecode": _local.stateCode,
+    "option":    "6",
+    "from_date": _local.fromDate,
+    "to_date":   _local.toDate
+  }
+
+# TWO WRAPS, NOT ONE. JSONata collapses a one-element sequence at every level,
+# so the outer list needs [...] for a state with one market AND the inner list
+# needs its own for a market trading one commodity. The second is the easier to
+# miss and the more common in the data.
+response: |
+  [$map(response, function($row) {
+    {
+      "marketId":     $row.market_id,
+      "marketName":   $trim($row.mkt_name),
+      "stateCode":    $row.state_code,
+      "stateName":    $trim($row.state_name),
+      "districtId":   $row.district_id,
+      "districtName": $trim($row.district_name),
+      "commodities":  [$map($row.cmdt_details, function($c) {
+        { "code": $c.cmdt_id, "name": $trim($c.cmdt_name) }
+      })]
+    }
+  })]
