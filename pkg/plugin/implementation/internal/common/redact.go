@@ -129,6 +129,25 @@ func (a *authenticator) secretForms() []string {
 			forms = append(forms, encoded)
 		}
 		return forms
+	case util.AuthSchemeTokenQuery:
+		// oauth2's two halves, with query's escaping: the secret goes to the
+		// token endpoint, and the token it returns travels in a QUERY STRING --
+		// which is the exposed placement, so its escaped form has to be
+		// covered too or a token containing "+" or "=" survives redaction.
+		var forms []string
+		if secret := os.Getenv(a.cfg.TokenSecretEnv); secret != "" {
+			forms = append(forms, secret)
+		}
+		// Read without tokenMu: reached from inside the exchange, which holds it.
+		if held := a.token.Load(); held != nil && held.value != "" {
+			forms = append(forms, held.value)
+			if encoded := url.QueryEscape(held.value); encoded != held.value {
+				forms = append(forms, encoded)
+			}
+		}
+		// tokenUserField's value is NOT redacted, for the same reason a client
+		// id is not: it identifies, it does not authenticate.
+		return forms
 	}
 	return nil
 }
