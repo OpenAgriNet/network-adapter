@@ -63,7 +63,7 @@ const selectRequest = `{
           "resources": [
             {
               "id": "res:agmarknet:price-enquiry",
-              "quantity": 1,
+              "quantity": { "count": 1 },
               "resourceAttributes": {
                 "@context": "https://schemas.openagrinet.global/schema/MandiPrice/v0.1/context.jsonld",
                 "@type": "openagrinet:MandiPrice",
@@ -292,9 +292,11 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 			t.Errorf("resource id %q contains a space or bracket; use codes, not display names", id)
 		}
 		// Required by Commitment.resources in the spec even though the spec
-		// defines no quantity property.
-		if _, present := resource["quantity"]; !present {
-			t.Errorf("resource %s carries no quantity", id)
+		// defines no quantity property. The only shape it states is the one its
+		// own error example implies: an object carrying a count.
+		quantity, _ := resource["quantity"].(map[string]any)
+		if _, present := quantity["count"].(float64); !present {
+			t.Errorf("resource %s carries no quantity.count", id)
 		}
 		returned = append(returned, id)
 	}

@@ -65,7 +65,8 @@ const selectRequest = `{
         "@type": "openagrinet:WeatherObservation",
         "subjectCategories": ["Weather"],
         "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
-        "validity": { "startsAt": "2026-08-26", "endsAt": "2026-08-30" }
+        "validity": { "startsAt": "2026-08-26T00:00:00+05:30",
+                      "endsAt": "2026-08-30T23:59:59+05:30" }
       }
     }],
     "offer": {
@@ -238,9 +239,11 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 		}
 		// Required by Commitment.resources in the spec even though the spec
 		// defines no quantity property -- a consumer that validates refuses an
-		// answer without it.
-		if _, present := resource["quantity"]; !present {
-			t.Errorf("resource %s carries no quantity; the spec requires one on every commitment resource", id)
+		// answer without it. The only shape it states is the one its own error
+		// example implies: an object carrying a count.
+		quantity, _ := resource["quantity"].(map[string]any)
+		if _, present := quantity["count"].(float64); !present {
+			t.Errorf("resource %s carries no quantity.count; the spec requires a quantity on every commitment resource", id)
 		}
 		returned = append(returned, id)
 	}
@@ -293,19 +296,28 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 		t.Errorf("coordinates = %v, want [73.7898, 19.9975] in GeoJSON order", coordinates)
 	}
 
-	// This resource covers one day, so its validity opens and closes on it.
+	// This resource covers one day, so its validity spans that whole day. Both
+	// ends are format date-time in the pack's ClosedTimePeriod, so the bare
+	// "2026-08-26" this used to expect is not a legal value there, and a start
+	// equal to the end would claim a zero-length period for a 24-hour forecast.
 	validity, _ := attributes["validity"].(map[string]any)
-	if validity["startsAt"] != "2026-08-26" || validity["endsAt"] != "2026-08-26" {
-		t.Errorf("validity = %v, want the single day this resource reports", validity)
+	if validity["startsAt"] != "2026-08-26T00:00:00+05:30" ||
+		validity["endsAt"] != "2026-08-26T23:59:59+05:30" {
+		t.Errorf("validity = %v, want the whole of the single day this resource reports", validity)
 	}
 
+	// One entry per parameter, not one per statistic: the pack groups every
+	// statistic for a parameter under values, so tmin and tmax are two keys of
+	// one Temperature entry rather than two entries. Five for this day --
+	// Rainfall, Temperature, Humidity, WindSpeed and the warning as Alert. The
+	// seven this used to expect counted the flat form's entries.
 	parameters, _ := attributes["parameters"].([]any)
-	if len(parameters) != 7 {
-		t.Errorf("got %d parameters, want 7 for a fully-reported day with a warning", len(parameters))
+	if len(parameters) != 5 {
+		t.Errorf("got %d parameters, want 5 for a fully-reported day with a warning", len(parameters))
 	}
-	assertParameter(t, parameters, "Rainfall", "Total", "mm", 12.4)
-	assertParameter(t, parameters, "Temperature", "Minimum", "Cel", 22.1)
-	assertParameter(t, parameters, "WindSpeed", "Average", "m/s", 4.2)
+	assertParameter(t, parameters, "Rainfall", "mm", map[string]float64{"sum": 12.4})
+	assertParameter(t, parameters, "Temperature", "Cel", map[string]float64{"minimum": 22.1, "maximum": 30.6})
+	assertParameter(t, parameters, "WindSpeed", "m/s", map[string]float64{"mean": 4.2})
 
 	// A warning is a parameter, not a field of its own: the pack has no advisory
 	// property but does have an Alert parameter, and unit "1" is what it
@@ -316,12 +328,18 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 	// Readings it did not take are absent, not present and empty: a consumer
 	// must be able to tell "no rainfall recorded" from "zero rainfall". A day
 	// with no warning carries no Alert parameter at all.
+	//
+	// The third day carries tmin and tmax and nothing else, and both are
+	// statistics of the same parameter, so it yields ONE entry -- Temperature
+	// with two keys under values.
 	third, _ := resources[2].(map[string]any)
 	thirdAttributes, _ := third["resourceAttributes"].(map[string]any)
 	thirdParameters, _ := thirdAttributes["parameters"].([]any)
-	if len(thirdParameters) != 2 {
-		t.Errorf("got %d parameters for a partly-reported day, want only the 2 taken", len(thirdParameters))
+	if len(thirdParameters) != 1 {
+		t.Errorf("got %d parameters for a partly-reported day, want only the 1 taken", len(thirdParameters))
 	}
+	assertParameter(t, thirdParameters, "Temperature", "Cel",
+		map[string]float64{"minimum": 23.4, "maximum": 32.0})
 	for _, entry := range thirdParameters {
 		if p, _ := entry.(map[string]any); p["parameter"] == "Alert" {
 			t.Error("a day the provider gave no warning for must carry no Alert parameter")
@@ -329,7 +347,10 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 	}
 }
 
-// assertAlert finds the Alert parameter and checks its value and unit.
+// assertAlert finds the Alert parameter and checks its value and unit. The
+// advisory text is instantaneous rather than aggregated -- it is what the
+// provider said about that day, not a statistic over it -- and instantaneous is
+// the one key in values the pack lets carry a string.
 func assertAlert(t *testing.T, parameters []any, want string) {
 	t.Helper()
 	for _, entry := range parameters {
@@ -337,8 +358,9 @@ func assertAlert(t *testing.T, parameters []any, want string) {
 		if p["parameter"] != "Alert" {
 			continue
 		}
-		if p["value"] != want {
-			t.Errorf("Alert value = %v, want %q", p["value"], want)
+		values, _ := p["values"].(map[string]any)
+		if values["instantaneous"] != want {
+			t.Errorf("Alert value = %v, want %q", values["instantaneous"], want)
 		}
 		if p["unit"] != "1" {
 			t.Errorf("Alert unit = %v, want \"1\" -- the pack's code for a unitless value", p["unit"])
@@ -495,11 +517,13 @@ func TestShippedMappingsTakeHoweverManyDaysTheProviderSent(t *testing.T) {
 					len(resources), days)
 			}
 
-			// In the provider's order, not the keys' lexical order.
+			// In the provider's order, not the keys' lexical order. startsAt is
+			// the day's opening instant in IST, not the bare date the provider
+			// sent: format date-time admits no bare date.
 			for i, entry := range resources {
 				attributes := entry.(map[string]any)["resourceAttributes"].(map[string]any)
 				validity := attributes["validity"].(map[string]any)
-				want := fmt.Sprintf("2026-09-%02d", i+1)
+				want := fmt.Sprintf("2026-09-%02dT00:00:00+05:30", i+1)
 				if validity["startsAt"] != want {
 					t.Errorf("resource %d covers %v, want %s -- days are out of order",
 						i, validity["startsAt"], want)
@@ -528,19 +552,37 @@ func firstCommitment(t *testing.T, answer map[string]any) map[string]any {
 	return commitment
 }
 
-func assertParameter(t *testing.T, parameters []any, name, aggregation, unit string, value float64) {
+// assertParameter finds a parameter by name and checks its unit and the whole
+// of its values object.
+//
+// It takes a map of statistic to value rather than one aggregation and one
+// value because the pack groups every statistic for a parameter under values
+// and sets additionalProperties:false on the entry: the flat {aggregation,
+// value} pair this used to look for is not merely absent from what the mapping
+// emits, it is a shape the pack refuses.
+//
+// The length check is part of the assertion -- a caller naming two statistics
+// is also saying the mapping reported no third one.
+func assertParameter(t *testing.T, parameters []any, name, unit string, want map[string]float64) {
 	t.Helper()
 	for _, raw := range parameters {
 		parameter, _ := raw.(map[string]any)
-		if parameter["parameter"] == name && parameter["aggregation"] == aggregation {
-			if parameter["unit"] != unit {
-				t.Errorf("%s/%s unit = %v, want %v", name, aggregation, parameter["unit"], unit)
-			}
-			if parameter["value"] != value {
-				t.Errorf("%s/%s value = %v, want %v", name, aggregation, parameter["value"], value)
-			}
-			return
+		if parameter["parameter"] != name {
+			continue
 		}
+		if parameter["unit"] != unit {
+			t.Errorf("%s unit = %v, want %v", name, parameter["unit"], unit)
+		}
+		values, _ := parameter["values"].(map[string]any)
+		if len(values) != len(want) {
+			t.Errorf("%s values = %v, want exactly the %d in %v", name, values, len(want), want)
+		}
+		for statistic, value := range want {
+			if values[statistic] != value {
+				t.Errorf("%s/%s = %v, want %v", name, statistic, values[statistic], value)
+			}
+		}
+		return
 	}
-	t.Errorf("no %s/%s parameter in %v", name, aggregation, parameters)
+	t.Errorf("no %s parameter in %v", name, parameters)
 }
