@@ -1,0 +1,254 @@
+# Knowledge advisory: a Beckn /select against the network's knowledge
+# capability, answered from a provider's retrieval service.
+#
+# ONE FILE, BOTH DIRECTIONS, one Beckn action. The registry row for this
+# capability names this URL, and the adapter fetches it verbatim -- so a
+# deployment pointing at a different corpus points at its own copy of this
+# file, and nothing about the provider is compiled in.
+#
+# Both halves read:
+#   beckn     the inbound Beckn payload -- the context to echo, the topics to
+#             search for, the resource the caller selected
+# and the response half additionally reads:
+#   response  the provider's answer, in its own shape
+#
+# The base URL, the path and the credentials are NOT here. The first two are
+# the registry's ProviderSchema row; the credentials are environment variables
+# named in the adapter config. No host appears in this file.
+
+request: |
+  /* Request half: an OnDemand KnowledgeAdvisory select -> POST /search.
+
+     Only `query` is required upstream; every other SearchRequest field has a
+     provider-side default, so nothing else is sent.
+
+     The base URL and path are NOT here -- they live in the provider's registry
+     ProviderSchema row, so moving the provider is a registry write and no file
+     in this repo names a host. */
+  (
+    $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+
+    /* DEPLOYMENT CONSTANT. Which corpus this deployment searches. The registry
+       row names this mapping file per deployment, so a different environment
+       points at a mapping carrying its own index. Omit the key entirely to let
+       the provider fall back to its persisted SearchSettings.indexName. */
+    $indexName := "test_doc_pipeline";
+
+    {
+      "query":      $trim($join($ra.topics, " ")),
+      "index_name": $indexName
+    }
+  )
+
+
+# Response half derived from the OpenAgriNet non-normative implementation guide
+# for this capability (knowledge-mapper/on_select.jsonata). Its per-field
+# derivation rules are followed; three things deliberately are not.
+#
+#   INPUT SHAPE. The guide reads a hand-built { search, pn }; this adapter
+#   supplies { beckn, _local, response }, and there is no `pn` to supply the
+#   values it treats as Provider responsibility.
+#
+#   ONE RESOURCE PER HIT, keyed on hits[]._id. The guide emits a single
+#   Resource for the top-scoring hit. Per-hit is what the network wants here:
+#   in the live corpus the four hits carry four DISTINCT passages (no two share
+#   a text checksum), so collapsing them loses content.
+#
+#   hits[]._id, hits[].filename and hits[].section ARE mapped, though the guide
+#   lists all three as never-mapped. _id is the only per-hit identifier,
+#   filename the only per-hit label for the document a passage came from, and
+#   section the only per-hit short label -- doc_short_description, the field
+#   that looks right for it, is "" on every hit.
+#
+#   supportingResourceIds is NOT emitted. It named the document a passage came
+#   from, which source.sourceId now does directly, and the ids it minted
+#   resolved to nothing: those documents are not published as KnowledgeResource
+#   resources.
+#
+# Also divergent, each marked at its site: hits[].text IS the recommendation
+# message, since nothing in this path synthesizes; no $assert, because an empty
+# result is an answer; Contract.consideration omitted.
+response: |
+  (
+    $ra    := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+    $ctx   := $ra.`@context`;
+    $offer := beckn.message.contract.commitments[0].offer;
+
+    /* This API returns "" for absent strings -- doc_language, category_tags,
+       title_en, doc_short_description and description are all "" on every hit
+       in the live corpus. Treat "" and absent identically, or a blank ships as
+       a present-but-empty value and fails minLength. */
+    $text := function($s) { $exists($s) ? ($trim($s) != "" ? $trim($s)) : undefined };
+
+    /* hits[].type -> subjectCategories enum. Only these have an unambiguous
+       counterpart; "document" maps to NOTHING on purpose, because it names a
+       container format rather than a subject. */
+    $categoryOf := function($t) {
+      $lookup({
+        "scheme": "Scheme", "crop": "Crop", "livestock": "Livestock",
+        "weather": "Weather", "market": "Market", "practice": "Practice"
+      }, $lowercase($t))
+    };
+
+    /* Governed codes are upper-case; the corpus emits scheme_code as "tgj". */
+    $toCode := function($s) { $uppercase($replace($s, /[^A-Za-z0-9]+/, "_")) };
+
+    /* Every hit the provider returned, less its own reference chunks. It ran
+       the query and chose what to send; applying a score floor here would be
+       this adapter overriding the provider's relevance judgement. The guide
+       argues for one (unrelated documents can land within 0.005 of the top
+       hit) -- that is one $filter to reinstate if a deployment wants it. */
+    $usable := $filter(response.hits, function($h) { $h.is_reference != true });
+
+    /* The query the engine reports having run. Sole fallback for topics, which
+       Direct mode requires: category_tags is "" throughout this corpus. */
+    $query := $text(response.effective_config.query);
+
+    /* Counts are whole-response facts, so this reads the same on every
+       advisory. It cites aggregate provenance only -- naming the index, the
+       ranking method or its parameters would leak engine internals. */
+    $counts := "Retrieved " & $string($count($usable)) & " of "
+             & $string(response.candidate_count) & " candidate passages";
+
+    {
+      "context": $merge([ beckn.context, { "action": "on_select" } ]),
+      "message": {
+        "contract": {
+          "status": { "code": "DRAFT" },
+          /* Contract.consideration is NOT emitted. The guide recommends a
+             priced quote, but its own caveat is the reason to leave it out:
+             Beckn v2.0.0 never DEFINES beckn:PriceSpecification, so any
+             considerationAttributes shape here is unverifiable. Contract
+             requires only `commitments`, so omitting it is valid. */
+          "commitments": [{
+            "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+            /* The offer is echoed; its references are rebuilt to name exactly
+               the resources this answer carries. The OnDemand id the caller
+               selected is NOT retained -- it resolves to nothing in
+               resources[], and context.transactionId already correlates the
+               callback. With no hits this is [], matching resources[]. */
+            "offer": $merge([
+              $offer,
+              { "resourceIds": [$map($usable, function($h) { $h.`_id` })] }
+            ]),
+            /* ONE RESOURCE PER HIT. Each passage stands on its own: its id is
+               that hit's _id, its message that hit's text, and every label it
+               carries is read from that same hit. Nothing is pooled across
+               hits, so no resource can describe itself with another's
+               metadata.
+
+               NO RESULTS IS AN ANSWER: with nothing to map this is [], which
+               Commitment.resources allows -- required, but with no minItems. */
+            "resources": [$map($usable, function($h) { (
+              /* doc_language, then the guide's "en" default. recommendations[]
+                 requires language with minLength 2, and this corpus leaves the
+                 field blank on every hit, so there is no honest empty here. */
+              $lang := $exists($text($h.doc_language)) ? $text($h.doc_language) : "en";
+
+              /* category_tags is a COMMA-JOINED STRING, not an array. Blank
+                 throughout this corpus, so the engine's own reported query is
+                 what keeps topics sourced from the response rather than
+                 echoed from the request. */
+              $tags   := $distinct($split($text($h.category_tags), ",").$trim($)[$ != ""]);
+              $topics := $exists($tags) ? $tags : ($exists($query) ? [ $query ] : undefined);
+
+              $cat := $categoryOf($h.type);
+
+              /* scheme_name, then the human titles, then name_en/name_gu LAST:
+                 this corpus fills those with the ingestion filename slug,
+                 which reads badly to a farmer. This hit's own values only. */
+              $label := $exists($text($h.scheme_name)) ? $text($h.scheme_name)
+                      : $exists($text($h.title_en))    ? $text($h.title_en)
+                      : $exists($text($h.title_gu))    ? $text($h.title_gu)
+                      : $exists($text($h.name_en))     ? $text($h.name_en)
+                      : $exists($text($h.name_gu))     ? $text($h.name_gu)
+                      : undefined;
+
+              {
+                /* The hit's own identifier. Unique per passage -- verified
+                   distinct across every hit in the live corpus, where two hits
+                   can share a doc_id yet come from different ingestion runs. */
+                "id": $h.`_id`,
+                /* Required by Commitment.resources, which declares no quantity
+                   property and carries no Quantity schema at all -- a defect
+                   upstream. One resource is one advisory. */
+                "quantity": 1,
+                "descriptor": $merge([
+                  {
+                    "code": $exists($text($h.scheme_code))
+                            ? $toCode($text($h.scheme_code)) & "_ADVISORY"
+                            : "KNOWLEDGE_ADVISORY"
+                  },
+                  $exists($label) ? { "name": $label & " advisory" } : {},
+                  /* The heading the passage sits under. doc_short_description
+                     is the field this looks like it should read, but that is ""
+                     on every hit in the corpus while section is always
+                     populated -- so section is the only per-hit short label
+                     there is. Note it carries the passage's raw ingested
+                     markdown, images included. */
+                  $exists($text($h.section))
+                    ? { "shortDesc": $text($h.section) } : {},
+                  $exists($text($h.doc_llm_description))
+                    ? { "longDesc": $text($h.doc_llm_description) }
+                    : ($exists($text($h.description))
+                       ? { "longDesc": $text($h.description) } : {})
+                ]),
+                "resourceAttributes": $merge([
+                  {
+                    "@context": $ctx,
+                    "@type": "openagrinet:KnowledgeAdvisory",
+                    /* The discriminator. Its Direct branch is what makes
+                       topics, issuedAt, recommendations and source required. */
+                    "informationMode": "Direct",
+                    "languages": [ $lang ],
+                    /* Not in the search response: the advisory is issued by
+                       this answer, at this moment. */
+                    "issuedAt": $now(),
+                    /* This passage, as retrieved. The guide holds that
+                       hits[].text is evidence and the message must be
+                       synthesized upstream; nothing in this path synthesizes
+                       and /search returns passages, so the retrieved text IS
+                       the message here -- a divergence recorded, not hidden. */
+                    "recommendations": [{
+                      "message": $h.text,
+                      "language": $lang
+                    }],
+                    "rationale": $exists($text($h.instance_name))
+                      ? $counts & " from the " & $text($h.instance_name) & " corpus."
+                      : $counts & ".",
+                    /* The document behind this passage IS its source:
+                       doc_id identifies it, filename is its human label. Two
+                       upstream fields that look like better candidates are
+                       traps, and the guide says so -- hits[].instance is a
+                       provider-internal code ("bv") and hits[].source names
+                       the ingestion pipeline ("docs-pipeline"). */
+                    "source": $merge([
+                      { "sourceId": $h.doc_id },
+                      $exists($text($h.filename))
+                        ? { "sourceName": $text($h.filename) } : {}
+                    ])
+                  },
+                  /* Optional, so emitted only when this hit's type maps. */
+                  $exists($cat) ? { "subjectCategories": [ $cat ] } : {},
+                  /* REQUIRED in Direct mode, yet category_tags is blank across
+                     this corpus and the reported query is the only other
+                     source. When neither speaks the key is OMITTED rather than
+                     emitted as [] -- an empty array asserts "this advisory has
+                     no topics", where absence says nothing was available to
+                     say. Both fail the pack; only one is honest, and the
+                     absence is what makes the gap visible.
+
+                     agricultureSubjects stays absent although scheme_code and
+                     scheme_name are real data: AgricultureSubjectReference
+                     requires a subjectId taxonomy URI nothing here supplies.
+                     coverageAreas has no counterpart at all, and deriving it
+                     from a scheme's name ("Telangana" -> IN-TG) is guesswork. */
+                  $exists($topics) ? { "topics": [ $topics ] } : {}
+                ])
+              }
+            ) })]
+          }]
+        }
+      }
+    }
+  )

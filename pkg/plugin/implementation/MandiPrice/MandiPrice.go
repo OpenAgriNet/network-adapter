@@ -1,0 +1,38 @@
+// Package MandiPrice serves the network's market price capabilities.
+//
+// One package per capability, named for the capability it serves, so which
+// plugin owns a payload is readable from its binding key without a lookup:
+// openagrinet:MandiPrice is this one's, openagrinet:WeatherObservation is not.
+//
+// Almost nothing lives here, and that is the point. Recognising a capability,
+// resolving the call plan, authenticating, calling with the registry's budget
+// and translating in both directions are all internal/common's, because none
+// of them differ by domain. What this package owns is its name, and
+// prerequisites -- the work a mapping cannot express, which is domain knowledge
+// by definition.
+//
+// The upstream this was written against is Agmarknet's Vistaar API, whose
+// select takes governed codes for state, district, market and commodity plus a
+// date range, all of which a MandiPrice payload carries. So the package is a
+// name and nothing else: see prerequisites.go for why that is worth stating.
+package MandiPrice
+
+import (
+	"context"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
+)
+
+// Config is upstream's, unchanged. Aliased here so a domain plugin's cmd package
+// need not know where the machinery lives.
+type Config = common.Config
+
+// New creates the mandi step.
+//
+// Which capabilities it answers to is configuration, with no default: a package
+// serving a family cannot guess which of them a deployment has providers for.
+func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
+	cfg *Config) (definition.Step, func() error, error) {
+	return common.New(ctx, registry, mapper, prerequisites, cfg)
+}

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +79,29 @@ type referencedObject struct {
 	Path    string
 	Context string
 	Type    string
-	Data    map[string]interface{}
+	// Types is every @type the object carries, in payload order. JSON-LD
+	// permits the array form and the packs allow it explicitly, so which
+	// entry names the capability is not known until a document is consulted.
+	Types []string
+	Data  map[string]interface{}
+	// Unusable is set when the object claims a domain type but carries it in
+	// a shape this validator cannot resolve. It is a coded error rather than
+	// a bool because the object is then rejected, not skipped: a layer whose
+	// purpose is to turn a missing attribute into a rejection must not answer
+	// "valid" for an object it never looked at.
+	Unusable error
+}
+
+// candidateTypes returns the @type values to try, tolerating an object built
+// with Type alone -- which every caller outside findReferencedObjects does.
+func (o referencedObject) candidateTypes() []string {
+	if len(o.Types) > 0 {
+		return o.Types
+	}
+	if o.Type == "" {
+		return nil
+	}
+	return []string{o.Type}
 }
 
 // schemaCache caches loaded domain schemas with LRU eviction.
@@ -312,7 +335,7 @@ func (c *schemaCache) cleanupExpired() int {
 	return len(expired)
 }
 
-func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string, ttl, timeout time.Duration, localSchema bool) (*openapi3.T, error) {
+func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string, ttl, timeout time.Duration, allowedDomains []string, localSchema bool) (*openapi3.T, error) {
 	urlHash := hashURL(schemaPath)
 
 	u, parseErr := url.Parse(schemaPath)
@@ -322,6 +345,18 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 
 	loader := newFreshLoader()
 	loader.Context = ctx
+	// Installed on BOTH branches, with the local-file allowance following
+	// localSchema. The check at the one @context runs once, on the entry
+	// document; the $refs inside whatever comes back are resolved by the
+	// loader, and a pack pulls 13-16 documents, so the refs are the great
+	// majority of the reads.
+	//
+	// localSchema is included because its rawSchemas path falls back to the
+	// NETWORK for a ref it does not hold -- so a local document could reach an
+	// arbitrary host, the same exposure by a longer route. What it keeps is
+	// the file read itself, which in that mode is the operator's stated
+	// intent rather than something a payload asked for.
+	loader.ReadFromURIFunc = payloadDirectedReader(allowedDomains, localSchema)
 
 	var doc *openapi3.T
 	var err error
@@ -408,22 +443,80 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 	return doc, nil
 }
 
+// payloadDirectedReader returns a reader for schema documents whose location a
+// payload chose, enforcing the allowlist on EVERY read -- the entry document
+// and every $ref under it.
+//
+// Two separate refusals, for two separate reasons.
+//
+// SCHEME: freshReadFromURI falls through to os.ReadFile for every scheme but
+// http and https, so a $ref of "file:///etc/passwd" -- or a bare path, which
+// parses with no scheme at all -- is an instruction from the network to read
+// this container's disk and parse it as a schema. The base spec loader keeps
+// that fallthrough deliberately: its location is operator-configured, where a
+// local file is the point. Here it never is.
+//
+// HOST: the entry @context is allowlisted, but the document it returns is not
+// trusted -- it came from a payload-named URL on a host anyone can publish to.
+// Its $refs used to reach any http host at all, so a payload could name an
+// attacker's document and have this process fetch whatever that document
+// pointed at: an internal service, a cloud metadata endpoint. Checking the
+// same allowlist on every read closes that, and makes the allowlist mean what
+// it says -- the hosts this deployment will read schemas from, not the hosts
+// it will read the FIRST schema from.
+//
+// This is why the allowlist cannot be a single host: loading one capability
+// pack touches raw.githubusercontent.com, schema.beckn.io and
+// schema.nfh.global (13-16 reads, measured), so all three have to be named or
+// no pack loads at all. An empty allowlist still means "unset, do not check",
+// as it does at the @context.
+//
+// allowLocal follows localSchema: an operator who configured
+// extendedSchema_localSchemaPath is asking for files to be read, so the scheme
+// refusal does not apply to them. The HOST check still does, because that
+// mode falls back to the network for a ref it does not hold locally.
+func payloadDirectedReader(allowedDomains []string, allowLocal bool) func(*openapi3.Loader, *url.URL) ([]byte, error) {
+	return func(loader *openapi3.Loader, u *url.URL) ([]byte, error) {
+		remote := u.Scheme == "http" || u.Scheme == "https"
+		if !remote && !allowLocal {
+			return nil, fmt.Errorf("refusing to read schema from %q: only http and https are read for a location a payload chose", u.String())
+		}
+		if remote && len(allowedDomains) > 0 && !isAllowedDomain(u, allowedDomains) {
+			return nil, fmt.Errorf("refusing to read schema from %q: host is not in extendedSchema_allowedDomains", u.String())
+		}
+		return freshReadFromURI(loader, u)
+	}
+}
+
 // findReferencedObjects recursively finds domain-specific objects with @context.
 func findReferencedObjects(data interface{}, path string) []referencedObject {
 	var results []referencedObject
 
 	switch v := data.(type) {
 	case map[string]interface{}:
-		// Check for @context and @type
-		if contextVal, hasContext := v["@context"].(string); hasContext {
-			if typeVal, hasType := v["@type"].(string); hasType {
-				results = append(results, referencedObject{
-					Path:    path,
-					Context: contextVal,
-					Type:    typeVal,
-					Data:    v,
-				})
+		// @type ABSENT is not the same as @type unreadable. An object with a
+		// context and no type makes no claim about which schema applies, and
+		// there is nothing to validate it against, so it is passed over as
+		// before. An object that does claim a type is validated or rejected.
+		rawContext, hasContext := v["@context"]
+		rawType, hasType := v["@type"]
+		if hasContext && hasType {
+			obj := referencedObject{Path: path, Data: v}
+			contextVal, contextOK := jsonLDLocation(rawContext)
+			types, typesOK := jsonLDTypes(rawType)
+			switch {
+			case !contextOK:
+				obj.Unusable = model.NewCodedError("SCH_INVALID_JSONLD_CONTEXT",
+					"@context is not a URL this validator can resolve a schema from")
+			case !typesOK:
+				obj.Unusable = model.NewCodedError("SCH_INVALID_ENTITY_TYPE",
+					"@type is present but is not a type name or a list of them")
+			default:
+				obj.Context = contextVal
+				obj.Type = types[0]
+				obj.Types = types
 			}
+			results = append(results, obj)
 		}
 
 		// Recurse into nested objects
@@ -450,6 +543,70 @@ func findReferencedObjects(data interface{}, path string) []referencedObject {
 func transformContextToSchemaURL(contextURL string) string {
 	// transformation: context.jsonld -> attributes.yaml
 	return strings.Replace(contextURL, "context.jsonld", "attributes.yaml", 1)
+}
+
+// jsonLDLocation returns the @context entry a schema can be located from.
+//
+// JSON-LD allows a string, an array mixing strings and inline objects, or a
+// single inline object. Only a URL locates a schema, so the first string is
+// taken and an inline object yields nothing -- there is no document to fetch.
+func jsonLDLocation(raw interface{}) (string, bool) {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return v, true
+		}
+	case []interface{}:
+		for _, entry := range v {
+			if s, ok := entry.(string); ok && s != "" {
+				return s, true
+			}
+		}
+	}
+	return "", false
+}
+
+// jsonLDTypes returns every @type the object carries, in payload order.
+//
+// The array form is not exotic: the packs declare @type as a oneOf whose
+// second branch is an array containing the canonical OAN type plus
+// provider-defined ones. Reading only the string form left those objects
+// matching nothing, so they were dropped before validation and the layer
+// reported a pass over an object it had not looked at.
+func jsonLDTypes(raw interface{}) ([]string, bool) {
+	switch v := raw.(type) {
+	case string:
+		if v != "" {
+			return []string{v}, true
+		}
+	case []interface{}:
+		types := make([]string, 0, len(v))
+		for _, entry := range v {
+			if s, ok := entry.(string); ok && s != "" {
+				types = append(types, s)
+			}
+		}
+		if len(types) > 0 {
+			return types, true
+		}
+	}
+	return nil, false
+}
+
+// findSchemaForAnyType resolves the first @type the document declares a schema
+// for, and returns which one matched. With the array form the capability type
+// sits among provider-defined ones and its position is not fixed, so the
+// document decides rather than the payload's ordering.
+func findSchemaForAnyType(ctx context.Context, doc *openapi3.T, types []string) (*openapi3.SchemaRef, string, error) {
+	var lastErr error
+	for _, typeName := range types {
+		schema, err := findSchemaByType(ctx, doc, typeName)
+		if err == nil {
+			return schema, typeName, nil
+		}
+		lastErr = err
+	}
+	return nil, "", lastErr
 }
 
 // findSchemaByType finds a schema in the document by @type value.
@@ -498,6 +655,69 @@ func isAllowedDomain(u *url.URL, allowedDomains []string) bool {
 	return false
 }
 
+// jsonLDKeys are the JSON-LD control keys that travel inside a domain object
+// rather than beside it.
+var jsonLDKeys = []string{"@context", "@type"}
+
+// stripUnaccountedJSONLDKeys removes those JSON-LD keys the target schema does
+// not declare, and keeps the ones it does.
+//
+// The two schema styles in use need opposite treatment, and removing both keys
+// unconditionally only served the first:
+//
+//   - a schema that closes itself with additionalProperties:false and never
+//     mentions @type rejects the payload if @type is left in;
+//   - a schema pack that declares @type and lists it in required rejects the
+//     payload if @type is taken out.
+//
+// Asking the schema, per key, satisfies both without a config switch and
+// without either style having to know about the other.
+func stripUnaccountedJSONLDKeys(schema *openapi3.SchemaRef, data map[string]interface{}) map[string]interface{} {
+	domainData := make(map[string]interface{}, len(data))
+	for k, v := range data {
+		if slices.Contains(jsonLDKeys, k) && !schemaDeclaresProperty(schema, k, map[*openapi3.Schema]bool{}) {
+			continue
+		}
+		domainData[k] = v
+	}
+	return domainData
+}
+
+// schemaDeclaresProperty reports whether name is declared as a property, or
+// listed as required, anywhere in a schema's composition tree.
+//
+// allOf, anyOf, oneOf and the then/else branches can each introduce a property,
+// so all of them are walked -- the capability packs declare @type one level down, in
+// allOf. "not" is skipped because naming a property there forbids it rather
+// than permitting it, and "if" is skipped because it only selects a branch.
+// seen guards against schemas that reference themselves.
+func schemaDeclaresProperty(ref *openapi3.SchemaRef, name string, seen map[*openapi3.Schema]bool) bool {
+	if ref == nil || ref.Value == nil || seen[ref.Value] {
+		return false
+	}
+	seen[ref.Value] = true
+
+	if _, ok := ref.Value.Properties[name]; ok {
+		return true
+	}
+	if slices.Contains(ref.Value.Required, name) {
+		return true
+	}
+	for _, group := range []openapi3.SchemaRefs{ref.Value.AllOf, ref.Value.AnyOf, ref.Value.OneOf} {
+		for _, sub := range group {
+			if schemaDeclaresProperty(sub, name, seen) {
+				return true
+			}
+		}
+	}
+	for _, sub := range []*openapi3.SchemaRef{ref.Value.Then, ref.Value.Else} {
+		if schemaDeclaresProperty(sub, name, seen) {
+			return true
+		}
+	}
+	return false
+}
+
 // validateReferencedObject validates a single object with @context.
 func (c *schemaCache) validateReferencedObject(
 	ctx context.Context,
@@ -506,18 +726,31 @@ func (c *schemaCache) validateReferencedObject(
 	allowedDomains []string,
 	localSchema bool,
 ) error {
+	// An object that claims a domain type in a shape we cannot resolve is
+	// rejected here rather than dropped in findReferencedObjects. Dropping it
+	// meant the extended layer reported a pass over an object it never
+	// validated, which is the one outcome this layer exists to prevent.
+	if obj.Unusable != nil {
+		log.Warnf(ctx, "refusing an object at %s that carries @context in an unusable shape: %v", obj.Path, obj.Unusable)
+		return obj.Unusable
+	}
+
 	var doc *openapi3.T
 
 	if localSchema {
-		typeName := obj.Type
-		if idx := strings.LastIndex(typeName, ":"); idx >= 0 {
-			typeName = typeName[idx+1:]
-		}
-		if typeName != "" && !strings.ContainsAny(typeName, "/\\") {
-			if localDoc, localErr := c.loadSchemaFromPath(ctx, typeName+"/attributes.yaml", ttl, timeout, localSchema); localErr != nil {
-				log.Debugf(ctx, "local @type lookup failed for %s: %v", obj.Type, localErr)
+		for _, candidate := range obj.candidateTypes() {
+			typeName := candidate
+			if idx := strings.LastIndex(typeName, ":"); idx >= 0 {
+				typeName = typeName[idx+1:]
+			}
+			if typeName == "" || strings.ContainsAny(typeName, "/\\") {
+				continue
+			}
+			if localDoc, localErr := c.loadSchemaFromPath(ctx, typeName+"/attributes.yaml", ttl, timeout, allowedDomains, localSchema); localErr != nil {
+				log.Debugf(ctx, "local @type lookup failed for %s: %v", candidate, localErr)
 			} else {
 				doc = localDoc
+				break
 			}
 		}
 	}
@@ -539,26 +772,24 @@ func (c *schemaCache) validateReferencedObject(
 		schemaPath := transformContextToSchemaURL(obj.Context)
 		log.Debugf(ctx, "Transformed %s -> %s (localSchema=%v)", obj.Context, schemaPath, localSchema)
 		var err error
-		doc, err = c.loadSchemaFromPath(ctx, schemaPath, ttl, timeout, false)
+		doc, err = c.loadSchemaFromPath(ctx, schemaPath, ttl, timeout, allowedDomains, false)
 		if err != nil {
 			return model.NewCodedErrorWithCause("SCH_SCHEMA_ADAPTATION_FAILED", err.Error(), obj.Path, err)
 		}
 	}
 
 	// Find schema by @type
-	schema, err := findSchemaByType(ctx, doc, obj.Type)
+	schema, matched, err := findSchemaForAnyType(ctx, doc, obj.candidateTypes())
+	if err == nil && matched != obj.Type {
+		log.Debugf(ctx, "resolved @type %s from the array at %s", matched, obj.Path)
+	}
 	if err != nil {
 		log.Errorf(ctx, err, "Schema not found for @type: %s at path: %s", obj.Type, obj.Path)
 		return model.NewCodedErrorWithCause("SCH_INVALID_ENTITY_TYPE", err.Error(), obj.Path, err)
 	}
 
-	// Strip JSON-LD metadata before validation
-	domainData := make(map[string]interface{}, len(obj.Data)-2)
-	for k, v := range obj.Data {
-		if k != "@context" && k != "@type" {
-			domainData[k] = v
-		}
-	}
+	// Strip only the JSON-LD keys this schema does not account for itself.
+	domainData := stripUnaccountedJSONLDKeys(schema, obj.Data)
 
 	// Validate domain-specific data against schema
 	opts := []openapi3.SchemaValidationOption{
