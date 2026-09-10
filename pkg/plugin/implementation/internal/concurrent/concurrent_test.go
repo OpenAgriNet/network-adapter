@@ -198,6 +198,95 @@ func TestRunCancelsTheContextItHandsToInFlightWork(t *testing.T) {
 
 // Map hands each value to its own call and returns the answers in the order
 // the values were given, whatever order the calls finished in.
+// A parent already cancelled before Run is called is an error, not a slice of
+// zero values. Swallowing it would hand the caller n zero-value results with a
+// nil error -- every call reported as having succeeded -- and the caller's next
+// step (unmarshalling an empty answer, say) would report the cancellation as
+// whatever that step happened to fail at.
+func TestRunReportsAnAlreadyCancelledParentRatherThanZeroResults(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var calls atomic.Int32
+	results, err := Run(ctx, 3, 1, func(ctx context.Context, index int) (string, error) {
+		calls.Add(1)
+		return "answered", nil
+	})
+	if err == nil {
+		t.Fatalf("Run() with a cancelled parent returned results %v and no error, want the cancellation reported", results)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want it to be context.Canceled", err)
+	}
+	if results != nil {
+		t.Errorf("results = %v, want nil -- an errored Run returns no results", results)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("work ran %d time(s), want 0 -- nothing is worth calling for an answer nobody will read", got)
+	}
+}
+
+// The same for a parent cancelled while calls are in flight: the ones already
+// running see the cancellation through their own ctx, and Run reports it rather
+// than returning whatever partial set of results happened to be written.
+func TestRunReportsAParentCancelledMidFlight(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	results, err := Run(ctx, 3, 1, func(ctx context.Context, index int) (string, error) {
+		if index == 0 {
+			cancel()
+		}
+		return "answered", nil
+	})
+	if err == nil {
+		t.Fatalf("Run() returned results %v and no error after its parent was cancelled, want the cancellation reported", results)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want it to be context.Canceled", err)
+	}
+}
+
+// A cancelled parent whose cause was set reports THAT cause, so a caller can
+// tell a client that went away from a deadline that ran out.
+func TestRunReportsTheParentsOwnCancellationCause(t *testing.T) {
+	t.Parallel()
+
+	wanted := errors.New("the client went away")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(wanted)
+
+	if _, err := Run(ctx, 2, 1, func(ctx context.Context, index int) (string, error) {
+		return "answered", nil
+	}); !errors.Is(err, wanted) {
+		t.Errorf("err = %v, want the parent's own cause %v", err, wanted)
+	}
+}
+
+// A work error still reaches the caller unwrapped by any cancellation of its
+// own: the siblings cancelled by that error must not overwrite it with a
+// context error, which would lose the classification the caller acts on.
+func TestRunPrefersTheWorkErrorOverTheCancellationItCaused(t *testing.T) {
+	t.Parallel()
+
+	wanted := errors.New("the second call failed")
+	_, err := Run(context.Background(), 4, 1, func(ctx context.Context, index int) (string, error) {
+		if index == 1 {
+			return "", wanted
+		}
+		return "answered", nil
+	})
+	if !errors.Is(err, wanted) {
+		t.Errorf("err = %v, want the work error %v rather than a context error", err, wanted)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want the work error rather than the cancellation it caused", err)
+	}
+}
+
 func TestMapCallsOncePerValueInOrder(t *testing.T) {
 	t.Parallel()
 

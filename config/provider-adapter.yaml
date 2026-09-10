@@ -389,15 +389,19 @@ modules:
               # baseUrl can be published as it stands.
               authScheme: none
 
-              # internal/upstream's default is 1 (sequential), deliberately:
-              # POCRA's failure mode when pushed is a 200 with an EMPTY catalog,
-              # indistinguishable from "no results", so a parallel search can
-              # silently lose a facility type with no error anywhere, with
-              # nothing in the payload recording that a type was asked for and
-              # lost. Kept at 1 here until that's verified against the live
-              # API -- raise it in a follow-up once confirmed safe, to at most
-              # 4, which is every governed type at once and so full
-              # concurrency for this capability.
+              # AgricultureFacility.DefaultSearchConcurrency is 1 (sequential),
+              # deliberately: POCRA's failure mode when pushed is a 200 with an
+              # EMPTY catalog, indistinguishable from "no results", so a
+              # parallel search can silently lose a facility type with no error
+              # anywhere, with nothing in the payload recording that a type was
+              # asked for and lost. internal/upstream has no such setting --
+              # splitting and concurrency belong to this capability's step.
+              # Kept at 1 here until that's verified against the live API --
+              # raise it in a follow-up once confirmed safe. 4 is every
+              # governed type at once, and so full concurrency for this
+              # capability today; the enforced ceiling is
+              # AgricultureFacility.MaxFacilityTypes, which is 8, and a higher
+              # value is clamped to it rather than refused.
               searchConcurrency: 1
 
       # Declaring a step above is not enough: THIS list is what runs. A step

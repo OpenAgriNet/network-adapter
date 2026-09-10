@@ -100,6 +100,12 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	// fields could drift from the first.
 	paths, err := upstream.BindingPaths(upstreamCfg)
 	if err != nil {
+		// closer belongs to the inner step this New already built, and a New
+		// that returns an error returns no closer -- so releasing it is this
+		// function's last chance. Unreachable while upstream.New validates the
+		// same two fields BindingPaths reads; written anyway, because the leak
+		// arrives silently the day BindingPaths grows a check of its own.
+		_ = closer()
 		return nil, nil, err
 	}
 

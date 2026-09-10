@@ -59,6 +59,23 @@ func facilityTypesFrom(beckn any) ([]string, error) {
 		return nil, model.NewBadReqErr("", fmt.Errorf(
 			"agriculture facility: the payload's commitment carries no resource to read a facility search from"))
 	}
+	// Refused rather than half-answered. Everything downstream reads
+	// resources[0] and only resources[0] -- this function, splitByType's
+	// rewrite of supportedFacilityTypes, and the mapping's own required:
+	// checks -- so a second resource is a facility search this design cannot
+	// express. Nothing else catches it: capabilitybinding's countAt stops at
+	// the commitments[] segment, so it bounds commitments and never resources,
+	// and valuesAt collapses two resources of the same @type to one value.
+	//
+	// Answering resources[0] alone would send back a confident, signed,
+	// spec-valid catalogue with no record that a second resource was asked for
+	// and dropped -- the exact defect this facility exists to fix, one level
+	// down from the facility types it already refuses to clamp.
+	if len(resources) > 1 {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"agriculture facility: the payload's commitment carries %d resources and this capability "+
+				"reads one; send one resource per request", len(resources)))
+	}
 	resource, ok := resources[0].(map[string]any)
 	if !ok {
 		return nil, model.NewBadReqErr("", fmt.Errorf(

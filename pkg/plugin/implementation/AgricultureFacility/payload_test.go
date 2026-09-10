@@ -105,6 +105,13 @@ func TestFacilityTypesFromRefusesWhatItCannotRead(t *testing.T) {
 			"supportedFacilityTypes":[42]}}]}]}}}`, "not a facility type"},
 		{"a nested list", `{"message":{"contract":{"commitments":[{"resources":[{"resourceAttributes":{
 			"supportedFacilityTypes":[["Warehouse"]]}}]}]}}}`, "not a facility type"},
+		// Two resources are refused, not half-answered. Everything downstream
+		// reads resources[0] alone, so accepting this would answer for the
+		// first resource's types and drop the second's with nothing anywhere
+		// recording the loss.
+		{"two resources", `{"message":{"contract":{"commitments":[{"resources":[
+			{"resourceAttributes":{"supportedFacilityTypes":["KrishiVigyanKendra"]}},
+			{"resourceAttributes":{"supportedFacilityTypes":["Warehouse"]}}]}]}}}`, "carries 2 resources"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

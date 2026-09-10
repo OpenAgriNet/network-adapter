@@ -328,10 +328,16 @@ func mergeAnswers(answers [][]byte, callerMessageID string) ([]byte, error) {
 			// broken reference the moment anything resolves it. The mapping
 			// already collapses POCRA's own repeats within one call; this
 			// catches a facility that answered for two types.
-			if id != "" && seen[id] {
-				continue
+			if id != "" {
+				if seen[id] {
+					continue
+				}
+				// Guarded, so the map holds only ids the check above can
+				// act on. An unguarded write would record "" for every
+				// id-less resource and read as though they were being
+				// deduplicated, which they are not.
+				seen[id] = true
 			}
-			seen[id] = true
 			resources = append(resources, resource)
 		}
 	}

@@ -41,6 +41,13 @@ import (
 // identity looks like is entirely work's business -- Run passes only an
 // index, so it never has to know or care what a caller maps that index onto.
 //
+// A cancelled PARENT ctx -- a disconnected client, a handler that ran out of
+// time -- is reported as an error too, never as results. The ctx errgroup
+// hands out is cancelled by both causes, the first work error and the parent
+// going away, and a Run that answered a cancelled parent with (zero values,
+// nil) would tell its caller every call succeeded: the silent-partial-answer
+// failure its fail-fast contract exists to prevent.
+//
 // n == 0 calls work zero times and returns (nil, nil). limit is passed
 // straight to errgroup.Group.SetLimit -- see its own doc for what a
 // non-positive value means.
@@ -55,8 +62,13 @@ func Run[T any](ctx context.Context, n, limit int, work func(ctx context.Context
 	results := make([]T, n)
 	for index := range n {
 		group.Go(func() error {
+			// Reported rather than swallowed. context.Cause names which
+			// cancellation this is: the first work error when a sibling
+			// failed -- which is what group.Wait already returns, so saying it
+			// again changes nothing -- and the PARENT's own reason when the
+			// parent went away, which nothing else here would report at all.
 			if groupCtx.Err() != nil {
-				return nil
+				return context.Cause(groupCtx)
 			}
 			result, err := work(groupCtx, index)
 			if err != nil {
