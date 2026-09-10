@@ -180,3 +180,10 @@ test_request.json
 /catalog/
 /docs/
 /dev_docs/
+
+# go build output left at repo root by tools/publish/mandi_publish
+/mandi_publish
+# Collected market data written by tools/publish/mandi_publish. Not secret, but
+# it is generated output that changes on every run and would bloat the history.
+/markets.json
+/mandi_*.json
