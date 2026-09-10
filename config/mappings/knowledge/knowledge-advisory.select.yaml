@@ -28,16 +28,35 @@ request: |
   (
     $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
 
-    /* DEPLOYMENT CONSTANT. Which corpus this deployment searches. The registry
-       row names this mapping file per deployment, so a different environment
-       points at a mapping carrying its own index. Omit the key entirely to let
-       the provider fall back to its persisted SearchSettings.indexName. */
-    $indexName := "test_doc_pipeline";
+    /* THE CORPUS FOLLOWS subjectCategories, and only in one case.
 
-    {
-      "query":      $trim($join($ra.topics, " ")),
-      "index_name": $indexName
-    }
+       A request for Scheme AND NOTHING ELSE searches the schemes corpus, which
+       is narrower and answers a scheme question better. Anything else OMITS
+       index_name and lets the provider use its own default, because this
+       mapping has no basis for choosing on the caller's behalf once the
+       question is not purely about schemes.
+
+       ONLY-Scheme, not contains-Scheme. A caller asking about schemes AND
+       crops wants both considered; sending that to the schemes index would
+       silently drop the half of the question it cannot answer, and the caller
+       would have no way to tell.
+
+       subjectCategories is coerced with [] because Beckn permits a bare string
+       where a list is expected. Without it, "Scheme" and ["Scheme"] could take
+       different branches for the same intent.
+
+       OMITTED, NOT NULL. The provider falls back to its persisted
+       SearchSettings.indexName on an ABSENT key; a null would be a value it
+       has to interpret. Hence $merge -- JSONata cannot conditionally drop a
+       key from an object literal. */
+    $categories := [$ra.subjectCategories];
+    $schemesOnly := $count($categories) = 1 and $categories[0] = "Scheme";
+
+    $search := { "query": $trim($join($ra.topics, " ")) };
+
+    $schemesOnly
+      ? $merge([$search, { "index_name": "documents-index-schemes" }])
+      : $search
   )
 
 

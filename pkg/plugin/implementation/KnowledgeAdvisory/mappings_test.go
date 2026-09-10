@@ -267,15 +267,81 @@ func resourcesOf(t *testing.T, answer map[string]any) []any {
 }
 
 // The request half's whole job: the caller's topics become the query. Only
-// `query` is required upstream, so nothing else but the corpus is sent.
+// `query` is required upstream, so nothing else has to be sent.
 func TestShippedMappingTurnsTopicsIntoTheQuery(t *testing.T) {
 	sent, _ := runShipped(t, selectRequest)
 
 	if got := sent["query"]; got != "gruha jyoti scheme eligibility" {
 		t.Errorf("query = %v, want the caller's topics joined", got)
 	}
-	if _, ok := sent["index_name"]; !ok {
-		t.Error("the request names no index_name")
+}
+
+// withCategories rewrites selectRequest's subjectCategories, as raw JSON so a
+// bare string can be tested alongside a list -- Beckn permits both, and the
+// mapping has to read them the same way.
+func withCategories(t *testing.T, categoriesJSON string) string {
+	t.Helper()
+	const anchor = `"informationMode": "OnDemand",`
+	if !strings.Contains(selectRequest, anchor) {
+		t.Fatalf("selectRequest no longer carries %s", anchor)
+	}
+	return strings.Replace(selectRequest, anchor,
+		anchor+"\n          \"subjectCategories\": "+categoriesJSON+",", 1)
+}
+
+// THE CORPUS FOLLOWS subjectCategories, and only for Scheme ALONE.
+//
+// The narrow case is deliberate. A caller asking about schemes AND crops wants
+// both considered, and sending that to the schemes index would silently answer
+// half their question -- so anything other than Scheme-by-itself omits the key
+// and lets the provider use its own default.
+//
+// index_name must be ABSENT rather than null in that case: the provider falls
+// back to its persisted SearchSettings.indexName on an absent key, while a
+// null is a value it would have to interpret.
+func TestShippedMappingChoosesTheCorpusFromSubjectCategories(t *testing.T) {
+	const schemesIndex = "documents-index-schemes"
+
+	for _, tc := range []struct {
+		name       string
+		categories string // raw JSON; "" omits the field entirely
+		wantIndex  string // "" means the key must be absent
+	}{
+		{"scheme alone, as a list", `["Scheme"]`, schemesIndex},
+		{"scheme alone, as a bare string", `"Scheme"`, schemesIndex},
+		{"scheme with another category", `["Scheme", "Crop"]`, ""},
+		{"another category alone", `["Crop"]`, ""},
+		{"an empty list", `[]`, ""},
+		{"no subjectCategories at all", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := selectRequest
+			if tc.categories != "" {
+				request = withCategories(t, tc.categories)
+			}
+			sent, _ := runShipped(t, request)
+
+			// The query must survive either branch -- it is the one field the
+			// provider requires.
+			if got := sent["query"]; got != "gruha jyoti scheme eligibility" {
+				t.Errorf("query = %v, want the caller's topics joined", got)
+			}
+
+			got, present := sent["index_name"]
+			if tc.wantIndex == "" {
+				if present {
+					t.Errorf("index_name = %v, want the key ABSENT so the provider "+
+						"uses its own default", got)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("index_name is absent, want %q", tc.wantIndex)
+			}
+			if got != tc.wantIndex {
+				t.Errorf("index_name = %v, want %q", got, tc.wantIndex)
+			}
+		})
 	}
 }
 
