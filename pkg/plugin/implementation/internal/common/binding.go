@@ -31,16 +31,19 @@ func (b Binding) Key() string {
 	return b.ParticipantID + separator + b.CapabilityCode
 }
 
-// bindingFrom derives the capability binding a payload is asking for.
+// BindingFrom derives the capability binding a payload is asking for.
 //
 // Returns errNoBinding when the payload names no provider or type -- the
 // ordinary case for a request this step is not meant to serve.
+//
+// EXPORTED for a domain package that must answer "is this payload mine?" the
+// same way serve does, rather than reading the payload a second way.
 //
 // More than one distinct provider or type is refused, not resolved to the
 // first: the two halves index ONE registry row for ONE call, so a payload
 // spanning several is asking for something this design cannot express, and
 // guessing would silently serve part of it.
-func bindingFrom(paths Paths, body []byte) (Binding, error) {
+func BindingFrom(paths Paths, body []byte) (Binding, error) {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return Binding{}, fmt.Errorf("payload could not be read: %w", err)
@@ -61,8 +64,8 @@ func bindingFrom(paths Paths, body []byte) (Binding, error) {
 			commitments)
 	}
 
-	providers := distinct(valuesAt(payload, paths.ProviderID))
-	types := distinct(valuesAt(payload, paths.CapabilityCode))
+	providers := distinct(ValuesAt(payload, paths.ProviderID))
+	types := distinct(ValuesAt(payload, paths.CapabilityCode))
 
 	if len(providers) == 0 || len(types) == 0 {
 		return Binding{}, errNoBinding

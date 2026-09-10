@@ -22,12 +22,12 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
-	binding, err := bindingFrom(s.paths, ctx.Body)
+	binding, err := BindingFrom(s.paths, ctx.Body)
 	if errors.Is(err, errNoBinding) {
 		return nil
 	}
 	if err != nil {
-		// Everything bindingFrom refuses is about the payload -- unreadable
+		// Everything BindingFrom refuses is about the payload -- unreadable
 		// JSON, or more than one call named. Unclassified it becomes a 500,
 		// which blames this adapter and hides the reason from the caller.
 		return model.NewBadReqErr("", err)

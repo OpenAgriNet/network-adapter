@@ -63,13 +63,33 @@ const (
 	// Only client_credentials. That grant has no user to redirect and no
 	// refresh token, so the other flows would be dead code.
 	AuthSchemeOAuth2 = "oauth2"
+
+	// Credentials are POSTed as JSON and the token that comes back goes in the
+	// QUERY STRING. For an upstream that issues short-lived tokens from its own
+	// endpoint rather than an OAuth2 one -- neither the request shape nor the
+	// placement matches oauth2, so it cannot be served by bending that scheme:
+	//
+	//   oauth2      form-encoded client_id/client_secret -> access_token,
+	//               sent as Authorization: Bearer
+	//   tokenQuery  JSON body of CONFIGURED field names -> a CONFIGURED field,
+	//               sent as a query parameter
+	//
+	// The field names are configured rather than fixed because "access_name"
+	// and "password" are one provider's spelling, not a standard.
+	//
+	// Inherits query's exposure -- the token reaches proxy logs and transport
+	// errors -- so it is redacted the same way. See redact.
+	AuthSchemeTokenQuery = "tokenQuery"
 )
 
 // CodeUpstreamUnavailable: the provider could not be reached or failed. Not
 // this adapter's fault and not the caller's.
 const CodeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
 
-// How early an oauth2 token stops being trusted. Must exceed the round trip to
-// the provider, so a request that passed the expiry check cannot arrive after
-// the token died. Costs one extra exchange per lifetime.
+// How early an exchanged token stops being trusted. Must exceed the round trip
+// to the provider, so a request that passed the expiry check cannot arrive
+// after the token died. Costs one extra exchange per lifetime.
+//
+// Applied to oauth2's expires_in and to tokenQuery's configured tokenTtl
+// alike: both are a claim about a lifetime, and the same race sits under both.
 const TokenRefreshSkew = 60 * time.Second
