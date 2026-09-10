@@ -83,7 +83,7 @@ const selectRequest = `{
     "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
     "resources": [{
       "id": "res:pocra:facility-search",
-      "quantity": 1,
+      "quantity": { "count": 1 },
       "resourceAttributes": {
         "@context": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/AgricultureFacility/v0.1/context.jsonld",
         "@type": "openagrinet:AgricultureFacility",
@@ -740,9 +740,14 @@ func TestShippedMappingRewritesTheOffersReferences(t *testing.T) {
 		t.Errorf("status = %v, want DRAFT -- QUOTED is not in the spec's enum", code)
 	}
 
+	// Required by Commitment.resources even though Resource itself declares no
+	// quantity property and the spec carries no Quantity schema. The only shape
+	// the spec states is the one its own error example implies --
+	// $.message.order.items[0].quantity.count -- so it is an object with a
+	// count, not the bare number this used to accept.
 	for _, entry := range resources {
-		if _, present := dig(entry, "quantity").(float64); !present {
-			t.Errorf("resource %v carries no quantity; the spec requires one on every commitment resource",
+		if _, present := dig(entry, "quantity", "count").(float64); !present {
+			t.Errorf("resource %v carries no quantity.count; the spec requires a quantity on every commitment resource",
 				dig(entry, "id"))
 		}
 	}

@@ -212,9 +212,19 @@ response: |
        field are now one entry that cannot be ambiguous.
 
        Emits nothing when the provider sent no value for any statistic, rather
-       than an entry with an empty values object. */
+       than an entry with an empty values object.
+
+       $exists and NOT $count($keys($values)) > 0, which is what this guard used
+       to say. $present returns UNDEFINED, not {}, when it kept nothing --
+       $each over an empty object yields nothing and $merge(undefined) is
+       undefined -- and $count(undefined) is itself undefined in jsonata-go, so
+       comparing it with ">" raises T2009: "the values 0 and 0 either side of
+       operator > must be of the same data type". Both sides render as their
+       zero value, which is why the error names 0 twice and neither is the
+       count. It fired for any day the provider left a parameter out of, a day
+       with no rain being the common one. */
     $reading := function($name, $unit, $values) {
-      $count($keys($values)) > 0 ? {
+      $exists($values) ? {
         "parameter": $name,
         "values": $values,
         "unit": $unit
