@@ -193,6 +193,19 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 					"%q is set for the whole step; auth is per provider now, "+
 						"so it belongs in a block named for the participant id", key)
 			}
+			// Same mistake, same answer, for the other per-provider settings:
+			// step-wide it would be silently ignored, leaving a provider with
+			// no resolver and a mapping blaming its own assertion.
+			if key == prerequisiteField {
+				return nil, fmt.Errorf(
+					"%q is set for the whole step; it is per provider, "+
+						"so it belongs in a block named for the participant id", key)
+			}
+			continue
+		}
+		// Per provider but not a credential, so it is read elsewhere and is
+		// not a misspelling.
+		if field == prerequisiteField {
 			continue
 		}
 		set, isSetting := authFields[field]
@@ -213,6 +226,42 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 		set(profile, config[key])
 	}
 	return profiles, nil
+}
+
+// prerequisiteField is the per-provider setting naming what to resolve before
+// calling. Not in authFields -- it is not a credential -- so it is named here,
+// where both the parser that reads it and the one that has to skip it can see
+// it.
+const prerequisiteField = "prerequisite"
+
+// ParseProviderPrerequisites reads the per-provider resolver names from a
+// plugin's flattened settings, keyed by participant id.
+//
+// An operator writes them beside the credentials, in the same block:
+//
+//	imd:
+//	  authScheme: none
+//	  prerequisite: findStation
+//
+// The name is checked by the domain package that owns the resolvers, not here:
+// this package has none of its own and cannot say which exist.
+// Nil when nothing is configured, which is the common case: most providers
+// need no resolver, and a nil map reads the same as an empty one.
+func ParseProviderPrerequisites(config map[string]string) map[string]string {
+	var names map[string]string
+	for key, value := range config {
+		field, provider, dashed := strings.Cut(key, "-")
+		if !dashed || field != prerequisiteField {
+			continue
+		}
+		if name := strings.TrimSpace(value); name != "" {
+			if names == nil {
+				names = map[string]string{}
+			}
+			names[provider] = name
+		}
+	}
+	return names
 }
 
 // authFields maps each per-provider setting to the field it fills.

@@ -298,7 +298,12 @@ modules:
               # REQUIRED. Comma-separated, because a plugin config value is a
               # string and one provider may serve several capabilities. A
               # binding key contains "|" and ":", so a comma is unambiguous.
-              bindingKeys: "mausamgram|openagrinet:WeatherObservation"
+              #
+              # TWO PROVIDERS OF THE SAME CAPABILITY on one step. Everything
+              # that differs between them -- credentials, endpoint, mapping --
+              # is already per provider, so the second is this key plus its own
+              # auth block below.
+              bindingKeys: "mausamgram|openagrinet:WeatherObservation,imd|openagrinet:WeatherObservation"
 
               # Where in the payload to read the two halves of the key. Both
               # default to where core-v2.0.0-lts puts them, so they are only
@@ -333,8 +338,31 @@ modules:
                 usernameEnv: MAUSAMGRAM_USER
                 passwordEnv: MAUSAMGRAM_X_API_KEY
 
-              # The other schemes, for reference. A second provider of this same
-              # capability goes beside the block above, with its own:
+              # IMD's city weather endpoint is open, so there is nothing to
+              # present. Declared rather than left out: a served provider with
+              # no block is refused at startup.
+              #
+              # prerequisite names the work THIS PROVIDER must do before it can
+              # be called, from the catalogue its domain package offers. Per
+              # provider, like the scheme above: IMD's API is addressed by a
+              # station id, which a Beckn payload has no field for, while
+              # Mausamgram's call needs nothing resolved -- so a step-wide
+              # setting would run a station lookup for Mausamgram too. Omitted,
+              # or none, means the payload is enough. An unknown name fails at
+              # STARTUP, listing what is available.
+              #
+              # The mapping reads what it returns as _local.stationId.
+              #
+              # THE STATION IS MOCKED: a fixed one, 43382 NANCOWRY, with the
+              # point ignored, because the real lookup is a spatial query and
+              # this adapter is not allowed a database. IMD_MOCK_STATION_ID
+              # points it elsewhere.
+              imd:
+                authScheme: none
+                prerequisite: findStation
+
+              # The other schemes, for reference. A third provider of this same
+              # capability goes beside the blocks above, with its own:
               #
               #   some-other-imd:
               #     authScheme: header

@@ -71,6 +71,22 @@ type Config struct {
 	// nested block per provider, which pkg/plugin flattens on the way in.
 	AuthByProvider map[string]*AuthProfile `yaml:"-" json:"-"`
 
+	// Which of the domain package's resolvers to run before calling, keyed by
+	// participant id. Absent, or none, means the payload is enough.
+	//
+	// Per provider for the same reason as the profiles above: one step serves
+	// several binding keys, and only some of the providers behind them need
+	// work done first. Per step would run a station lookup for every provider
+	// on the step, including the ones whose call needs nothing.
+	//
+	// A NAME, not a function: which resolvers exist is the domain package's,
+	// which provider needs one is a deployment's. Keeping the choice here is
+	// what keeps participant ids -- deployment-specific, and routinely
+	// suffixed per environment -- out of Go.
+	//
+	// Built by ParseProviderPrerequisites, like the profiles above.
+	PrerequisiteByProvider map[string]string `yaml:"-" json:"-"`
+
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 }

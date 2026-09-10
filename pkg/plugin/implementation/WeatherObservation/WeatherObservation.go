@@ -31,5 +31,11 @@ type Config = common.Config
 // serving a family cannot guess which of them a deployment has providers for.
 func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
+	// Which provider resolves what is configuration, so this is where a name
+	// that matches no resolver stops the process.
+	prerequisites, err := prerequisitesFor(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
 	return common.New(ctx, registry, mapper, prerequisites, cfg)
 }

@@ -52,6 +52,10 @@ func (p weatherProvider) parseConfig(config map[string]string) (*WeatherObservat
 	}
 	cfg.AuthByProvider = auth
 
+	// Read from the same per-provider blocks, and validated by the package
+	// that owns the resolvers -- this one cannot say which names exist.
+	cfg.PrerequisiteByProvider = common.ParseProviderPrerequisites(config)
+
 	return cfg, nil
 }
 
