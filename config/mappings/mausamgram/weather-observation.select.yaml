@@ -24,6 +24,10 @@
 # merely used to make the call are not in _local: reading those back would be a
 # second name for the same data. Where the answer needs one, it takes it from
 # what the provider echoed.
+#
+# UPSTREAM: GET /nwpapi/get-daily?lat=&lon=, Basic auth, answering fcstday1..N
+# plus an `abbreviation` unit dictionary, `location` echoing the request, and
+# `lat_r`/`lon_r` -- the 0.25 degree grid centre the request snapped to.
 
 # The response half follows the openagrinet:WeatherObservation v0.1 schema pack,
 # Direct mode. The pack lives in OpenAgriNet/network-specs; it is referred to
@@ -35,7 +39,8 @@
 # contradict the caller.
 #
 # Direct mode requires observationType, source, location, generatedAt and
-# parameters. informationMode is what selects those requirements: a catalog
+# parameters; Direct + Forecast additionally requires modelRunAt and a closed
+# validity. informationMode is what selects those requirements: a catalog
 # resource advertising this capability is OnDemand instead, and carries
 # supportedParameters rather than values.
 #
@@ -50,27 +55,30 @@
 # the id that was asked for, and leaving it would point the offer at something
 # that appears nowhere in the answer.
 #
-# ONE FIELD HERE IS NOT IN THE PACK, and this does NOT validate against it.
-# An earlier version of this comment said the pack set no additionalProperties.
-# It does: WeatherObservation v0.1 closes parameters.items with
-# `additionalProperties: false`, so the field below is refused, not merely
-# ungoverned.
+# WHAT THIS PROVIDER SENDS THAT THE PACK CANNOT HOLD, and is therefore dropped:
 #
-#   aggregation    The pack's parameter entry is parameter/value/unit only, and
-#                  its `parameter` enum has no minimum or maximum variants. This
-#                  provider reports a minimum AND a maximum for temperature and
-#                  humidity every day, so without this field the two arrive as
-#                  two identical Temperature readings and a consumer cannot tell
-#                  which is which.
+#   cloud, cloud_message   Total cloud cover, every day. The `parameter` enum has
+#                          no cloud member, so there is nowhere to put 95.84%.
+#                          Adding CloudCover to the enum is a one-line pack
+#                          change and this mapping gains a line when it lands.
+#                          It used to be smuggled out as an Alert when no warning
+#                          was present, which reported routine cloud cover as an
+#                          advisory -- worse than dropping it.
+#   tmin_raw, tmax_raw     Non-bias-corrected temperature. parameters.items is
+#                          closed by additionalProperties:false, so there is no
+#                          discriminator to distinguish a raw reading from a
+#                          corrected one -- two Temperature entries would be
+#                          indistinguishable. The corrected pair is the better
+#                          number, so it is the one kept.
+#   rain_message           Prose restating `rain`, which is carried numerically.
+#   wind                   ["WNW", "West-North Westerly"] -- the compass form of
+#                          `wdir`, which is carried in degrees. Same information,
+#                          and a two-element array is not a value `values` holds.
+#   rain_icon, cloud_icon  Presentation.
 #
-# It is kept because dropping it loses information the pack cannot express any
-# other way -- removing it would make the answer conformant and useless. The
-# resolution is a pack change, an aggregation field or enum variants, and this
-# mapping follows once that lands. Nothing validates a response today, so it
-# does not bite until a consumer checks.
-#
-# Fields that are the same for every day -- the point, the source, the
-# observation type -- sit once at the top. Only what varies per day repeats.
+# Everything else the provider sends is mapped. Fields that are the same for
+# every day -- the point, the source, the observation type -- sit once at the
+# top; only what varies per day repeats.
 
 # What this capability requires of a payload, checked before either half runs.
 # A predicate that is false refuses the request with the message beside it, so
@@ -91,6 +99,15 @@
 # and both learn what this capability needs -- splitting them would be two
 # entries repeating the same sentence.
 #
+# The pack permits what this check requires. An earlier version of this comment
+# claimed WeatherObservation v0.1's OnDemand branch EXCLUDES `location`, and that
+# a conforming request therefore could not satisfy this check. That was wrong:
+# the pack's if/then blocks only ADD to `required`, there is no `not`, and
+# neither AgricultureResourceFields nor the WeatherObservation body closes with
+# additionalProperties:false -- that appears only on parameters.items and
+# parameters.items.values. So an OnDemand resource carrying `location` conforms,
+# and no pack change is pending on this.
+#
 # Each check is its own expression and binds $ra for itself; there is no shared
 # scope with the halves below. Where several checks say genuinely different
 # things, they are separate entries and the first failure is the one reported.
@@ -102,37 +119,19 @@ required:
       )
     message: "this capability needs a Point location; the provider forecasts one point at a time"
 
-  # NOTE, and it is not a small one: the pack and this check disagree today.
-  # WeatherObservation v0.1's OnDemand branch does not leave `location`
-  # optional -- it EXCLUDES it, alongside observationType, source, generatedAt,
-  # observedAt, modelRunAt, validity and parameters. So a request conforming to
-  # the pack carries no location and this check refuses it, while a request
-  # satisfying this check does not conform.
-  #
-  # Nothing breaks in practice: the exclusion sits under if/then, which the
-  # validator parses and never evaluates. That is an accident to rely on rather
-  # than a design.
-  #
-  # The pack has no third mode for a question -- OnDemand describes what a
-  # provider can obtain, Direct describes an obtained reading, and a request is
-  # neither. Resolving it is a pack change. `coverageAreas` is inherited from
-  # AgricultureResource, is NOT excluded in OnDemand, and accepts a GeoJSON
-  # geometry, so it is the likely home for the point once that is settled.
-
 # The request half decides what the provider is asked for. Whatever it produces
 # IS the request: query parameters for a method with no body, a body for one that
 # takes it.
 #
 # This is where the extraction lives, deliberately. The step reads only the
-# geometry's type -- enough to refuse a Polygon with a clear error, because a
-# mapping cannot refuse -- and nothing else. So when this provider wants another
-# parameter, it is an edit here and nothing else: no Go, no rebuild, live on the
-# next cache expiry.
+# geometry's type -- enough for the check above -- and nothing else. So when this
+# provider wants another parameter, it is an edit here and nothing else: no Go,
+# no rebuild, live on the next cache expiry.
 #
-# A date range, for instance, is already in the payload and would be two lines:
-#
-#   "from": $ra.validity.startsAt,
-#   "to":   $ra.validity.endsAt
+# There is no date range to send, and that is not an omission: get-daily takes
+# lat and lon only and always answers its full horizon. A `from`/`to` read off
+# $ra.validity would be a promise this provider does not honour, so the request
+# does not carry one and the select example does not offer one.
 #
 # $ra is bound once so the rest reads as plain field access rather than four
 # repetitions of the same path.
@@ -154,8 +153,31 @@ request: |
 # than an action of its own.
 response: |
   (
-    $lat := response.location.lat;
-    $lon := response.location.lon;
+    /* The grid centre, NOT response.location. `location` merely echoes the
+       coordinates the caller asked for; lat_r/lon_r are the 0.25 degree cell the
+       model actually resolved them to, up to ~14 km away. The pack defines
+       location as the geometry to which the observation or forecast applies,
+       which is the cell, not the question.
+
+       Three sources, best first, because `location` is REQUIRED for Direct mode
+       and there must always be one to emit:
+         1. lat_r/lon_r  the cell the model resolved the request to
+         2. location     the provider's echo of the request
+         3. the request itself, which the precondition above already proved is a
+            Point -- so this always resolves, and an earlier version of this file
+            that stopped at (2) emitted a resource with no location at all, which
+            the pack refuses outright.
+       (3) is not a fabrication: it is the point the provider was asked about,
+       merely unsnapped. Every source here is the same point to within one cell;
+       none of them invents a location the answer does not describe. */
+    $asked := beckn.message.contract.commitments[0].resources[0].resourceAttributes.location.coordinates;
+    $lat := $exists(response.lat_r) ? response.lat_r
+          : $exists(response.location.lat) ? response.location.lat
+          : $asked[1];
+    $lon := $exists(response.lon_r) ? response.lon_r
+          : $exists(response.location.lon) ? response.location.lon
+          : $asked[0];
+
     /* However many days the provider sent. It answers fcstday1..fcstdayN and N
        is whatever the forecast ran to, so naming five would truncate a ten-day
        answer and mis-handle a one-day one.
@@ -170,25 +192,81 @@ response: |
       }
     })^(n).day;
 
-    $reading := function($name, $aggregation, $unit, $value) {
-      $exists($value) ? {
+    /* Drops keys whose value the provider omitted, so a day missing rhmin does
+       not produce "values": {"minimum": null}. */
+    $present := function($obj) {
+      $merge($each($obj, function($v, $k) { $exists($v) ? {$k: $v} }))
+    };
+
+    /* One entry per PARAMETER, with every statistic for it grouped under
+       `values`. This is what the pack requires: parameters.items is
+       {parameter, values, unit}, closed by additionalProperties:false, and
+       `values` is itself closed over instantaneous/minimum/maximum/mean/sum.
+
+       An earlier version of this file emitted a flat
+       {parameter, aggregation, unit, value} per statistic, which the pack
+       refuses three ways per reading -- `values` missing, `aggregation` and
+       `value` both additional. Grouping is also what makes `aggregation`
+       unnecessary: minimum and maximum are keys, not a discriminator field, so
+       the two temperature readings that used to be distinguishable only by that
+       field are now one entry that cannot be ambiguous.
+
+       Emits nothing when the provider sent no value for any statistic, rather
+       than an entry with an empty values object. */
+    $reading := function($name, $unit, $values) {
+      $count($keys($values)) > 0 ? {
         "parameter": $name,
-        "aggregation": $aggregation,
-        "unit": $unit,
-        "value": $value
+        "values": $values,
+        "unit": $unit
       }
     };
 
-    /* A warning is a parameter, not a field of its own: the pack has no
-       advisory property but does have an Alert parameter. Unit "1" is what it
-       prescribes for a value that has no unit. */
-    $alert := function($value) {
-      $exists($value) ? {
-        "parameter": "Alert",
-        "unit": "1",
-        "value": $value
-      }
+    /* Every parameter this provider reports, for one day. Read off the
+       `abbreviation` dictionary the provider ships alongside the days, so the
+       units below are its own declared units rather than a guess. */
+    $paramsFor := function($day) {
+      [
+        $reading("Rainfall", "mm",
+          $present({ "sum": $day.rain })),
+        $reading("Temperature", "Cel",
+          $present({ "minimum": $day.tmin, "maximum": $day.tmax })),
+        $reading("Humidity", "%",
+          $present({ "minimum": $day.rhmin, "maximum": $day.rhmax })),
+        $reading("WindSpeed", "m/s",
+          $present({ "mean": $day.wspd })),
+        /* Dropped by the old flat form, which had no entry for it at all. An
+           instantaneous bearing in degrees, not an aggregate. */
+        $reading("WindDirection", "deg",
+          $present({ "instantaneous": $day.wdir })),
+        /* A warning is a parameter, not a field of its own: the pack has no
+           advisory property but does have an Alert parameter, whose value may be
+           a string. Unit "1" is what the pack prescribes for a value that has no
+           unit.
+
+           Read what this provider means by it: weather_warning is a daily
+           condition summary and is present every day, so most days carry
+           "Overcast Sky" rather than a hazard. It is IMD's own advisory text and
+           belongs here, but a consumer must not treat its presence as a warning
+           -- only its content says whether one was issued. The old form fell
+           back to cloud_message when it was absent, which reported routine cloud
+           cover as an advisory; it does not any more. */
+        $reading("Alert", "1",
+          $present({ "instantaneous": $day.weather_warning }))
+      ]
     };
+
+    /* Days that yielded at least one reading. The pack sets minItems:1 on
+       parameters, so a day the provider sent as a placeholder -- a date and
+       nothing measured -- cannot become a resource: it would be a signed
+       assertion that a forecast exists for that day carrying no forecast.
+       Dropping it is silent, because a response mapping has no fault channel;
+       the answer is simply shorter than the horizon. An earlier version of this
+       file mapped every day unconditionally and emitted `parameters: []`, which
+       the pack refuses.
+
+       Filtered BEFORE the ids are minted, so offer.resourceIds and the resources
+       it points at are derived from the same list and cannot disagree. */
+    $kept := $filter($days, function($day) { $count($paramsFor($day)) > 0 });
 
     $selected := beckn.message.contract.commitments[0];
 
@@ -196,12 +274,46 @@ response: |
        mapping that hardcodes it has to be reissued whenever the pack URL
        moves, and it can disagree with what the request actually declared.
        Backticks because @ is an operator in JSONata. */
-    $ctx := beckn.message.contract.commitments[0].resources[0].resourceAttributes.`@context`;
+    $ctx := $selected.resources[0].resourceAttributes.`@context`;
 
     /* Bound once because it is used twice -- for a resource's own id and for the
        offer's reference to it. Two copies of the same expression is how a
        dangling reference gets reintroduced. */
     $resourceId := function($day) { "res:mausamgram:forecast:" & $day.date };
+
+    /* A forecast day is a whole day in IST, not an instant. ClosedTimePeriod
+       requires both ends with format date-time, so the bare "2026-09-10" this
+       file used to emit is not a legal value, and startsAt equal to endsAt
+       claimed a zero-length period for a 24-hour forecast. */
+    $dayStart := function($d) { $d & "T00:00:00+05:30" };
+    $dayEnd   := function($d) { $d & "T23:59:59+05:30" };
+
+    /* modelRunAt is required for Direct + Forecast, and this provider does not
+       send it in any form -- there is no run time, cycle or issue timestamp
+       anywhere in the payload.
+
+       ASSUMPTION, and the one value in this file not read off the wire: the
+       first forecast day's opening instant stands in for it. That is a
+       conservative floor, never later than the true run -- IMD's NWP cycles at
+       00Z, which is 05:30 IST -- so it understates freshness by hours and never
+       overstates it, and a consumer's staleness check errs toward refetching.
+
+       The $exists guard means the fallback disappears the moment the provider
+       exposes a real field: point the first branch at it and change nothing
+       else. The alternative is a pack change relaxing modelRunAt, in which case
+       this binding and its two uses come out together.
+
+       Reads the first KEPT day, not the first day sent: if the provider led with
+       a placeholder that was dropped above, the floor has to be a day that
+       actually appears in the answer. */
+    $modelRunAt := $exists(response.model_run)
+      ? response.model_run
+      : $dayStart($kept[0].date);
+
+    /* Bound once so every resource in one answer carries the same instant.
+       Calling $now() per resource would stamp five slightly different times on
+       one round trip. */
+    $generatedAt := $now();
 
     {
       /* Correlation only: the ids that tie this answer to the request that
@@ -222,7 +334,7 @@ response: |
         "networkId": beckn.context.networkId,
         "transactionId": beckn.context.transactionId,
         "messageId": beckn.context.messageId,
-        "timestamp": $now()
+        "timestamp": $generatedAt
       },
       "message": {
         "contract": {
@@ -244,7 +356,7 @@ response: |
                  descriptor, the provider -- and replaces one key. */
               "offer": $merge([
                 $selected.offer,
-                { "resourceIds": [$map($days, function($day) { $resourceId($day) })] }
+                { "resourceIds": [$map($kept, function($day) { $resourceId($day) })] }
               ]),
               /* One resource per forecast day, which is what the pack describes:
                  every WeatherObservation example carries a single validity and a
@@ -255,15 +367,18 @@ response: |
                  collapses a one-element sequence to a bare value, so a one-day
                  forecast would answer with an object where every other N answers
                  with a list. */
-              "resources": [$map($days, function($day) {
+              "resources": [$map($kept, function($day) {
                 {
                   "id": $resourceId($day),
                   /* Required by Commitment.resources in the spec, which defines
                      no quantity property and no Quantity schema anywhere -- a
-                     defect upstream. One resource is one day's observation, so
-                     one. Omitting it makes every answer fail validation for a
-                     consumer who validates. */
-                  "quantity": 1,
+                     defect upstream, so any value validates. {"count": n} is the
+                     shape the spec's own example path implies
+                     ($.message.order.items[0].quantity.count) and the one the
+                     network's other packs use; the bare `1` this file used to
+                     emit validated only because nothing constrains it. One
+                     resource is one day. */
+                  "quantity": { "count": 1 },
                   "resourceAttributes": {
                     "@context": $ctx,
                     "@type": "openagrinet:WeatherObservation",
@@ -272,34 +387,26 @@ response: |
                     "subjectCategories": ["Weather"],
                     "source": {
                       "sourceId": "mausamgram",
-                      "sourceName": "IMD Mausamgram NWP"
+                      "sourceName": "IMD Mausamgram NWP",
+                      "sourceUri": "https://mausamgram.imd.gov.in/"
                     },
-                    /* Emitted only when the provider echoed both coordinates.
-                       JSONata drops undefined values inside an array, so a
-                       provider that answered without its location echo would
-                       otherwise produce "coordinates": [] -- an invalid Point,
-                       signed and delivered. Absent is honest; empty is a lie
-                       in the shape of an answer. */
-                    "location": $exists($lat) and $exists($lon) ? {
+                    /* The same point on every resource: one call answers one
+                       location, and $lat/$lon resolved it once at the top. */
+                    "location": {
                       "type": "Point",
                       "coordinates": [$lon, $lat]
                     },
-                    "generatedAt": $now(),
+                    "generatedAt": $generatedAt,
+                    "modelRunAt": $modelRunAt,
                     /* This resource reports one day, so its validity opens and
                        closes on it. */
                     "validity": {
-                      "startsAt": $day.date,
-                      "endsAt": $day.date
+                      "startsAt": $dayStart($day.date),
+                      "endsAt": $dayEnd($day.date)
                     },
-                    "parameters": [
-                      $reading("Rainfall", "Total", "mm", $day.rain),
-                      $reading("Temperature", "Minimum", "Cel", $day.tmin),
-                      $reading("Temperature", "Maximum", "Cel", $day.tmax),
-                      $reading("Humidity", "Minimum", "%", $day.rhmin),
-                      $reading("Humidity", "Maximum", "%", $day.rhmax),
-                      $reading("WindSpeed", "Average", "m/s", $day.wspd),
-                      $alert($day.weather_warning ? $day.weather_warning : $day.cloud_message)
-                    ]
+                    /* Non-empty by construction: $kept dropped every day for
+                       which this returns nothing. */
+                    "parameters": $paramsFor($day)
                   }
                 }
               })]

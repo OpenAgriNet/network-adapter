@@ -457,7 +457,7 @@ response: |
            facility. */
         "source": {
           "sourceId": "pocra",
-          "sourceName": "PoCRA Provider Aggregator Services",
+          "sourceName": "PoCRA, Government of Maharashtra",
           "sourceUri": $clean($item.contact.webUrl)
         },
         "publicContact": $contact($item)
@@ -510,8 +510,13 @@ response: |
                   "id": $resourceId($entry.facility),
                   /* Required by Commitment.resources in the spec, which defines
                      no quantity property and no Quantity schema anywhere -- a
-                     defect upstream. One resource is one facility, so one. */
-                  "quantity": 1,
+                     defect upstream, so any value validates. {"count": n} is the
+                     shape the spec's own example path implies
+                     ($.message.order.items[0].quantity.count) and the shape
+                     every mapping and example on this network sends; the bare
+                     `1` this file used to emit validated only because nothing
+                     constrains it. One resource is one facility. */
+                  "quantity": { "count": 1 },
                   /* Direct mode requires @type, informationMode, facilityType
                      and source, plus one of location or address.
 

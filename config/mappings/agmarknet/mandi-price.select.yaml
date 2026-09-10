@@ -292,9 +292,14 @@ response: |
                   "id": $resourceId($r),
                   /* Required by Commitment.resources in the Beckn v2 spec,
                      which defines no quantity property and carries no Quantity
-                     schema at all -- a defect upstream. One resource is one
-                     market's observation for one day, so one. */
-                  "quantity": 1,
+                     schema at all -- a defect upstream, so any value validates.
+                     {"count": n} is the shape the spec's own example path
+                     implies ($.message.order.items[0].quantity.count) and the
+                     shape every mapping and example on this network sends; the
+                     bare `1` this file used to emit validated only because
+                     nothing constrains it. One resource is one market's
+                     observation for one day. */
+                  "quantity": { "count": 1 },
                   "resourceAttributes": {
                     "@context": $ctx,
                     "@type": "openagrinet:MandiPrice",
