@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
@@ -26,7 +27,7 @@ type AuthProfile struct {
 	// operator guessing which block to look at.
 	Provider string
 
-	// One of none, basic, header, query or oauth2.
+	// One of none, basic, header, query, oauth2 or tokenQuery.
 	Scheme string
 
 	// Variable NAMES, never the values.
@@ -47,6 +48,30 @@ type AuthProfile struct {
 	// Variable names. The values never appear in config, the registry or a log.
 	ClientIDEnv     string
 	ClientSecretEnv string
+
+	// tokenQuery only. The JSON keys the token endpoint expects, and the
+	// variables holding what goes under them.
+	//
+	// The KEYS are configured because they are one provider's spelling rather
+	// than a standard: the live one this was written against wants
+	// access_name and password, and the next will want something else.
+	TokenUserField  string
+	TokenUserEnv    string
+	TokenSecretName string
+	TokenSecretEnv  string
+
+	// Where the token sits in the response body, as a top-level key.
+	TokenResponseField string
+
+	// How long a token may be held, as written in config and as parsed.
+	//
+	// Configured because the response carries no expiry at all -- nothing in it
+	// says how long the token lives, so an operator states what they believe
+	// and this refuses to guess. Set it too long and calls fail with the
+	// provider's own rejection until it lapses; the cache is dropped on such a
+	// rejection so the next call re-exchanges rather than waiting that out.
+	TokenTTLRaw string
+	TokenTTL    time.Duration
 }
 
 // authenticator is one provider's profile plus the token it holds.
@@ -91,13 +116,43 @@ func (a *AuthProfile) validate() error {
 				"%s: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv",
 				a.Provider)
 		}
+	case util.AuthSchemeTokenQuery:
+		// Every one of these is required, and none can be defaulted: the JSON
+		// keys, the response key and the parameter name are all this
+		// provider's spelling, and guessing any of them sends a malformed
+		// request whose rejection says nothing about the cause.
+		if a.TokenURL == "" || a.TokenUserField == "" || a.TokenUserEnv == "" ||
+			a.TokenSecretName == "" || a.TokenSecretEnv == "" ||
+			a.TokenResponseField == "" || a.QueryName == "" {
+			return fmt.Errorf("%s: authScheme tokenQuery requires tokenUrl, "+
+				"tokenUserField, tokenUserEnv, tokenSecretField, tokenSecretEnv, "+
+				"tokenResponseField and queryName", a.Provider)
+		}
+		if a.TokenTTLRaw == "" {
+			return fmt.Errorf("%s: authScheme tokenQuery requires tokenTtl, "+
+				"because the token response carries no expiry to read", a.Provider)
+		}
+		ttl, err := time.ParseDuration(a.TokenTTLRaw)
+		if err != nil {
+			return fmt.Errorf("%s: tokenTtl %q is not a duration: %w",
+				a.Provider, a.TokenTTLRaw, err)
+		}
+		// Below the skew every token is already expired when it arrives, so
+		// each call would exchange one and then discard it -- two round trips
+		// per request and a token endpoint hit at the request rate.
+		if ttl <= util.TokenRefreshSkew {
+			return fmt.Errorf("%s: tokenTtl %s must exceed the %s refresh skew, "+
+				"or every token is expired before it is used",
+				a.Provider, ttl, util.TokenRefreshSkew)
+		}
+		a.TokenTTL = ttl
 	case "":
 		return fmt.Errorf("%s: authScheme is required, "+
 			"and is none where the upstream needs no credential", a.Provider)
 	default:
 		return fmt.Errorf(
-			"%s: unknown authScheme %q: must be none, basic, header, query or oauth2",
-			a.Provider, a.Scheme)
+			"%s: unknown authScheme %q: must be none, basic, header, query, "+
+				"oauth2 or tokenQuery", a.Provider, a.Scheme)
 	}
 	return nil
 }
@@ -181,6 +236,16 @@ var authFields = map[string]func(*AuthProfile, string){
 	"tokenUrl":        func(p *AuthProfile, v string) { p.TokenURL = v },
 	"clientIdEnv":     func(p *AuthProfile, v string) { p.ClientIDEnv = v },
 	"clientSecretEnv": func(p *AuthProfile, v string) { p.ClientSecretEnv = v },
+
+	"tokenUserField":     func(p *AuthProfile, v string) { p.TokenUserField = v },
+	"tokenUserEnv":       func(p *AuthProfile, v string) { p.TokenUserEnv = v },
+	"tokenSecretField":   func(p *AuthProfile, v string) { p.TokenSecretName = v },
+	"tokenSecretEnv":     func(p *AuthProfile, v string) { p.TokenSecretEnv = v },
+	"tokenResponseField": func(p *AuthProfile, v string) { p.TokenResponseField = v },
+	// Kept as written and turned into a duration by validate, so a bad value is
+	// refused at startup naming the provider rather than read as zero -- which
+	// would mean re-exchanging a token on every single call.
+	"tokenTtl": func(p *AuthProfile, v string) { p.TokenTTLRaw = v },
 }
 
 // providerIDFrom returns the provider half of "<participantId>|<capabilityCode>".
@@ -236,11 +301,22 @@ func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 		query.Set(cfg.QueryName, value)
 		req.URL.RawQuery = query.Encode()
 	case util.AuthSchemeOAuth2:
-		token, err := s.bearerToken(req.Context(), auth)
+		token, err := s.providerToken(req.Context(), auth)
 		if err != nil {
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
+
+	case util.AuthSchemeTokenQuery:
+		// Exchanged like oauth2, placed like query: the same held token, put
+		// where this provider reads it from.
+		token, err := s.providerToken(req.Context(), auth)
+		if err != nil {
+			return err
+		}
+		query := req.URL.Query()
+		query.Set(cfg.QueryName, token)
+		req.URL.RawQuery = query.Encode()
 	}
 	return nil
 }
