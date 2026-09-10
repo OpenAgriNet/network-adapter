@@ -1,5 +1,6 @@
 # Logs
 .DS_Store
+__MACOSX/
 logs
 .idea
 *.log
