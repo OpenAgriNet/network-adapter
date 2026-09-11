@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -182,13 +184,8 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 	if market["state"] != "MH" {
 		t.Errorf("state = %v, want MH", market["state"])
 	}
-	location := market["location"].(map[string]any)
-	if location["type"] != "Point" {
-		t.Errorf("location.type = %v", location["type"])
-	}
-	coords := location["coordinates"].([]any)
-	if len(coords) != 2 || coords[0].(float64) != 74.69368182799322 || coords[1].(float64) != 18.609873934158966 {
-		t.Errorf("coordinates = %v, want [74.69368182799322, 18.609873934158966]", coords)
+	if _, exists := market["location"]; exists {
+		t.Errorf("market.location exists, want absent (coverageAreas is the only geometry)")
 	}
 
 	// Supported commodities: string codes, sorted ascending: 2 then 4
@@ -222,6 +219,10 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 	covPoint := covAreas[0].(map[string]any)
 	if covPoint["type"] != "Point" {
 		t.Errorf("covPoint.type = %v", covPoint["type"])
+	}
+	covCoords := covPoint["coordinates"].([]any)
+	if len(covCoords) != 2 || covCoords[0].(float64) != 74.69368182799322 || covCoords[1].(float64) != 18.609873934158966 {
+		t.Errorf("covPoint.coordinates = %v, want [74.69368182799322, 18.609873934158966]", covCoords)
 	}
 	covAdmin := covAreas[1].(map[string]any)
 	if covAdmin["codeScheme"] != "AGMARKNET-DISTRICT" || covAdmin["areaCode"] != "338" ||
@@ -612,45 +613,65 @@ func TestBuildEndToEndAgainstRealMHFile(t *testing.T) {
 		t.Fatalf("build real MH: %v", err)
 	}
 
-	if len(built) != 1 || built[0].StateCode != "MH" {
-		t.Fatalf("built states = %+v", built)
+	// 272 of the 273 markets carry a coordinate, so Maharashtra spends 272
+	// geometries and is the one state that cannot fit in a single catalog.
+	if len(built) != 2 {
+		t.Fatalf("built states = %+v, want 2 chunks for 272 geometries", built)
+	}
+	total := 0
+	for i, state := range built {
+		if state.StateCode != "MH" {
+			t.Errorf("chunk %d state = %q, want MH", i, state.StateCode)
+		}
+		wantID := fmt.Sprintf("agmarknet-mock/mandi-MH-%d", i+1)
+		if state.CatalogID != wantID {
+			t.Errorf("chunk %d id = %q, want %q", i, state.CatalogID, wantID)
+		}
+		total += state.Markets
+	}
+	if total != 273 {
+		t.Errorf("chunks carry %d markets in total, want 273", total)
 	}
 
-	// 273 markets in MH. 1 has missing coordinates.
+	// 1 of the 273 has missing coordinates, and it is named, not just counted.
 	if summary.GeometryLess != 1 {
 		t.Errorf("summary.GeometryLess = %d, want 1", summary.GeometryLess)
 	}
-	if built[0].Markets != 273 {
-		t.Errorf("built[0].Markets = %d, want 273", built[0].Markets)
+	if len(summary.GeometryLessMarkets) != 1 {
+		t.Fatalf("GeometryLessMarkets = %+v, want one named market", summary.GeometryLessMarkets)
+	}
+	if !strings.Contains(summary.GeometryLessMarkets[0].Reason, coordinateMissing) {
+		t.Errorf("reason = %q, want it to name the verdict", summary.GeometryLessMarkets[0].Reason)
 	}
 
-	data, err := os.ReadFile(filepath.Join(tmpDir, "mandi-MH.json"))
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-
-	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	catalogs := root["message"].(map[string]any)["catalogs"].([]any)
-	resources := catalogs[0].(map[string]any)["resources"].([]any)
-	if len(resources) != 273 {
-		t.Fatalf("len(resources) = %d, want 273", len(resources))
-	}
-
-	// Find market 1282 and verify
-	var foundRes map[string]any
-	for _, r := range resources {
-		rm := r.(map[string]any)
-		if rm["id"] == "res:agmarknet:market:1282" {
-			foundRes = rm
-			break
+	// Every market appears exactly once across the chunks.
+	resourcesByID := map[string]map[string]any{}
+	for _, state := range built {
+		data, err := os.ReadFile(state.Path)
+		if err != nil {
+			t.Fatalf("read %s: %v", state.Path, err)
+		}
+		var root map[string]any
+		if err := json.Unmarshal(data, &root); err != nil {
+			t.Fatalf("unmarshal %s: %v", state.Path, err)
+		}
+		catalogs := root["message"].(map[string]any)["catalogs"].([]any)
+		for _, r := range catalogs[0].(map[string]any)["resources"].([]any) {
+			rm := r.(map[string]any)
+			id := rm["id"].(string)
+			if _, duplicate := resourcesByID[id]; duplicate {
+				t.Errorf("%s appears in more than one chunk", id)
+			}
+			resourcesByID[id] = rm
 		}
 	}
-	if foundRes == nil {
-		t.Fatalf("market 1282 not found in resources")
+	if len(resourcesByID) != 273 {
+		t.Fatalf("%d distinct resources across chunks, want 273", len(resourcesByID))
+	}
+
+	foundRes, ok := resourcesByID["res:agmarknet:market:1282"]
+	if !ok {
+		t.Fatalf("market 1282 not found in any chunk")
 	}
 
 	ra := foundRes["resourceAttributes"].(map[string]any)

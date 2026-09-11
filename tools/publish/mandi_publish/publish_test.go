@@ -129,6 +129,40 @@ func TestPublishHonoursTheStateFilter(t *testing.T) {
 	}
 }
 
+func TestPublishFiltersChunkedCatalogsByState(t *testing.T) {
+	// A split state is written as mandi-TN-1.json, mandi-TN-2.json. --states TN
+	// has to match every chunk of TN, or a filtered republish silently posts
+	// part of the state.
+	server, calls := ackServer(t, "ACCEPTED", 0)
+	defer server.Close()
+
+	dir := catalogDir(t, "TN-1", "TN-2", "MH")
+
+	result, err := publish(context.Background(), publishConfig{
+		publishURL: server.URL,
+		catalogIn:  dir,
+		states:     []string{"TN"},
+	})
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	if *calls != 2 {
+		t.Errorf("posted %d times, want both TN chunks", *calls)
+	}
+	if len(result.Outcomes) != 2 {
+		t.Fatalf("outcomes = %+v, want both TN chunks", result.Outcomes)
+	}
+	for _, outcome := range result.Outcomes {
+		if outcome.StateCode != "TN" {
+			t.Errorf("outcome state = %q, want TN for every chunk", outcome.StateCode)
+		}
+	}
+	if result.Outcomes[0].CatalogID == result.Outcomes[1].CatalogID {
+		t.Errorf("both outcomes carry %q; the chunks are different catalogs", result.Outcomes[0].CatalogID)
+	}
+}
+
 func TestPublishDryRunSendsNothing(t *testing.T) {
 	server, calls := ackServer(t, "ACCEPTED", 0)
 	defer server.Close()

@@ -37,16 +37,7 @@ response: |
         $hasCoords := $row.coordinateQuality = "ok" and $exists($row.latitude) and $exists($row.longitude);
         $coords := [$row.longitude, $row.latitude];
 
-        $marketObj := $hasCoords ? {
-          "marketCode": $string($row.marketId),
-          "marketName": $trim($row.marketName),
-          "district": $string($row.districtId),
-          "state": $row.stateCode,
-          "location": {
-            "type": "Point",
-            "coordinates": $coords
-          }
-        } : {
+        $marketObj := {
           "marketCode": $string($row.marketId),
           "marketName": $trim($row.marketName),
           "district": $string($row.districtId),
@@ -135,10 +126,10 @@ response: |
       "message": {
         "catalogs": [
           {
-            "id": _local.participantId & "/mandi-" & _local.stateCode,
+            "id": _local.participantId & "/mandi-" & _local.catalogSlug,
             "isActive": true,
             "descriptor": {
-              "code": "AGMARKNET-" & _local.stateCode,
+              "code": "AGMARKNET-" & _local.catalogSlug,
               "name": "Agmarknet mandi markets — " & _local.stateName,
               "shortDesc": "Markets in " & _local.stateName & ", their locations, and what each trades",
               "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery."
@@ -159,7 +150,7 @@ response: |
         ],
         "publishDirectives": [
           {
-            "catalogId": _local.participantId & "/mandi-" & _local.stateCode,
+            "catalogId": _local.participantId & "/mandi-" & _local.catalogSlug,
             "catalogType": "REGULAR",
             "updateMode": "MERGE",
             "visibleTo": [
