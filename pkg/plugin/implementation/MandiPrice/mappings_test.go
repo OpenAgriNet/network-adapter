@@ -59,7 +59,7 @@ const selectRequest = `{
     "contract": {
       "commitments": [
         {
-          "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+          "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
           "resources": [
             {
               "id": "res:agmarknet:price-enquiry",
@@ -270,8 +270,8 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 	}
 
 	commitment := firstCommitment(t, answer)
-	if status := commitment["status"].(map[string]any)["descriptor"].(map[string]any); status["code"] != "DRAFT" {
-		t.Errorf("status = %v, want DRAFT -- the spec's enum is DRAFT, ACTIVE, CLOSED", status["code"])
+	if status := commitment["status"].(map[string]any)["descriptor"].(map[string]any); status["code"] != "ACTIVE" {
+		t.Errorf("status = %v, want ACTIVE -- the spec's enum is DRAFT, ACTIVE, CLOSED", status["code"])
 	}
 
 	// --- one resource per price record --------------------------------------

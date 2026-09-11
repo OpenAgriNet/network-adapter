@@ -49,7 +49,7 @@ const selectRequest = `{
     "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
     "timestamp": "2026-09-09T06:12:01.330Z" },
   "message": { "contract": { "commitments": [{
-    "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+    "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
     "resources": [{
       "id": "res:knowledge-advisory:schemes:ondemand",
       "resourceAttributes": {

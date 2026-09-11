@@ -274,7 +274,7 @@ response: |
           "commitments": [
             {
               "status": {
-                "descriptor": { "code": "DRAFT", "name": "Draft" }
+                "descriptor": { "code": "ACTIVE", "name": "active" }
               },
               /* The offer is echoed, but its references are not: the request
                  named an abstract price enquiry and the answer returns the
@@ -353,7 +353,7 @@ response: |
                          to read -- unlike the unit on the next line, which it does report.
                          The pack requires currency, so it cannot be omitted either.
                       
-                         Worth being deliberate about the difference: on_select, DRAFT and the
+                         Worth being deliberate about the difference: on_select, ACTIVE and the
                          @type values are PACK constants, correctly stated. INR and the
                          agmarknet sourceId are PROVIDER constants -- they change if this file
                          is pointed at another upstream, and the pack ones do not. */

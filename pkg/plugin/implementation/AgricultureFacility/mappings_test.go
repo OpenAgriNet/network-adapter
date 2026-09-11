@@ -80,7 +80,7 @@ const selectRequest = `{
     "messageId": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
     "timestamp": "2026-09-02T06:12:01.330Z" },
   "message": { "contract": { "commitments": [{
-    "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+    "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
     "resources": [{
       "id": "res:pocra:facility-search",
       "quantity": { "count": 1 },
@@ -669,10 +669,10 @@ func TestShippedMappingScrubsPocraPlaceholders(t *testing.T) {
 		t.Errorf("address = %v, want IN / Maharashtra", address)
 	}
 
-	// source names PoCRA, whatever each upstream BPP writes in its own contact
-	// block -- the warehouse BPP sends "https://warehouse.com" there, so a
-	// sourceUri copied from the item published a third party's placeholder
-	// under a sourceId and sourceName that both say PoCRA.
+	// sourceId and sourceName identify the binding's upstream, which POCRA does
+	// not restate per item. sourceUri is the URL POCRA answered with, published
+	// as sent: substituting one it did not return would assert something it
+	// never said.
 	source, ok := farther["source"].(map[string]any)
 	if !ok {
 		t.Fatal("COMMON-55043 carries no source")
@@ -680,8 +680,8 @@ func TestShippedMappingScrubsPocraPlaceholders(t *testing.T) {
 	if source["sourceId"] != "pocra" {
 		t.Errorf("source.sourceId = %v, want pocra", source["sourceId"])
 	}
-	if source["sourceUri"] != "https://mahapocra.gov.in" {
-		t.Errorf("source.sourceUri = %v, want PoCRA's own site", source["sourceUri"])
+	if source["sourceUri"] != "https://provider.mahapocra.gov.in" {
+		t.Errorf("source.sourceUri = %v, want the webUrl POCRA sent", source["sourceUri"])
 	}
 }
 
@@ -743,9 +743,10 @@ func TestShippedMappingRewritesTheOffersReferences(t *testing.T) {
 	}
 
 	// The v2 status enum is DRAFT, ACTIVE and CLOSED. QUOTED reads better and is
-	// refused by base schema validation.
-	if code := dig(commitments[0], "status", "descriptor", "code"); code != "DRAFT" {
-		t.Errorf("status = %v, want DRAFT -- QUOTED is not in the spec's enum", code)
+	// refused by base schema validation. ACTIVE rather than DRAFT: the answer
+	// stands on its own, naming facilities available now.
+	if code := dig(commitments[0], "status", "descriptor", "code"); code != "ACTIVE" {
+		t.Errorf("status = %v, want ACTIVE -- QUOTED is not in the spec's enum", code)
 	}
 
 	// Required by Commitment.resources even though Resource itself declares no
