@@ -1,0 +1,166 @@
+# Agmarknet Vistaar per-state catalog publisher mapping.
+#
+# Turns one state's CollectedMarket rows into a complete Beckn catalog/publish
+# payload for that state.
+#
+# Two vocabularies for validity:
+#   catalog-level validity: startDate / endDate (Beckn envelope)
+#   resourceAttributes validity: startsAt / endsAt (OpenAgriNet schema pack)
+#
+# JSONata collapses single-element sequences at every level, so the outer
+# resources array and the inner supportedCommodities array are both explicitly
+# wrapped in [...] so a single item never becomes a bare object.
+
+response: |
+  (
+    $toRFC3339Start := function($w) {
+      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T00:00:00Z'
+    };
+    $toRFC3339End := function($w) {
+      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T23:59:59Z'
+    };
+    $startDate := $toRFC3339Start(_local.windowFrom);
+    $endDate := $toRFC3339End(_local.windowTo);
+
+    $isPublishable := function($m) {
+      $count($m.commodities) > 0 and
+      (_local.publishWithoutGeometry = "skip" ? $m.coordinateQuality = "ok" : true)
+    };
+
+    $validMarkets := response[$isPublishable($)];
+    $sortedMarkets := [ $sort($validMarkets, function($a, $b) {
+      $a.marketId > $b.marketId
+    }) ];
+
+    $makeResource := function($row) {
+      (
+        $hasCoords := $exists($row.latitude) and $exists($row.longitude);
+        $coords := [$row.longitude, $row.latitude];
+
+        $marketObj := {
+          "marketCode": $string($row.marketId),
+          "marketName": $trim($row.marketName),
+          "district": $string($row.districtId),
+          "state": $row.stateCode
+        };
+
+        $coverageAreas := $hasCoords ? [
+          {
+            "type": "Point",
+            "coordinates": $coords
+          },
+          {
+            "codeScheme": "AGMARKNET-DISTRICT",
+            "areaCode": $string($row.districtId),
+            "areaLevel": "District",
+            "areaName": $trim($row.districtName)
+          }
+        ] : [
+          {
+            "codeScheme": "AGMARKNET-DISTRICT",
+            "areaCode": $string($row.districtId),
+            "areaLevel": "District",
+            "areaName": $trim($row.districtName)
+          }
+        ];
+
+        /* Deduplicate and sort commodities */
+        $distinctCommodities := [ $distinct($row.commodities) ];
+        $mappedCommodities := [ $map($distinctCommodities, function($c) {
+          {
+            "code": $string($c.code),
+            "name": $trim($c.name)
+          }
+        }) ];
+        $sortedCommodities := [ $sort($mappedCommodities, function($a, $b) {
+          $number($a.code) > $number($b.code)
+        }) ];
+
+        {
+          "id": "res:agmarknet:market:" & $string($row.marketId),
+          "descriptor": {
+            "code": $string($row.marketId),
+            "name": $trim($row.marketName),
+            "shortDesc": "Mandi prices at " & $trim($row.marketName) & ", " & $trim($row.districtName) & ", " & $trim($row.stateName)
+          },
+          "resourceAttributes": {
+            "@context": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/MandiPrice/v0.1/context.jsonld",
+            "@type": "openagrinet:MandiPrice",
+            "informationMode": "OnDemand",
+            "subjectCategories": [
+              "Market"
+            ],
+            "market": $marketObj,
+            "supportedCommodities": $sortedCommodities,
+            "supportedPriceFields": [
+              "Minimum",
+              "Maximum",
+              "Modal"
+            ],
+            "historicalDataAvailable": true,
+            "historyPeriod": "P1Y",
+            "updateFrequency": "P1D",
+            "languages": [
+              "en"
+            ],
+            "validity": {
+              "startsAt": $startDate,
+              "endsAt": $endDate
+            },
+            "coverageAreas": $coverageAreas
+          }
+        }
+      )
+    };
+
+    $resources := [ $map($sortedMarkets, $makeResource) ];
+
+    {
+      "context": {
+        "action": "catalog/publish",
+        "version": "2.0.0",
+        "transactionId": _local.transactionId,
+        "messageId": _local.messageId,
+        "timestamp": _local.generatedAt
+      },
+      "message": {
+        "catalogs": [
+          {
+            "id": _local.participantId & "/mandi-" & _local.catalogSlug,
+            "isActive": true,
+            "descriptor": {
+              "code": "AGMARKNET-" & _local.catalogSlug,
+              "name": "Agmarknet mandi markets — " & _local.stateName,
+              "shortDesc": "Markets in " & _local.stateName & ", their locations, and what each trades",
+              "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery."
+            },
+            "provider": {
+              "id": _local.participantId,
+              "descriptor": {
+                "code": "AGMARKNET-01",
+                "name": "Agmarknet Vistaar"
+              }
+            },
+            "validity": {
+              "startDate": $startDate,
+              "endDate": $endDate
+            },
+            "resources": $resources
+          }
+        ],
+        "publishDirectives": [
+          {
+            "catalogId": _local.participantId & "/mandi-" & _local.catalogSlug,
+            "catalogType": "REGULAR",
+            "updateMode": "MERGE",
+            "visibleTo": [
+              _local.networkId
+            ],
+            "schemaTypes": [
+              "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/MandiPrice/v0.1/context.jsonld"
+            ]
+          }
+        ]
+      }
+    }
+  )

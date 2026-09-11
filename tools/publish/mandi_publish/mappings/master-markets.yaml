@@ -1,0 +1,43 @@
+# Agmarknet Vistaar master data, option 6 -- every market in India with its
+# coordinates. Fetched ONCE per run: there is no per-state variant of this call,
+# so it is indexed in memory and joined onto each state's mapping rows.
+#
+# What this file deliberately does NOT read: agm_market_center_code. It is a
+# real field and a different number from market_id, and market_id is what the
+# price call's marketcode parameter takes. Reading the wrong one produces a
+# catalog whose codes look plausible and return nothing.
+request: |
+  {
+    "option": "6",
+    "token": _local.token
+  }
+
+# Coordinates arrive as STRINGS, and as JSON null where the upstream has none,
+# and occasionally as a non-numeric string such as "N/A". Each expression first
+# tests truthiness (null is falsy and short-circuits, so $number() never runs on
+# a null value and the key is naturally omitted -- this satisfies the omitempty
+# tag on the Go side, where absent and zero are different facts since 0,0 is a
+# real place) and then, for anything truthy, requires the value to match a
+# numeric pattern before casting it. $string() coerces a genuine number so
+# $match cannot throw T0410, and $count(...) > 0 is used rather than
+# $exists(...): this engine returns an empty array from $match on no match, and
+# $exists([]) is true, so $exists would accept a non-numeric string and let
+# $number() throw D3030 and crash the whole $map. Avoid $exists() on either
+# form -- it also returns true for null, which is why the truthiness guard
+# above matters independently of the pattern check.
+#
+# The district name carries trailing whitespace on some rows, so it is trimmed
+# here rather than everywhere it is later compared.
+#
+# WRAPPED IN [...]: JSONata collapses a one-element sequence to a bare value.
+response: |
+  [$map(response, function($market) {
+    {
+      "marketId":     $market.market_id,
+      "marketName":   $trim($market.market_name),
+      "stateName":    $trim($market.state_name),
+      "districtName": $trim($market.district_name),
+      "latitude":     ($market.market_latitude and $count($match($string($market.market_latitude), /^-?[0-9]+(\.[0-9]+)?$/)) > 0 ? $number($market.market_latitude)),
+      "longitude":    ($market.market_longitude and $count($match($string($market.market_longitude), /^-?[0-9]+(\.[0-9]+)?$/)) > 0 ? $number($market.market_longitude))
+    }
+  })]
