@@ -2,10 +2,11 @@
 
 <div align="center">
 
-[![Go Version](https://img.shields.io/badge/Go-1.24-blue.svg)](https://golang.org)
+[![CI](https://github.com/OpenAgriNet/network-adapter/actions/workflows/ci.yml/badge.svg?branch=release-0.0.1)](https://github.com/OpenAgriNet/network-adapter/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/OpenAgriNet/network-adapter/branch/release-0.0.1/graph/badge.svg)](https://codecov.io/gh/OpenAgriNet/network-adapter)
+[![Security](https://github.com/OpenAgriNet/network-adapter/actions/workflows/security.yml/badge.svg?branch=release-0.0.1)](https://github.com/OpenAgriNet/network-adapter/security/code-scanning)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/OpenAgriNet/network-adapter)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](LICENSE)
-[![CI Status](https://img.shields.io/github/actions/workflow/status/beckn/beckn-onix/ci.yml)](https://github.com/beckn/beckn-onix/actions)
-[![Coverage](https://img.shields.io/badge/Coverage-90%25-brightgreen.svg)](https://codecov.io/gh/beckn/beckn-onix)
 
 **A production-ready, plugin-based middleware adapter for the Beckn Protocol**
 
@@ -173,7 +174,8 @@ Results land in `benchmarks/results/<timestamp>/`. The latest committed report i
 
 ### Prerequisites
 
-- Go 1.24 or higher
+- Go 1.26.8 or higher — the version `go.mod` requires, and the floor that
+  clears the current Go standard-library advisories (`make security`)
 - Redis (for caching)
 - Docker (optional, for containerized deployment)
 
@@ -181,8 +183,8 @@ Results land in `benchmarks/results/<timestamp>/`. The latest committed report i
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/beckn/beckn-onix.git
-cd beckn-onix
+git clone https://github.com/OpenAgriNet/network-adapter.git
+cd network-adapter
 ```
 
 2. **Build the application**
@@ -231,8 +233,8 @@ For local setup, starts only redis and onix adapter:
 
 ```bash
 # Clone and setup everything automatically
-git clone https://github.com/beckn/beckn-onix.git
-cd beckn-onix/install
+git clone https://github.com/OpenAgriNet/network-adapter.git
+cd network-adapter/install
 chmod +x setup.sh
 ./setup.sh
 ```
@@ -413,20 +415,70 @@ The project includes a Next.js-based GUI component located in `onix-gui/` that p
 
 ## Testing
 
+Use the `make` targets rather than a bare `go test ./...`. The plugin packages
+have to be carved out of the race-instrumented build: `pkg/plugin` and
+`benchmarks/e2e` compile a real `.so` with `go build -buildmode=plugin` and
+then `plugin.Open` it in the same run, and a race-instrumented test binary
+cannot load a non-race `.so`. `make test` splits the invocation accordingly;
+`go test -race ./...` does not, and fails in a way that looks like a bug in the
+plugin loader.
+
 ```bash
-# Run all tests
-go test ./...
+make test        # both suites, race detection where it is safe
+make cover       # the same, writing a merged profile to coverage.out
+make cover-diff  # coverage of the files this branch changed vs BASE_REF
+make lint        # golangci-lint run + fmt --diff
+make build       # the adapter binary, into bin/
 
-# Run tests with coverage
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out
-
-# Run specific test
+# A single package is still a plain go test
 go test ./pkg/plugin/implementation/cache -v
-
-# Run tests with race detection
-go test -race ./...
 ```
+
+`make cover-diff` is the coverage gate, and it is scoped to the diff on
+purpose: the repo's whole-tree total is below `MIN_COVERAGE`, so a whole-repo
+gate would fail every PR over a backlog none of them created. What a review can
+act on is the number for the lines the PR itself touched.
+
+## Security scanning
+
+Three scanners, because they are blind to different things:
+
+```bash
+make trivy-deps   # the module graph — catches a vulnerable module only the
+                  #   tests import, which never reaches a layer
+make docker && make trivy-image
+                  # the image — base layers plus the Go build info compiled
+                  #   into the binary, so a toolchain CVE shows up here
+make trivy-gate   # fails if either SARIF report carries a finding
+make security     # govulncheck: the call graph, so it reports a CVE only
+                  #   when the vulnerable symbol is actually reachable
+```
+
+`make security` is also the only one that judges the toolchain `go.mod`
+requires rather than the one the Dockerfile pins — which is why the
+prerequisite above names a specific patch version.
+
+## CI
+
+| Workflow | Runs on | What it answers |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | every PR, and pushes to the trunk | Does this diff build, test and scan clean? Posts the coverage and Trivy comments. |
+| [`codeql.yml`](.github/workflows/codeql.yml) | every PR, trunk, weekly | Does the code in this repo contain a vulnerability — injection, request forgery, key material reaching a log? Reports to the Security tab; does not block. |
+| [`coverage.yml`](.github/workflows/coverage.yml) | trunk only | What is the whole-repo total, for the badge. |
+| [`security.yml`](.github/workflows/security.yml) | trunk, weekly | Is anything wrong with the trunk *today* — including a CVE published against code nobody has touched since? |
+| [`ci-release.yml`](.github/workflows/ci-release.yml) | version tags | Build, rescan and publish the images a release ships. |
+
+The weekly schedules are the point of the last two: a PR scan can only tell you
+whether a diff introduced something, and almost every real finding arrives
+against code that has not changed.
+
+Every CI step is a one-line `make` call, so a red check reproduces locally by
+running the command its log shows. Thresholds and tool versions live in the
+`Makefile`, never duplicated into a workflow `env:` block.
+
+The two badges at the top read `release-0.0.1` — the branch this service
+actually ships from — and they are measured after a merge, not on a pull
+request. The per-PR gates are the first two rows above.
 
 ## Contributing
 
@@ -438,9 +490,11 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/beckn/beckn-onix/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/beckn/beckn-onix/discussions)
-- **Documentation**: [Wiki](https://github.com/beckn/beckn-onix/wiki)
+- **Issues**: [GitHub Issues](https://github.com/OpenAgriNet/network-adapter/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/OpenAgriNet/network-adapter/discussions)
+- **Security advisories**: [Code scanning alerts](https://github.com/OpenAgriNet/network-adapter/security/code-scanning) — see also [SECURITY.md](SECURITY.md)
+
+Upstream — the protocol adapter this fork tracks — is [beckn/beckn-onix](https://github.com/beckn/beckn-onix); issues about the Beckn adapter itself, rather than about this OpenAgriNet deployment of it, belong there.
 
 ## License
 

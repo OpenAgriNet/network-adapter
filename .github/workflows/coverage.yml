@@ -1,0 +1,87 @@
+name: Coverage
+
+# Publishes the one number the README badge reads: total statement coverage of
+# the trunk, right now.
+#
+# The badge it replaces was a static shields.io image with "90%" typed into the
+# URL. It had no connection to the test suite, could not go down, and linked to
+# codecov.io/gh/beckn/beckn-onix — the upstream fork parent, not this repo. A
+# hand-written number that looks measured is worse than no number, especially
+# on a public repo where it reads as a claim.
+#
+# Deliberately not a job in ci.yml. That file gates a PR against its OWN diff
+# (make cover-diff, MIN_COVERAGE), and it does so precisely because the repo's
+# existing total is well under the threshold — a whole-repo gate would fail
+# every PR regardless of what it changed. A whole-repo total is also not a
+# question a PR can answer, since it only becomes true once the merge lands. So
+# the gate runs before the merge and this runs after it, and the two never
+# compete to be the check that blocks.
+#
+# Which means the badge will not read 90%. It reads whatever the suite actually
+# covers, which is the entire point.
+on:
+  push:
+    # main and the release branches. Not development: it is where PRs land on
+    # their way somewhere, and a badge that tracks it would swing on work that
+    # has not been released. release-0.0.1 is the tip that ships today —
+    # 12 commits ahead of development — and origin/main is still the upstream
+    # beckn/beckn-onix history, so main is listed for the day this fork's work
+    # reaches it rather than because it means anything now.
+    #
+    # release-* as a glob, not release-0.0.1 by name: the next release branch
+    # is the exact moment nobody remembers a workflow names the old one, and
+    # the symptom is silent — no failure, just a badge quietly reporting the
+    # previous release's number as though it were current.
+    branches: [main, release-*]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second merge landing while the first is still measuring makes the first
+# obsolete — the badge must show the tip of the branch, not whichever run
+# finished last.
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Publish coverage
+    runs-on: ubuntu-latest
+    # test-ci runs the suites twice (the plugin packages are carved out of the
+    # -race build), so this is slower than ci.yml's verify job. A hang
+    # detector, not a performance gate.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # No fetch-depth: 0 here. cover-diff needs the base branch's history to
+      # compute a changed-file set; a whole-tree total needs only the tree.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The same target ci.yml runs, so the profile uploaded here is the
+      # profile a local `make test-ci` produces — including the merge of
+      # coverage-plugin.out that merge-coverage appends.
+      - run: make test-ci
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          # A repository upload token, set as a repo secret. The organisation
+          # secret of the same name does not resolve for a repo Codecov has
+          # not been told about, and its failure mode is a 404 reading
+          # "Repository not found" rather than an auth error.
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          # `files` ADDS to the action's own search rather than replacing it —
+          # without this it also uploads anything else that looks like a
+          # profile, and the badge becomes a number nobody can reproduce.
+          disable_search: true
+          # A silent upload failure is the one outcome worse than a red badge:
+          # the badge would simply keep showing the last successful run's
+          # number, which is the static-badge problem all over again.
+          fail_ci_if_error: true

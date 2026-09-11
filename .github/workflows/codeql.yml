@@ -1,0 +1,112 @@
+name: CodeQL
+
+# A different question from security.yml, which is why it is a different file.
+# Trivy and govulncheck both ask "does this depend on something with a
+# published CVE". CodeQL asks whether the code in this repo has a vulnerability
+# in it. Nothing here asked that before.
+#
+# For an adapter that is worth more than it sounds. This process terminates
+# signed Beckn messages, resolves a counterparty's callback URL out of the
+# payload and makes an outbound request to it, holds private signing keys, and
+# dlopen()s thirty .so files by name from config. That is request forgery, key
+# material reaching a log, and path handling, all in the code rather than in a
+# dependency — the exact classes Trivy and govulncheck are both structurally
+# blind to.
+#
+# It runs on pull_request, and that is a deliberate reversal of ci.yml's "two
+# checks and no more". The rule it bends is not the rule ci.yml's SARIF comment
+# defends: that one refuses a check which can report the OPPOSITE of a gate
+# looking at the same findings, which is a thing that actually happened here —
+# the upload went green with "No new alerts in code change" on the same run
+# where make trivy-gate failed on 20 HIGH stdlib CVEs. CodeQL has no competing
+# gate; it is the only thing in this repo that reports this class at all, so
+# there is nothing for its check to contradict, and a finding that only appears
+# after the merge is a finding reported to the wrong person at the wrong time.
+#
+# Separate from security.yml rather than a job inside it because triggers are
+# per-workflow: a pull_request trigger there would fire the Trivy job on every
+# PR too, duplicating ci.yml's Security Scan exactly.
+on:
+  pull_request:
+  push:
+    # The trunk as well, not only PRs. A pull_request analysis is compared
+    # against the base branch's most recent one, so without these the "new
+    # alerts in this PR" view has nothing to subtract and every pre-existing
+    # alert reads as newly introduced. Same branch list and same glob as
+    # coverage.yml and security.yml.
+    branches: [main, release-*]
+  schedule:
+    # Monday 04:17 UTC — an hour after security.yml's, not the same minute, so
+    # the two are not queued against each other. Weekly because the queries
+    # themselves change: the same code re-analysed six months later is a
+    # genuinely different scan, which is the one thing a push trigger can never
+    # do.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    # Builds the adapter and all thirty plugins under the extractor, which is
+    # slower than either build alone.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: go
+          # manual, not autobuild. Autobuild for Go amounts to `go build ./...`,
+          # and that does not work in this module — the ten
+          # pkg/plugin/implementation/*/cmd packages are `package main` with no
+          # func main(), meant only for `go build -buildmode=plugin`, so an
+          # ordinary whole-module build fails on every one of them with
+          # "function main is undeclared in the main package". The two steps
+          # below are how this repo is really built.
+          build-mode: manual
+          # The default suite, not security-extended. discovery-service widened
+          # its own because the default returned zero there, which is the only
+          # condition under which widening is cheap: no backlog for the extra
+          # queries to be lost in. This tree has never been analysed at all and
+          # carries 139 commits on top of an upstream fork parent, so the
+          # default's baseline is the thing to find out first. Widen in a
+          # follow-up once that number is known and triaged — a wall of
+          # low-confidence alerts nobody reads is how a Security tab becomes
+          # furniture.
+
+      # Both halves, because they are two separate link units and CodeQL only
+      # sees what it watches compile. `make build` is scoped to ./cmd/adapter,
+      # and the plugin implementations are never imported by it — they are
+      # loaded at runtime through plugin.Open. Build only the adapter and the
+      # thirty plugins go unanalysed, which is most of the code this fork
+      # actually wrote.
+      - run: make build
+
+      - name: Build the plugins
+        run: bash install/build-plugins.sh
+
+      # An explicit category so this analysis sits beside trivy-deps and
+      # trivy-image in the Security tab rather than competing with them for the
+      # default one.
+      #
+      # Findings do NOT fail this job: analyze files alerts and exits 0. The
+      # check therefore says whether CodeQL ran and the Security tab says what
+      # it found. Gating on the alert count is a deliberate later decision,
+      # taken once there is a baseline to gate against.
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: codeql-go

@@ -1,6 +1,13 @@
 name: CI
 
-# Two checks and no more: "End to End verification" and "Security Scan".
+# Two checks from THIS file and no more: "End to End verification" and
+# "Security Scan". A PR carries a third, "CodeQL", from codeql.yml.
+#
+# That is not a hole in the rule, because the rule was never a count. What it
+# refuses is a check that can report the opposite of a gate reading the same
+# findings — see the upload-sarif comment further down, which is still refused
+# for exactly that reason. CodeQL reports a class nothing else here reports, so
+# it has no gate to contradict.
 #
 # The two tag-time checks live in ci-release.yml, not here behind an `if:`. A
 # job whose `if:` is false still posts a skipped check, and its `name:` is
@@ -16,10 +23,13 @@ name: CI
 # running the exact command the log shows.
 on:
   push:
-    # development as well as main: this is the branch PRs target and merge
-    # into, so a merge landing there runs the same gates the PR did. No tags —
-    # a tag re-running the tests its PR already gated on proves nothing.
-    branches: [main, development]
+    # development and the release branches as well as main: these are what PRs
+    # target and merge into, so a merge landing there runs the same gates the
+    # PR did. release-* was missing and that was a real gap — release-0.0.1 is
+    # the tip that ships today, 12 commits ahead of development, and until now
+    # nothing re-verified a merge into it. No tags — a tag re-running the tests
+    # its PR already gated on proves nothing.
+    branches: [main, development, release-*]
   pull_request:
 
 # Least privilege at the workflow level; the jobs that need more declare it for
