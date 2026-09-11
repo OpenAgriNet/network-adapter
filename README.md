@@ -21,7 +21,9 @@ The ONIX Adapter previous to this release is archived to a separate branch, [mai
 
 ## Overview
 
-Beckn-ONIX is an enterprise-grade middleware adapter system designed to facilitate seamless communication in any Beckn-enabled network. It acts as a protocol adapter between Beckn Application Platforms (BAPs - buyer applications) and Beckn Provider Platforms (BPPs - seller platforms), ensuring secure, validated, and compliant message exchange across various commerce networks.
+Beckn-ONIX is a middleware adapter that carries messages across a Beckn network. It sits between Beckn Application Platforms (BAPs — buyer applications) and Beckn Provider Platforms (BPPs — seller platforms), and it authenticates, validates and routes every message that passes through.
+
+**This repository is OpenAgriNet's fork**, tracking [beckn/beckn-onix](https://github.com/beckn/beckn-onix). What it adds is the **provider adapter**: a `bpp`-role deployment that answers Beckn `select` requests synchronously for four agriculture capabilities — weather, mandi prices, knowledge advisory and agriculture facilities — by resolving each one's call plan from the registry, calling the upstream provider, and mapping the answer back. Everything below that is not marked as such is upstream's, and still true here.
 
 ### What is Beckn Protocol?
 
@@ -69,12 +71,24 @@ The **Beckn Protocol** is an open protocol that enables location-aware, local co
 - **Runtime Instrumentation**: Go runtime + Redis client metrics included
 - **Health Checks**: Liveness and readiness probes for Kubernetes
 
-### 🌐 **Multi-Domain Support**
-- **Retail & E-commerce**: Product search, order management, fulfillment tracking
-- **Mobility Services**: Ride-hailing, public transport, vehicle rentals
-- **Logistics**: Shipping, last-mile delivery, returns management
-- **Healthcare**: Appointments, telemedicine, pharmacy services
-- **Financial Services**: Loans, insurance, payments
+### 🌾 **Agriculture Capabilities**
+
+The four capabilities this fork serves, each a step plugin that recognises its
+own work by the binding key in the payload and passes the request through
+untouched otherwise — so all four sit in one pipeline with no routing table:
+
+| Capability | Provider | Serves |
+|---|---|---|
+| [`WeatherObservation`](pkg/plugin/implementation/WeatherObservation) | IMD Mausamgram | Daily forecast for a location |
+| [`MandiPrice`](pkg/plugin/implementation/MandiPrice) | Agmarknet (Vistaar) | Commodity prices at a market |
+| [`KnowledgeAdvisory`](pkg/plugin/implementation/KnowledgeAdvisory) | Bharat Vistaar | Retrieval-backed advisory passages |
+| [`AgricultureFacility`](pkg/plugin/implementation/AgricultureFacility) | POCRA | The four governed facility types |
+
+Adding a fifth is not a Go change here: a registry row binding
+`<participantId>\|<capabilityCode>` to a call plan, one mapping file per action,
+and one more entry under `providerSteps`. See
+[`config/provider-adapter.yaml`](config/provider-adapter.yaml), which documents
+each of these in place.
 
 ## Architecture
 
@@ -85,7 +99,8 @@ The **Beckn Protocol** is an open protocol that enables location-aware, local co
                          │
 ┌────────────────────────▼────────────────────────────────┐
 │                   Module Handler                         │
-│  (bapTxnReceiver/Caller or bppTxnReceiver/Caller)      │
+│  (bapTxnReceiver/Caller, bppTxnReceiver/Caller,         │
+│   or oanProvider)                                        │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
@@ -104,24 +119,34 @@ The **Beckn Protocol** is an open protocol that enables location-aware, local co
 
 ### Core Components
 
-#### 1. **Transaction Modules**
+#### 1. **Modules**
 - `bapTxnReceiver`: Receives callback responses at BAP
 - `bapTxnCaller`: Sends requests from BAP to BPP
 - `bppTxnReceiver`: Receives requests at BPP
 - `bppTxnCaller`: Sends responses from BPP to BAP
+- `oanProvider`: Answers actions synchronously from a provider — this fork's module, mounted at `/`
 
 #### 2. **Processing Steps**
 - `validateSign`: Validates digital signatures on incoming requests
 - `addRoute`: Determines routing based on configuration
 - `validateSchema`: Validates against JSON schemas
 - `sign`: Signs outgoing requests
+- `signAck`: Signs whatever a provider step answered with
 - `cache`: Caches requests/responses
 - `publish`: Publishes messages to queue
+
+A capability is a step too — the provider adapter's pipeline is
+`validateSign → validateSchema → the four capability steps → signAck`. Each
+capability step matches the binding key in the payload, serves the request if it
+is one of its own, and returns the payload untouched if it is not, so dispatch
+needs no routing table to keep in step with the registry.
 
 #### 3. **Plugin Types**
 - **Cache**: Redis-based response caching 
 - **Router**: YAML-based routing rules engine for request forwarding (supports domain-agnostic routing for Beckn v2.x.x)
 - **Registry**: Standard Beckn registry or Beckn One DeDi registry lookup for participant information
+- **SunbirdRegistry**: SunbirdRC registry client, serving both halves of the lookup — the sender's signing key for `validateSign`, and the capability call plans the provider steps resolve against. See [plugin docs](pkg/plugin/implementation/sunbirdRegistry/README.md).
+- **JsonMapper**: JSONata mapper (id: `jsonmapper`). Knows nothing about any provider: it fetches whatever URL the registry's `mappings` field names, compiles the JSONata, caches the compiled form and runs it in both directions. See [plugin docs](pkg/plugin/implementation/jsonmapper/README.md).
 - **Signer**: Ed25519 digital signature creation for outgoing requests
 - **SignValidator**: Ed25519 signature validation for incoming requests
 - **SchemaValidator**: JSON schema validation
@@ -166,7 +191,12 @@ go install golang.org/x/perf/cmd/benchstat@latest
 bash benchmarks/run_benchmarks.sh
 ```
 
-Results land in `benchmarks/results/<timestamp>/`. The latest committed report is at [benchmarks/results/BENCHMARK_REPORT.md](benchmarks/reports/REPORT_ONIX_v150.md). See [benchmarks/README.md](benchmarks/README.md) for full methodology and interpretation guidance.
+Results land in `benchmarks/results/<timestamp>/`, which is generated and not
+committed. The committed reports are in `benchmarks/reports/`; the latest is
+[REPORT_ONIX_v172.md](benchmarks/reports/REPORT_ONIX_v172.md), with
+[REPORT_ONIX_v150.md](benchmarks/reports/REPORT_ONIX_v150.md) kept for
+comparison. See [benchmarks/README.md](benchmarks/README.md) for methodology and
+interpretation guidance.
 
 ---
 
@@ -227,6 +257,27 @@ The following config change is required to all cache related entries in order to
 
 The server will start on `http://localhost:8081`
 
+### Running the provider adapter
+
+`config/provider-adapter.yaml` is the deployment this fork ships, and it needs
+two things `local-simple.yaml` does not. Fill in the `<>` placeholders — the
+registry URL, the `subscriberId` (in **both** places), and each provider's
+token endpoint — and export the credentials, which are named in the config but
+never held by it:
+
+```bash
+export MAUSAMGRAM_AUTH='Basic <token>'            # WeatherObservation
+export AGMARKNET_ACCESS_NAME=... AGMARKNET_PASSWORD=...   # MandiPrice
+export VISTAAR_CLIENT_ID=... VISTAAR_CLIENT_SECRET=...    # KnowledgeAdvisory
+                                                   # AgricultureFacility: none
+
+./server --config=config/provider-adapter.yaml     # http://localhost:8080
+```
+
+A capability whose variables are unset loads cleanly, registers cleanly, passes
+startup validation and then fails every one of its requests — the step refuses
+to call an upstream unauthenticated rather than calling it without credentials.
+
 ### Automated Setup (Recommended)
 
 For local setup, starts only redis and onix adapter:
@@ -278,58 +329,22 @@ docker run -p 8081:8081 \
   beckn-onix:latest
 ```
 
-### Basic Usage Example
-
-#### 1. Search for Products (BAP → BPP)
-
-```bash
-curl -X POST http://localhost:8081/bap/caller/search \
-  -H "Content-Type: application/json" \
-  -d '{
-    "context": {
-      "domain": "nic2004:60221",
-      "country": "IND",
-      "city": "std:080",
-      "action": "search",
-      "version": "0.9.4", 
-      "bap_id": "bap.example.com",
-      "bap_uri": "https://bap.example.com/beckn",
-      "transaction_id": "550e8400-e29b-41d4-a716-446655440000",
-      "message_id": "550e8400-e29b-41d4-a716-446655440001",
-      "timestamp": "2023-06-15T09:30:00.000Z",
-      "ttl": "PT30S"
-    },
-    "message": {
-      "intent": {
-        "fulfillment": {
-          "start": {
-            "location": {
-              "gps": "12.9715987,77.5945627"
-            }
-          },
-          "end": {
-            "location": {
-              "gps": "12.9715987,77.5945627"
-            }
-          }
-        }
-      }
-    }
-  }'
-```
-
 ## Configuration
 
 ### Configuration Structure
 
+A config names the modules to mount, the plugins each one loads, and the ordered
+`steps` that run. Declaring a plugin is not enough — `steps` is what executes.
+Abridged from [`config/local-simple.yaml`](config/local-simple.yaml):
+
 ```yaml
-appName: "beckn-onix"
+appName: "onix-local"
 log:
   level: debug
   destinations:
     - type: stdout
 http:
-  port: 8080
+  port: 8081
   timeout:
     read: 30
     write: 30
@@ -350,9 +365,9 @@ modules:
         router:
           id: router
           config:
-            routingConfig: ./config/routing.yaml
+            routingConfig: ./config/local-simple-routing.yaml
         schemaValidator:
-          id: schemavalidator  # or schemav2validator 
+          id: schemavalidator  # or schemav2validator
           config:
             schemaDir: ./schemas  # for schemavalidator
             # type: url           # for schemav2validator
@@ -365,37 +380,45 @@ modules:
 
 ### Deployment Modes
 
-1. **Combined Mode**: Single instance handling both BAP and BPP (`config/onix/`) - Uses `secretskeymanager` (HashiCorp Vault) for production key management
-2. **BAP-Only Mode**: Dedicated buyer-side deployment (`config/onix-bap/`)
-3. **BPP-Only Mode**: Dedicated seller-side deployment (`config/onix-bpp/`)
-4. **Local Development Combined Mode**: Simplified configuration (`config/local-simple.yaml`) - Uses `simplekeymanager` with embedded Ed25519 keys, no vault setup needed
-5. **Local Development Combined Mode (Alternative)**: Development configuration (`config/local-dev.yaml`) - Uses `keymanager`, vault setup needed
-6. **Local with Observability (BAP/BPP)**: Configs `config/local-beckn-one-bap.yaml` and `config/local-beckn-one-bpp.yaml` include OtelSetup (metrics, traces, audit logs) for use with an OTLP collector. Audit fields are configured via `config/audit-fields.yaml`. For a full stack (collectors, Grafana, Loki), see `install/network-observability/`
+| Mode | Config | Notes |
+|---|---|---|
+| **Provider adapter** | [`config/provider-adapter.yaml`](config/provider-adapter.yaml) | What this fork deploys. Synchronous — see below. Port 8080. |
+| Local development, combined | `config/local-simple.yaml` | BAP and BPP in one process, `simplekeymanager` with embedded Ed25519 keys, no Vault. Port 8081. |
+| Local development, alternative | `config/local-dev.yaml` | As above but `keymanager`; needs a Vault. |
+| Local with observability | `config/local-beckn-one-bap.yaml`, `config/local-beckn-one-bpp.yaml` | Add `otelsetup` (metrics, traces, audit logs) against an OTLP collector. Audit fields in `config/audit-fields.yaml`; full stack in `install/network-observability/`. |
+| Combined / BAP-only / BPP-only | `config/onix/`, `config/onix-bap/`, `config/onix-bpp/` | Upstream production layouts, `secretskeymanager` (HashiCorp Vault). |
+
+Placeholders written `<>` in `provider-adapter.yaml` are deliberate — a registry
+URL, a `subscriberId` and a provider token endpoint are per-deployment, and a
+working value copied from a README signs as somebody else.
 
 ## API Endpoints
 
-### BAP Endpoints
+There is no fixed endpoint list. A module mounts a **subtree**, its mount path
+is stripped off the request path, and whatever remains — `select`, `discover` —
+is the action the routing config matches on. So which actions exist is a
+property of the routing config and the registry, not of the adapter.
+
+### Provider adapter (`config/provider-adapter.yaml`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/bap/caller/search` | Search for products/services |
-| POST | `/bap/caller/select` | Select specific items |
-| POST | `/bap/caller/init` | Initialize order |
-| POST | `/bap/caller/confirm` | Confirm order |
-| POST | `/bap/caller/status` | Check order status |
-| POST | `/bap/caller/track` | Track order/shipment |
-| POST | `/bap/caller/cancel` | Cancel order |
-| POST | `/bap/caller/update` | Update order |
-| POST | `/bap/caller/rating` | Submit rating |
-| POST | `/bap/caller/support` | Get support |
+| POST | `/{action}` | The `oanProvider` module, mounted at `/`. `select` is the action the four capabilities serve today. |
 
-### BPP Endpoints
+It answers **synchronously**: verify the sender, resolve the capability's call
+plan from the registry, call the provider, map the result, sign and return it.
+There is no callback — the answer is the HTTP response. A payload no capability
+claims gets `404 NET_ENTITY_NOT_FOUND`, deliberately not an ACK, which would
+leave the caller waiting for a callback nobody will send.
+
+### Transaction modules (`config/local-simple.yaml`)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/bpp/receiver/*` | Receives all BAP requests |
-| POST | `/bpp/caller/on_*` | Sends responses back to BAP |
-
+| POST | `/bap/caller/{action}` | Sends requests from BAP to BPP |
+| POST | `/bap/receiver/{action}` | Receives callbacks at BAP |
+| POST | `/bpp/receiver/{action}` | Receives requests at BPP |
+| POST | `/bpp/caller/{action}` | Sends callbacks from BPP to BAP |
 
 ## Documentation
 
@@ -404,14 +427,6 @@ modules:
 - **[Contributing](CONTRIBUTING.md)**: Guidelines for contributors
 - **[Governance](GOVERNANCE.md)**: Project governance model
 - **[License](LICENSE)**: Apache 2.0 license details
-
-## GUI Component
-
-The project includes a Next.js-based GUI component located in `onix-gui/` that provides:
-- Visual configuration management
-- Request/response monitoring
-- Plugin status dashboard
-- Routing rules editor
 
 ## Testing
 
