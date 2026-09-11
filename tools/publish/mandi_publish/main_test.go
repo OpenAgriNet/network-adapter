@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -241,16 +240,5 @@ func TestCollectDedupesMarketsAcrossDuplicateStates(t *testing.T) {
 	}
 	if got.Markets[0].MarketID != 1282 {
 		t.Errorf("market = %+v", got.Markets[0])
-	}
-}
-
-func TestCollectionIsWrittenAsIndentedJSON(t *testing.T) {
-	// The file is read by humans during review before anything is published.
-	out, err := json.MarshalIndent(Collection{StateErrors: []StateError{}}, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(out), "\n  ") {
-		t.Error("output should be indented")
 	}
 }
