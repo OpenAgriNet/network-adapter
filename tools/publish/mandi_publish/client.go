@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -163,6 +164,12 @@ func (c *Client) get(ctx context.Context, path, query string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: response could not be read: %w", path, err)
 	}
+	// A 400 carrying "No data available." is the upstream saying the result is
+	// empty. The BODY IS INSPECTED BUT NEVER QUOTED: this upstream echoes the
+	// request, and the request carries the token in its query string.
+	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(body, []byte("No data available")) {
+		return nil, errNoUpstreamData
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("GET %s returned %s", path, resp.Status)
 	}
@@ -258,3 +265,14 @@ func (c *Client) States(ctx context.Context, m mapperRunner, mappingBase, token 
 	}
 	return states, nil
 }
+
+// errNoUpstreamData reports that the upstream answered "no rows", not that the
+// call went wrong.
+//
+// The service says this with an HTTP 400 and {"success":false,"message":"No
+// data available."} -- measured 2026-09-11, when 27 of 36 states answered that
+// way for the market-commodity mapping while every one of their markets was
+// present in the master data. A malformed request looks different
+// ({"error":"Option must be between 1 and 6"} for option=7), which is what
+// makes this body safe to read as semantic rather than as a rejection.
+var errNoUpstreamData = errors.New("upstream reports no data for this request")

@@ -1,115 +1,137 @@
 # mandi_publish
 
-Collects Agmarknet Vistaar's market master data into one normalized document.
+Collects, builds, and publishes Agmarknet Vistaar market catalogs for the Beckn/OpenAgriNet network.
 
-Publishing is not yet part of this command. What it writes is the input to a
-later stage that turns markets into a MandiPrice catalog — kept separate so the
-collected data can be reviewed before anything reaches a network.
+The workflow is split into three deliberate stages, each with a reviewable seam on disk:
 
-## Running it
+```
+Upstream Agmarknet Vistaar
+         |
+         |  Plan 0: collect
+         v
+    markets.json
+         |
+         |  Plan 1: build
+         v
+    catalog/mandi-<STATE>.json
+         |
+         |  Plan 2: publish
+         v
+Provider Adapter (POST /publish)
+```
+
+Keeping these stages apart means collected data can be reviewed before payloads are built, and catalog JSON files can be inspected and diffed before anything reaches a network.
+
+---
+
+## 1. Collect (Plan 0)
+
+Authenticates with Agmarknet Vistaar, reads master data and market-commodity mappings, and writes one normalized collection document (`markets.json`).
 
 ```sh
 export MANDI_TOKEN_USER=... MANDI_TOKEN_SECRET=...
 go run ./tools/publish/mandi_publish --states MH --from 01-07-2026 --to 01-12-2026 --out markets.json
 ```
 
-Credentials come from the environment only. A flag would land in shell history
-and in `ps` output.
-
-Omit `--states` to walk every state the upstream reports. Dates are `dd-MM-yyyy`,
-which is what this upstream reads, and default to today.
-
-Exit is non-zero when any state failed, and the failures are in `stateErrors`
-alongside the markets that did come back.
-
-## Tokens
-
-The token is exchanged once at the start of a run and used for every call in
-it. It is **not** re-exchanged on a 401/403. If it expires mid-run, every state
-still to be fetched fails and lands in `stateErrors`, and the process exits
-non-zero. The remedy is re-running the tool; there is nothing to configure.
-
-## What it collects
-
-Three upstream calls, each described by a file in `mappings/`:
-
-| Call | Mapping | Gives |
-|---|---|---|
-| `master-data?option=4` | `master-states.yaml` | the state codes that drive the loop |
-| `master-data?option=6` | `master-markets.yaml` | every market's coordinates, fetched once for all of India |
-| `market-commodity-mapping?statecode=…` | `market-commodity.yaml` | each market's codes and what it trades |
-
-The mappings are the adapter's own format and run through the same JSONata
-mapper, so what a reviewer reads is what executes.
-
-## The codes that matter
-
-The market-commodity call carries every value a `select` must send:
-
-| Output field | Price call parameter |
-|---|---|
-| `marketId` | `marketcode` |
-| `districtId` | `districtcode` |
-| `stateCode` | `statecode` |
-| `commodities[].code` | `commoditycode` |
-
-Master data also carries `agm_market_center_code` and `agm_district_code`. They
-are different numbers and are **not** what the price call takes.
-
-## Coordinates
-
-`coordinateQuality` is `ok`, `missing`, `suspect` or `outOfBounds`, first match
-wins. `latitude`/`longitude` appear only when it is `ok`.
-
-Upstream carries no coordinates on about a third of its market rows, and 31 rows
-repeat the same number in both fields — a copy-paste defect whose point is not
-in India. Nothing here repairs a coordinate: a wrong point returns the wrong
-mandi to a farmer and nothing downstream can detect it.
-
-## Verifying against the live service
-
-This is a manual step. It is not a test and nothing in CI runs it.
-
-```sh
-export MANDI_TOKEN_USER=... MANDI_TOKEN_SECRET=...
-go run ./tools/publish/mandi_publish --states MH --from 01-07-2026 --to 01-12-2026 --out /tmp/mh.json
-```
-
-Expected, from the live service on 2026-09-10:
-- about **273 markets**, roughly **2115** market–commodity pairs in total
-- **one** market reported as not `ok` for coordinates
-- `stateErrors` empty, exit 0
-- market `1282` present as `Jamkhed APMC`, `districtId` 338, `stateCode` MH,
-  with `4`/`Maize` among its commodities
-
-Confirm those codes answer for real:
-
-```sh
-TOKEN=$(curl -sS -X POST http://34.0.4.235:8080/v1/generate-dynamic-token-agmarknet \
-  -H 'Content-Type: application/json' \
-  -d "{\"access_name\":\"$MANDI_TOKEN_USER\",\"password\":\"$MANDI_TOKEN_SECRET\"}" \
-  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
-
-curl -sS "http://34.0.4.235:8080/v1/fetch-agmarknet-vistaar?token=$TOKEN&statecode=MH&districtcode=338&marketcode=1282&commoditycode=4&from_date=20-08-2026&to_date=20-08-2026"
-```
-
-A non-empty result proves the collected codes are the ones the price call
-accepts, which is the whole point of the exercise. An empty result with a 200 is
-the failure this tool exists to prevent — if it happens, the codes being read
-are the wrong ones and the mapping files are where to look.
+- Credentials come from the environment only (`MANDI_TOKEN_USER`, `MANDI_TOKEN_SECRET`).
+- Omit `--states` to walk every state the upstream reports.
+- Dates are `dd-MM-yyyy` (default: today).
+- Output records `coordinateQuality` (`ok`, `missing`, `suspect`, `outOfBounds`).
+- Exit is non-zero if any state failed.
 
 ---
 
-## What Plan 0 does not do
+## 2. Build (Plan 1)
 
-Named so nobody goes looking for them:
+Reads `markets.json`, runs `mappings/catalog.yaml` through the embedded JSONata mapper, and writes one `catalog/publish` JSON file per state.
 
-- **No publishing.** The catalog generator and the POST to the provider
-  adapter's `/publish` are Plan 1, built on `markets.json`.
-- **No decision about flawed coordinates.** A `missing` or `suspect` market is
-  collected and labelled; whether it is published without geometry is Plan 1's
-  call, made once the real distribution has been seen.
-- **No concurrency.** A `--concurrency` flag is a later change with no effect on
-  the output contract.
-- **No retry.** A failed state is recorded and reported; re-running the tool for
-  that state is the remedy, and it is cheap.
+```sh
+go run ./tools/publish/mandi_publish --in markets.json --catalog-out catalog/
+```
+
+### Options for Build
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--in` | *none* | The collection document to read (e.g. `markets.json`) |
+| `--catalog-out` | `catalog` | Directory to write per-state catalog files into |
+| `--participant-id` | `$MANDI_PARTICIPANT_ID`, else `agmarknet` | Left half of binding key; `provider.id` and catalog ID prefix |
+| `--network-id` | `$APP_NETWORK_ID`, else `oan-dev` | `publishDirectives[].visibleTo` |
+| `--without-geometry` | `publish` | `publish` or `skip` — how to handle markets without `ok` coordinates |
+| `--states` | *all* | Restrict building to named state codes |
+
+### Invariants enforced
+
+- **Zero-commodity markets skipped**: `supportedCommodities` has `minItems: 1`. Markets with zero commodities are omitted and counted in the run summary.
+- **Coordinates**: GeoJSON `[longitude, latitude]` order. When `without-geometry` is `publish`, geometry-less markets carry the district `AdministrativeAreaReference` without a Point.
+- **Deterministic output**: Resources sorted by `marketId`, commodities deduplicated and sorted by numeric code.
+- **Two validity vocabularies**: Catalog envelope uses `startDate`/`endDate`; resource attributes use `startsAt`/`endsAt`.
+- **Quiet states**: A state with zero publishable markets produces no file.
+
+---
+
+## 3. Publish (Plan 2)
+
+Reads the catalog files produced by Plan 1 and POSTs each sequentially to the provider adapter's `/publish` endpoint (unsigned inbound; the provider adapter signs and forwards to the network).
+
+```sh
+export MANDI_PUBLISH_URL=http://localhost:9200
+go run ./tools/publish/mandi_publish --publish --catalog-in catalog/ --states MH --dry-run
+```
+
+### Options for Publish
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--publish` | `false` | Enables the publish stage |
+| `--publish-url` | `$MANDI_PUBLISH_URL` | Base URL of the provider adapter (no default; refuses if absent) |
+| `--catalog-in` | `catalog` | Directory of catalog files to publish |
+| `--states` | *all* | Restrict publishing to named state codes |
+| `--dry-run` | `false` | Prints target URL and catalog IDs without sending HTTP requests |
+| `--retire-old` | `false` | Additionally posts `isActive: false` tombstone for `cat-agmarknet-mandi-prices` |
+
+### Chaining Build and Publish
+
+Build and publish can be executed in one command while still writing the intermediate files to disk:
+
+```sh
+MANDI_PUBLISH_URL=http://localhost:9200 \
+  go run ./tools/publish/mandi_publish --in markets.json --catalog-out catalog/ --publish --states MH
+```
+
+### Publishing Outcome Checks
+
+For each state, three conditions must hold:
+1. HTTP 2xx response.
+2. `results[0].status == "ACCEPTED"`.
+3. `results[0].catalogId` matches the catalog's own ID.
+
+Failures are logged verbatim and the process exits non-zero if any state fails.
+
+---
+
+## Retiring the Old Catalog
+
+The single India-wide polygon catalog (`cat-agmarknet-mandi-prices`) is retired explicitly via `--retire-old`:
+
+```sh
+MANDI_PUBLISH_URL=http://localhost:9200 \
+  go run ./tools/publish/mandi_publish --retire-old
+```
+
+---
+
+## Verifying against the Live Upstream
+
+```sh
+# 1. Collect real data for Maharashtra
+export MANDI_TOKEN_USER=... MANDI_TOKEN_SECRET=...
+go run ./tools/publish/mandi_publish --states MH --from 01-07-2026 --to 01-12-2026 --out /tmp/mh.json
+
+# 2. Build catalog
+go run ./tools/publish/mandi_publish --in /tmp/mh.json --catalog-out /tmp/catalog
+
+# 3. Dry-run publish
+MANDI_PUBLISH_URL=http://localhost:9200 \
+  go run ./tools/publish/mandi_publish --publish --catalog-in /tmp/catalog --states MH --dry-run
+```

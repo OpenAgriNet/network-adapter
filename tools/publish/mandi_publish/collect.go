@@ -10,9 +10,10 @@ import (
 // Deliberately generous: this rejects obvious corruption, it does not decide
 // whether a point is in the right district.
 const (
-	minLatitude, maxLatitude   = 6.0, 38.0
-	minLongitude, maxLongitude = 68.0, 98.0
+    minLatitude, maxLatitude   = 6.0, 38.0
+    minLongitude, maxLongitude = 68.0, 98.0
 )
+
 
 // Coordinate verdicts.
 const (
