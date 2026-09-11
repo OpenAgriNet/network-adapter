@@ -1,13 +1,21 @@
 name: CI
 
 # Two checks from THIS file and no more: "End to End verification" and
-# "Security Scan". A PR carries a third, "CodeQL", from codeql.yml.
+# "Security Scan". A PR carries two further checks, both from codeql.yml:
+# "CodeQL", which is its job, and "Code scanning results / CodeQL", which
+# GitHub posts for the analysis upload and which is not a job at all — it
+# cannot be renamed, reordered or switched off.
 #
-# That is not a hole in the rule, because the rule was never a count. What it
-# refuses is a check that can report the opposite of a gate reading the same
-# findings — see the upload-sarif comment further down, which is still refused
-# for exactly that reason. CodeQL reports a class nothing else here reports, so
-# it has no gate to contradict.
+# That second one is the exact shape this file refuses for Trivy further down,
+# so the rule has to be stated properly rather than by count. What it refuses
+# is a check that can report the OPPOSITE of a gate reading the same findings.
+# Trivy has such a gate, make trivy-gate, and the two did disagree: the upload
+# went green with "No new alerts in code change" on the run where the gate
+# failed on 20 HIGH stdlib CVEs. CodeQL has no gate to contradict — it is the
+# only thing here that reports its class, and codeql.yml deliberately does not
+# fail on findings — so its results check is redundant rather than
+# contradictory. Redundant is a cost worth paying for per-PR alerts; a check
+# that can be green while the truth is red is not.
 #
 # The two tag-time checks live in ci-release.yml, not here behind an `if:`. A
 # job whose `if:` is false still posts a skipped check, and its `name:` is
