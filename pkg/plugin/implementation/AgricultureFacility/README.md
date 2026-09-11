@@ -116,16 +116,29 @@ precondition's list. No rebuild.
 
 ## Where the query lives
 
-An inbound query resource is `informationMode: OnDemand`. The search origin is
-read from `message.contract.commitments[].fulfillment.stops[].location.geo`
-and the requested type from `resourceAttributes.supportedFacilityTypes`,
-rather than from `location`/`address`/`facilityType` on `resourceAttributes` --
-a convention this plugin keeps, not a schema requirement. The pack forbade
-those fields under OnDemand until `network-specs` commit `b76c9ad8a5` on
-`schema-packs-v0.1` dropped that constraint (see
-`dev_docs/schema-onDemand-forbid-removed.md`); the plugin's behavior did not
-change when that happened, since POCRA has no verified per-facility
-coordinate to put there anyway.
+An inbound query resource is `informationMode: OnDemand`, and both its inputs
+sit on `resourceAttributes`: the requested type in `supportedFacilityTypes`, the
+point to search around in `location.geo`. WeatherObservation carries its query
+point on `resourceAttributes.location` too, so a consumer that has written one
+select can write this one.
+
+The one difference is the wrapper, and it belongs to the packs rather than to
+either plugin. AgricultureFacility types `location` as `CompleteLocation`, which
+requires `geo`; WeatherObservation types it as a bare `CompleteGeoJSONGeometry`,
+one level flatter. A payload that copies WeatherObservation's shape here fails
+pack validation.
+
+The origin used to be read from
+`message.contract.commitments[].fulfillment.stops[].location.geo`, because the
+pack forbade `location`, `address` and `facilityType` outright under OnDemand
+until `network-specs` commit `b76c9ad8a5` on `schema-packs-v0.1` dropped that
+constraint. The stop was a workaround for a rule that no longer exists.
+
+The pack's `location` description still says not to populate it with a search
+origin. That rule governs the answer, where an inferred point would be a false
+claim about a real place, and the response half honours it: it emits no
+`location` at all, because POCRA returns no per-facility coordinate, and emits
+`address` instead.
 
 **This convention is provisional.** It was chosen on design and has not been
 confirmed against a payload captured from the network.

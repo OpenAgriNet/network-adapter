@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -51,13 +52,16 @@ const shippedBindingKey = "pocra|" + shippedCapability
 
 // selectRequest is a facility search in OnDemand mode.
 //
-// The query lives in the Beckn layer, not in resourceAttributes: the pack
-// forbids an OnDemand resource from carrying location or facilityType, so the
-// search origin is a fulfillment stop and the requested type is
-// supportedFacilityTypes.
+// Both query inputs sit on resourceAttributes: the requested type in
+// supportedFacilityTypes, the point to search around in location.geo. That is
+// where the other three capabilities on this network carry their query too.
+// The pack's location is CompleteLocation, so the geometry is wrapped in geo --
+// one level deeper than WeatherObservation's bare geometry.
 //
-// PROVISIONAL: this convention was chosen on the design and has not yet been
-// confirmed against a payload captured from the network.
+// It used to be a Beckn fulfillment stop, because the pack forbade an OnDemand
+// resource from carrying location at all until network-specs commit b76c9ad8a5
+// dropped that constraint.
+
 // declaredContext is the @context the fixture declares, and the one the answer
 // must echo back.
 //
@@ -89,7 +93,8 @@ const selectRequest = `{
         "@type": "openagrinet:AgricultureFacility",
         "informationMode": "OnDemand",
         "subjectCategories": ["Facility"],
-        "supportedFacilityTypes": ["KrishiVigyanKendra"]
+        "supportedFacilityTypes": ["KrishiVigyanKendra"],
+        "location": { "geo": { "type": "Point", "coordinates": [74.5321, 19.5132] } }
       }
     }],
     "offer": {
@@ -97,12 +102,6 @@ const selectRequest = `{
       "resourceIds": ["res:pocra:facility-search"],
       "provider": { "id": "pocra",
                     "descriptor": { "code": "POCRA-01", "name": "PoCRA Provider Aggregator" } }
-    },
-    "fulfillment": {
-      "stops": [{
-        "location": { "geo": { "type": "Point", "coordinates": [74.5321, 19.5132] } },
-        "time": { "range": { "start": "2026-09-19T08:00:00.108Z" } }
-      }]
     }
   }] } }
 }`
@@ -326,8 +325,18 @@ func TestShippedMappingSendsWhatPocraExpects(t *testing.T) {
 	if gps := dig(stops[0], "location", "gps"); gps != "19.5132,74.5321" {
 		t.Errorf("gps = %v, want 19.5132,74.5321 in lat,lon order", gps)
 	}
-	if start := dig(stops[0], "time", "range", "start"); start != "2026-09-19T08:00:00.108Z" {
-		t.Errorf("time.range.start = %v, want the stop's own start", start)
+	// The start is when THIS call is made, not the caller's context.timestamp --
+	// the adapter states when it asked, which is a thing only it knows. So there
+	// is no literal to assert against: what is checked is that the value parses
+	// as a timestamp and is the present one, which is what would catch a
+	// regression to forwarding the fixture's own 2026-09-02 stamp.
+	start, _ := dig(stops[0], "time", "range", "start").(string)
+	asked, err := time.Parse(time.RFC3339, start)
+	if err != nil {
+		t.Fatalf("time.range.start = %q, which does not parse as RFC 3339: %v", start, err)
+	}
+	if drift := time.Since(asked); drift < -time.Minute || drift > time.Minute {
+		t.Errorf("time.range.start = %v, which is %v away from now; want the moment of the call", start, drift)
 	}
 
 	// The governed type is translated into POCRA's private vocabulary here and
@@ -417,6 +426,22 @@ func attributes(t *testing.T, payload map[string]any) map[string]any {
 	return found
 }
 
+// geo reaches the search origin's geometry: resourceAttributes.location.geo.
+// The geo wrapper is the pack's, not this fixture's -- AgricultureFacility
+// types location as CompleteLocation, which requires it.
+func geo(t *testing.T, payload map[string]any) map[string]any {
+	t.Helper()
+	location, ok := attributes(t, payload)["location"].(map[string]any)
+	if !ok {
+		t.Fatal("the fixture carries no location on resourceAttributes")
+	}
+	found, ok := location["geo"].(map[string]any)
+	if !ok {
+		t.Fatal("the fixture's location carries no geo")
+	}
+	return found
+}
+
 func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 	testCases := []struct {
 		name   string
@@ -424,18 +449,38 @@ func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 		wants  string
 	}{
 		{
-			name: "no fulfillment stop at all",
+			name: "no location at all",
 			mutate: func(t *testing.T, payload map[string]any) {
-				commitment(t, payload)["fulfillment"] = map[string]any{"stops": []any{}}
+				delete(attributes(t, payload), "location")
 			},
 			wants: "Point",
 		},
 		{
 			name: "a polygon rather than a point",
 			mutate: func(t *testing.T, payload map[string]any) {
-				fulfillment := commitment(t, payload)["fulfillment"].(map[string]any)
-				stop := fulfillment["stops"].([]any)[0].(map[string]any)
-				stop["location"].(map[string]any)["geo"].(map[string]any)["type"] = "Polygon"
+				geo(t, payload)["type"] = "Polygon"
+			},
+			wants: "Point",
+		},
+		{
+			// Arity alone would pass this. The pair is well-formed and the gps
+			// string it builds is one POCRA accepts and answers emptily, so
+			// without the type check the caller is told there are no facilities
+			// rather than that their point is not a point.
+			name: "coordinates that are strings rather than numbers",
+			mutate: func(t *testing.T, payload map[string]any) {
+				geo(t, payload)["coordinates"] = []any{"74.5321", "19.5132"}
+			},
+			wants: "Point",
+		},
+		{
+			// Note what this does NOT catch: a caller who swaps the pair to
+			// [lat, lon] sends 19.5132 as longitude and 74.5321 as latitude, and
+			// both are in range. Only the far side of the round trip can tell
+			// that apart -- POCRA answering about the wrong place.
+			name: "coordinates outside the valid range",
+			mutate: func(t *testing.T, payload map[string]any) {
+				geo(t, payload)["coordinates"] = []any{200.0, 95.0}
 			},
 			wants: "Point",
 		},
