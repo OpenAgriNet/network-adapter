@@ -34,7 +34,7 @@ response: |
 
     $makeResource := function($row) {
       (
-        $hasCoords := $row.coordinateQuality = "ok" and $exists($row.latitude) and $exists($row.longitude);
+        $hasCoords := $exists($row.latitude) and $exists($row.longitude);
         $coords := [$row.longitude, $row.latitude];
 
         $marketObj := {
