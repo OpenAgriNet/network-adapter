@@ -38,11 +38,13 @@ GOLANGCI_LINT_VERSION := v2.5.0
 GOTESTSUM_VERSION     := v1.13.0
 TRIVY_VERSION         := v0.74.0
 ACTIONLINT_VERSION    := v1.7.12
+GOVULNCHECK_VERSION   := v1.8.0
 
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOTESTSUM     := $(BIN_DIR)/gotestsum
 TRIVY         := $(BIN_DIR)/trivy
 ACTIONLINT    := $(BIN_DIR)/actionlint
+GOVULNCHECK   := $(BIN_DIR)/govulncheck
 
 # From GOROOT, not PATH: `go` is always resolvable here (every other target
 # needs it), and gofmt sits next to it, so this works even where only the
@@ -294,6 +296,30 @@ trivy-gate:
 	[ "$$fail" -eq 0 ] || echo "::error::Trivy findings at $(SEVERITY), or a missing report — see the log above"; \
 	exit $$fail
 
+## security: report the published vulnerabilities this binary can actually reach
+# The third scanner, and the only one that reads the call graph. Trivy answers
+# "is a vulnerable version present" from a manifest or a layer; govulncheck
+# answers "is the vulnerable symbol reachable from an entry point in this
+# module", which is a different and usually much shorter list.
+#
+# It is also the only one of the three that sees a Go toolchain CVE without an
+# image: trivy-image finds those by reading `stdlib` out of the compiled
+# binary's build info, so it is blind on any tree whose image has not been
+# built, and it reports the toolchain the Dockerfile pins rather than the one
+# go.mod requires. When those two differ, this target is the one telling the
+# truth about `go build` on a developer's machine.
+#
+# ./... and not $(MAIN_PKGS): the plugin carve-out exists because a
+# race-instrumented or whole-module-coverage build makes plugin.Open reject the
+# .so. govulncheck builds neither, so there is nothing to carve out, and a
+# vulnerability reachable only from a plugin is still shipped in the image.
+#
+# Exits 3 when something is reachable, 0 when the only findings are in modules
+# nothing calls — so an unmaintained-but-unused dependency is reported without
+# turning the gate red, which is correct: there is often no version to move to.
+security: $(GOVULNCHECK)
+	$(GOVULNCHECK) ./...
+
 ## lint: vet, format check and static analysis
 lint: $(GOLANGCI_LINT)
 	$(GOLANGCI_LINT) run ./...
@@ -463,6 +489,14 @@ $(ACTIONLINT):
 	@mkdir -p $(BIN_DIR)
 	GOBIN=$(abspath $(BIN_DIR)) $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
+# Pinned like the rest, even though the findings come from a database fetched
+# at run time rather than from the binary — pinning the tool is what keeps a
+# new release changing its exit codes or output format from turning into a
+# CI failure nobody made.
+$(GOVULNCHECK):
+	@mkdir -p $(BIN_DIR)
+	GOBIN=$(abspath $(BIN_DIR)) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+
 # The prebuilt release binary, not `go install`: trivy's rpm-db parser needs
 # cgo, and its module graph is comparable in size to golangci-lint's for a
 # tool nothing here imports — the official install script is what
@@ -478,6 +512,6 @@ $(TRIVY):
 		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
 
 .PHONY: help build test cover test-ci merge-coverage cover-diff lint fmt \
-	lint-actions lint-staged hooks \
+	lint-actions lint-staged hooks security \
 	trivy-deps trivy-image trivy-report trivy-gate trivy-release-gate \
 	docker image-build image-publish require-image-repo clean

@@ -1,6 +1,21 @@
 name: CI
 
-# Two checks and no more: "End to End verification" and "Security Scan".
+# Two checks from THIS file and no more: "End to End verification" and
+# "Security Scan". A PR carries two further checks, both from codeql.yml:
+# "CodeQL", which is its job, and "Code scanning results / CodeQL", which
+# GitHub posts for the analysis upload and which is not a job at all — it
+# cannot be renamed, reordered or switched off.
+#
+# That second one is the exact shape this file refuses for Trivy further down,
+# so the rule has to be stated properly rather than by count. What it refuses
+# is a check that can report the OPPOSITE of a gate reading the same findings.
+# Trivy has such a gate, make trivy-gate, and the two did disagree: the upload
+# went green with "No new alerts in code change" on the run where the gate
+# failed on 20 HIGH stdlib CVEs. CodeQL has no gate to contradict — it is the
+# only thing here that reports its class, and codeql.yml deliberately does not
+# fail on findings — so its results check is redundant rather than
+# contradictory. Redundant is a cost worth paying for per-PR alerts; a check
+# that can be green while the truth is red is not.
 #
 # The two tag-time checks live in ci-release.yml, not here behind an `if:`. A
 # job whose `if:` is false still posts a skipped check, and its `name:` is
@@ -16,10 +31,13 @@ name: CI
 # running the exact command the log shows.
 on:
   push:
-    # development as well as main: this is the branch PRs target and merge
-    # into, so a merge landing there runs the same gates the PR did. No tags —
-    # a tag re-running the tests its PR already gated on proves nothing.
-    branches: [main, development]
+    # development and the release branches as well as main: these are what PRs
+    # target and merge into, so a merge landing there runs the same gates the
+    # PR did. release-* was missing and that was a real gap — release-0.0.1 is
+    # the tip that ships today, 12 commits ahead of development, and until now
+    # nothing re-verified a merge into it. No tags — a tag re-running the tests
+    # its PR already gated on proves nothing.
+    branches: [main, development, release-*]
   pull_request:
 
 # Least privilege at the workflow level; the jobs that need more declare it for
