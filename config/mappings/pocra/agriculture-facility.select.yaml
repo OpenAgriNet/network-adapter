@@ -217,6 +217,22 @@ response: |
       "GSW": "Warehouse"
     };
 
+    /* subjectCategories per facility type, copied from the AgricultureFacility
+       v0.1 pack's own four Direct examples -- chc.json, kvk.json,
+       warehouse.json and soil-testing.json. The pack is the authority on what
+       each governed type is for, so this table is transcription rather than
+       judgement, and a reader can check every row against those files.
+
+       Keyed by the governed type, so it is total over $types' values: $wanted
+       below admits nothing outside $requestedTypes, which the request half
+       already checked against the same four names. */
+    $subjects := {
+      "CustomHiringCentre": ["Facility", "Crop", "Practice"],
+      "KrishiVigyanKendra": ["Facility", "Crop", "Livestock", "Practice"],
+      "Warehouse": ["Facility", "Crop", "Market"],
+      "SoilTestingFacility": ["Facility", "Crop"]
+    };
+
     /* EVERY type the payload asked for, as a list. The answer is filtered to
        this set rather than to its first entry -- filtering to [0] is what made a
        two-type search drop a type. */
@@ -257,10 +273,24 @@ response: |
     /* POCRA writes "Unknown", "N/A" and "000000" where it has no value.
        Publishing them would put junk on the network under a governed schema, so
        a value that is one of them is treated as absent. A ternary with no else
-       yields nothing, which is how a field is omitted rather than nulled. */
+       yields nothing, which is how a field is omitted rather than nulled.
+
+       Trimmed first, and the trimmed value is what is returned: POCRA pads some
+       fields ("Rajesh Maruti Thoke "), and an untrimmed value both publishes the
+       padding and slips past the placeholder comparisons below -- " N/A " is not
+       equal to "N/A". $trim NORMALISES rather than only trimming: per the
+       JSONata spec it also collapses interior runs of whitespace to one space,
+       so POCRA's "Malunje  Bk." publishes as "Malunje Bk.". That is wanted here
+       -- these are values a consumer matches on -- but it is more than the name
+       suggests. Guarded on $type because $trim's signature is <s-:s> and
+       throws T0410 on anything but a string; $clean is also called on the
+       already-split head inside $numericPrefix. */
     $clean := function($value) {
-      ($exists($value) and $value != "" and $value != "Unknown"
-        and $value != "N/A" and $value != "000000" and $value != "-") ? $value
+      (
+        $trimmed := $type($value) = "string" ? $trim($value) : $value;
+        ($exists($trimmed) and $trimmed != "" and $trimmed != "Unknown"
+          and $trimmed != "N/A" and $trimmed != "000000" and $trimmed != "-") ? $trimmed
+      )
     };
 
     /* $number($substringBefore(...)) THROWS on anything it cannot parse, and
@@ -400,37 +430,100 @@ response: |
       )
     };
 
-    /* A Beckn Address. streetAddress is POCRA's one real address line; district,
-       taluka and village go to extendedAddress, which is where the pack's own
-       examples put them. addressRegion is Maharashtra because POCRA is that
-       state's aggregator and publishes nothing outside it. */
+    /* A Beckn Address. Beckn v2.0 declares Address additionalProperties: false
+       with exactly six fields, so India's administrative levels have to be
+       placed into them rather than named.
+
+       THE VILLAGE IS addressLocality, not part of extendedAddress. Beckn
+       describes addressLocality as "City/locality", the pack's own four Direct
+       examples all put the village there, and it is the only one of these that
+       profile.json declares both indexable and filterable AND that
+       renderer.json prints on the result card. Folded into extendedAddress it
+       was searchable by nothing and shown by nothing -- extendedAddress ("apt/
+       suite/floor, C/O") appears in neither template.
+
+       Taluka and district stay in extendedAddress because Beckn offers them no
+       slot at all: addressRegion is one level, and it is the state.
+
+       addressRegion is Maharashtra because POCRA is that state's aggregator and
+       publishes nothing outside it. Both constants are emitted only when POCRA
+       supplied at least one field of its own -- Direct mode is satisfied by
+       `address` alone, so returning {Maharashtra, IN} for an item with no
+       address at all would satisfy the schema with two values this file wrote
+       itself and nothing POCRA said. */
     $address := function($item) {
       (
-        $parts := [$clean($item.address.district), $clean($item.address.taluka), $clean($item.address.vilage)];
-        {
-          "streetAddress": $clean($item.address.address),
+        $street := $clean($item.address.address);
+        $locality := $clean($item.address.vilage);
+        $postal := $clean($item.address.pinCode);
+        $parts := [$clean($item.address.taluka), $clean($item.address.district)];
+        /* Each field tested on its own rather than by counting the keys of an
+           assembled object: $keys is not implemented by the JSONata this
+           adapter runs, and returns undefined rather than erroring, so
+           $count($keys(...)) > 0 fails every response with T2009. */
+        ($exists($street) or $exists($locality) or $exists($postal) or $count($parts) > 0) ? {
+          "streetAddress": $street,
+          "addressLocality": $locality,
           "extendedAddress": $count($parts) > 0 ? $join($parts, ", "),
-          "postalCode": $clean($item.address.pinCode),
+          "postalCode": $postal,
           "addressRegion": "Maharashtra",
           "addressCountry": "IN"
         }
       )
     };
 
-    /* Organisational contact only. The pack restricts publicContact to contact
-       data approved for catalog publication, and POCRA's person field is an
-       office rather than an individual. Omitted entirely when there is nothing
-       usable, rather than emitted empty. */
+    /* The contact POCRA publishes for the facility, carried through as the
+       directory entry it is.
+
+       name, NOT company. This file used to write person into company on the
+       stated grounds that "POCRA's person field is an office rather than an
+       individual". That is true of KVK ("President, Pravara Instt. Of Res. &
+       Edn. ...") and of warehouses ("Warehouse Manager"), and FALSE of every
+       CHC, each of which publishes a named individual and a personal mobile
+       ("Rajesh Maruti Thoke" / 9765007429). POCRA gives one field for all three
+       and says nothing about which it holds, so there is no rule that routes
+       them correctly. Beckn's Contact.company is specifically "Company name if
+       B2B contact"; Contact.name is the general one and is exemplified with a
+       person. Writing a person's name into company would not make it less
+       personal, only harder to see -- name states what the value actually is.
+
+       Retained rather than dropped for CHC on the deployment's decision that
+       these are POCRA's own published directory entries, i.e. already public.
+       profile.json's privacy_notes still limits publicContact to contact data
+       the Provider approved for catalog publication; that approval is POCRA's
+       to give and this file records the value as given.
+
+       Omitted entirely when there is nothing usable, rather than emitted
+       empty. */
     $contact := function($item) {
       (
-        $company := $clean($item.contact.person);
+        $name := $clean($item.contact.person);
         $phone := $clean($item.contact.phone);
         $email := $clean($item.contact.email);
-        ($exists($company) or $exists($phone) or $exists($email)) ? {
-          "company": $company,
+        ($exists($name) or $exists($phone) or $exists($email)) ? {
+          "name": $name,
           "phone": $phone,
           "email": $email
         }
+      )
+    };
+
+    /* The facility's own name, for Beckn's Resource.descriptor.
+       The pack README states the attachment point outright: "Beckn owns the
+       Resource identifier and descriptor." That is why resourceAttributes has
+       no name field -- not an omission to work around, but a statement that the
+       name belongs one level up, beside id.
+
+       Emitted verbatim, including the CHC case where POCRA repeats the generic
+       "Custom Hiring Center" for every item and buries the operator's name in
+       long_desc prose ("Address: Krushisafalya Farmer Producer Company
+       Limited. Distance: 14 Km."). Parsing that prose would invent structure
+       POCRA does not publish; a name that restates the type is at least what
+       POCRA said. KVK and warehouse items carry real names. */
+    $facilityDescriptor := function($item) {
+      (
+        $name := $clean($item.descriptor.name);
+        $exists($name) ? { "name": $name }
       )
     };
 
@@ -444,21 +537,34 @@ response: |
            the pack's broad discovery category, deliberately coarse: the
            concrete kind is facilityType below.
 
-           "Facility" alone. The pack permits further values to name the
-           agricultural domains a facility serves (Crop, Livestock, ...), and
-           POCRA states nothing about that for any item -- inventing one would
-           publish a guess as a governed discovery category. */
-        "subjectCategories": ["Facility"],
+           Taken from $subjects, which is the pack's own per-type table -- not
+           a guess about the individual facility. This file previously wrote
+           "Facility" alone, on the grounds that POCRA states nothing about the
+           agricultural domains a given item serves. True, and beside the
+           point: these categories describe what a facility TYPE is for, and
+           the pack fixes that for each of the four in its own examples. A
+           Krishi Vigyan Kendra does crop, livestock and practice extension
+           because that is what a KVK is. subjectCategories is a discovery_field
+           in profile.json, so "Facility" alone left every POCRA facility
+           indistinguishable in the one place the value is read. */
+        "subjectCategories": $lookup($subjects, $facilityType),
         "facilityType": $facilityType,
         "address": $address($item),
         "capacity": $capacity($item),
-        /* sourceUri rather than website: contact.webUrl is POCRA's own site
-           repeated on every item, so it identifies the source and not the
-           facility. */
+        /* sourceUri rather than website: contact.webUrl identifies the source
+           and not the facility.
+
+           CONSTANT, not read from the item. webUrl is POCRA's own site on CHC
+           and KVK items, which is what made copying it look right -- but the
+           warehouse BPP sends "https://warehouse.com" on every warehouse, and
+           copying that published a third party's placeholder as the URI of a
+           SourceReference whose sourceId and sourceName both say PoCRA. The
+           source of every record in this answer is PoCRA, whatever each
+           upstream BPP writes in its own contact block. */
         "source": {
           "sourceId": "pocra",
           "sourceName": "PoCRA, Government of Maharashtra",
-          "sourceUri": $clean($item.contact.webUrl)
+          "sourceUri": "https://mahapocra.gov.in"
         },
         "publicContact": $contact($item)
       }
@@ -508,6 +614,13 @@ response: |
               "resources": [$map($sorted, function($entry) {
                 {
                   "id": $resourceId($entry.facility),
+                  /* The facility's name, beside id where the pack says it
+                     belongs -- see $facilityDescriptor. Without it the answer
+                     named no facility at all: resourceAttributes has no name
+                     field, so every resource here reached the caller as a
+                     type, an address and an id. knowledge-advisory.select.yaml
+                     already emits descriptor in this position. */
+                  "descriptor": $facilityDescriptor($entry.facility),
                   /* Required by Commitment.resources in the spec, which defines
                      no quantity property and no Quantity schema anywhere -- a
                      defect upstream, so any value validates. {"count": n} is the
@@ -524,10 +637,12 @@ response: |
                      per-facility coordinate, and the pack forbids substituting
                      the search origin for one.
 
-                     services, capacity, website and lastUpdatedAt are absent for
-                     the same reason -- POCRA supplies none of them, and deriving
-                     them from the facility type, or lastUpdatedAt from the time
-                     of the fetch, would assert something nobody verified. */
+                     services, website and lastUpdatedAt are absent for the same
+                     reason -- POCRA supplies none of them, and deriving them
+                     from the facility type, or lastUpdatedAt from the time of
+                     the fetch, would assert something nobody verified. capacity
+                     is emitted where POCRA reports one, which is warehouses and
+                     nothing else. */
                   "resourceAttributes": $attributes($entry.facility, $entry.type)
                 }
               })]

@@ -632,9 +632,12 @@ func TestShippedMappingScrubsPocraPlaceholders(t *testing.T) {
 		t.Error("COMMON-55007 has no usable contact, so publicContact must be absent")
 	}
 
-	// COMMON-55043 does have one, carried as an organisational company name --
-	// the pack restricts publicContact to contact data approved for catalog
-	// publication, and POCRA's person field is an office rather than a person.
+	// COMMON-55043 does have one, and it is carried as Contact.name rather than
+	// Contact.company. POCRA gives one `person` field and says nothing about
+	// which it holds: this KVK's is an office, but every CHC's is a named
+	// individual with a personal mobile. company is "Company name if B2B
+	// contact" in Beckn v2.0, so routing all three through it mislabels the
+	// personal ones instead of making them less personal.
 	farther, ok := dig(resources[1], "resourceAttributes").(map[string]any)
 	if !ok {
 		t.Fatal("the farther resource carries no resourceAttributes")
@@ -643,8 +646,11 @@ func TestShippedMappingScrubsPocraPlaceholders(t *testing.T) {
 	if !ok {
 		t.Fatal("COMMON-55043 has a contact person and must carry publicContact")
 	}
-	if company, _ := contact["company"].(string); !strings.Contains(company, "Sanskriti") {
-		t.Errorf("publicContact.company = %v, want POCRA's organisational contact", contact["company"])
+	if name, _ := contact["name"].(string); !strings.Contains(name, "Sanskriti") {
+		t.Errorf("publicContact.name = %v, want the contact POCRA published", contact["name"])
+	}
+	if _, present := contact["company"]; present {
+		t.Error("POCRA's person field is not known to be a company, so company must be absent")
 	}
 
 	// The district survives scrubbing even though region, taluka and village do
@@ -663,8 +669,10 @@ func TestShippedMappingScrubsPocraPlaceholders(t *testing.T) {
 		t.Errorf("address = %v, want IN / Maharashtra", address)
 	}
 
-	// contact.webUrl is POCRA's own site repeated on every item, so it
-	// identifies the source and not the facility.
+	// source names PoCRA, whatever each upstream BPP writes in its own contact
+	// block -- the warehouse BPP sends "https://warehouse.com" there, so a
+	// sourceUri copied from the item published a third party's placeholder
+	// under a sourceId and sourceName that both say PoCRA.
 	source, ok := farther["source"].(map[string]any)
 	if !ok {
 		t.Fatal("COMMON-55043 carries no source")
@@ -672,8 +680,8 @@ func TestShippedMappingScrubsPocraPlaceholders(t *testing.T) {
 	if source["sourceId"] != "pocra" {
 		t.Errorf("source.sourceId = %v, want pocra", source["sourceId"])
 	}
-	if source["sourceUri"] != "https://provider.mahapocra.gov.in" {
-		t.Errorf("source.sourceUri = %v, want POCRA's own site", source["sourceUri"])
+	if source["sourceUri"] != "https://mahapocra.gov.in" {
+		t.Errorf("source.sourceUri = %v, want PoCRA's own site", source["sourceUri"])
 	}
 }
 
