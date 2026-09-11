@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 )
 
 require github.com/stretchr/testify v1.11.1
