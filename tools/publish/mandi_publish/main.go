@@ -1,22 +1,29 @@
-// Command mandi_publish collects Agmarknet Vistaar's market master data.
+// Command mandi_publish collects, builds, and publishes Agmarknet Vistaar
+// market catalogs.
 //
-// It authenticates, reads the state list, reads every market's coordinates once
-// for all of India, then walks the states fetching what each market trades, and
-// writes one normalized document.
+// ONE RUN COLLECTS AND WRITES THE CATALOGS. There is no intermediate
+// collection document.
 //
-// Publishing is not this command's job yet: the document it writes is what a
-// later stage turns into a MandiPrice catalog. Keeping the two apart means the
-// collected data can be reviewed by a human before anything reaches a network.
-//
-// Usage:
+// Collect and build:
 //
 //	MANDI_TOKEN_USER=... MANDI_TOKEN_SECRET=... \
-//	  mandi_publish --states MH --from 01-07-2026 --to 01-12-2026 --out markets.json
+//	  mandi_publish --states MH --from 01-07-2026 --to 01-12-2026 --catalog-out catalog
+//
+// Collect, build and publish in one go:
+//
+//	MANDI_PUBLISH_URL=http://localhost:9200 \
+//	  mandi_publish --states MH --from 01-07-2026 --to 01-12-2026 --publish
+//
+// Publish catalogs already on disk, collecting nothing:
+//
+//	mandi_publish --publish --catalog-in catalog --states MH --dry-run
+//
+// Each state becomes one catalog, because the discovery service caps a catalog
+// at 256 geometries -- measured, see the design spec.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,12 +43,48 @@ type config struct {
 }
 
 func main() {
+	loadEnvFile(".env")
+
+	// Collect
 	baseURL := flag.String("base-url", "http://34.0.4.235:8080", "Agmarknet Vistaar base URL")
 	states := flag.String("states", "", "comma-separated state codes; empty means every state")
 	fromDate := flag.String("from", "", "window start, dd-MM-yyyy (default: today)")
 	toDate := flag.String("to", "", "window end, dd-MM-yyyy (default: today)")
-	out := flag.String("out", "markets.json", "where to write the collected document")
+
+	// Build. The catalogs ARE the output: one run collects and writes them.
+	catalogOut := flag.String("catalog-out", "catalog", "directory to write per-state catalogs into")
+	participantID := flag.String("participant-id", "", "participant ID (default: $MANDI_PARTICIPANT_ID, else agmarknet)")
+	networkID := flag.String("network-id", "", "network ID (default: $APP_NETWORK_ID, else oan-dev)")
+	withoutGeometry := flag.String("without-geometry", "publish", "what to do with geometry-less markets: publish or skip")
+
+	// Publish
+	doPublish := flag.Bool("publish", false, "publish the catalogs to the provider adapter")
+	publishURL := flag.String("publish-url", "", "provider adapter base URL (default: $MANDI_PUBLISH_URL)")
+	catalogIn := flag.String("catalog-in", "", "publish these already-built catalogs instead of collecting")
+	dryRun := flag.Bool("dry-run", false, "print what would be posted without sending HTTP requests")
+	retireOldFlag := flag.Bool("retire-old", false, "additionally publish the isActive:false tombstone for old catalog")
+
 	flag.Parse()
+
+	ctx := context.Background()
+
+	pubCfg := publishConfig{
+		publishURL: firstNonEmpty(*publishURL, os.Getenv("MANDI_PUBLISH_URL")),
+		states:     splitStates(*states),
+		dryRun:     *dryRun,
+		retireOld:  *retireOldFlag,
+	}
+
+	// --catalog-in publishes what is already on disk and collects nothing. It
+	// is the path for re-posting exactly what was reviewed.
+	if *catalogIn != "" {
+		if !*doPublish && !*retireOldFlag {
+			fail("--catalog-in only makes sense with --publish or --retire-old")
+		}
+		pubCfg.catalogIn = *catalogIn
+		publishAndExit(ctx, pubCfg)
+		return
+	}
 
 	today := time.Now().Format("02-01-2006")
 	if *fromDate == "" {
@@ -51,52 +94,146 @@ func main() {
 		*toDate = today
 	}
 
-	cfg := config{
-		baseURL: *baseURL,
-		// CREDENTIALS FROM THE ENVIRONMENT, NEVER A FLAG. A flag value lands in
-		// shell history and is visible in ps output to every user on the host.
-		user:     os.Getenv("MANDI_TOKEN_USER"),
-		secret:   os.Getenv("MANDI_TOKEN_SECRET"),
-		states:   splitStates(*states),
-		fromDate: *fromDate,
-		toDate:   *toDate,
-	}
-
-	collection, err := collect(context.Background(), cfg)
+	built, summary, collection, err := run(ctx, runConfig{
+		collect: config{
+			baseURL: *baseURL,
+			// CREDENTIALS FROM THE ENVIRONMENT, NEVER A FLAG. A flag value
+			// lands in shell history and is visible in ps output to every
+			// user on the host.
+			user:     os.Getenv("MANDI_TOKEN_USER"),
+			secret:   os.Getenv("MANDI_TOKEN_SECRET"),
+			states:   splitStates(*states),
+			fromDate: *fromDate,
+			toDate:   *toDate,
+		},
+		build: buildConfig{
+			catalogOut:      *catalogOut,
+			participantID:   *participantID,
+			networkID:       *networkID,
+			withoutGeometry: *withoutGeometry,
+			states:          splitStates(*states),
+		},
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mandi_publish: %v\n", err)
-		os.Exit(1)
+		fail("%v", err)
 	}
 
-	body, err := json.MarshalIndent(collection, "", "  ")
+	printCollectionSummary(collection)
+	printBuildSummary(built, summary, buildConfig{catalogOut: *catalogOut, withoutGeometry: *withoutGeometry})
+
+	if *doPublish || *retireOldFlag {
+		pubCfg.catalogIn = *catalogOut
+		// A state that failed to collect is not a state with no markets, so a
+		// partial collection must not be published as though it were whole.
+		if len(collection.StateErrors) > 0 {
+			fail("%d states failed to collect; not publishing a partial set", len(collection.StateErrors))
+		}
+		publishAndExit(ctx, pubCfg)
+		return
+	}
+
+	// Non-zero on a partial collection: a caller scripting this must be able
+	// to tell a complete run from one missing a state.
+	if len(collection.StateErrors) > 0 {
+		os.Exit(1)
+	}
+}
+
+// publishAndExit posts the catalogs and exits non-zero if anything did not
+// reach the index intact.
+func publishAndExit(ctx context.Context, cfg publishConfig) {
+	res, err := publish(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mandi_publish: %v\n", err)
+		fail("publish: %v", err)
+	}
+	printPublishSummary(res, cfg)
+	if res.HasFailures() {
 		os.Exit(1)
 	}
-	if err := os.WriteFile(*out, body, 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "mandi_publish: %v\n", err)
-		os.Exit(1)
-	}
+}
 
-	fmt.Fprintf(os.Stderr, "wrote %d markets to %s\n", len(collection.Markets), *out)
+// printCollectionSummary reports what was collected and, above all, what was
+// not: a doubtful coordinate and a state that answered nothing are both facts
+// a reader has to see.
+func printCollectionSummary(collection Collection) {
+	fmt.Fprintf(os.Stderr, "collected %d markets\n", len(collection.Markets))
 	for _, quality := range []string{coordinateMissing, coordinateSuspect, coordinateOutOfBounds} {
 		if n := countQuality(collection.Markets, quality); n > 0 {
 			fmt.Fprintf(os.Stderr, "  %d markets have %s coordinates\n", n, quality)
 		}
 	}
 	if len(collection.EmptyStates) > 0 {
-		// Not fatal -- see the EmptyStates doc comment -- but worth a human's
-		// attention, since it can also be the first sign of an upstream problem.
-		fmt.Fprintf(os.Stderr, "  %d states returned zero markets: %s\n",
+		// The upstream holds no mapping rows for these. It is a coverage fact,
+		// not a failure -- see errNoUpstreamData.
+		fmt.Fprintf(os.Stderr, "  %d states returned no data: %s\n",
 			len(collection.EmptyStates), strings.Join(collection.EmptyStates, ", "))
 	}
-	if len(collection.StateErrors) > 0 {
-		// Non-zero on a partial run: a caller scripting this must be able to
-		// tell a complete collection from one missing a state.
-		for _, failure := range collection.StateErrors {
-			fmt.Fprintf(os.Stderr, "  %s failed: %s\n", failure.StateCode, failure.Reason)
+	for _, failure := range collection.StateErrors {
+		fmt.Fprintf(os.Stderr, "  %s FAILED: %s\n", failure.StateCode, failure.Reason)
+	}
+}
+
+// fail prints one message and exits non-zero.
+func fail(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "mandi_publish: "+format+"\n", args...)
+	os.Exit(1)
+}
+
+// firstNonEmpty returns the first value that is set, so a flag beats an
+// environment variable and both beat nothing.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
 		}
-		os.Exit(1)
+	}
+	return ""
+}
+
+func printBuildSummary(built []BuiltState, summary SkipSummary, cfg buildConfig) {
+	fmt.Fprintf(os.Stderr, "built %d state catalogs into %s\n", len(built), cfg.catalogOut)
+	for _, b := range built {
+		fmt.Fprintf(os.Stderr, "  %s: %d markets -> %s (%s)\n", b.StateCode, b.Markets, b.Path, b.CatalogID)
+	}
+	if summary.ZeroCommodities > 0 {
+		fmt.Fprintf(os.Stderr, "  skipped %d markets with zero commodities\n", summary.ZeroCommodities)
+	}
+	if summary.GeometryLess > 0 {
+		fmt.Fprintf(os.Stderr, "  %d markets without coordinates (without-geometry=%s)\n", summary.GeometryLess, cfg.withoutGeometry)
+	}
+	if summary.EmptyStates > 0 {
+		fmt.Fprintf(os.Stderr, "  %d states emitted no catalog file\n", summary.EmptyStates)
+	}
+}
+
+func printPublishSummary(res PublishResult, cfg publishConfig) {
+	if cfg.dryRun {
+		fmt.Fprintf(os.Stderr, "dry-run: would publish to %s/publish\n", strings.TrimRight(cfg.publishURL, "/"))
+	}
+	for _, o := range res.Outcomes {
+		switch o.Status {
+		case StatusPublished:
+			fmt.Fprintf(os.Stderr, "  %s: %s -> ACCEPTED\n", o.StateCode, o.CatalogID)
+		case StatusDryRun:
+			fmt.Fprintf(os.Stderr, "  %s: %s -> would POST\n", o.StateCode, o.CatalogID)
+		case StatusRejected:
+			fmt.Fprintf(os.Stderr, "  %s: %s -> REJECTED: %s\n", o.StateCode, o.CatalogID, o.Reason)
+		case StatusTransportError:
+			fmt.Fprintf(os.Stderr, "  %s: %s -> ERROR: %s\n", o.StateCode, o.CatalogID, o.Reason)
+		}
+	}
+	if res.RetiredOld != nil {
+		o := res.RetiredOld
+		switch o.Status {
+		case StatusPublished:
+			fmt.Fprintf(os.Stderr, "  retired old catalog %s -> ACCEPTED\n", o.CatalogID)
+		case StatusDryRun:
+			fmt.Fprintf(os.Stderr, "  retired old catalog %s -> would POST\n", o.CatalogID)
+		case StatusRejected:
+			fmt.Fprintf(os.Stderr, "  retiring old catalog %s -> REJECTED: %s\n", o.CatalogID, o.Reason)
+		case StatusTransportError:
+			fmt.Fprintf(os.Stderr, "  retiring old catalog %s -> ERROR: %s\n", o.CatalogID, o.Reason)
+		}
 	}
 }
 
@@ -167,18 +304,10 @@ func collect(ctx context.Context, cfg config) (Collection, error) {
 		}
 	}
 
-	// FATAL, not a partial run: an empty state list means every market in
-	// India would be silently lost, and the output would still be a
-	// well-formed, zero-error document that looks complete. cfg.states is
-	// never legitimately non-nil-but-empty (splitStates turns a blank flag
-	// into nil, which is "every state"), so this only fires when the
-	// upstream's own state list resolved to nothing.
 	if len(stateCodes) == 0 {
 		return Collection{}, errors.New("state list resolved to zero states; refusing to write an empty collection")
 	}
 
-	// Once, for all of India: this call has no per-state variant, so fetching
-	// it inside the loop would download 600 KB thirty-six times.
 	markets, err := client.Markets(ctx, mapper, mappingBase, token)
 	if err != nil {
 		return Collection{}, err
@@ -192,28 +321,25 @@ func collect(ctx context.Context, cfg config) (Collection, error) {
 		EmptyStates: []string{},
 	}
 
-	// Tracks marketId across every state processed so far. A market appearing
-	// under two state codes (or a state code repeated in --states) must land
-	// in the output once: Plan 1 makes one catalog resource per market, and a
-	// duplicate here becomes a duplicate resource ID there. First occurrence
-	// wins; later ones are skipped.
 	seen := make(map[int]bool)
 
 	for _, code := range stateCodes {
 		rows, err := client.StateMarkets(ctx, mapper, mappingBase, token, code, cfg.fromDate, cfg.toDate)
+		if errors.Is(err, errNoUpstreamData) {
+			// The upstream holds no mapping rows for this state, which is a
+			// coverage fact rather than a failed run -- it says so with an
+			// HTTP 400 and "No data available.". Recording it as a stateError
+			// made 27 of 36 states read as 27 outages and exited non-zero on a
+			// collection as complete as the upstream allows.
+			collection.EmptyStates = append(collection.EmptyStates, code)
+			continue
+		}
 		if err != nil {
-			// RECORDED, NOT FATAL. One state failing must not discard the
-			// thirty-five that succeeded; main exits non-zero so a partial run
-			// is still distinguishable from a complete one.
 			collection.StateErrors = append(collection.StateErrors,
 				StateError{StateCode: code, Reason: err.Error()})
 			continue
 		}
 		if len(rows) == 0 {
-			// SUCCEEDED but empty is suspicious, not fatal: a state can
-			// genuinely have nothing trading in the window, but this must be
-			// visible rather than indistinguishable from a state that was
-			// never fetched.
 			collection.EmptyStates = append(collection.EmptyStates, code)
 		}
 		for _, cm := range join(rows, markets) {
@@ -225,4 +351,27 @@ func collect(ctx context.Context, cfg config) (Collection, error) {
 		}
 	}
 	return collection, nil
+}
+
+// loadEnvFile reads a simple KEY=VALUE file and populates missing environment variables.
+func loadEnvFile(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.TrimSpace(parts[1])
+			v = strings.Trim(v, `"'`)
+			if os.Getenv(k) == "" {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}
 }
