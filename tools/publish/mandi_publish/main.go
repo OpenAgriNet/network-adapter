@@ -18,8 +18,9 @@
 //
 //	mandi_publish --publish --catalog-in catalog --states MH --dry-run
 //
-// Each state becomes one catalog, because the discovery service caps a catalog
-// at 256 geometries -- measured, see the design spec.
+// The discovery service caps a catalog at 256 geometries -- measured, see the
+// design spec. A state within that budget becomes one catalog; a state over
+// it is split into several numbered catalogs (mandi-<STATE>-1.json, -2, ...).
 package main
 
 import (
@@ -28,6 +29,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -191,18 +193,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 func printBuildSummary(built []BuiltState, summary SkipSummary, cfg buildConfig) {
-	fmt.Fprintf(os.Stderr, "built %d state catalogs into %s\n", len(built), cfg.catalogOut)
-	for _, b := range built {
-		fmt.Fprintf(os.Stderr, "  %s: %d markets -> %s (%s)\n", b.StateCode, b.Markets, b.Path, b.CatalogID)
-	}
-	if summary.ZeroCommodities > 0 {
-		fmt.Fprintf(os.Stderr, "  skipped %d markets with zero commodities\n", summary.ZeroCommodities)
-	}
-	if summary.GeometryLess > 0 {
-		fmt.Fprintf(os.Stderr, "  %d markets without coordinates (without-geometry=%s)\n", summary.GeometryLess, cfg.withoutGeometry)
-	}
-	if summary.EmptyStates > 0 {
-		fmt.Fprintf(os.Stderr, "  %d states emitted no catalog file\n", summary.EmptyStates)
+	for _, line := range buildReportLines(built, summary, cfg.catalogOut) {
+		fmt.Fprintln(os.Stderr, line)
 	}
 }
 
@@ -374,4 +366,91 @@ func loadEnvFile(path string) {
 			}
 		}
 	}
+}
+
+// buildReportLines renders what was built and, in detail, what was left out.
+//
+// Every excluded market is named, not counted. "95 markets have missing
+// coordinates" tells nobody which ones, and the reason for reporting them at
+// all is that somebody can look one up against the upstream.
+func buildReportLines(built []BuiltState, summary SkipSummary, catalogOut string) []string {
+	lines := []string{fmt.Sprintf("built %d catalogs into %s", len(built), catalogOut)}
+
+	// Per state, so a split state reads as one state in several catalogs
+	// rather than as several states.
+	totals := map[string]int{}
+	var order []string
+	for _, state := range built {
+		if _, seen := totals[state.StateCode]; !seen {
+			order = append(order, state.StateCode)
+		}
+		totals[state.StateCode] += state.Markets
+	}
+	for _, stateCode := range order {
+		chunks := chunksOf(built, stateCode)
+		if len(chunks) == 1 {
+			lines = append(lines, fmt.Sprintf("  %s: %d markets -> %s",
+				stateCode, totals[stateCode], chunks[0].CatalogID))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  %s: %d markets split across %d catalogs (%d-geometry limit per catalog)",
+			stateCode, totals[stateCode], len(chunks), catalogGeometryBudget))
+		for _, chunk := range chunks {
+			lines = append(lines, fmt.Sprintf("      %s: %d markets", chunk.CatalogID, chunk.Markets))
+		}
+	}
+
+	if len(summary.Excluded) > 0 {
+		lines = append(lines, fmt.Sprintf("%d markets NOT PUBLISHED:", len(summary.Excluded)))
+		lines = append(lines, marketLines(summary.Excluded)...)
+	}
+
+	if len(summary.GeometryLessMarkets) > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"%d markets published WITHOUT a location, so no proximity search can find them:",
+			len(summary.GeometryLessMarkets)))
+		lines = append(lines, "  (a filter on market.state or market.district still returns them)")
+		lines = append(lines, marketLines(summary.GeometryLessMarkets)...)
+	}
+
+	if summary.EmptyStates > 0 {
+		lines = append(lines, fmt.Sprintf("%d states produced no catalog at all", summary.EmptyStates))
+	}
+	return lines
+}
+
+// chunksOf returns one state's catalogs in the order they were built.
+func chunksOf(built []BuiltState, stateCode string) []BuiltState {
+	var out []BuiltState
+	for _, state := range built {
+		if state.StateCode == stateCode {
+			out = append(out, state)
+		}
+	}
+	return out
+}
+
+// marketLines groups markets by reason and names each one, so the reasons are
+// counted and the individual markets stay identifiable.
+func marketLines(markets []ExcludedMarket) []string {
+	byReason := map[string][]ExcludedMarket{}
+	for _, market := range markets {
+		byReason[market.Reason] = append(byReason[market.Reason], market)
+	}
+	reasons := make([]string, 0, len(byReason))
+	for reason := range byReason {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+
+	var lines []string
+	for _, reason := range reasons {
+		group := byReason[reason]
+		lines = append(lines, fmt.Sprintf("  %d x %s:", len(group), reason))
+		for _, market := range group {
+			lines = append(lines, fmt.Sprintf("      %s %d %s",
+				market.StateCode, market.MarketID, market.MarketName))
+		}
+	}
+	return lines
 }
