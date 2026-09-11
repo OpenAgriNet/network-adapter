@@ -27,9 +27,15 @@
 # in resourceAttributes, since POCRA returns no per-facility coordinate for
 # the searched point.
 #
-# PROVISIONAL. This convention was chosen on the design and has not been
-# confirmed against a payload captured from the network. Confirm it before the
-# registry row goes live.
+# The pack's own query example agrees: examples/on-demand-facility-discovery.json
+# is an OnDemand resource carrying supportedFacilityTypes and coverageAreas and
+# NO location, address or facilityType. So the convention is the pack's shape
+# for a query, not only this file's preference.
+#
+# STILL PROVISIONAL in one respect: the shape of the fulfillment stop the
+# search origin is read from comes from the design, not from a payload captured
+# from the network -- the pack's example says nothing about the stop. Confirm
+# that before the registry row goes live.
 
 # What this capability cannot serve, refused before the provider is called.
 #
@@ -400,16 +406,42 @@ response: |
       )
     };
 
-    /* A Beckn Address. streetAddress is POCRA's one real address line; district,
-       taluka and village go to extendedAddress, which is where the pack's own
-       examples put them. addressRegion is Maharashtra because POCRA is that
-       state's aggregator and publishes nothing outside it. */
+    /* A Beckn Address, shaped the way the pack's own Direct examples shape one:
+       streetAddress is the facility's own line, addressLocality is the
+       settlement, and extendedAddress carries the administrative tail --
+       "Rahta, Ahmednagar district" in examples/custom-hiring-centre.json, which
+       is where the district's own word "district" comes from.
+
+       addressLocality is not cosmetic. profile.json lists
+       address.addressLocality under BOTH indexable_paths and filterable_paths,
+       so a facility that leaves it unset cannot be found by locality at all --
+       which is what putting every administrative part in extendedAddress did.
+
+       POCRA's village is the settlement when it reports one; its taluka is the
+       nearest thing when it does not, and is then not repeated in the tail.
+       POCRA also repeats the village AS the taluka on some items ("Shrirampur"
+       for both), so an identical taluka is dropped from the tail rather than
+       published twice in one address.
+
+       addressRegion is Maharashtra because POCRA is that state's aggregator and
+       publishes nothing outside it. POCRA's own address.region is NOT read for
+       it: that field carries a revenue division ("Pune") or "Unknown", never
+       the state. */
     $address := function($item) {
       (
-        $parts := [$clean($item.address.district), $clean($item.address.taluka), $clean($item.address.vilage)];
+        $village := $clean($item.address.vilage);
+        $taluka := $clean($item.address.taluka);
+        $district := $clean($item.address.district);
+        /* Bound separately rather than inline in the array, because a ternary
+           with no else inside an array constructor reads ambiguously against
+           the element comma. */
+        $tailTaluka := ($exists($village) and $taluka != $village) ? $taluka;
+        $tailDistrict := $exists($district) ? $district & " district";
+        $tail := [$tailTaluka, $tailDistrict];
         {
           "streetAddress": $clean($item.address.address),
-          "extendedAddress": $count($parts) > 0 ? $join($parts, ", "),
+          "addressLocality": $exists($village) ? $village : $taluka,
+          "extendedAddress": $count($tail) > 0 ? $join($tail, ", "),
           "postalCode": $clean($item.address.pinCode),
           "addressRegion": "Maharashtra",
           "addressCountry": "IN"
@@ -434,6 +466,66 @@ response: |
       )
     };
 
+    /* What each governed facility type IS, per the pack's four Direct examples.
+       Both tables are copied from them rather than composed here:
+
+         examples/custom-hiring-centre.json    Facility, Crop, Practice
+                                               FARM_MACHINERY_HIRE
+         examples/krishi-vigyan-kendra.json    Facility, Crop, Livestock, Practice
+                                               FARM_ADVISORY, FARMER_TRAINING
+         examples/warehouse.json               Facility, Crop, Market
+                                               GENERAL_STORAGE
+         examples/soil-testing-facility.json   Facility, Crop
+                                               SOIL_TESTING
+
+       Keyed on the TYPE, which POCRA does state per facility -- see $labelled
+       above, where the type comes from the provider's id, the item's category
+       tag or the provider's fulfillment, and never from what was requested. An
+       item whose type none of those three can establish is dropped before it
+       reaches here, so neither table is ever consulted with a guess.
+
+       This follows from the type rather than asserting anything POCRA left
+       unsaid: what a Custom Hiring Centre hires out, or a Soil Testing Facility
+       tests, is what the governed type MEANS. Both lists are discovery surface
+       the pack indexes -- profile.json lists subjectCategories and
+       services[].code under both indexable_paths and filterable_paths -- so
+       "Facility" alone and no services made every facility unfilterable by
+       domain or by service.
+
+       What is deliberately NOT derived this way: languages, website,
+       lastUpdatedAt and capacity.basis appear in those same examples, but none
+       of them follows from the TYPE. They are per-facility facts POCRA does not
+       report, so they stay absent rather than become a guess. */
+    $categories := {
+      "CustomHiringCentre": ["Facility", "Crop", "Practice"],
+      "KrishiVigyanKendra": ["Facility", "Crop", "Livestock", "Practice"],
+      "Warehouse": ["Facility", "Crop", "Market"],
+      "SoilTestingFacility": ["Facility", "Crop"]
+    };
+    $serviceList := {
+      "CustomHiringCentre": [
+        {
+          "code": "FARM_MACHINERY_HIRE",
+          "name": "Farm machinery hire",
+          "shortDesc": "Access to agricultural machinery and implements."
+        }
+      ],
+      "KrishiVigyanKendra": [
+        { "code": "FARM_ADVISORY", "name": "Farm advisory" },
+        { "code": "FARMER_TRAINING", "name": "Farmer training" }
+      ],
+      "Warehouse": [
+        { "code": "GENERAL_STORAGE", "name": "General agricultural storage" }
+      ],
+      "SoilTestingFacility": [
+        {
+          "code": "SOIL_TESTING",
+          "name": "Soil sample testing",
+          "shortDesc": "Laboratory testing of soil samples for agricultural use."
+        }
+      ]
+    };
+
     $attributes := function($item, $facilityType) {
       {
         "@context": $ctx,
@@ -444,13 +536,17 @@ response: |
            the pack's broad discovery category, deliberately coarse: the
            concrete kind is facilityType below.
 
-           "Facility" alone. The pack permits further values to name the
-           agricultural domains a facility serves (Crop, Livestock, ...), and
-           POCRA states nothing about that for any item -- inventing one would
-           publish a guess as a governed discovery category. */
-        "subjectCategories": ["Facility"],
+           The further domains come from $categories above, which is the pack's
+           own examples rather than a judgement made here. Wrapped in [] because
+           JSONata collapses a one-element sequence to a bare value. */
+        "subjectCategories": [$lookup($categories, $facilityType)],
         "facilityType": $facilityType,
         "address": $address($item),
+        /* The type's own published services, from $serviceList above. Wrapped
+           in [] for the same reason: Warehouse and SoilTestingFacility name one
+           service each, and a bare object where the pack requires an array is
+           a schema failure rather than a cosmetic one. */
+        "services": [$lookup($serviceList, $facilityType)],
         "capacity": $capacity($item),
         /* sourceUri rather than website: contact.webUrl is POCRA's own site
            repeated on every item, so it identifies the source and not the
@@ -519,10 +615,13 @@ response: |
                      per-facility coordinate, and the pack forbids substituting
                      the search origin for one.
 
-                     services, capacity, website and lastUpdatedAt are absent for
-                     the same reason -- POCRA supplies none of them, and deriving
-                     them from the facility type, or lastUpdatedAt from the time
-                     of the fetch, would assert something nobody verified. */
+                     website, lastUpdatedAt and capacity.basis are absent for
+                     a related reason -- POCRA supplies none of them per
+                     facility, and taking lastUpdatedAt from the time of the
+                     fetch, or a basis from the pack's example wording, would
+                     assert something nobody verified. services and the wider
+                     subjectCategories ARE emitted, because those follow from
+                     the governed facility type rather than from the item. */
                   "resourceAttributes": $attributes($entry.facility, $entry.type)
                 }
               })]

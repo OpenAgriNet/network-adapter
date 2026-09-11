@@ -80,10 +80,10 @@ import (
 // A constraint ADDED. AgricultureResource v0.1 later made subjectCategories
 // REQUIRED (it was optional), added "Facility" to its enum, and
 // AgricultureFacility now requires the list to contain "Facility". That one
-// this repo could and did satisfy: the mapping states
-// subjectCategories: ["Facility"] on every facility it answers with, and the
-// request fixture carries it too. See the mapping's own comment beside the
-// field.
+// this repo could and did satisfy: every facility the mapping answers with
+// carries "Facility", alongside the further domains the pack's own Direct
+// examples give that facility type, and the request fixture carries it too. See
+// the mapping's own comment beside the field.
 //
 // The rule for the next one: a red cold-cache run here is a question about
 // which of those two it is. If the pack asks for something this adapter can

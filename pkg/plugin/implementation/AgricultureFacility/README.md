@@ -127,8 +127,15 @@ those fields under OnDemand until `network-specs` commit `b76c9ad8a5` on
 change when that happened, since POCRA has no verified per-facility
 coordinate to put there anyway.
 
-**This convention is provisional.** It was chosen on design and has not been
-confirmed against a payload captured from the network.
+The pack's own query example agrees:
+`examples/on-demand-facility-discovery.json` is an OnDemand resource carrying
+`supportedFacilityTypes` and `coverageAreas` and no `location`, `address` or
+`facilityType`.
+
+**One part is still provisional.** The shape of the fulfillment stop the search
+origin is read from was chosen on design and has not been confirmed against a
+payload captured from the network; the pack's example says nothing about the
+stop.
 
 ## What the answer deliberately omits
 
@@ -136,9 +143,41 @@ confirmed against a payload captured from the network.
 `gps` in its response is a fixed stub unrelated to the point that was asked for —
 and the pack forbids substituting the search origin.
 
-`services`, `capacity`, `website` and `lastUpdatedAt`, because POCRA supplies
-none of them. Deriving services from the facility type, or `lastUpdatedAt` from
-the time of the fetch, would assert something nobody verified.
+`capacity` (except for a warehouse, which is the only type POCRA reports one
+for), `capacity.basis`, `languages`, `website` and `lastUpdatedAt`, because
+POCRA supplies none of them per facility and none of them follows from the
+facility type. Taking `lastUpdatedAt` from the time of the fetch, a `basis` from
+the pack example's wording, or a `website` from the portal URL POCRA repeats on
+every item, would assert something nobody verified.
+
+## What the answer derives from the facility type
+
+`subjectCategories` and `services` are keyed on the governed `facilityType`,
+using the values the pack's four Direct examples state for each type:
+
+| `facilityType` | `subjectCategories` | `services[].code` |
+|---|---|---|
+| `CustomHiringCentre` | Facility, Crop, Practice | `FARM_MACHINERY_HIRE` |
+| `KrishiVigyanKendra` | Facility, Crop, Livestock, Practice | `FARM_ADVISORY`, `FARMER_TRAINING` |
+| `Warehouse` | Facility, Crop, Market | `GENERAL_STORAGE` |
+| `SoilTestingFacility` | Facility, Crop | `SOIL_TESTING` |
+
+These follow from what the governed type means rather than from anything POCRA
+left unsaid, and the type itself is never guessed: it comes from the provider
+id, the item's category tag or the provider's fulfillment, and an item none of
+the three can type is dropped. Both fields are discovery surface the pack
+indexes — `profile.json` lists `subjectCategories` and `services[].code` under
+both `indexable_paths` and `filterable_paths` — so publishing `["Facility"]`
+alone and no services left every facility unfilterable by domain and by service.
+
+The address follows the same examples: `addressLocality` carries the settlement
+(POCRA's village, or its taluka when there is no village), and
+`extendedAddress` the administrative tail — `"Rahta, Ahmednagar district"`.
+`addressLocality` is indexable and filterable too, so putting every
+administrative part in `extendedAddress` made locality unsearchable.
+`addressRegion` is `Maharashtra`, the state POCRA aggregates; POCRA's own
+`address.region` is not read for it, since that field carries a revenue
+division or `"Unknown"`.
 
 Distance, which POCRA does supply, is used to order the resources nearest-first
 and then dropped: the pack states that query-relative distance is not an

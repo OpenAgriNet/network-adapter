@@ -588,12 +588,41 @@ func TestShippedMappingFollowsTheAgricultureFacilityPack(t *testing.T) {
 			t.Errorf("%s: carries location; POCRA supplies no verified facility geometry", id)
 		}
 
-		// Not supplied truthfully by POCRA, so not asserted. Deriving services
-		// from the facility type, or lastUpdatedAt from fetch time, would be
+		// Not supplied truthfully by POCRA per facility, and not implied by the
+		// facility type either, so not asserted. Taking lastUpdatedAt from
+		// fetch time, or a website from the provider-wide portal URL, would be
 		// inventing data under a governed schema.
-		for _, absent := range []string{"services", "lastUpdatedAt", "capacity", "website"} {
+		for _, absent := range []string{"lastUpdatedAt", "capacity", "website"} {
 			if _, present := attrs[absent]; present {
 				t.Errorf("%s: carries %q, which POCRA does not supply", id, absent)
+			}
+		}
+
+		// subjectCategories and services DO follow from the governed facility
+		// type, and the pack's own Direct examples state what each type serves
+		// and offers -- examples/krishi-vigyan-kendra.json for this one. They
+		// are both indexed and filterable per profile.json, so publishing
+		// "Facility" alone and no services left every facility unfilterable by
+		// domain and by service.
+		categories, _ := attrs["subjectCategories"].([]any)
+		if len(categories) != 4 {
+			t.Errorf("%s: subjectCategories = %v, want the four the pack's KVK example names",
+				id, attrs["subjectCategories"])
+		}
+		for _, want := range []string{"Facility", "Crop", "Livestock", "Practice"} {
+			if !slices.Contains(categories, any(want)) {
+				t.Errorf("%s: subjectCategories = %v, missing %q", id, categories, want)
+			}
+		}
+
+		services, _ := attrs["services"].([]any)
+		if len(services) != 2 {
+			t.Fatalf("%s: services = %v, want the two the pack's KVK example names",
+				id, attrs["services"])
+		}
+		for i, want := range []string{"FARM_ADVISORY", "FARMER_TRAINING"} {
+			if code := dig(services[i], "code"); code != want {
+				t.Errorf("%s: services[%d].code = %v, want %v", id, i, code, want)
 			}
 		}
 	}
@@ -955,6 +984,151 @@ func TestShippedMappingScrubsTheWarehousePlaceholders(t *testing.T) {
 	}
 	if secondContact["phone"] != "02422-222735" {
 		t.Errorf("publicContact.phone = %v, want the number POCRA published", secondContact["phone"])
+	}
+}
+
+// The pack's Direct examples put the settlement in addressLocality and the
+// administrative tail in extendedAddress -- "Rahta, Ahmednagar district" in
+// examples/custom-hiring-centre.json, which is the same facility this fixture
+// carries. addressLocality is indexable AND filterable per profile.json, so a
+// facility that leaves it unset cannot be found by locality at all.
+func TestShippedMappingShapesTheAddressLikeThePack(t *testing.T) {
+	answer := runAgainst(t, requestFor(t, "CustomHiringCentre"), mixedResponse)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want the one Custom Hiring Centre", len(resources))
+	}
+	address, ok := dig(resources[0], "resourceAttributes", "address").(map[string]any)
+	if !ok {
+		t.Fatal("the Custom Hiring Centre carries no address")
+	}
+	for _, f := range []struct{ key, want string }{
+		{"streetAddress", "Gogalgaon, Rahta"},
+		{"addressLocality", "Gogalgaon"},
+		{"extendedAddress", "Rahta, Ahmednagar district"},
+		{"addressRegion", "Maharashtra"},
+		{"addressCountry", "IN"},
+	} {
+		if address[f.key] != f.want {
+			t.Errorf("address.%s = %v, want %q", f.key, address[f.key], f.want)
+		}
+	}
+	// pinCode was 000000, and a placeholder must not become a postal code.
+	if _, present := address["postalCode"]; present {
+		t.Errorf("address carries postalCode %v, but POCRA sent 000000", address["postalCode"])
+	}
+}
+
+// POCRA repeats the village as the taluka on the warehouse items ("Shrirampur"
+// for both). The tail must not say it twice.
+func TestShippedMappingDoesNotRepeatTheVillageAsTheTaluka(t *testing.T) {
+	answer := runAgainst(t, warehouseRequest(t), warehouseResponse)
+	resources := answerResources(t, answer)
+	address, ok := dig(resources[0], "resourceAttributes", "address").(map[string]any)
+	if !ok {
+		t.Fatal("the nearest warehouse carries no address")
+	}
+	if address["addressLocality"] != "Shrirampur" {
+		t.Errorf("address.addressLocality = %v, want Shrirampur", address["addressLocality"])
+	}
+	if address["extendedAddress"] != "Ahmednagar district" {
+		t.Errorf("address.extendedAddress = %v, want the district alone -- the taluka repeats the village",
+			address["extendedAddress"])
+	}
+	if address["postalCode"] != "413720" {
+		t.Errorf("address.postalCode = %v, want the pin POCRA published", address["postalCode"])
+	}
+}
+
+// soilLabResponse is one soil testing facility, the one governed type the wider
+// fixtures carry none of. Shaped like the rest of POCRA's answers: the type is
+// in the provider id, and the item repeats it in a category tag.
+const soilLabResponse = `{
+  "context": { "action": "search", "version": "1.1.0" },
+  "responses": [
+    {
+      "context": { "action": "on_search" },
+      "message": { "catalog": { "providers": [{
+        "id": "COMMON_PROVIDER_SOIL_LAB",
+        "fulfillments": [{ "id": "f1_soil",
+          "categories": [{ "id": "c_soil", "descriptor": { "code": "soil_lab", "name": "Soil Lab" } }] }],
+        "items": [{
+          "id": "COMMON-9001",
+          "descriptor": { "name": "District Soil Testing Laboratory" },
+          "address": { "address": "District Soil Survey and Soil Testing Laboratory, Pumping Station Road",
+                       "district": "Ahmednagar", "region": "Unknown", "taluka": "Nagar",
+                       "vilage": "Bhutkarwadi", "pinCode": "414001" },
+          "contact": { "person": "Soil Testing Officer", "email": "N/A", "phone": "N/A",
+                       "webUrl": "https://provider.mahapocra.gov.in" },
+          "tags": [{ "list": [
+            { "descriptor": { "code": "distance" }, "value": "9 Km" },
+            { "descriptor": { "code": "category" }, "value": "soil_lab" } ] }]
+        }]
+      }] } }
+    }
+  ]
+}`
+
+// subjectCategories and services follow from the governed facility type, and
+// the pack's four Direct examples are what each type serves and offers. They
+// are both indexed and filterable per profile.json, so publishing "Facility"
+// alone and no services left every facility unfilterable by domain and by
+// service.
+//
+// Every governed type is covered, because the tables in the mapping are keyed
+// on the type and a missing key would answer with neither field rather than
+// with an error.
+func TestShippedMappingPublishesThePacksCategoriesAndServices(t *testing.T) {
+	for _, tc := range []struct {
+		facilityType string
+		provider     string
+		wantCategori []string
+		wantServices []string
+	}{
+		{"CustomHiringCentre", mixedResponse,
+			[]string{"Facility", "Crop", "Practice"},
+			[]string{"FARM_MACHINERY_HIRE"}},
+		{"KrishiVigyanKendra", mixedResponse,
+			[]string{"Facility", "Crop", "Livestock", "Practice"},
+			[]string{"FARM_ADVISORY", "FARMER_TRAINING"}},
+		{"Warehouse", mixedResponse,
+			[]string{"Facility", "Crop", "Market"},
+			[]string{"GENERAL_STORAGE"}},
+		{"SoilTestingFacility", soilLabResponse,
+			[]string{"Facility", "Crop"},
+			[]string{"SOIL_TESTING"}},
+	} {
+		t.Run(tc.facilityType, func(t *testing.T) {
+			answer := runAgainst(t, requestFor(t, tc.facilityType), tc.provider)
+			resources := answerResources(t, answer)
+			if len(resources) == 0 {
+				t.Fatalf("no %s came back", tc.facilityType)
+			}
+			attrs, _ := dig(resources[0], "resourceAttributes").(map[string]any)
+
+			categories, _ := attrs["subjectCategories"].([]any)
+			got := make([]string, 0, len(categories))
+			for _, c := range categories {
+				name, _ := c.(string)
+				got = append(got, name)
+			}
+			if !slices.Equal(got, tc.wantCategori) {
+				t.Errorf("subjectCategories = %v, want %v", got, tc.wantCategori)
+			}
+
+			services, _ := attrs["services"].([]any)
+			codes := make([]string, 0, len(services))
+			for _, service := range services {
+				code, _ := dig(service, "code").(string)
+				codes = append(codes, code)
+				if name := dig(service, "name"); name == nil {
+					t.Errorf("service %s carries no name; the pack requires a code or a name", code)
+				}
+			}
+			if !slices.Equal(codes, tc.wantServices) {
+				t.Errorf("services = %v, want %v", codes, tc.wantServices)
+			}
+		})
 	}
 }
 
