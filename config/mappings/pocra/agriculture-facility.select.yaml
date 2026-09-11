@@ -13,23 +13,32 @@
 # and the response half additionally reads:
 #   response  POCRA's answer, in its own shape
 #
-# WHERE THE QUERY LIVES, and why it is not in resourceAttributes.
+# WHERE THE QUERY LIVES.
 #
-# An inbound query resource is informationMode OnDemand. The search origin is
-# read from the Beckn fulfillment stop and the requested type from
-# supportedFacilityTypes, rather than from location/address/facilityType on
-# resourceAttributes -- a convention this file chooses to keep, not a schema
-# requirement: the AgricultureFacility v0.1 pack no longer forbids those
-# fields under OnDemand (it did until network-specs commit b76c9ad8a5 on
-# schema-packs-v0.1 quietly dropped that constraint; see
-# dev_docs/schema-onDemand-forbid-removed.md). Nothing here depends on the
-# constraint being back -- the search origin still has nowhere verified to go
-# in resourceAttributes, since POCRA returns no per-facility coordinate for
-# the searched point.
+# An inbound query resource is informationMode OnDemand, and BOTH its inputs sit
+# on resourceAttributes: the requested type in supportedFacilityTypes, the point
+# to search around in location.geo. Every other capability on this network reads
+# its query the same way -- MandiPrice off market and supportedCommodities,
+# WeatherObservation off location, KnowledgeAdvisory off topics and languages --
+# so a consumer that has written one select can write this one.
 #
-# PROVISIONAL. This convention was chosen on the design and has not been
-# confirmed against a payload captured from the network. Confirm it before the
-# registry row goes live.
+# location is CompleteLocation, so the geometry sits under a geo wrapper.
+# WeatherObservation's location is a bare CompleteGeoJSONGeometry and is one
+# level flatter; a payload that copies its shape here fails pack validation
+# before this file runs. That difference is the packs', not this file's.
+#
+# On the pack's line "Do not populate it with the search origin or another
+# inferred point": that rule governs the ANSWER, where claiming an inferred
+# point as verified facility geometry would be a false assertion about a real
+# place. This file honours it where it bites -- the response half below emits no
+# location at all, because POCRA returns no per-facility coordinate to put
+# there, and emits address instead. A request carries no such assertion: it
+# names the point being asked about, which is the only location a caller has.
+#
+# The origin used to be read off a Beckn fulfillment stop, because the pack
+# forbade location, address and facilityType outright under OnDemand until
+# network-specs commit b76c9ad8a5 dropped that not/anyOf block. The workaround
+# outlived its reason.
 
 # What this capability cannot serve, refused before the provider is called.
 #
@@ -43,10 +52,17 @@
 required:
   - check: |
       (
-        $geo := beckn.message.contract.commitments[0].fulfillment.stops[0].location.geo;
+        $geo := beckn.message.contract.commitments[0].resources[0].resourceAttributes.location.geo;
+        $lon := $geo.coordinates[0];
+        $lat := $geo.coordinates[1];
+        /* Arity alone is not enough: coordinates of ["a","b"] or [200, 95] are
+           a well-formed pair that yields a gps string POCRA accepts and answers
+           emptily, so the caller sees "no facilities" rather than "bad point". */
         $exists($geo) and $geo.type = "Point" and $count($geo.coordinates) = 2
+          and $type($lon) = "number" and $type($lat) = "number"
+          and $lon >= -180 and $lon <= 180 and $lat >= -90 and $lat <= 90
       )
-    message: "this capability needs a fulfillment stop with a Point location; POCRA searches around one point at a time"
+    message: "this capability needs resourceAttributes.location.geo to be a Point whose coordinates are a numeric [longitude, latitude] pair in range; POCRA searches around one point at a time"
   - check: |
       (
         $requested := [beckn.message.contract.commitments[0].resources[0].resourceAttributes.supportedFacilityTypes];
@@ -104,7 +120,7 @@ required:
 request: |
   (
     $commitment := beckn.message.contract.commitments[0];
-    $stop := $commitment.fulfillment.stops[0];
+    $origin := $commitment.resources[0].resourceAttributes.location.geo;
     /* This call's own facility type. The payload names exactly one, because
        the plugin split a multi-type search into one payload per type before
        this ran -- reading [0] of a multi-type list here is what made such a
@@ -165,11 +181,35 @@ request: |
             "stops": [
               {
                 "location": {
-                  "gps": $string($stop.location.geo.coordinates[1]) & "," & $string($stop.location.geo.coordinates[0])
+                  "gps": $string($origin.coordinates[1]) & "," & $string($origin.coordinates[0])
                 },
+                /* Now, the moment this call is made.
+
+                   This is the adapter asking POCRA a question, not a value
+                   forwarded on the caller's behalf. The caller's
+                   context.timestamp says when the consumer sent its select,
+                   which is not the same instant and can be well behind it --
+                   a queued, delayed or retried select would tell POCRA the
+                   search is happening at a time it is not. Nothing in the
+                   request is being restated here; the adapter is stating when
+                   it asked, which is a thing only it knows.
+
+                   UNVERIFIED whether POCRA needs the field at all. Every POCRA
+                   behaviour this file relies on elsewhere -- the one-category
+                   rule, the message_id cache -- was checked against the live
+                   API and says so. This one was not: no captured request, no
+                   published schema, nothing in the plugin's history asserting
+                   it either way. It is sent because the original mapping sent
+                   it, and because sending a field the upstream ignores costs
+                   nothing while omitting a required one earns a schema NACK.
+
+                   Worth one live call to settle: send a stop with no time
+                   block. If POCRA answers, delete this -- a facility has no
+                   time dimension to select on, and the same point answers the
+                   same way whatever start is sent. */
                 "time": {
                   "range": {
-                    "start": $exists($stop.time.range.start) ? $stop.time.range.start : $now()
+                    "start": $now()
                   }
                 }
               }
@@ -457,11 +497,27 @@ response: |
         $locality := $clean($item.address.vilage);
         $postal := $clean($item.address.pinCode);
         $parts := [$clean($item.address.taluka), $clean($item.address.district)];
-        /* Each field tested on its own rather than by counting the keys of an
-           assembled object: $keys is not implemented by the JSONata this
-           adapter runs, and returns undefined rather than erroring, so
-           $count($keys(...)) > 0 fails every response with T2009. */
-        ($exists($street) or $exists($locality) or $exists($postal) or $count($parts) > 0) ? {
+        /* Emitted unconditionally, which is a schema requirement rather than a
+           preference. The pack makes a Direct AgricultureFacility carry
+           location OR address, and this binding never carries location --
+           POCRA returns no per-facility coordinate, and inventing one is
+           exactly what the pack's location description forbids. So address is
+           the only half of that pair available, and an item POCRA sends with
+           every address field blank would otherwise produce a resource the
+           pack refuses.
+
+           What remains when they are all blank is addressRegion and
+           addressCountry, which are facts about this binding rather than
+           claims about the item: the upstream serves Maharashtra and nowhere
+           else. That satisfies NonEmptyAddress without asserting a street or a
+           village POCRA did not send. Absent fields stay absent.
+
+           Each source field is tested on its own below rather than by counting
+           the keys of an assembled object: $keys is not implemented by the
+           JSONata this adapter runs, and returns undefined rather than
+           erroring, so $count($keys(...)) > 0 fails every response with
+           T2009. */
+        {
           "streetAddress": $street,
           "addressLocality": $locality,
           "extendedAddress": $count($parts) > 0 ? $join($parts, ", "),

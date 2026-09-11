@@ -363,24 +363,21 @@ func propertyNames(section string) []string {
 
 // The INBOUND query resource must satisfy the pack too, in OnDemand mode.
 //
-// Every other conformance test here validates the answer. Nothing validated
-// the request, and the request is where this plugin made its most debatable
-// choice: the search origin is read from the Beckn fulfillment stop rather
-// than from resourceAttributes, because an OnDemand resource used to be
-// schema-forbidden from carrying location, address or facilityType there.
+// Every other conformance test here validates the answer. Nothing validated the
+// request, and the request is where this plugin's shape is least obvious: the
+// search origin rides on resourceAttributes.location, which the pack types as
+// CompleteLocation and therefore requires a geo wrapper around the geometry.
 //
-// That forbid clause is gone as of network-specs commit b76c9ad8a5 on
-// schema-packs-v0.1 (see dev_docs/schema-onDemand-forbid-removed.md) --
-// OnDemand now permits, but does not require, all of those fields. This test
-// used to assert the forbid; it no longer can, because the schema no longer
-// enforces it. The convention -- origin in the fulfillment stop, not in
-// resourceAttributes -- is kept anyway, as a choice rather than a schema
-// requirement, so what is left to check is only that the fixture is still a
-// valid OnDemand AgricultureFacility at all.
+// That the schema permits it is the whole point of validating here. An OnDemand
+// resource was forbidden from carrying location, address or facilityType until
+// network-specs commit b76c9ad8a5 on schema-packs-v0.1 dropped the clause; the
+// origin lived on a Beckn fulfillment stop for exactly as long as that was
+// true. This test is what would catch the clause coming back, since it would
+// return as a validation failure here rather than as a mapping that quietly
+// stops finding the point.
 //
 // If the fixture the whole suite is built on is not a valid OnDemand
-// AgricultureFacility, then the convention is wrong and every test that uses it
-// is testing the wrong shape.
+// AgricultureFacility, then every test that uses it is testing the wrong shape.
 func TestTheRequestResourceSatisfiesOnDemandMode(t *testing.T) {
 	schema := facilitySchema(t)
 
