@@ -20,7 +20,7 @@ const realSelectPayload = `{
     "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
     "timestamp": "2026-08-26T06:12:01.330Z" },
   "message": { "contract": { "commitments": [{
-    "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+    "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
     "resources": [{
       "id": "res:mausamgram:point-forecast",
       "resourceAttributes": {

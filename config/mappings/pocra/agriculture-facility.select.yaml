@@ -551,20 +551,25 @@ response: |
         "facilityType": $facilityType,
         "address": $address($item),
         "capacity": $capacity($item),
-        /* sourceUri rather than website: contact.webUrl identifies the source
-           and not the facility.
+        /* sourceUri is whatever the upstream answered, not a literal. POCRA
+           sends "https://provider.mahapocra.gov.in" on CHC and KVK items and
+           "https://warehouse.com" on warehouses -- a per-BPP value rather than
+           a per-facility one, and on warehouses a placeholder. It is published
+           as sent regardless: this mapping reports what the source said, and
+           substituting a URI POCRA did not return would assert something it
+           never stated. $clean still applies, so a placeholder like "N/A"
+           yields no sourceUri at all rather than an invalid one.
 
-           CONSTANT, not read from the item. webUrl is POCRA's own site on CHC
-           and KVK items, which is what made copying it look right -- but the
-           warehouse BPP sends "https://warehouse.com" on every warehouse, and
-           copying that published a third party's placeholder as the URI of a
-           SourceReference whose sourceId and sourceName both say PoCRA. The
-           source of every record in this answer is PoCRA, whatever each
-           upstream BPP writes in its own contact block. */
+           sourceId and sourceName stay constant because they identify the
+           binding's upstream, which POCRA does not restate per item.
+
+           Not website: the pack defines that as the facility's own public
+           site, and this value is identical across every result, so it does
+           not describe any one facility. */
         "source": {
           "sourceId": "pocra",
           "sourceName": "PoCRA, Government of Maharashtra",
-          "sourceUri": "https://mahapocra.gov.in"
+          "sourceUri": $clean($item.contact.webUrl)
         },
         "publicContact": $contact($item)
       }
@@ -590,11 +595,13 @@ response: |
         "contract": {
           "commitments": [
             {
-              /* DRAFT, not QUOTED. The Beckn v2 status enum is DRAFT, ACTIVE and
-                 CLOSED, and a quote is still a draft: nothing is committed until
-                 init and confirm. QUOTED read better and validated nowhere. */
+              /* ACTIVE, not QUOTED. The Beckn v2 status enum is DRAFT, ACTIVE
+                 and CLOSED; QUOTED read better and validated nowhere. ACTIVE
+                 rather than DRAFT because this answer stands on its own: the
+                 facilities it names are available now and the caller can act
+                 on it without a further round trip. */
               "status": {
-                "descriptor": { "code": "DRAFT", "name": "Draft" }
+                "descriptor": { "code": "ACTIVE", "name": "active" }
               },
               /* The offer is echoed, but its references are not: the request
                  named an abstract facility search, and the answer returns the
@@ -637,12 +644,15 @@ response: |
                      per-facility coordinate, and the pack forbids substituting
                      the search origin for one.
 
-                     services, website and lastUpdatedAt are absent for the same
-                     reason -- POCRA supplies none of them, and deriving them
-                     from the facility type, or lastUpdatedAt from the time of
-                     the fetch, would assert something nobody verified. capacity
-                     is emitted where POCRA reports one, which is warehouses and
-                     nothing else. */
+                     services and lastUpdatedAt are absent for the same reason
+                     -- POCRA supplies neither, and deriving services from the
+                     facility type, or lastUpdatedAt from the time of the fetch,
+                     would assert something nobody verified. website is absent
+                     for a narrower reason: the one URL POCRA sends is the same
+                     on every item, so it does not describe a facility; it is
+                     published as source.sourceUri instead. capacity is emitted
+                     where POCRA reports one, which is warehouses and nothing
+                     else. */
                   "resourceAttributes": $attributes($entry.facility, $entry.type)
                 }
               })]

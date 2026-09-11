@@ -57,7 +57,7 @@ const selectRequest = `{
     "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
     "timestamp": "2026-08-26T06:12:01.330Z" },
   "message": { "contract": { "commitments": [{
-    "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+    "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
     "resources": [{
       "id": "res:mausamgram:point-forecast",
       "resourceAttributes": {
@@ -205,11 +205,12 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 	commitment := firstCommitment(t, answer)
 	status, _ := commitment["status"].(map[string]any)
 	descriptor, _ := status["descriptor"].(map[string]any)
-	// DRAFT rather than QUOTED: the Beckn v2 status enum is DRAFT, ACTIVE and
-	// CLOSED, so QUOTED was refused by base schema validation. A quote is a
-	// draft commitment -- nothing is committed until init and confirm.
-	if descriptor["code"] != "DRAFT" {
-		t.Errorf("status = %v, want DRAFT -- QUOTED is not in the spec's enum", descriptor["code"])
+	// ACTIVE rather than QUOTED: the Beckn v2 status enum is DRAFT, ACTIVE and
+	// CLOSED, so QUOTED was refused by base schema validation. ACTIVE rather
+	// than DRAFT because the forecast this answer carries is usable as it
+	// stands, without a further round trip.
+	if descriptor["code"] != "ACTIVE" {
+		t.Errorf("status = %v, want ACTIVE -- QUOTED is not in the spec's enum", descriptor["code"])
 	}
 	if commitment["offer"] == nil {
 		t.Error("the quoted commitment carries no offer")

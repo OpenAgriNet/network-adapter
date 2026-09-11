@@ -133,14 +133,14 @@ response: |
       "context": $merge([ beckn.context, { "action": "on_select" } ]),
       "message": {
         "contract": {
-          "status": { "code": "DRAFT" },
+          "status": { "code": "ACTIVE" },
           /* Contract.consideration is NOT emitted. The guide recommends a
              priced quote, but its own caveat is the reason to leave it out:
              Beckn v2.0.0 never DEFINES beckn:PriceSpecification, so any
              considerationAttributes shape here is unverifiable. Contract
              requires only `commitments`, so omitting it is valid. */
           "commitments": [{
-            "status": { "descriptor": { "code": "DRAFT", "name": "Draft" } },
+            "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
             /* The offer is echoed; its references are rebuilt to name exactly
                the resources this answer carries. The OnDemand id the caller
                selected is NOT retained -- it resolves to nothing in

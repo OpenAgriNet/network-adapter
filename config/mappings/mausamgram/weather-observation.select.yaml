@@ -350,12 +350,13 @@ response: |
         "contract": {
           "commitments": [
             {
-              /* DRAFT, not QUOTED. The Beckn v2 status enum is DRAFT, ACTIVE
-                 and CLOSED, and a quote is still a draft: nothing is committed
-                 until init and confirm. QUOTED read better and validated
-                 nowhere -- base schema validation refuses it. */
+              /* ACTIVE, not QUOTED. The Beckn v2 status enum is DRAFT, ACTIVE
+                 and CLOSED; QUOTED read better and validated nowhere -- base
+                 schema validation refuses it. ACTIVE rather than DRAFT because
+                 this answer stands on its own: the forecast it carries is
+                 usable now, without a further round trip. */
               "status": {
-                "descriptor": { "code": "DRAFT", "name": "Draft" }
+                "descriptor": { "code": "ACTIVE", "name": "active" }
               },
               /* The offer is echoed, but its references are not: the request
                  named the abstract point forecast, and the answer returns the
