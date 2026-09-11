@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -141,10 +142,23 @@ func publish(ctx context.Context, cfg publishConfig) (PublishResult, error) {
 	return result, nil
 }
 
-// catalogFile pairs a state code with the file carrying its catalog.
+// catalogFile pairs a catalog with the state it belongs to.
+//
+// slug and stateCode differ for a split state: mandi-TN-2.json has slug TN-2
+// and state TN. The state is what a --states filter matches, so filtering a
+// chunked state posts all of its chunks rather than none.
 type catalogFile struct {
+	slug      string
 	stateCode string
 	path      string
+}
+
+// chunkSuffix matches the -N a split state's catalog carries.
+var chunkSuffix = regexp.MustCompile(`-[0-9]+$`)
+
+// stateOf strips a chunk suffix, so TN-2 is a catalog of TN.
+func stateOf(slug string) string {
+	return chunkSuffix.ReplaceAllString(slug, "")
 }
 
 // catalogFiles lists mandi-<STATE>.json in dir, filtered and sorted, so a run
@@ -166,13 +180,14 @@ func catalogFiles(dir string, states []string) ([]catalogFile, error) {
 		if entry.IsDir() || !strings.HasPrefix(name, "mandi-") || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		stateCode := strings.TrimSuffix(strings.TrimPrefix(name, "mandi-"), ".json")
+		slug := strings.TrimSuffix(strings.TrimPrefix(name, "mandi-"), ".json")
+		stateCode := stateOf(slug)
 		if len(wanted) > 0 && !wanted[stateCode] {
 			continue
 		}
-		files = append(files, catalogFile{stateCode: stateCode, path: filepath.Join(dir, name)})
+		files = append(files, catalogFile{slug: slug, stateCode: stateCode, path: filepath.Join(dir, name)})
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].stateCode < files[j].stateCode })
+	sort.Slice(files, func(i, j int) bool { return files[i].slug < files[j].slug })
 	return files, nil
 }
 
