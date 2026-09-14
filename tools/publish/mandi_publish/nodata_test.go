@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
 
 // The upstream reports an empty result as an HTTP 400 carrying this body.
@@ -47,14 +49,14 @@ func TestStateMarketsReportsNoDataDistinctly(t *testing.T) {
 	upstream := noDataUpstream(t)
 	defer upstream.Close()
 
-	base, stop, err := serveMappings()
+	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
@@ -78,14 +80,14 @@ func TestNoDataErrorNeverQuotesTheToken(t *testing.T) {
 	upstream := noDataUpstream(t)
 	defer upstream.Close()
 
-	base, stop, err := serveMappings()
+	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}

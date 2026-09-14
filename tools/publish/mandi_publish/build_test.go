@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
 
 func floatPtr(v float64) *float64 {
@@ -55,14 +57,14 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 		fixedGeneratedAt: "2026-09-10T11:09:18Z",
 	}
 
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
@@ -275,14 +277,14 @@ func TestBuildMarketWithOneCommodityWrapsArray(t *testing.T) {
 		},
 	}
 
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
@@ -341,14 +343,14 @@ func TestBuildMarketWithZeroCommoditiesSkipped(t *testing.T) {
 		},
 	}
 
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
@@ -370,14 +372,14 @@ func TestBuildMarketWithZeroCommoditiesSkipped(t *testing.T) {
 }
 
 func TestBuildGeometryLessMarket(t *testing.T) {
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
@@ -484,14 +486,14 @@ func TestBuildCommodityDedupeAndSort(t *testing.T) {
 		},
 	}
 
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
@@ -529,14 +531,14 @@ func TestBuildCommodityDedupeAndSort(t *testing.T) {
 func TestBuildDeterministicOutput(t *testing.T) {
 	col := sampleCollection()
 
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
