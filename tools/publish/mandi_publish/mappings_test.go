@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
 
 func TestServeMappingsIsFetchableByTheMapper(t *testing.T) {
-	base, stop, err := serveMappings()
+	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
@@ -20,7 +21,7 @@ func TestServeMappingsIsFetchableByTheMapper(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
@@ -43,14 +44,14 @@ func TestServeMappingsIsFetchableByTheMapper(t *testing.T) {
 }
 
 func TestMasterStatesRequestHalfBuildsTheQuery(t *testing.T) {
-	base, stop, err := serveMappings()
+	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
