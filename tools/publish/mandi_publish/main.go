@@ -28,7 +28,16 @@ import (
 	"flag"
 	"os"
 	"time"
+
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
+
+// The catalog whose single India-wide polygon resource this work replaces.
+//
+// That resource matches every S_DWITHIN at any radius -- measured: a discover
+// 300 km from anything still returns it -- so it must go, or every proximity
+// answer carries a resource that says only "somewhere in India".
+const oldCatalogID = "cat-agmarknet-mandi-prices"
 
 // config is one run's inputs, gathered so collect can be tested without flags.
 type config struct {
@@ -66,11 +75,14 @@ func main() {
 
 	ctx := context.Background()
 
-	pubCfg := publishConfig{
-		publishURL: firstNonEmpty(*publishURL, os.Getenv("MANDI_PUBLISH_URL")),
-		states:     splitStates(*states),
-		dryRun:     *dryRun,
-		retireOld:  *retireOldFlag,
+	pubCfg := catalogpublish.Config{
+		PublishURL:     firstNonEmpty(*publishURL, os.Getenv("MANDI_PUBLISH_URL")),
+		States:         splitStates(*states),
+		DryRun:         *dryRun,
+		RetireOld:      *retireOldFlag,
+		FilenamePrefix: "mandi",
+		AddressHint:    "pass --publish-url or set MANDI_PUBLISH_URL",
+		OldCatalogID:   oldCatalogID,
 	}
 
 	// --catalog-in publishes what is already on disk and collects nothing. It
@@ -79,7 +91,7 @@ func main() {
 		if !*doPublish && !*retireOldFlag {
 			fail("--catalog-in only makes sense with --publish or --retire-old")
 		}
-		pubCfg.catalogIn = *catalogIn
+		pubCfg.CatalogIn = *catalogIn
 		publishAndExit(ctx, pubCfg)
 		return
 	}
@@ -120,7 +132,7 @@ func main() {
 	printBuildSummary(built, summary, buildConfig{catalogOut: *catalogOut, withoutGeometry: *withoutGeometry})
 
 	if *doPublish || *retireOldFlag {
-		pubCfg.catalogIn = *catalogOut
+		pubCfg.CatalogIn = *catalogOut
 		// A state that failed to collect is not a state with no markets, so a
 		// partial collection must not be published as though it were whole.
 		if len(collection.StateErrors) > 0 {
@@ -139,8 +151,8 @@ func main() {
 
 // publishAndExit posts the catalogs and exits non-zero if anything did not
 // reach the index intact.
-func publishAndExit(ctx context.Context, cfg publishConfig) {
-	res, err := publish(ctx, cfg)
+func publishAndExit(ctx context.Context, cfg catalogpublish.Config) {
+	res, err := catalogpublish.Publish(ctx, cfg)
 	if err != nil {
 		fail("publish: %v", err)
 	}
