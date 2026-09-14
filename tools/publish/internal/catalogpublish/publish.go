@@ -1,4 +1,4 @@
-package main
+package catalogpublish
 
 // Posting built catalogs to the provider adapter's own /publish module, which
 // signs the request and forwards it to the network adapter and thence to the
@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,13 +27,6 @@ import (
 
 	"github.com/google/uuid"
 )
-
-// The catalog whose single India-wide polygon resource this work replaces.
-//
-// That resource matches every S_DWITHIN at any radius -- measured: a discover
-// 300 km from anything still returns it -- so it must go, or every proximity
-// answer carries a resource that says only "somewhere in India".
-const oldCatalogID = "cat-agmarknet-mandi-prices"
 
 // Per-catalog outcomes.
 const (
@@ -48,32 +40,47 @@ const (
 // adapter signs, forwards and indexes it before answering.
 const publishTimeout = 180 * time.Second
 
-// publishConfig is one publish run's inputs.
-type publishConfig struct {
-	publishURL string
-	catalogIn  string
-	states     []string
-	dryRun     bool
-	retireOld  bool
+// Config is one publish run's inputs.
+//
+// FilenamePrefix, AddressHint and OldCatalogID are the whole per-tool
+// customization surface: this package otherwise carries no knowledge of any
+// specific source or catalog domain.
+type Config struct {
+	PublishURL string
+	CatalogIn  string
+	States     []string
+	DryRun     bool
+	RetireOld  bool
+
+	// FilenamePrefix matches catalog files named <prefix>-<STATE>[-N].json.
+	FilenamePrefix string
+
+	// AddressHint is shown in the error when PublishURL is empty, e.g.
+	// "pass --publish-url or set MANDI_PUBLISH_URL".
+	AddressHint string
+
+	// OldCatalogID is the catalog to retire when RetireOld is set. Ignored
+	// otherwise.
+	OldCatalogID string
 }
 
-// PublishOutcome is what happened to one catalog.
-type PublishOutcome struct {
+// Outcome is what happened to one catalog.
+type Outcome struct {
 	StateCode string
 	CatalogID string
 	Status    string
 	Reason    string
 }
 
-// PublishResult is the whole run.
-type PublishResult struct {
-	Outcomes   []PublishOutcome
-	RetiredOld *PublishOutcome
+// Result is the whole run.
+type Result struct {
+	Outcomes   []Outcome
+	RetiredOld *Outcome
 }
 
-// HasFailures reports whether anything did not reach the index intact, so main
-// can exit non-zero. A PARTIAL counts: see publishOne.
-func (r PublishResult) HasFailures() bool {
+// HasFailures reports whether anything did not reach the index intact, so a
+// caller can exit non-zero. A PARTIAL counts: see publishEnvelope.
+func (r Result) HasFailures() bool {
 	for _, outcome := range r.Outcomes {
 		if outcome.Status == StatusRejected || outcome.Status == StatusTransportError {
 			return true
@@ -103,40 +110,39 @@ type onPublishEnvelope struct {
 	} `json:"message"`
 }
 
-// publish posts every catalog file in cfg.catalogIn, one at a time.
+// Publish posts every catalog file in cfg.CatalogIn, one at a time.
 //
 // Sequential and per-catalog on purpose. A failed state is one retryable
 // catalog, and one bad state must not discard the outcomes of the others --
 // which is why a transport failure lands in an outcome rather than returning
 // an error.
-func publish(ctx context.Context, cfg publishConfig) (PublishResult, error) {
-	result := PublishResult{}
+func Publish(ctx context.Context, cfg Config) (Result, error) {
+	result := Result{}
 
-	if strings.TrimSpace(cfg.publishURL) == "" {
-		return result, errors.New(
-			"no publish address: pass --publish-url or set MANDI_PUBLISH_URL")
+	if strings.TrimSpace(cfg.PublishURL) == "" {
+		return result, fmt.Errorf("no publish address: %s", cfg.AddressHint)
 	}
-	base := strings.TrimRight(cfg.publishURL, "/") + "/publish"
+	base := strings.TrimRight(cfg.PublishURL, "/") + "/publish"
 
-	files, err := catalogFiles(cfg.catalogIn, cfg.states)
+	files, err := catalogFiles(cfg.CatalogIn, cfg.States, cfg.FilenamePrefix)
 	if err != nil {
 		return result, err
 	}
 	// An empty directory must not look like a successful run: silently
 	// publishing nothing is indistinguishable from publishing everything.
-	if len(files) == 0 && !cfg.retireOld {
-		return result, fmt.Errorf("no catalog files in %s", cfg.catalogIn)
+	if len(files) == 0 && !cfg.RetireOld {
+		return result, fmt.Errorf("no catalog files in %s", cfg.CatalogIn)
 	}
 
 	client := &http.Client{Timeout: publishTimeout}
 
 	for _, file := range files {
-		result.Outcomes = append(result.Outcomes, publishFile(ctx, client, base, file, cfg.dryRun))
+		result.Outcomes = append(result.Outcomes, publishFile(ctx, client, base, file, cfg.DryRun))
 	}
 
-	if cfg.retireOld {
-		outcome := publishEnvelope(ctx, client, base, "", oldCatalogID,
-			tombstone(oldCatalogID), cfg.dryRun)
+	if cfg.RetireOld {
+		outcome := publishEnvelope(ctx, client, base, "", cfg.OldCatalogID,
+			tombstone(cfg.OldCatalogID), cfg.DryRun)
 		result.RetiredOld = &outcome
 	}
 	return result, nil
@@ -144,9 +150,9 @@ func publish(ctx context.Context, cfg publishConfig) (PublishResult, error) {
 
 // catalogFile pairs a catalog with the state it belongs to.
 //
-// slug and stateCode differ for a split state: mandi-TN-2.json has slug TN-2
-// and state TN. The state is what a --states filter matches, so filtering a
-// chunked state posts all of its chunks rather than none.
+// slug and stateCode differ for a split state: <prefix>-TN-2.json has slug
+// TN-2 and state TN. The state is what a --states filter matches, so
+// filtering a chunked state posts all of its chunks rather than none.
 type catalogFile struct {
 	slug      string
 	stateCode string
@@ -161,9 +167,9 @@ func stateOf(slug string) string {
 	return chunkSuffix.ReplaceAllString(slug, "")
 }
 
-// catalogFiles lists mandi-<STATE>.json in dir, filtered and sorted, so a run
-// reads the same way twice.
-func catalogFiles(dir string, states []string) ([]catalogFile, error) {
+// catalogFiles lists <prefix>-<STATE>.json in dir, filtered and sorted, so a
+// run reads the same way twice.
+func catalogFiles(dir string, states []string, prefix string) ([]catalogFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read catalog directory: %w", err)
@@ -174,13 +180,14 @@ func catalogFiles(dir string, states []string) ([]catalogFile, error) {
 		wanted[state] = true
 	}
 
+	namePrefix := prefix + "-"
 	var files []catalogFile
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, "mandi-") || !strings.HasSuffix(name, ".json") {
+		if entry.IsDir() || !strings.HasPrefix(name, namePrefix) || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		slug := strings.TrimSuffix(strings.TrimPrefix(name, "mandi-"), ".json")
+		slug := strings.TrimSuffix(strings.TrimPrefix(name, namePrefix), ".json")
 		stateCode := stateOf(slug)
 		if len(wanted) > 0 && !wanted[stateCode] {
 			continue
@@ -196,10 +203,10 @@ func catalogFiles(dir string, states []string) ([]catalogFile, error) {
 // Verbatim matters: the file is what a human reviewed, so re-encoding it here
 // would publish something nobody read.
 func publishFile(ctx context.Context, client *http.Client, url string,
-	file catalogFile, dryRun bool) PublishOutcome {
+	file catalogFile, dryRun bool) Outcome {
 	body, err := os.ReadFile(file.path)
 	if err != nil {
-		return PublishOutcome{StateCode: file.stateCode, Status: StatusTransportError,
+		return Outcome{StateCode: file.stateCode, Status: StatusTransportError,
 			Reason: fmt.Sprintf("read %s: %v", file.path, err)}
 	}
 	return publishEnvelope(ctx, client, url, file.stateCode, catalogIDOf(body), body, dryRun)
@@ -224,8 +231,8 @@ func catalogIDOf(body []byte) string {
 
 // publishEnvelope posts one body and judges the answer.
 func publishEnvelope(ctx context.Context, client *http.Client, url, stateCode, catalogID string,
-	body []byte, dryRun bool) PublishOutcome {
-	outcome := PublishOutcome{StateCode: stateCode, CatalogID: catalogID}
+	body []byte, dryRun bool) Outcome {
+	outcome := Outcome{StateCode: stateCode, CatalogID: catalogID}
 
 	if dryRun {
 		outcome.Status = StatusDryRun

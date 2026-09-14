@@ -5,6 +5,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
 
 // printCollectionSummary reports what was collected and, above all, what was
@@ -132,32 +134,32 @@ func marketLines(markets []ExcludedMarket) []string {
 	return lines
 }
 
-func printPublishSummary(res PublishResult, cfg publishConfig) {
-	if cfg.dryRun {
-		fmt.Fprintf(os.Stderr, "dry-run: would publish to %s/publish\n", strings.TrimRight(cfg.publishURL, "/"))
+func printPublishSummary(res catalogpublish.Result, cfg catalogpublish.Config) {
+	if cfg.DryRun {
+		fmt.Fprintf(os.Stderr, "dry-run: would publish to %s/publish\n", strings.TrimRight(cfg.PublishURL, "/"))
 	}
 	for _, o := range res.Outcomes {
 		switch o.Status {
-		case StatusPublished:
+		case catalogpublish.StatusPublished:
 			fmt.Fprintf(os.Stderr, "  %s: %s -> ACCEPTED\n", o.StateCode, o.CatalogID)
-		case StatusDryRun:
+		case catalogpublish.StatusDryRun:
 			fmt.Fprintf(os.Stderr, "  %s: %s -> would POST\n", o.StateCode, o.CatalogID)
-		case StatusRejected:
+		case catalogpublish.StatusRejected:
 			fmt.Fprintf(os.Stderr, "  %s: %s -> REJECTED: %s\n", o.StateCode, o.CatalogID, o.Reason)
-		case StatusTransportError:
+		case catalogpublish.StatusTransportError:
 			fmt.Fprintf(os.Stderr, "  %s: %s -> ERROR: %s\n", o.StateCode, o.CatalogID, o.Reason)
 		}
 	}
 	if res.RetiredOld != nil {
 		o := res.RetiredOld
 		switch o.Status {
-		case StatusPublished:
+		case catalogpublish.StatusPublished:
 			fmt.Fprintf(os.Stderr, "  retired old catalog %s -> ACCEPTED\n", o.CatalogID)
-		case StatusDryRun:
+		case catalogpublish.StatusDryRun:
 			fmt.Fprintf(os.Stderr, "  retired old catalog %s -> would POST\n", o.CatalogID)
-		case StatusRejected:
+		case catalogpublish.StatusRejected:
 			fmt.Fprintf(os.Stderr, "  retiring old catalog %s -> REJECTED: %s\n", o.CatalogID, o.Reason)
-		case StatusTransportError:
+		case catalogpublish.StatusTransportError:
 			fmt.Fprintf(os.Stderr, "  retiring old catalog %s -> ERROR: %s\n", o.CatalogID, o.Reason)
 		}
 	}
