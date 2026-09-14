@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
 
 // India's bounding box, used only to catch coordinates that cannot be a mandi.
@@ -221,13 +223,13 @@ func collect(ctx context.Context, cfg config) (Collection, error) {
 			"set MANDI_TOKEN_USER and MANDI_TOKEN_SECRET in the environment")
 	}
 
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		return Collection{}, err
 	}
 	defer stop()
 
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		return Collection{}, err
 	}

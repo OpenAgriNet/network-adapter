@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 	"github.com/google/uuid"
 )
 
@@ -150,13 +151,13 @@ func chunkMarkets(markets []CollectedMarket, budget int) [][]CollectedMarket {
 // so a publish no longer has to go through a file on disk. build() is the same
 // thing with a file read in front of it.
 func buildCollection(ctx context.Context, collection Collection, cfg buildConfig) ([]BuiltState, SkipSummary, error) {
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		return nil, SkipSummary{}, err
 	}
 	defer stop()
 
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		return nil, SkipSummary{}, err
 	}

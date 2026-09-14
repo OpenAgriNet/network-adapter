@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
 
 // marketsIn builds n markets for one state, each with a coordinate and one
@@ -35,14 +37,14 @@ func marketsIn(state string, n int) []CollectedMarket {
 func buildInto(t *testing.T, dir string, markets []CollectedMarket) ([]BuiltState, SkipSummary) {
 	t.Helper()
 
-	mappingBase, stop, err := serveMappings()
+	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
 		t.Fatalf("serveMappings: %v", err)
 	}
 	defer stop()
 
 	ctx := context.Background()
-	mapper, closer, err := newMapper(ctx)
+	mapper, closer, err := catalogpublish.NewMapper(ctx)
 	if err != nil {
 		t.Fatalf("newMapper: %v", err)
 	}
