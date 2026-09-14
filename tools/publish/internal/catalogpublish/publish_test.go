@@ -1,4 +1,4 @@
-package main
+package catalogpublish
 
 import (
 	"context"
@@ -14,15 +14,15 @@ import (
 )
 
 // catalogDir writes one catalog file per named state, each a payload shaped
-// like the real one but small enough to read in a failure message.
-func catalogDir(t *testing.T, states ...string) string {
+// like a real one but small enough to read in a failure message.
+func catalogDir(t *testing.T, prefix string, states ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, state := range states {
-		body := `{"context":{"action":"catalog/publish"},"message":{"catalogs":[{"id":"agmarknet-mock/mandi-` +
-			state + `","isActive":true,"resources":[{"id":"res:agmarknet:market:1"}]}],` +
-			`"publishDirectives":[{"catalogId":"agmarknet-mock/mandi-` + state + `"}]}}`
-		path := filepath.Join(dir, "mandi-"+state+".json")
+		body := `{"context":{"action":"catalog/publish"},"message":{"catalogs":[{"id":"mock/` +
+			prefix + `-` + state + `","isActive":true,"resources":[{"id":"res:mock:1"}]}],` +
+			`"publishDirectives":[{"catalogId":"mock/` + prefix + `-` + state + `"}]}}`
+		path := filepath.Join(dir, prefix+"-"+state+".json")
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			t.Fatalf("write %s: %v", path, err)
 		}
@@ -78,12 +78,13 @@ func TestPublishPostsEveryCatalogInTheDirectory(t *testing.T) {
 	server, calls := ackServer(t, "ACCEPTED", 0)
 	defer server.Close()
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  catalogDir(t, "MH", "AP"),
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      catalogDir(t, "test", "MH", "AP"),
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	if *calls != 2 {
@@ -100,7 +101,7 @@ func TestPublishPostsEveryCatalogInTheDirectory(t *testing.T) {
 	if result.Outcomes[1].Status != StatusPublished {
 		t.Errorf("status = %q, want published", result.Outcomes[1].Status)
 	}
-	if result.Outcomes[1].CatalogID != "agmarknet-mock/mandi-MH" {
+	if result.Outcomes[1].CatalogID != "mock/test-MH" {
 		t.Errorf("catalogId = %q, want the one from the payload", result.Outcomes[1].CatalogID)
 	}
 	if result.HasFailures() {
@@ -112,13 +113,14 @@ func TestPublishHonoursTheStateFilter(t *testing.T) {
 	server, calls := ackServer(t, "ACCEPTED", 0)
 	defer server.Close()
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  catalogDir(t, "MH", "AP", "CG"),
-		states:     []string{"MH"},
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      catalogDir(t, "test", "MH", "AP", "CG"),
+		States:         []string{"MH"},
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	if *calls != 1 {
@@ -130,21 +132,22 @@ func TestPublishHonoursTheStateFilter(t *testing.T) {
 }
 
 func TestPublishFiltersChunkedCatalogsByState(t *testing.T) {
-	// A split state is written as mandi-TN-1.json, mandi-TN-2.json. --states TN
+	// A split state is written as test-TN-1.json, test-TN-2.json. --states TN
 	// has to match every chunk of TN, or a filtered republish silently posts
 	// part of the state.
 	server, calls := ackServer(t, "ACCEPTED", 0)
 	defer server.Close()
 
-	dir := catalogDir(t, "TN-1", "TN-2", "MH")
+	dir := catalogDir(t, "test", "TN-1", "TN-2", "MH")
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  dir,
-		states:     []string{"TN"},
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      dir,
+		States:         []string{"TN"},
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	if *calls != 2 {
@@ -167,13 +170,14 @@ func TestPublishDryRunSendsNothing(t *testing.T) {
 	server, calls := ackServer(t, "ACCEPTED", 0)
 	defer server.Close()
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  catalogDir(t, "MH"),
-		dryRun:     true,
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      catalogDir(t, "test", "MH"),
+		DryRun:         true,
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	// A dry run that reached the network would have already published.
@@ -192,12 +196,13 @@ func TestPublishReportsRejected(t *testing.T) {
 	server, _ := ackServer(t, "REJECTED", 0)
 	defer server.Close()
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  catalogDir(t, "MH"),
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      catalogDir(t, "test", "MH"),
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	if result.Outcomes[0].Status != StatusRejected {
@@ -218,12 +223,13 @@ func TestPublishTreatsPartialAsAFailureAndSaysHowMany(t *testing.T) {
 	server, _ := ackServer(t, "PARTIAL", 288)
 	defer server.Close()
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  catalogDir(t, "MH"),
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      catalogDir(t, "test", "MH"),
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	if result.Outcomes[0].Status != StatusRejected {
@@ -243,12 +249,13 @@ func TestPublishTreatsPartialAsAFailureAndSaysHowMany(t *testing.T) {
 
 func TestPublishRecordsATransportFailureAndKeepsGoing(t *testing.T) {
 	// One unreachable adapter must not discard the other states' outcomes.
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: "http://127.0.0.1:1", // nothing listens here
-		catalogIn:  catalogDir(t, "MH", "AP"),
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     "http://127.0.0.1:1", // nothing listens here
+		CatalogIn:      catalogDir(t, "test", "MH", "AP"),
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish returned a fatal error, want per-state outcomes: %v", err)
+		t.Fatalf("Publish returned a fatal error, want per-state outcomes: %v", err)
 	}
 
 	if len(result.Outcomes) != 2 {
@@ -274,12 +281,13 @@ func TestPublishRejectsANonSuccessHTTPStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  catalogDir(t, "MH"),
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      catalogDir(t, "test", "MH"),
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	outcome := result.Outcomes[0]
@@ -294,6 +302,8 @@ func TestPublishRejectsANonSuccessHTTPStatus(t *testing.T) {
 }
 
 func TestPublishRetiresTheOldCatalogWhenAsked(t *testing.T) {
+	const testOldCatalogID = "cat-test-old"
+
 	var bodies []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var envelope map[string]any
@@ -301,24 +311,26 @@ func TestPublishRetiresTheOldCatalogWhenAsked(t *testing.T) {
 		_ = json.Unmarshal(body, &envelope)
 		bodies = append(bodies, envelope)
 		_, _ = w.Write([]byte(`{"context":{"action":"catalog/on_publish"},
-			"message":{"results":[{"catalogId":"cat-agmarknet-mandi-prices","status":"ACCEPTED"}]}}`))
+			"message":{"results":[{"catalogId":"` + testOldCatalogID + `","status":"ACCEPTED"}]}}`))
 	}))
 	defer server.Close()
 
-	result, err := publish(context.Background(), publishConfig{
-		publishURL: server.URL,
-		catalogIn:  catalogDir(t),
-		retireOld:  true,
+	result, err := Publish(context.Background(), Config{
+		PublishURL:     server.URL,
+		CatalogIn:      catalogDir(t, "test"),
+		RetireOld:      true,
+		OldCatalogID:   testOldCatalogID,
+		FilenamePrefix: "test",
 	})
 	if err != nil {
-		t.Fatalf("publish: %v", err)
+		t.Fatalf("Publish: %v", err)
 	}
 
 	if result.RetiredOld == nil {
 		t.Fatal("RetiredOld is nil, want the tombstone's outcome")
 	}
-	if result.RetiredOld.CatalogID != oldCatalogID {
-		t.Errorf("retired %q, want %q", result.RetiredOld.CatalogID, oldCatalogID)
+	if result.RetiredOld.CatalogID != testOldCatalogID {
+		t.Errorf("retired %q, want %q", result.RetiredOld.CatalogID, testOldCatalogID)
 	}
 	if result.RetiredOld.Status != StatusPublished {
 		t.Errorf("status = %q, want published", result.RetiredOld.Status)
@@ -329,32 +341,37 @@ func TestPublishRetiresTheOldCatalogWhenAsked(t *testing.T) {
 	}
 	catalog := bodies[0]["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)
 	// isActive false is the whole point: MERGE cannot be relied on to remove
-	// the India-wide resource, so the catalog containing it is deactivated.
+	// the old resource, so the catalog containing it is deactivated.
 	if catalog["isActive"] != false {
 		t.Errorf("isActive = %v, want false", catalog["isActive"])
 	}
-	if catalog["id"] != oldCatalogID {
+	if catalog["id"] != testOldCatalogID {
 		t.Errorf("tombstone id = %v", catalog["id"])
 	}
 }
 
 func TestPublishNeedsAnAddress(t *testing.T) {
-	_, err := publish(context.Background(), publishConfig{catalogIn: catalogDir(t, "MH")})
+	_, err := Publish(context.Background(), Config{
+		CatalogIn:      catalogDir(t, "test", "MH"),
+		FilenamePrefix: "test",
+		AddressHint:    "pass --publish-url or set TEST_PUBLISH_URL",
+	})
 	if err == nil {
-		t.Fatal("publish accepted an empty URL, want an error")
+		t.Fatal("Publish accepted an empty URL, want an error")
 	}
-	if !strings.Contains(err.Error(), "MANDI_PUBLISH_URL") {
-		t.Errorf("error = %q, want it to name the variable that sets the address", err)
+	if !strings.Contains(err.Error(), "TEST_PUBLISH_URL") {
+		t.Errorf("error = %q, want it to carry the caller's address hint", err)
 	}
 }
 
 func TestPublishReportsAnEmptyCatalogDirectory(t *testing.T) {
 	// Silently publishing nothing looks identical to publishing successfully.
-	_, err := publish(context.Background(), publishConfig{
-		publishURL: "http://example.invalid",
-		catalogIn:  catalogDir(t),
+	_, err := Publish(context.Background(), Config{
+		PublishURL:     "http://example.invalid",
+		CatalogIn:      catalogDir(t, "test"),
+		FilenamePrefix: "test",
 	})
 	if err == nil {
-		t.Fatal("publish accepted an empty directory, want an error")
+		t.Fatal("Publish accepted an empty directory, want an error")
 	}
 }
