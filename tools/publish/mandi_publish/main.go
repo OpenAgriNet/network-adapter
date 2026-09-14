@@ -25,7 +25,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"os"
 	"time"
@@ -150,100 +149,4 @@ func publishAndExit(ctx context.Context, cfg publishConfig) {
 		os.Exit(1)
 	}
 }
-
-
-
-
-
-// collect runs the whole pipeline.
-//
-// Sequential deliberately. Thirty-six calls against a service that publishes no
-// rate limit is the polite default, and concurrency here would buy seconds while
-// risking a throttle that looks like data loss.
-func collect(ctx context.Context, cfg config) (Collection, error) {
-	if cfg.user == "" || cfg.secret == "" {
-		return Collection{}, errors.New(
-			"set MANDI_TOKEN_USER and MANDI_TOKEN_SECRET in the environment")
-	}
-
-	mappingBase, stop, err := serveMappings()
-	if err != nil {
-		return Collection{}, err
-	}
-	defer stop()
-
-	mapper, closer, err := newMapper(ctx)
-	if err != nil {
-		return Collection{}, err
-	}
-	defer func() { _ = closer() }()
-
-	client := newClient(cfg.baseURL)
-
-	token, err := client.Token(ctx, cfg.user, cfg.secret)
-	if err != nil {
-		return Collection{}, err
-	}
-
-	stateCodes := cfg.states
-	if len(stateCodes) == 0 {
-		states, err := client.States(ctx, mapper, mappingBase, token)
-		if err != nil {
-			return Collection{}, err
-		}
-		for _, state := range states {
-			stateCodes = append(stateCodes, state.Code)
-		}
-	}
-
-	if len(stateCodes) == 0 {
-		return Collection{}, errors.New("state list resolved to zero states; refusing to write an empty collection")
-	}
-
-	markets, err := client.Markets(ctx, mapper, mappingBase, token)
-	if err != nil {
-		return Collection{}, err
-	}
-
-	collection := Collection{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Window:      Window{From: cfg.fromDate, To: cfg.toDate},
-		Markets:     []CollectedMarket{},
-		StateErrors: []StateError{},
-		EmptyStates: []string{},
-	}
-
-	seen := make(map[int]bool)
-
-	for _, code := range stateCodes {
-		rows, err := client.StateMarkets(ctx, mapper, mappingBase, token, code, cfg.fromDate, cfg.toDate)
-		if errors.Is(err, errNoUpstreamData) {
-			// The upstream holds no mapping rows for this state, which is a
-			// coverage fact rather than a failed run -- it says so with an
-			// HTTP 400 and "No data available.". Recording it as a stateError
-			// made 27 of 36 states read as 27 outages and exited non-zero on a
-			// collection as complete as the upstream allows.
-			collection.EmptyStates = append(collection.EmptyStates, code)
-			continue
-		}
-		if err != nil {
-			collection.StateErrors = append(collection.StateErrors,
-				StateError{StateCode: code, Reason: err.Error()})
-			continue
-		}
-		if len(rows) == 0 {
-			collection.EmptyStates = append(collection.EmptyStates, code)
-		}
-		for _, cm := range join(rows, markets) {
-			if seen[cm.MarketID] {
-				continue
-			}
-			seen[cm.MarketID] = true
-			collection.Markets = append(collection.Markets, cm)
-		}
-	}
-	return collection, nil
-}
-
-
 
