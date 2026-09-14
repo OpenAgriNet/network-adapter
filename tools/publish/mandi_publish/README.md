@@ -4,6 +4,32 @@ Collects, builds, and (optionally) publishes Agmarknet Vistaar market catalogs f
 
 This tool now runs as a single pipeline by default: collect upstream rows in memory, transform them into one or more per-state catalog JSON files, and optionally POST those catalogs to a provider adapter. The former file-based "collect → build → publish" flags (`--out`, `--in`) have been removed.
 
+## Anatomy of a publish tool
+
+This tool is the reference layout for anything else under `tools/publish/`
+that collects from an upstream and publishes a Beckn catalog. Building a
+second one is: copy this directory, then only touch the files marked
+"rewrite" below.
+
+| File | Role | For a new source |
+|---|---|---|
+| `main.go` | flags + wiring | copy as-is |
+| `env.go` | CLI/env utilities | copy as-is |
+| `report.go` | stderr presentation | copy as-is |
+| `run.go` | orchestrator | copy as-is |
+| `build.go` | chunking / geometry budget / exclusion reporting | copy, adapt type names |
+| `client.go` | upstream auth + HTTP | rewrite |
+| `collect.go` | domain shapes (`Market`, `Collection`, ...) + `collect()` | rewrite |
+| `mappings/*.yaml` | catalog JSONata transform | rewrite |
+| [`internal/catalogpublish`](../internal/catalogpublish) (shared) | HTTP publish/tombstone/dry-run, mapper wiring | import, do not copy |
+
+`internal/catalogpublish` carries no knowledge of markets, states, or any
+other mandi-specific type — it operates on catalog filenames, raw bytes, and
+the generic Beckn envelope shape. A new tool passes it a `FilenamePrefix`
+(e.g. `"facility"`), and, if it needs a retire-old path, an `AddressHint` and
+`OldCatalogID`. See `tools/publish/mandi_publish/main.go`'s `pubCfg`
+construction for a worked example.
+
 Workflows
 
 - One-stage (collect → build): authenticate with Agmarknet, fetch per-state market rows, build per-state catalog files and write them to `--catalog-out`.
