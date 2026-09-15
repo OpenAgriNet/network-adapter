@@ -64,7 +64,7 @@ const selectRequest = `{
         "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
         "@type": "openagrinet:WeatherObservation",
         "subjectCategories": ["Weather"],
-        "location": { "type": "Point", "coordinates": [73.7898, 19.9975] },
+        "location": { "geo": { "type": "Point", "coordinates": [73.7898, 19.9975] } },
         "validity": { "startsAt": "2026-08-26T00:00:00+05:30",
                       "endsAt": "2026-08-30T23:59:59+05:30" }
       }
@@ -292,7 +292,10 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 	// GeoJSON order, and the provider's own echo of the point: the mapping reads
 	// response.location rather than anything the step resolved.
 	location, _ := attributes["location"].(map[string]any)
-	coordinates, _ := location["coordinates"].([]any)
+	// The geometry sits under `geo`: the pack takes a Beckn Location here,
+	// not a bare GeoJSON geometry, so a location can also carry an address.
+	geo, _ := location["geo"].(map[string]any)
+	coordinates, _ := geo["coordinates"].([]any)
 	if len(coordinates) != 2 || coordinates[0] != 73.7898 || coordinates[1] != 19.9975 {
 		t.Errorf("coordinates = %v, want [73.7898, 19.9975] in GeoJSON order", coordinates)
 	}
@@ -426,9 +429,12 @@ func TestShippedMappingsPreconditions(t *testing.T) {
 
 	payload := func(t *testing.T, geometry string) map[string]any {
 		t.Helper()
+		// The geometry goes under `geo`: a resolved location is a Beckn
+		// Location now, so every case below -- served and refused alike --
+		// exercises the shape the mapping actually reads.
 		location := ""
 		if geometry != "" {
-			location = `"location": ` + geometry + `,`
+			location = `"location": {"geo": ` + geometry + `},`
 		}
 		body := `{"context":{"action":"select"},"message":{"contract":{"commitments":[{"resources":[{"resourceAttributes":{` +
 			location + `"@type":"openagrinet:WeatherObservation"}}]}]}}}`

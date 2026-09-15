@@ -95,6 +95,7 @@ const providerResponse = `{
    "_id": "26860172-2762-4b0b-cabf-3c947846c2e1",
    "section": "![House icon](a2bc7bb7c74e387ff445bcc6cf9b2a5a_1_img.webp)",
    "filename": "doc-379e706ade8b-rerun-1788847883",
+   "name_en": "Telangana Welfare Schemes Handbook",
    "_score": 0.77918214,
    "doc_id": "74b89b5f69dcd56f6566d4b1a9392ffd",
    "text": "![House icon](a2bc7bb7c74e387ff445bcc6cf9b2a5a_1_img.webp)\n# Gruha Jyoti Scheme:\n1. 200 units of free electricity per family per month\n1.1. Your monthly household electricity consumption:\n0-100 Units\n100-200 Units\nAbove 200 Units\n1.2. Household consumption electricity meter connection number _____\n![Hand icon](a2bc7bb7c74e387ff445bcc6cf9b2a5a_7_img.webp)\n# Chayata Scheme:\nTo receive Rs.4000 per month under Chayata Scheme and Rs.6000 Disability Pension, provide the following details.\n( Those currently receiving pension do not need to apply )\n1. Disability Certificate Number: _____\n2. Others:\nOld Age\nWidow\nWeavers\nCotton Workers\nDiabetics\nAIDS Affected\nBeedi Workers' Livelihood Pension\nFilariasis Affected\nSingle Woman Livelihood Pension\nBeedi Contractor Livelihood Pension\nPath of Progress.. Welfare of All.. Our People's Government\n![Government of Telangana logo](a2bc7bb7c74e387ff445bcc6cf9b2a5a_16_img.webp)\nGovernment of Telangana\n![Circular graphic with Nirmala Sitharaman's portrait and icons for various schemes: Mahalaxmi, Rashtra Janjane, Grahajyoti, Chayata, Yuvavikasan, and Indiramandir](a2bc7bb7c74e387ff445bcc6cf9b2a5a_18_img.webp)![Portrait of Nirmala Sitharaman and N. Chandrababu Naidu](a2bc7bb7c74e387ff445bcc6cf9b2a5a_19_img.webp)\nPeople's Governance\nFrom 28.12.2023 to 06.01.2024",
@@ -108,6 +109,7 @@ const providerResponse = `{
    "_id": "0e753c2b-040a-4af9-3dc4-c9fca3b01e4d",
    "section": "![House icon](71c6c13ee057c1204dd8980597d79d5b_1_img.webp)",
    "filename": "doc-379e706ade8b-rerun-1788785422",
+   "name_en": "Telangana Welfare Schemes Handbook",
    "_score": 0.7783708,
    "doc_id": "74b89b5f69dcd56f6566d4b1a9392ffd",
    "text": "![House icon](71c6c13ee057c1204dd8980597d79d5b_1_img.webp)\n# Gruha Jyoti Scheme:\n1. 200 units of free electricity per family per month\n1.1. Your monthly household electricity consumption:\n0-100 Units\n100-200 Units\nAbove 200 Units\n1.2. Household consumption electricity meter connection number _____\n![Hand icon](71c6c13ee057c1204dd8980597d79d5b_7_img.webp)\n# Chayatha Scheme:\nTo receive Rs.4000 per month under Chayatha Scheme and Rs.6000 pension for disabled persons, provide the following details.\n(Those currently receiving pension do not need to apply)\n1. Disabled person certificate number: _____\n2. Others:\nOld Age\nWidow\nGita Workers\nAgricultural Laborers\nDiabetes Affected\nAIDS Affected\nBeedi Workers' Livelihood Pension\nFilaria Affected\nBantali Women Livelihood Pension\nBeedi Contractors' Livelihood Pension\nPath of Progress.. Welfare of All.. Our People's Government\n![Government of Telangana logo](71c6c13ee057c1204dd8980597d79d5b_16_img.webp)\nGovernment of Telangana\n![Circular graphic with Nirmala Sitharaman's portrait and icons for various schemes: Mahalaxmi, Rashtra Janjane, Grahajyoti, Chayath, Yuvavikasan, and Indiramandir](71c6c13ee057c1204dd8980597d79d5b_18_img.webp)![Portrait of Nirmala Sitharaman and N. Chandrababu Naidu](71c6c13ee057c1204dd8980597d79d5b_19_img.webp)\nPeople's Governance\nFrom 28.12.2023 to 06.01.2024",
@@ -123,6 +125,7 @@ const providerResponse = `{
    "_id": "b9ec5c75-7331-0424-f741-4b3294c6b75e",
    "section": "- (d) Under the Anna Bhagya Scheme, from which state is the rice being brought",
    "filename": "doc-d7124029cb60-rerun-1788841718",
+   "name_en": "Karnataka Gruha Jyoti Scheme Guidelines",
    "_score": 0.77453613,
    "doc_id": "2cc58f8a1c39a64fc132338be3547f52",
    "text": "- (d) Under the Anna Bhagya Scheme, from which state is the rice being brought; what is the rate of this rice; what is the transportation and other cost? (Details to be provided)\n- (e) Following what standard has the rice brought from outside the state been entrusted for transportation; and which company/agency is currently transporting the rice?\n- (f) At what rate is the levy quantity of rice being collected in the state for the Anna Bhagya Scheme being purchased; for how many months is this collected rice sufficient? (Detailed information to be provided)\n**Smart City Scheme**\n**Shri Kavatagi Matha Mahantesh Mallikarjuna (Local Institutions Department):-**\n1053 (1274) Will the Hon'ble Minister of Urban Development kindly inform the following matters :-\n- (a) Has the fact that the ambitious Smart City Scheme of the Central Government is not being implemented properly in the state come to the government's notice;\n- (b) If it has come to notice, what steps has the government taken to implement the Smart City Scheme in the state and complete it at a rapid pace; for the delay",
@@ -136,6 +139,7 @@ const providerResponse = `{
    "_id": "4c6466a5-6975-a3be-4a62-637ae1a611d3",
    "section": "**Regarding the 'Jalashree' Scheme being implemented by KUIDFC in the State**",
    "filename": "doc-d7124029cb60-rerun-1788841718",
+   "name_en": "Karnataka Gruha Jyoti Scheme Guidelines",
    "_score": 0.7743588,
    "doc_id": "2cc58f8a1c39a64fc132338be3547f52",
    "text": "**Regarding the 'Jalashree' Scheme being implemented by KUIDFC in the State, Shri N. Appajigaoud (Local Institutions Department) :-**\n1031 (1244) Hon'ble Urban Development Minister, please inform on these matters :-\n- (a) What are the urban areas selected under the 24 x 7 drinking water supply scheme under the 'Jalashree' scheme being implemented by KUIDFC in the State, and what is the financial assistance allocated for their implementation; (Provide complete information)\n- (b) On what criteria were the urban areas included in this scheme selected; (Provide details)\n- (c) At what stage is the implementation of works in the urban areas selected under this scheme; (Provide complete information)\n- (d) Many urban areas selected under this scheme have been taken up under the drinking water development program under the Central Government's 'AMRUT' scheme, is it correct to include these urban areas again under the 'Jalashree' scheme; (Provide complete information)\n\n(d) Has the Government considered including the taluks in the districts where drought occurs frequently and the groundwater level is depleting in the state under the earlier 'Jalashree' scheme; if so, provide complete information?\n**Regarding Industrial Clusters in the state and industries established therein, Shri N. Appajigaoud (Local Bodies Department) :-**\n1032 (1248) Hon'ble Minister of Large and Medium Industries, please inform on these matters :-\n- (a) How many Industrial Clusters are there in the state; (Provide district-wise information including area)\n- (b) Out of these Industrial Clusters, in how many clusters has the Automobile industry been established; Provide complete information for each cluster including factories/enterprises;\n- (c) In several Small and Medium Industrial Estates located in the state for several decades such as Peethya Industrial Estate, Bidadi Industrial Estate, Mysore-Hebbal Industrial Estate, Belur-Hubballi Industrial Estate, etc., due to recent economic recession",
@@ -465,7 +469,7 @@ func TestShippedMappingDerivesTopicsAndLanguageFromTheResponse(t *testing.T) {
 func TestShippedMappingOmitsTopicsWhenNothingSuppliesThem(t *testing.T) {
 	_, answer := runShippedWith(t, selectRequest,
 		`{"candidate_count":1,"final_count":1,"hits":[
-		   {"_id":"h1","doc_id":"d1","_score":0.5,"text":"some passage","filename":"doc-d1","instance_name":"Bharat Vistaar"}]}`)
+		   {"_id":"h1","doc_id":"d1","_score":0.5,"text":"some passage","filename":"doc-d1","name_en":"A Named Document","instance_name":"Bharat Vistaar"}]}`)
 	attrs := attributesOf(t, answer, 0)
 	if v, present := attrs["topics"]; present {
 		t.Errorf("topics = %v, want the key absent when no source supplies it", v)
@@ -477,6 +481,42 @@ func TestShippedMappingOmitsTopicsWhenNothingSuppliesThem(t *testing.T) {
 // The two upstream fields that look like better candidates are traps --
 // hits[].instance is a provider-internal code and hits[].source names the
 // ingestion pipeline.
+// A document with no name_en gets a BLANK sourceName, not a filename and not
+// an absent key. The blank is the report: this document has no title, which is
+// a gap in the corpus and worth saying.
+//
+// The two rejected alternatives are both worse. Falling back to filename hides
+// the gap behind "doc-d1", which looks like an answer and names nothing a
+// reader can place. Omitting the key leaves a consumer unable to tell "this
+// document has no name" from "the provider reported nothing".
+//
+// sourceId survives either way, so the passage stays attributable.
+func TestShippedMappingLeavesAnUnnamedSourceBlank(t *testing.T) {
+	for _, tc := range []struct{ name, hit string }{
+		{"name_en absent", `{"_id":"h1","doc_id":"d1","_score":0.5,"text":"p","filename":"doc-d1"}`},
+		{"name_en blank", `{"_id":"h1","doc_id":"d1","_score":0.5,"text":"p","filename":"doc-d1","name_en":""}`},
+		{"name_en whitespace", `{"_id":"h1","doc_id":"d1","_score":0.5,"text":"p","filename":"doc-d1","name_en":"   "}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, answer := runShippedWith(t, selectRequest,
+				`{"candidate_count":1,"final_count":1,"hits":[`+tc.hit+`]}`)
+			attrs := attributesOf(t, answer, 0)
+			source, _ := attrs["source"].(map[string]any)
+
+			name, present := source["sourceName"]
+			if !present {
+				t.Fatalf("sourceName is absent; it must be present and empty")
+			}
+			if name != "" {
+				t.Errorf("sourceName = %q, want \"\" -- a filename fallback hides the gap", name)
+			}
+			if source["sourceId"] != "d1" {
+				t.Errorf("sourceId = %v, want d1; a nameless document is still identified", source["sourceId"])
+			}
+		})
+	}
+}
+
 func TestShippedMappingNamesTheDocumentAsTheSource(t *testing.T) {
 	_, answer := runShipped(t, selectRequest)
 	res := resourcesOf(t, answer)
@@ -504,13 +544,19 @@ func TestShippedMappingNamesTheDocumentAsTheSource(t *testing.T) {
 		}
 		seenIDs[id] = true
 
-		// sourceName is the document's filename, never the instance name.
+		// sourceName is the document's TITLE -- hits[].name_en -- never its
+		// filename and never the instance name. The filename identifies the
+		// document too, but as the ingestion pipeline's artefact name, which
+		// names nothing a reader can place.
 		name, _ := source["sourceName"].(string)
 		if name == "" {
 			t.Errorf("resource %d source carries no sourceName", i)
 		}
 		if name == "Bharat Vistaar" {
 			t.Errorf("sourceName = %q, which is the instance, not the document", name)
+		}
+		if strings.HasPrefix(name, "doc-") {
+			t.Errorf("sourceName = %q, which is the ingestion filename, not the document's name", name)
 		}
 	}
 	for _, want := range wantDocIDs {
