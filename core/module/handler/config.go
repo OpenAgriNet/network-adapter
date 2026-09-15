@@ -159,6 +159,15 @@ type HttpClientConfig struct {
 	// ResponseHeaderTimeout, if non-zero, specifies the amount of time to wait
 	// for a server's response headers after fully writing the request.
 	ResponseHeaderTimeout time.Duration `yaml:"responseHeaderTimeout"`
+
+	// Timeout, if non-zero, bounds the WHOLE round trip of every outbound
+	// request -- dial, write, response headers, and body read.
+	//
+	// ResponseHeaderTimeout above is not a substitute: it bounds only the wait
+	// for headers, so an upstream that answers promptly and then stalls
+	// mid-body is never cut off and holds the connection and its goroutine
+	// indefinitely. Left zero this keeps Go's default of no timeout at all.
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 // Config holds the configuration for request processing handlers.

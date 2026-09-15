@@ -39,23 +39,23 @@ const (
 )
 
 type stdHandler struct {
-	signer             definition.Signer
-	steps              []definition.Step
-	responseSteps      []definition.ResponseStep
-	signValidator      definition.SignValidator
-	cache              definition.Cache
-	registry           definition.RegistryLookup
-	manifestLoader     definition.ManifestLoader
-	km                 definition.KeyManager
-	schemaValidator    definition.SchemaValidator
+	signer                definition.Signer
+	steps                 []definition.Step
+	responseSteps         []definition.ResponseStep
+	signValidator         definition.SignValidator
+	cache                 definition.Cache
+	registry              definition.RegistryLookup
+	manifestLoader        definition.ManifestLoader
+	km                    definition.KeyManager
+	schemaValidator       definition.SchemaValidator
 	policyChecker         definition.PolicyChecker
 	schemaVersionMediator definition.SchemaVersionMediator
 	router                definition.Router
-	publisher          definition.Publisher
-	transportWrapper   definition.TransportWrapper
-	payloadTransformer definition.Step
-	payloadStore       definition.PayloadStore
-	mapper             definition.Mapper
+	publisher             definition.Publisher
+	transportWrapper      definition.TransportWrapper
+	payloadTransformer    definition.Step
+	payloadStore          definition.PayloadStore
+	mapper                definition.Mapper
 	// ackSigner is non-nil only when the "signAck" step is configured (Receiver
 	// modules). It is also used to sign pipeline-NACK responses so that ALL
 	// synchronous responses carry a Signature header per NFH-007 CON-004-02.
@@ -65,10 +65,10 @@ type stdHandler struct {
 	// request a dead end rather than work in flight -- see ServeHTTP.
 	hasProviderSteps bool
 	SubscriberID     string
-	role         model.Role
-	basePath     string
-	httpClient   *http.Client
-	moduleName   string
+	role             model.Role
+	basePath         string
+	httpClient       *http.Client
+	moduleName       string
 }
 
 // newHTTPClient creates a new HTTP client with a custom transport configuration.
@@ -91,12 +91,65 @@ func newHTTPClient(cfg *HttpClientConfig, wrapper definition.TransportWrapper) *
 		transport.ResponseHeaderTimeout = cfg.ResponseHeaderTimeout
 	}
 
+	// Client.Timeout bounds the whole round trip including the body read, which
+	// is the only thing that stops an upstream stalling mid-body from holding a
+	// goroutine and a connection forever.
+	//
+	// IT IS NOT ENOUGH ON ITS OWN. Client.Timeout is a field on http.Client, and
+	// the forwarding path does not use the Client: proxy() builds an
+	// httputil.ReverseProxy over httpClient.Transport, which never sees it. So
+	// the same bound is also applied as a RoundTripper below, where both paths
+	// go through it.
+	timeout := cfg.Timeout
+
 	var finalTransport http.RoundTripper = transport
 	if wrapper != nil {
 		log.Debugf(context.Background(), "Applying custom transport wrapper")
 		finalTransport = wrapper.Wrap(transport)
 	}
-	return &http.Client{Transport: finalTransport}
+	// Outermost, so the bound covers whatever the wrapper does as well.
+	if timeout > 0 {
+		finalTransport = &timeoutTransport{base: finalTransport, timeout: timeout}
+	}
+	return &http.Client{Transport: finalTransport, Timeout: timeout}
+}
+
+// timeoutTransport gives every request a deadline that outlives RoundTrip and
+// expires only once the response body is closed.
+//
+// This is what http.Client.Timeout does internally, reproduced at the transport
+// so that the ReverseProxy path gets it too -- that path holds only a
+// RoundTripper, so a Client field cannot reach it. Cancelling when RoundTrip
+// returns would be wrong: it returns as soon as the headers are read, and the
+// stall this exists to cut off happens while the body is being read afterwards.
+type timeoutTransport struct {
+	base    http.RoundTripper
+	timeout time.Duration
+}
+
+func (t *timeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(req.Context(), t.timeout)
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// cancelOnClose releases a request's context once its body is closed, which is
+// the point at which the round trip is genuinely over.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.once.Do(c.cancel)
+	return err
 }
 
 // NewStdHandler initializes a new processor with plugins and steps.
