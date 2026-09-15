@@ -448,6 +448,7 @@ func (s *addRouteStep) Run(ctx *model.StepContext) error {
 		TargetType:  route.TargetType,
 		PublisherID: route.PublisherID,
 		URL:         route.URL,
+		URLs:        route.URLs,
 	}
 	if s.metrics != nil && ctx.Route != nil {
 		s.metrics.RoutingDecisionsTotal.Add(ctx.Context, 1,

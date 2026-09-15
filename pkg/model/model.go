@@ -362,6 +362,13 @@ type Route struct {
 	TargetType  string   // "url" or "publisher"
 	PublisherID string   // For message queues
 	URL         *url.URL // For API calls
+	// URLs carries every target of a fan-out rule, in config order, and is set
+	// only when a routing rule names more than one. A single-target rule leaves
+	// it nil and is forwarded by the reverse proxy exactly as before. When it is
+	// populated the handler calls every target in parallel and merges the
+	// replies into one response; URL stays set to the first target so that
+	// logging, metrics and the single-target path keep reading one URL.
+	URLs []*url.URL
 }
 
 // Keyset represents a collection of cryptographic keys used for signing and encryption.
