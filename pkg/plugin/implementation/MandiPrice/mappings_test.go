@@ -328,18 +328,30 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 			t.Errorf("%s = %v, want %v", f.key, attributes[f.key], f.want)
 		}
 	}
-	// Direct requires all six of these.
-	for _, required := range []string{"source", "commodity", "market", "arrivalDate", "prices", "generatedAt"} {
+	// Direct requires all six of these. supportedCommodities is among them
+	// now: the pack dropped the singular `commodity` and made
+	// supportedCommodities the one coded collection in BOTH modes.
+	for _, required := range []string{"source", "supportedCommodities", "market", "arrivalDate", "prices", "generatedAt"} {
 		if attributes[required] == nil {
 			t.Errorf("resourceAttributes carries no %q", required)
 		}
 	}
-	// OnDemand's fields must NOT appear: the pack forbids prices alongside
-	// them, and an answer advertising a capability is a category error.
-	for _, absent := range []string{"supportedCommodities", "supportedPriceFields"} {
+	// `commodity` is gone from the pack, so emitting it would be inventing a
+	// field. supportedPriceFields is OnDemand's -- an answer that advertises a
+	// capability while reporting prices is a category error.
+	for _, absent := range []string{"commodity", "supportedPriceFields"} {
 		if _, present := attributes[absent]; present {
 			t.Errorf("a Direct answer must not carry %q", absent)
 		}
+	}
+	// ONE entry, not the caller's whole list: a Direct resource's single prices
+	// object applies to every commodity listed, and this mapping emits one
+	// resource per price record. Listing more would claim this row's prices for
+	// commodities it never priced.
+	if commodities, _ := attributes["supportedCommodities"].([]any); len(commodities) != 1 {
+		t.Errorf("supportedCommodities = %v, want exactly one entry -- the commodity this row priced", commodities)
+	} else if entry, _ := commodities[0].(map[string]any); entry["code"] == nil {
+		t.Errorf("supportedCommodities[0] = %v, want a code; the pack requires one per entry", entry)
 	}
 
 	// --- the prices, converted from strings ---------------------------------

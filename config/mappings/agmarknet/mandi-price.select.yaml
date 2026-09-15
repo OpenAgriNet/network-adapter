@@ -316,10 +316,25 @@ response: |
                       "sourceId": "agmarknet",
                       "sourceName": "Agmarknet Vistaar"
                     },
-                    "commodity": {
-                      "code": $ra.supportedCommodities[0].code,
-                      "name": $r.Commodity
-                    },
+                    /* ONE ENTRY, not the caller's whole list. The pack makes
+                       supportedCommodities the single coded collection in both
+                       modes and drops the singular `commodity` -- but it also
+                       says a Direct Resource's one prices object applies to
+                       EVERY commodity listed, and this mapping emits one
+                       resource per price record, each with its own prices. So
+                       listing more than the commodity this row reports would
+                       claim its prices for commodities the row never priced.
+
+                       The code is the CALLER's because the upstream reports
+                       none: it takes a commodity code and answers with a name
+                       only. The name is the RECORD's, so the pair describes
+                       what came back rather than what was asked for. */
+                    "supportedCommodities": [
+                      {
+                        "code": $ra.supportedCommodities[0].code,
+                        "name": $r.Commodity
+                      }
+                    ],
                     "commodityGroup": $r.Group,
                     "variety":        $r.Variety,
                     "grade":          $r.Grade,
