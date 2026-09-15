@@ -69,6 +69,9 @@ type stdHandler struct {
 	basePath         string
 	httpClient       *http.Client
 	moduleName       string
+	// fanout bounds routing rules naming more than one target. Read only on
+	// that path.
+	fanout FanoutConfig
 }
 
 // newHTTPClient creates a new HTTP client with a custom transport configuration.
@@ -168,6 +171,7 @@ func NewStdHandler(ctx context.Context, mgr PluginManager, cfg *Config, moduleNa
 	}
 	// Initialize HTTP client after plugins so transport wrapper can be applied.
 	h.httpClient = newHTTPClient(&cfg.HttpClientConfig, h.transportWrapper)
+	h.fanout = cfg.Fanout
 	// Initialize steps.
 	if err := h.initSteps(ctx, mgr, cfg); err != nil {
 		return nil, fmt.Errorf("failed to initialize steps: %w", err)
@@ -338,7 +342,7 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Handle routing based on the defined route type.
-		route(stepCtx, r, wrapped, h.publisher, h.httpClient, h.responseSteps, h.signNackResponse, &responseBody)
+		route(stepCtx, r, wrapped, h.publisher, h.httpClient, h.responseSteps, h.ackSigner, h.fanout, h.signNackResponse, &responseBody)
 	}
 }
 
@@ -414,16 +418,29 @@ var proxyFunc = func(ctx *model.StepContext, r *http.Request, w http.ResponseWri
 	proxy(ctx, r, w, httpClient, responseSteps, responseBody)
 }
 
+var fanoutFunc = func(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client, responseSteps []definition.ResponseStep, ackSigner *ackSignerStep, cfg FanoutConfig, signNack nackSignerFunc, responseBody *[]byte) {
+	fanout(ctx, r, w, httpClient, responseSteps, ackSigner, cfg, signNack, responseBody)
+}
+
 // nackSignerFunc is the function type used to sign NACK responses before they
 // are written to the wire. On Receiver modules h.signNackResponse is passed;
 // on Caller modules (no ackSigner) the function is a no-op.
 type nackSignerFunc func(ctx *model.StepContext, err error)
 
 // route handles request forwarding or message publishing based on the routing type.
-func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client, responseSteps []definition.ResponseStep, signNack nackSignerFunc, responseBody *[]byte) {
+func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client, responseSteps []definition.ResponseStep, ackSigner *ackSignerStep, fanoutCfg FanoutConfig, signNack nackSignerFunc, responseBody *[]byte) {
 	log.Debugf(ctx, "Routing to ctx.Route to %#v", ctx.Route)
 	switch ctx.Route.TargetType {
 	case "url":
+		// More than one target means the routing rule named several networks
+		// for this endpoint. Those cannot go through the reverse proxy, which
+		// streams a single upstream body straight to the client and so has
+		// nowhere to hold the second: they are called in parallel and merged.
+		if len(ctx.Route.URLs) > 1 {
+			log.Infof(ctx.Context, "Fanning request out to %d targets", len(ctx.Route.URLs))
+			fanoutFunc(ctx, r, w, httpClient, responseSteps, ackSigner, fanoutCfg, signNack, responseBody)
+			return
+		}
 		log.Infof(ctx.Context, "Forwarding request to URL: %s", ctx.Route.URL)
 		proxyFunc(ctx, r, w, httpClient, responseSteps, responseBody)
 		return
