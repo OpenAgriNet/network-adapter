@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -95,6 +96,13 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 			plan.BindingKey, action, strings.Join(plan.ServedActions(), ", ")))
 	}
 
+	// Which provider capability this request is serving, put on the context so
+	// the call layer can label its span and metrics without call() and
+	// attempt() growing two more parameters. StepContext embeds the Go
+	// context, so this travels the whole way down.
+	started := time.Now()
+	ctx.Context = withBinding(ctx.Context, plan.BindingKey)
+
 	beckn, err := decodeBody(ctx.Body)
 	if err != nil {
 		return err
@@ -154,7 +162,12 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	}
 
 	ctx.ResponseBody = becknResponse
-	log.Infof(ctx, "served %s in %d bytes", plan.BindingKey, len(becknResponse))
+	// Time as well as size. Subtracting the provider call's own duration --
+	// the line above this one -- leaves what the adapter spent on mapping,
+	// prerequisites and the response transform. That subtraction is how a slow
+	// request gets attributed to the provider or to us.
+	log.Infof(ctx, "served %s in %s, %d bytes",
+		plan.BindingKey, time.Since(started).Round(time.Millisecond), len(becknResponse))
 	return nil
 }
 

@@ -110,9 +110,25 @@ var defaultConfig = Config{
 	},
 }
 
+// Millisecond resolution, because a whole provider call fits inside one second.
+// zerolog's default is time.RFC3339, which truncates to the second -- and a
+// request that reaches the registry, fetches a mapping, calls the provider and
+// maps the answer back emits every one of those lines under a single
+// timestamp. Nothing can be measured by subtraction, so the log can say what
+// happened but never how long any of it took.
+//
+// Set in init rather than getLogger: the package-level logger is built here
+// before any config is read, so a line emitted during startup gets the same
+// resolution as one emitted while serving.
 func init() {
+	zerolog.TimeFieldFormat = timeFieldFormat
 	logger, _ = getLogger(defaultConfig)
 }
+
+// timeFieldFormat is RFC3339 with milliseconds. Not RFC3339Nano: nanoseconds
+// are noise at HTTP timescales, and it drops trailing zeros, so the field
+// changes width between lines and stops sorting as text.
+const timeFieldFormat = "2006-01-02T15:04:05.000Z07:00"
 
 func getLogger(config Config) (zerolog.Logger, error) {
 	var newLogger zerolog.Logger

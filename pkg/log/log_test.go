@@ -700,3 +700,46 @@ func TestValidateConfig(t *testing.T) {
 		})
 	}
 }
+
+// A whole provider call fits inside one second, so a timestamp truncated to
+// the second makes the log unmeasurable: the registry lookup, the mapping
+// fetch, the call itself and the mapped answer all share one value, and no two
+// lines can be subtracted to find where the time went.
+func TestTheTimestampHasMillisecondResolution(t *testing.T) {
+	logPath := setupLogger(t, InfoLevel)
+	Info(context.Background(), "a line worth timing")
+
+	var stamp string
+	for _, line := range readLogFile(t, logPath) {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		entry := parseLogLine(t, line)
+		if entry["message"] != "a line worth timing" {
+			continue
+		}
+		value, ok := entry["time"].(string)
+		if !ok {
+			t.Fatalf("log entry carries no time field: %v", entry)
+		}
+		stamp = value
+	}
+	if stamp == "" {
+		t.Fatal("the logged line was not found")
+	}
+
+	if _, err := time.Parse(timeFieldFormat, stamp); err != nil {
+		t.Fatalf("time %q does not parse as %q: %v", stamp, timeFieldFormat, err)
+	}
+
+	// Three fixed-width fractional digits. Not RFC3339Nano, which drops
+	// trailing zeros -- the field would change width between lines and stop
+	// sorting as text.
+	dot := strings.Index(stamp, ".")
+	if dot < 0 {
+		t.Fatalf("time = %q, which was truncated to the second", stamp)
+	}
+	if fraction := stamp[dot+1:]; len(fraction) < 4 {
+		t.Errorf("time = %q, want three fractional digits before the zone", stamp)
+	}
+}

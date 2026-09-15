@@ -41,7 +41,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 			break
 		}
 
-		body, err := s.attempt(ctx, auth, call, endpoint, mapped, timeout)
+		body, err := s.attempt(ctx, auth, call, endpoint, mapped, timeout, attempt, attempts)
 		if err == nil {
 			return body, nil
 		}
@@ -66,7 +66,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 }
 
 // attempt makes one upstream request.
-func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration) ([]byte, error) {
+func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration, attempt, attempts int) ([]byte, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -78,33 +78,69 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	if util.HasBody(method) {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// The span opens here rather than at the top of attempt: everything above
+	// is building a request, and timing that would report our own work as the
+	// provider's.
+	//
+	// It opens BEFORE authenticate, not after, for two reasons. An oauth2 or
+	// tokenQuery scheme dials a token endpoint from in there, and a caller
+	// waits on that exactly as it waits on the provider. And a credential that
+	// cannot be read fails there -- if the span started afterwards, the one
+	// failure an operator can actually fix would be the only one that emitted
+	// no telemetry at all.
+	//
+	// Seeded with the pre-credential endpoint: a query-scheme credential is
+	// added to the URL inside authenticate, so req.URL is not yet safe to
+	// record. The redacted one replaces it below.
+	_, observed := startProviderCall(attemptCtx, method, endpoint, attempt, attempts)
+
 	if err := s.authenticate(auth, req); err != nil {
 		// Already classified at the source. A missing environment variable is
 		// configuration and marked permanent there; an oauth2 exchange that
 		// could not reach the issuer is weather and is not, so the retry budget
 		// covers the token endpoint exactly as it covers the provider.
+		observed.done(ctx, 0, 0, err)
 		return nil, err
 	}
 
 	// The URL as it went on the wire, credential removed. At info because this
 	// is the line that answers "what did we ask, and what came back".
 	requested := s.redactString(req.URL.String())
+	observed.setURL(requested)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		observed.done(ctx, 0, 0, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, s.config.MaxResponseBytes+1))
 	if err != nil {
+		// Recorded at the status the provider gave: it answered, we could not
+		// read what it said.
+		observed.done(ctx, resp.StatusCode, 0, err)
 		return nil, fmt.Errorf("could not read the response: %w", err)
 	}
-	log.Infof(ctx, "%s %s -> %s, %d bytes", method, requested, resp.Status, len(body))
+
+	// Read once, before done() stops the span, so the duration on the log line
+	// and the one in the histogram are the same measurement rather than two
+	// that disagree by however long classification took.
+	//
+	// It covers the response read, not just the round trip. A provider that
+	// answers instantly and then dribbles a megabyte is slow, and a number
+	// that stopped at the headers would call it fast.
+	took := observed.elapsed()
+	log.Infof(ctx, "%s %s -> %s, %d bytes in %s",
+		method, requested, resp.Status, len(body), took.Round(time.Millisecond))
+
 	if int64(len(body)) > s.config.MaxResponseBytes {
 		// Asking again will not make the answer smaller.
-		return nil, util.DoNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
+		err := util.DoNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
+		observed.done(ctx, resp.StatusCode, len(body), err)
+		return nil, err
 	}
+	observed.done(ctx, resp.StatusCode, len(body), nil)
 	// Any 2xx, not 200 alone: 202, 204 and 201 are all legitimate answers. 3xx
 	// does not reach here, since the client follows redirects.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -114,8 +150,9 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		//
 		// Redacted on the way to the log too: a rejected request is often
 		// quoted back, credential and all.
-		log.Warnf(ctx, "provider returned %s for %s %s: %s",
-			resp.Status, method, requested, s.redactString(util.Explain(body)))
+		log.Warnf(ctx, "provider returned %s for %s %s in %s: %s",
+			resp.Status, method, requested, took.Round(time.Millisecond),
+			s.redactString(util.Explain(body)))
 
 		// A held token the provider has stopped accepting is dropped, so the
 		// next call exchanges a fresh one.
