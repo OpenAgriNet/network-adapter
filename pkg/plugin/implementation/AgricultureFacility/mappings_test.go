@@ -535,13 +535,64 @@ func TestShippedMappingDedupesAndOrdersByDistance(t *testing.T) {
 		}
 	}
 
-	// Distance must not survive into the answer in any form.
+	// The distance that ordered the answer is published with it, parsed into a
+	// {value, unit} pair. POCRA's own "165 Km" must not survive: a consumer
+	// reads a number and a unit, never a string it has to parse again.
 	raw, err := json.Marshal(answer)
 	if err != nil {
 		t.Fatalf("could not re-encode the answer: %v", err)
 	}
-	if strings.Contains(string(raw), "165 Km") || strings.Contains(string(raw), `"distance"`) {
-		t.Error("the answer carries a distance; the pack says query-relative distance is not a facility attribute")
+	if strings.Contains(string(raw), "165 Km") {
+		t.Error(`the answer carries POCRA's own "165 Km"; the distance must be published parsed`)
+	}
+
+	for i, want := range []float64{98, 165} {
+		distance, ok := dig(resources[i], "resourceAttributes", "distance").(map[string]any)
+		if !ok {
+			t.Fatalf("resource %d carries no distance; POCRA ranked it with one", i)
+		}
+		if distance["value"] != want {
+			t.Errorf("resource %d: distance.value = %v, want %v", i, distance["value"], want)
+		}
+		if distance["unit"] != "km" {
+			t.Errorf("resource %d: distance.unit = %v, want km -- POCRA's \"Km\" lowercased to the symbol",
+				i, distance["unit"])
+		}
+	}
+}
+
+// A distance POCRA wrote without a separator -- "12Km" -- must not publish
+// "12Km" as its own unit. $substringAfter returns the WHOLE string when the
+// separator is absent, which is how that would happen.
+func TestADistanceWithNoSeparatorStillPublishesAUnit(t *testing.T) {
+	body := pocraSingleWith("COMMON_PROVIDER_KVK", "kvk", "NOSPACE",
+		`{ "descriptor": {"code":"distance"}, "value": "12Km" }`)
+	answer := runAgainst(t, requestFor(t, "KrishiVigyanKendra"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want 1", len(resources))
+	}
+	distance, ok := dig(resources[0], "resourceAttributes", "distance").(map[string]any)
+	if !ok {
+		t.Fatalf("the facility carries no distance, but POCRA reported 12Km")
+	}
+	if distance["value"] != float64(12) || distance["unit"] != "km" {
+		t.Errorf("distance = %v, want {value: 12, unit: \"km\"}", distance)
+	}
+}
+
+// An item POCRA ranked with nothing readable carries no distance at all.
+// Zero would read as "at the search point", which is a different claim.
+func TestAPlaceholderDistancePublishesNoDistance(t *testing.T) {
+	body := pocraSingleWith("COMMON_PROVIDER_KVK", "kvk", "PLACEHOLDER",
+		`{ "descriptor": {"code":"distance"}, "value": "Unknown" }`)
+	answer := runAgainst(t, requestFor(t, "KrishiVigyanKendra"), body)
+	resources := answerResources(t, answer)
+	if len(resources) != 1 {
+		t.Fatalf("got %d resources, want 1", len(resources))
+	}
+	if distance := dig(resources[0], "resourceAttributes", "distance"); distance != nil {
+		t.Errorf("distance = %v, want omitted -- POCRA reported a placeholder", distance)
 	}
 }
 

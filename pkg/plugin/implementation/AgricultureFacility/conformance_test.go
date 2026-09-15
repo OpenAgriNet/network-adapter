@@ -239,6 +239,26 @@ var governedFields = map[string]bool{
 	"lastUpdatedAt":          true,
 }
 
+// ungovernedByDesign are fields the mapping publishes that the pack does NOT
+// declare -- a deviation recorded here rather than tolerated silently.
+//
+// distance is the only one. POCRA ranks by it and reports it as "165 Km", and a
+// facility search that cannot say how far away an answer is has lost the one
+// thing that ordered it. The pack says distance belongs in result metadata, and
+// Beckn v2 offers no per-resource metadata slot: commitmentAttributes is per
+// commitment, and a Resource is extensible only through resourceAttributes.
+//
+// Deliberately NOT added to governedFields: that list is cross-checked against
+// the pack by TestTheGovernedFieldListMatchesThePack, and pretending the pack
+// declares this would break the check that keeps the list honest. The day the
+// pack grows a distance property or a metadata container, this entry moves and
+// this comment goes away.
+//
+// A second entry here should be argued for, not appended.
+var ungovernedByDesign = map[string]bool{
+	"distance": true,
+}
+
 // Nothing this mapping emits may be a field the pack does not declare.
 //
 // The validator cannot check this. Neither AgricultureFacility nor
@@ -270,7 +290,7 @@ func TestTheAnswerInventsNoUngovernedField(t *testing.T) {
 					t.Fatalf("resource %s carries no resourceAttributes", id)
 				}
 				for field := range attributes {
-					if !governedFields[field] {
+					if !governedFields[field] && !ungovernedByDesign[field] {
 						t.Errorf("%s carries %q, which AgricultureFacility v0.1 does not declare. "+
 							"The top level sets no additionalProperties, so the validator will not "+
 							"catch it -- either the pack governs it and this list is stale, or the "+
@@ -443,18 +463,39 @@ func TestTheAnswerFollowsThePacksMappingRules(t *testing.T) {
 						"and POCRA confirms no facility coordinate", id)
 				}
 
-				// No price, no rating, no distance, under any spelling.
+				// No price and no rating, under any spelling.
 				encoded, err := json.Marshal(attributes)
 				if err != nil {
 					t.Fatalf("could not re-encode %s: %v", id, err)
 				}
-				for _, forbidden := range []string{"price", "rating", "distance",
-					"estimated_value", "minimum_value", "Km", " km"} {
+				for _, forbidden := range []string{"price", "rating",
+					"estimated_value", "minimum_value"} {
 					if strings.Contains(string(encoded), forbidden) {
-						t.Errorf("%s carries %q; query-relative distance, ranking and price are not "+
-							"facility attributes and belong in the Beckn offer or in result metadata",
-							id, forbidden)
+						t.Errorf("%s carries %q; ranking and price are not facility attributes "+
+							"and belong in the Beckn offer or in result metadata", id, forbidden)
 					}
+				}
+
+				// Distance IS carried, against the pack's rule and on purpose --
+				// see ungovernedByDesign. What the rule still buys: it is a
+				// parsed {value, unit} pair rather than POCRA's "165 Km", so a
+				// consumer reads a number and a unit instead of parsing a
+				// string, and nothing downstream can sort it as text.
+				if distance, present := attributes["distance"]; present {
+					pair, ok := distance.(map[string]any)
+					if !ok {
+						t.Fatalf("%s: distance = %v, want a {value, unit} object", id, distance)
+					}
+					if _, ok := pair["value"].(float64); !ok {
+						t.Errorf("%s: distance.value = %v, want a number", id, pair["value"])
+					}
+					if pair["unit"] != "km" {
+						t.Errorf("%s: distance.unit = %v, want the symbol km", id, pair["unit"])
+					}
+				}
+				if strings.Contains(string(encoded), "Km") {
+					t.Errorf("%s carries POCRA's own %q; the distance must be published parsed, "+
+						"not as the string POCRA sent", id, "Km")
 				}
 			}
 		})

@@ -179,9 +179,33 @@ administrative part in `extendedAddress` made locality unsearchable.
 `address.region` is not read for it, since that field carries a revenue
 division or `"Unknown"`.
 
-Distance, which POCRA does supply, is used to order the resources nearest-first
-and then dropped: the pack states that query-relative distance is not an
-intrinsic facility attribute and belongs in result metadata.
+## Distance, and the one place this deviates from the pack
+
+POCRA reports distance as `"165 Km"` and ranks by it. The answer orders the
+resources nearest-first and publishes the distance on each one, parsed:
+
+```json
+"distance": { "value": 165, "unit": "km" }
+```
+
+This deviates from the pack's mapping rules deliberately, and the deviation is
+recorded in `ungovernedByDesign` in `conformance_test.go` rather than left to be
+discovered. The pack says query-relative distance is not an intrinsic facility
+attribute and belongs in result metadata; it declares no `distance` property, so
+this publishes an ungoverned field under a governed schema, and it validates
+only because `AgricultureFacility` does not close the object. Beckn v2 offers no
+per-resource metadata slot to use instead — `commitmentAttributes` is per
+commitment, and a Resource is extensible only through `resourceAttributes` —
+and a facility search that cannot say how far away an answer is has lost the one
+thing that ordered it. Move it the moment the pack grows either a `distance`
+property or a result-metadata container.
+
+The value is query-relative: it describes the stop the search named, not the
+facility, so it must not be cached as though it were a facility attribute. An
+item POCRA ranked with nothing readable carries no `distance` at all rather than
+zero, which would read as "at the search point". The unit is lowercased to the
+symbol `km`; `capacity` keeps POCRA's own `"tons"`, since that one is a unit
+conversion rather than a case change.
 
 `"Unknown"`, `"N/A"`, `"000000"` and `"-"` are treated as absent wherever POCRA
 sends them, so a field is omitted rather than published as a placeholder. The

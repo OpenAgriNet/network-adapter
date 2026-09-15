@@ -269,6 +269,23 @@ response: |
         and $value != "N/A" and $value != "000000" and $value != "-") ? $value
     };
 
+    /* The number POCRA wrote at the front of a tagged measurement, as text.
+       Matched on the WHOLE string rather than on what precedes the first
+       space: POCRA writes "165 Km" but also "12Km", and splitting on the space
+       read the second as unparseable and dropped a ranking POCRA did supply.
+
+       $match() throws T0410 on a non-string, so $clean and the $type check have
+       to come first rather than fold into the regex -- $clean also strips the
+       placeholders POCRA writes ("Unknown", "N/A", "000000", "-") before any of
+       this runs. */
+    $leadingNumber := function($tagged) {
+      (
+        $text := $clean($tagged);
+        ($exists($text) and $type($text) = "string")
+          ? $match($text, /^[0-9]+(\.[0-9]+)?/)[0].match
+      )
+    };
+
     /* $number($substringBefore(...)) THROWS on anything it cannot parse, and
        that throw is not local: it propagates out of the whole response
        mapping, so one placeholder on one item's distance or capacity failed
@@ -276,22 +293,31 @@ response: |
        it -- $exists($number(...)) evaluates its argument first, so the throw
        fires before $exists is ever reached.
 
-       $clean strips the placeholders this file already knows POCRA writes
-       ("Unknown", "N/A", "000000", "-"); $type/$match then confirms what is
-       left actually looks like "<number><space><unit>" before $number ever
-       sees it. Same shape as $priced in agmarknet/mandi-price.select.yaml,
-       and for the same reason: $match() itself throws T0410 on a non-string,
-       so the string check has to come first rather than be folded into the
-       regex.
+       $leadingNumber above does the guarding: it strips POCRA's placeholders,
+       confirms what is left is a string, and hands back a leading number only
+       when the text actually starts with one. Same shape as $priced in
+       agmarknet/mandi-price.select.yaml, and for the same reason.
 
        Returns nothing when the value cannot be read as a number -- absent,
        not zero, so a caller cannot mistake "not reported" for "reported as
        none". */
     $numericPrefix := function($tagged) {
       (
-        $head := $clean($substringBefore($tagged, " "));
-        $exists($head) and $type($head) = "string" and $match($head, /^[0-9]+(\.[0-9]+)?$/)
-          ? $number($head)
+        $head := $leadingNumber($tagged);
+        $exists($head) ? $number($head)
+      )
+    };
+
+    /* The unit is whatever follows that number. Nothing when the value did not
+       parse, and nothing when the number was the whole string, so a caller is
+       never handed a unit that is really a digit. */
+    $unitSuffix := function($tagged) {
+      (
+        $head := $leadingNumber($tagged);
+        $exists($head) ? (
+          $rest := $trim($substring($clean($tagged), $length($head)));
+          $rest != "" ? $rest
+        )
       )
     };
 
@@ -352,20 +378,50 @@ response: |
     $unique := $each($wanted{ item.id: $ }, function($grouped) { $grouped[0] });
 
     /* POCRA ranks by distance and reports it only as a string with a unit --
-       "165 Km". It is parsed to sort by and then dropped: the pack states that
-       query-relative distance is not an intrinsic facility attribute, and
-       belongs in result metadata rather than on the facility.
+       "165 Km". It is read twice over: as a number to order the answer by, and
+       as the {value, unit} object published on each facility.
+
+       A DELIBERATE DEVIATION, recorded here rather than buried. The pack's
+       mapping rules say query-relative distance is not an intrinsic facility
+       attribute and belongs in result metadata, and the pack defines no
+       distance property -- so this publishes an ungoverned field under a
+       governed schema, and validates only because AgricultureFacility does not
+       close the object. It is carried anyway because a facility search is not
+       useful without how far away each answer is, and Beckn v2 offers no
+       per-resource metadata slot to put it in instead: commitmentAttributes is
+       per commitment, not per resource, and a Resource is extensible only
+       through resourceAttributes. Move it the moment the pack grows either a
+       distance property or a result-metadata container.
+
+       What it means, for anyone caching this answer: the number is relative to
+       the stop THIS search named. It is true of the query, not of the facility,
+       so it must not be stored as though it described the facility.
 
        Sorting the strings would put "165 Km" before "98 Km", which nothing
-       downstream could detect. An item with no distance sorts last, which is
-       what an absent ranking should mean. */
+       downstream could detect, so the numeric value is what the sort reads. An
+       item with no distance sorts last, which is what an absent ranking should
+       mean.
+
+       The unit is lowercased -- "Km" becomes the symbol "km" -- and is read
+       only when there was a separator to read it after: $substringAfter returns
+       the WHOLE string when the separator is absent, so "12Km" would otherwise
+       parse to a value of 12 with "12Km" as its unit. */
     $reading := function($item) {
       (
         /* A duplicated distance tag makes .value a sequence, and
            $numericPrefix's $substringBefore throws on anything but a string
            before the $type guard inside it is ever reached. Take the first. */
         $values := [$item.tags.list[descriptor.code = "distance"].value];
-        $numericPrefix($values[0])
+        $reported := $values[0];
+        $value := $numericPrefix($reported);
+        $unit := $unitSuffix($reported);
+        $exists($value) ? {
+          /* POCRA reports every distance in kilometres and writes the unit on
+             every one of them; "km" is the fallback for a value that parsed
+             with nothing after it, so the number is never published bare. */
+          "value": $value,
+          "unit": $exists($unit) ? $lowercase($unit) : "km"
+        }
       )
     };
     $sorted := $map($unique, function($entry) {
@@ -374,10 +430,13 @@ response: |
         {
           "facility": $entry.item,
           "type": $entry.type,
-          "distance": $exists($distance) ? $distance : 1e9
+          "distance": $distance,
+          /* The sort key, separate from the published object: an item POCRA
+             ranked nothing for sorts last rather than nearest. */
+          "order": $exists($distance) ? $distance.value : 1e9
         }
       )
-    })^(distance);
+    })^(order);
 
     /* POCRA reports a warehouse's capacity as one string with a unit --
        "500 tons" -- and reports it for no other facility type. The pack has a
@@ -399,9 +458,15 @@ response: |
            point substringAfter on the same string that just matched the
            numeric-prefix regex cannot itself throw. */
         $value := $numericPrefix($reported);
-        $exists($value) ? {
+        /* POCRA's own word for the unit, not normalised: "tons" is not
+           "metric tonne" and rewriting it would be an unverified conversion.
+           FacilityCapacity REQUIRES unit, so a capacity with nothing after the
+           number is published as no capacity at all rather than as a unitless
+           one. */
+        $unit := $unitSuffix($reported);
+        ($exists($value) and $exists($unit)) ? {
           "value": $value,
-          "unit": $substringAfter($reported, " ")
+          "unit": $unit
         }
       )
     };
@@ -526,7 +591,7 @@ response: |
       ]
     };
 
-    $attributes := function($item, $facilityType) {
+    $attributes := function($item, $facilityType, $distance) {
       {
         "@context": $ctx,
         "@type": "openagrinet:AgricultureFacility",
@@ -548,6 +613,11 @@ response: |
            a schema failure rather than a cosmetic one. */
         "services": [$lookup($serviceList, $facilityType)],
         "capacity": $capacity($item),
+        /* Query-relative, and ungoverned by the pack -- see $reading above for
+           why it is here and what has to happen for it to move. Absent when
+           POCRA ranked the item with nothing readable, rather than zeroed:
+           0 km would read as "at the search point". */
+        "distance": $distance,
         /* sourceUri rather than website: contact.webUrl is POCRA's own site
            repeated on every item, so it identifies the source and not the
            facility. */
@@ -622,7 +692,7 @@ response: |
                      assert something nobody verified. services and the wider
                      subjectCategories ARE emitted, because those follow from
                      the governed facility type rather than from the item. */
-                  "resourceAttributes": $attributes($entry.facility, $entry.type)
+                  "resourceAttributes": $attributes($entry.facility, $entry.type, $entry.distance)
                 }
               })]
             }
