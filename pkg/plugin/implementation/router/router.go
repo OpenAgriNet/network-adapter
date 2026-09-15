@@ -45,15 +45,7 @@ type target struct {
 	ExcludeAction bool     `yaml:"excludeAction,omitempty"` // For "url" type to exclude appending action to URL path
 }
 
-// urlList returns the rule's "url" targets as one slice whichever of the two
-// spellings the config used. "urls" wins when both are present, so widening a
-// rule to several networks does not require deleting the original line.
-//
-// THE LENGTH OF THIS SLICE IS THE FAN-OUT SWITCH. One entry is forwarded by the
-// reverse proxy exactly as before; more than one makes the handler call every
-// target in parallel and merge the replies. There is deliberately no separate
-// `enabled` flag: a second URL and a flag saying to use it are two things that
-// have to be kept in agreement, and a list cannot disagree with itself.
+// urlList returns the target URLs configured in the rule as a string slice.
 func (t target) urlList() []string {
 	if len(t.URLs) > 0 {
 		return t.URLs
@@ -412,18 +404,7 @@ func handleProtocolMapping(route *model.Route, npURI, endpoint, rawQuery string)
 	return &model.Route{TargetType: targetTypeURL, URL: targetURL}, nil
 }
 
-// withRawQuery returns a copy of a URL-type route with the inbound query string
-// applied to every target it carries.
-//
-// The stored route is shared by every request that matches the rule, so the
-// URLs are CLONED rather than written to: setting RawQuery in place would leak
-// one caller's query string onto the next request through the same rule.
-//
-// The inbound query is MERGED over whatever the configured target already
-// carried, rather than replacing it. A target may be configured with a query of
-// its own -- "http://maha:9201?network=maha" -- and overwriting would drop it on
-// every request that arrived with any query at all, while a request with none
-// kept it. The caller wins on a key they both set.
+// withRawQuery returns a copy of a URL-type route with the inbound query string applied to all targets.
 func withRawQuery(route *model.Route, rawQuery string) *model.Route {
 	inbound, err := url.ParseQuery(rawQuery)
 	if err != nil {

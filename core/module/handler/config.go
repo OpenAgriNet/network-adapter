@@ -160,37 +160,16 @@ type HttpClientConfig struct {
 	// for a server's response headers after fully writing the request.
 	ResponseHeaderTimeout time.Duration `yaml:"responseHeaderTimeout"`
 
-	// Timeout, if non-zero, bounds the WHOLE round trip of every outbound
-	// request -- dial, write, response headers, and body read.
-	//
-	// ResponseHeaderTimeout above is not a substitute: it bounds only the wait
-	// for headers, so an upstream that answers promptly and then stalls
-	// mid-body is never cut off and holds the connection and its goroutine
-	// indefinitely. Left zero this keeps Go's default of no timeout at all.
+	// Timeout specifies the maximum duration for an outbound request round trip.
 	Timeout time.Duration `yaml:"timeout"`
 }
 
-// FanoutConfig bounds a fan-out, which is what a routing rule naming more than
-// one target produces.
+// FanoutConfig holds concurrency and timeout limits for multi-target routing.
 type FanoutConfig struct {
-	// MaxConcurrency caps how many targets are called at once. The number of
-	// targets is whatever the routing rule lists, so without a cap every
-	// in-flight request multiplies by it -- in goroutines, in sockets, and in
-	// response bodies held in memory for the merge. Zero means
-	// defaultFanoutMaxConcurrency.
+	// MaxConcurrency caps the number of targets called simultaneously.
 	MaxConcurrency int `yaml:"maxConcurrency"`
 
-	// Timeout is the budget for the fan-out AS A WHOLE, not per target.
-	//
-	// Per-target timeouts do not compose: with MaxConcurrency 4 and 20 targets
-	// a 10s per-target bound still allows 5 waves of 10s. One shared deadline
-	// bounds the answer regardless of how many targets there are or how they
-	// are scheduled. When it expires the caller is answered with whatever
-	// arrived in time and the rest are reported degraded.
-	//
-	// IT MUST STAY BELOW THE SERVER'S OWN WRITE TIMEOUT. A fan-out that
-	// outlives it produces a reset connection instead of the merged partial
-	// answer this is designed to return. Zero means defaultFanoutTimeout.
+	// Timeout specifies the overall execution budget for the entire fan-out.
 	Timeout time.Duration `yaml:"timeout"`
 }
 
@@ -203,8 +182,7 @@ type Config struct {
 	Role             model.Role
 	SubscriberID     string           `yaml:"subscriberId"`
 	HttpClientConfig HttpClientConfig `yaml:"httpClientConfig"`
-	// Fanout bounds routing rules that name more than one target. Read only on
-	// that path; a deployment with no multi-target rule never consults it.
+	// Fanout configures execution limits for multi-target routing rules.
 	Fanout FanoutConfig `yaml:"fanout"`
 	// BasePath is the HTTP path prefix at which this module is mounted (e.g.
 	// "/bap/receiver/"). Set by the module layer from module.Config.Path; not

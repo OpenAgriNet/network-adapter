@@ -69,8 +69,7 @@ type stdHandler struct {
 	basePath         string
 	httpClient       *http.Client
 	moduleName       string
-	// fanout bounds routing rules naming more than one target. Read only on
-	// that path.
+	// fanout bounds routing rules naming more than one target.
 	fanout FanoutConfig
 }
 
@@ -94,15 +93,6 @@ func newHTTPClient(cfg *HttpClientConfig, wrapper definition.TransportWrapper) *
 		transport.ResponseHeaderTimeout = cfg.ResponseHeaderTimeout
 	}
 
-	// Client.Timeout bounds the whole round trip including the body read, which
-	// is the only thing that stops an upstream stalling mid-body from holding a
-	// goroutine and a connection forever.
-	//
-	// IT IS NOT ENOUGH ON ITS OWN. Client.Timeout is a field on http.Client, and
-	// the forwarding path does not use the Client: proxy() builds an
-	// httputil.ReverseProxy over httpClient.Transport, which never sees it. So
-	// the same bound is also applied as a RoundTripper below, where both paths
-	// go through it.
 	timeout := cfg.Timeout
 
 	var finalTransport http.RoundTripper = transport
@@ -110,21 +100,13 @@ func newHTTPClient(cfg *HttpClientConfig, wrapper definition.TransportWrapper) *
 		log.Debugf(context.Background(), "Applying custom transport wrapper")
 		finalTransport = wrapper.Wrap(transport)
 	}
-	// Outermost, so the bound covers whatever the wrapper does as well.
 	if timeout > 0 {
 		finalTransport = &timeoutTransport{base: finalTransport, timeout: timeout}
 	}
 	return &http.Client{Transport: finalTransport, Timeout: timeout}
 }
 
-// timeoutTransport gives every request a deadline that outlives RoundTrip and
-// expires only once the response body is closed.
-//
-// This is what http.Client.Timeout does internally, reproduced at the transport
-// so that the ReverseProxy path gets it too -- that path holds only a
-// RoundTripper, so a Client field cannot reach it. Cancelling when RoundTrip
-// returns would be wrong: it returns as soon as the headers are read, and the
-// stall this exists to cut off happens while the body is being read afterwards.
+// timeoutTransport applies a deadline to requests including the response body read.
 type timeoutTransport struct {
 	base    http.RoundTripper
 	timeout time.Duration
@@ -141,8 +123,7 @@ func (t *timeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-// cancelOnClose releases a request's context once its body is closed, which is
-// the point at which the round trip is genuinely over.
+// cancelOnClose releases the request context when the response body is closed.
 type cancelOnClose struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -432,10 +413,6 @@ func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb de
 	log.Debugf(ctx, "Routing to ctx.Route to %#v", ctx.Route)
 	switch ctx.Route.TargetType {
 	case "url":
-		// More than one target means the routing rule named several networks
-		// for this endpoint. Those cannot go through the reverse proxy, which
-		// streams a single upstream body straight to the client and so has
-		// nowhere to hold the second: they are called in parallel and merged.
 		if len(ctx.Route.URLs) > 1 {
 			log.Infof(ctx.Context, "Fanning request out to %d targets", len(ctx.Route.URLs))
 			fanoutFunc(ctx, r, w, httpClient, responseSteps, ackSigner, fanoutCfg, signNack, responseBody)
