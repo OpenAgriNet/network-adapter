@@ -39,9 +39,29 @@ type routingRule struct {
 
 // Target contains destination-specific details.
 type target struct {
-	URL           string `yaml:"url,omitempty"`           // URL for "url" or gateway endpoint for "bpp"/"bap"
-	PublisherID   string `yaml:"publisherId,omitempty"`   // For "msgq" type
-	ExcludeAction bool   `yaml:"excludeAction,omitempty"` // For "url" type to exclude appending action to URL path
+	URL           string   `yaml:"url,omitempty"`           // URL for "url" or gateway endpoint for "bpp"/"bap"
+	URLs          []string `yaml:"urls,omitempty"`          // Fan-out targets for "url"
+	PublisherID   string   `yaml:"publisherId,omitempty"`   // For "msgq" type
+	ExcludeAction bool     `yaml:"excludeAction,omitempty"` // For "url" type to exclude appending action to URL path
+}
+
+// urlList returns the rule's "url" targets as one slice whichever of the two
+// spellings the config used. "urls" wins when both are present, so widening a
+// rule to several networks does not require deleting the original line.
+//
+// THE LENGTH OF THIS SLICE IS THE FAN-OUT SWITCH. One entry is forwarded by the
+// reverse proxy exactly as before; more than one makes the handler call every
+// target in parallel and merge the replies. There is deliberately no separate
+// `enabled` flag: a second URL and a flag saying to use it are two things that
+// have to be kept in agreement, and a list cannot disagree with itself.
+func (t target) urlList() []string {
+	if len(t.URLs) > 0 {
+		return t.URLs
+	}
+	if t.URL == "" {
+		return nil
+	}
+	return []string{t.URL}
 }
 
 // TargetType defines possible target destinations.
@@ -124,16 +144,27 @@ func (r *Router) loadRules(configPath string) error {
 					PublisherID: rule.Target.PublisherID,
 				}
 			case targetTypeURL:
-				parsedURL, err := url.Parse(rule.Target.URL)
-				if err != nil {
-					return fmt.Errorf("invalid URL in rule: %w", err)
+				raw := rule.Target.urlList()
+				parsed := make([]*url.URL, 0, len(raw))
+				for _, t := range raw {
+					parsedURL, err := url.Parse(t)
+					if err != nil {
+						return fmt.Errorf("invalid URL in rule: %w", err)
+					}
+					if !rule.Target.ExcludeAction {
+						parsedURL.Path = joinPath(parsedURL, endpoint)
+					}
+					parsed = append(parsed, parsedURL)
 				}
-				if !rule.Target.ExcludeAction {
-					parsedURL.Path = joinPath(parsedURL, endpoint)
-				}
+				// URL is set on both paths so every existing reader of it keeps
+				// working untouched. URLs is populated only when there is more
+				// than one target, which is what the handler branches on.
 				route = &model.Route{
 					TargetType: rule.TargetType,
-					URL:        parsedURL,
+					URL:        parsed[0],
+				}
+				if len(parsed) > 1 {
+					route.URLs = parsed
 				}
 			case targetTypeBPP, targetTypeBAP, targetTypeReceiver, targetTypeSender:
 				var parsedURL *url.URL
@@ -178,11 +209,17 @@ func validateRules(rules []routingRule) error {
 		// Validate based on TargetType
 		switch rule.TargetType {
 		case targetTypeURL:
-			if rule.Target.URL == "" {
-				return fmt.Errorf("invalid rule: url is required for targetType 'url'")
+			targets := rule.Target.urlList()
+			if len(targets) == 0 {
+				return fmt.Errorf("invalid rule: url or urls is required for targetType 'url'")
 			}
-			if _, err := url.Parse(rule.Target.URL); err != nil {
-				return fmt.Errorf("invalid URL - %s: %w", rule.Target.URL, err)
+			for _, t := range targets {
+				if strings.TrimSpace(t) == "" {
+					return fmt.Errorf("invalid rule: urls holds an empty entry for targetType 'url'")
+				}
+				if _, err := url.Parse(t); err != nil {
+					return fmt.Errorf("invalid URL - %s: %w", t, err)
+				}
 			}
 		case targetTypePublisher:
 			if rule.Target.PublisherID == "" {
@@ -288,9 +325,7 @@ func (r *Router) Route(ctx context.Context, reqURL *url.URL, body []byte) (*mode
 		// Copy inbound query params onto a URL clone so the upstream receives them.
 		// The baked-in URL has no RawQuery of its own.
 		if rawQuery != "" && route.URL != nil {
-			clone := *route.URL
-			clone.RawQuery = rawQuery
-			return &model.Route{TargetType: targetTypeURL, URL: &clone}, nil
+			return withRawQuery(route, rawQuery), nil
 		}
 	}
 	return route, nil
@@ -327,9 +362,7 @@ func (r *Router) routeBodyless(endpoint, rawQuery string) (*model.Route, error) 
 		// Publisher routes address a queue by ID — they carry no URL, so
 		// RawQuery does not apply. Only clone for URL-type targets.
 		if rawQuery != "" && route.TargetType == targetTypeURL && route.URL != nil {
-			clone := *route.URL
-			clone.RawQuery = rawQuery
-			return &model.Route{TargetType: targetTypeURL, URL: &clone}, nil
+			return withRawQuery(route, rawQuery), nil
 		}
 		return route, nil
 	}
@@ -377,6 +410,48 @@ func handleProtocolMapping(route *model.Route, npURI, endpoint, rawQuery string)
 		targetURL.RawQuery = rawQuery
 	}
 	return &model.Route{TargetType: targetTypeURL, URL: targetURL}, nil
+}
+
+// withRawQuery returns a copy of a URL-type route with the inbound query string
+// applied to every target it carries.
+//
+// The stored route is shared by every request that matches the rule, so the
+// URLs are CLONED rather than written to: setting RawQuery in place would leak
+// one caller's query string onto the next request through the same rule.
+//
+// The inbound query is MERGED over whatever the configured target already
+// carried, rather than replacing it. A target may be configured with a query of
+// its own -- "http://maha:9201?network=maha" -- and overwriting would drop it on
+// every request that arrived with any query at all, while a request with none
+// kept it. The caller wins on a key they both set.
+func withRawQuery(route *model.Route, rawQuery string) *model.Route {
+	inbound, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		// Unparseable: pass it through verbatim rather than silently dropping
+		// it. The upstream is the one entitled to reject its own query string.
+		inbound = nil
+	}
+
+	out := &model.Route{TargetType: targetTypeURL, URL: mergeQuery(route.URL, rawQuery, inbound)}
+	for _, u := range route.URLs {
+		out.URLs = append(out.URLs, mergeQuery(u, rawQuery, inbound))
+	}
+	return out
+}
+
+// mergeQuery clones one target with the inbound query laid over its own.
+func mergeQuery(u *url.URL, rawQuery string, inbound url.Values) *url.URL {
+	clone := *u
+	if inbound == nil || clone.RawQuery == "" {
+		clone.RawQuery = rawQuery
+		return &clone
+	}
+	merged := clone.Query()
+	for key, values := range inbound {
+		merged[key] = values
+	}
+	clone.RawQuery = merged.Encode()
+	return &clone
 }
 
 func joinPath(u *url.URL, endpoint string) string {
