@@ -170,6 +170,30 @@ type HttpClientConfig struct {
 	Timeout time.Duration `yaml:"timeout"`
 }
 
+// FanoutConfig bounds a fan-out, which is what a routing rule naming more than
+// one target produces.
+type FanoutConfig struct {
+	// MaxConcurrency caps how many targets are called at once. The number of
+	// targets is whatever the routing rule lists, so without a cap every
+	// in-flight request multiplies by it -- in goroutines, in sockets, and in
+	// response bodies held in memory for the merge. Zero means
+	// defaultFanoutMaxConcurrency.
+	MaxConcurrency int `yaml:"maxConcurrency"`
+
+	// Timeout is the budget for the fan-out AS A WHOLE, not per target.
+	//
+	// Per-target timeouts do not compose: with MaxConcurrency 4 and 20 targets
+	// a 10s per-target bound still allows 5 waves of 10s. One shared deadline
+	// bounds the answer regardless of how many targets there are or how they
+	// are scheduled. When it expires the caller is answered with whatever
+	// arrived in time and the rest are reported degraded.
+	//
+	// IT MUST STAY BELOW THE SERVER'S OWN WRITE TIMEOUT. A fan-out that
+	// outlives it produces a reset connection instead of the merged partial
+	// answer this is designed to return. Zero means defaultFanoutTimeout.
+	Timeout time.Duration `yaml:"timeout"`
+}
+
 // Config holds the configuration for request processing handlers.
 type Config struct {
 	Plugins          PluginCfg `yaml:"plugins"`
@@ -179,6 +203,9 @@ type Config struct {
 	Role             model.Role
 	SubscriberID     string           `yaml:"subscriberId"`
 	HttpClientConfig HttpClientConfig `yaml:"httpClientConfig"`
+	// Fanout bounds routing rules that name more than one target. Read only on
+	// that path; a deployment with no multi-target rule never consults it.
+	Fanout FanoutConfig `yaml:"fanout"`
 	// BasePath is the HTTP path prefix at which this module is mounted (e.g.
 	// "/bap/receiver/"). Set by the module layer from module.Config.Path; not
 	// read from YAML. Steps use it to strip the prefix before calling plugins.
