@@ -84,7 +84,7 @@ response: |
         }) ];
 
         {
-          "id": "res:agmarknet:market:" & $string($row.marketId),
+          "id": "resource:mandi-price:market:" & $string($row.marketId),
           "descriptor": {
             "code": $string($row.marketId),
             "name": $trim($row.marketName),
@@ -92,7 +92,7 @@ response: |
             "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for " & $trim($row.marketName) & ". The result uses the same MandiPrice type in Direct information mode."
           },
           "resourceAttributes": {
-            "@context": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/MandiPrice/v0.1/context.jsonld",
+            "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
             "@type": "openagrinet:MandiPrice",
             "informationMode": "OnDemand",
             "subjectCategories": [
@@ -139,7 +139,7 @@ response: |
       "message": {
         "catalogs": [
           {
-            "id": _local.participantId & "/mandi-" & _local.catalogSlug,
+            "id": "catalog:mandi-price:" & _local.catalogSlug,
             "isActive": true,
             "descriptor": {
               "code": "AGMARKNET-" & _local.catalogSlug,
@@ -164,14 +164,14 @@ response: |
         ],
         "publishDirectives": [
           {
-            "catalogId": _local.participantId & "/mandi-" & _local.catalogSlug,
+            "catalogId": "catalog:mandi-price:" & _local.catalogSlug,
             "catalogType": "REGULAR",
             "updateMode": "MERGE",
             "visibleTo": [
               _local.networkId
             ],
             "schemaTypes": [
-              "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/MandiPrice/v0.1/context.jsonld"
+              "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
             ]
           }
         ]
