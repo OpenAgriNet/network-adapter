@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -447,6 +448,70 @@ func TestNewHTTPClient(t *testing.T) {
 				t.Errorf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, tt.expected.responseHeaderTimeout)
 			}
 		})
+	}
+}
+
+// TestNewHTTPClientZeroTimeoutLeavesTransportUnwrapped covers the
+// zero-Timeout path: cfg.Timeout == 0 must not wrap the transport at all, so
+// every existing test above (all built on the assumption that
+// client.Transport is a bare *http.Transport) keeps working.
+func TestNewHTTPClientZeroTimeoutLeavesTransportUnwrapped(t *testing.T) {
+	client := newHTTPClient(&HttpClientConfig{}, nil)
+	if _, ok := client.Transport.(*http.Transport); !ok {
+		t.Fatalf("client.Transport = %T, want *http.Transport when no Timeout is configured", client.Transport)
+	}
+}
+
+// TestNewHTTPClientPositiveTimeoutWrapsTransport covers the other side: a
+// configured Timeout must wrap the transport in *timeoutTransport rather than
+// leaving it bare.
+func TestNewHTTPClientPositiveTimeoutWrapsTransport(t *testing.T) {
+	client := newHTTPClient(&HttpClientConfig{Timeout: time.Second}, nil)
+	if _, ok := client.Transport.(*timeoutTransport); !ok {
+		t.Fatalf("client.Transport = %T, want *timeoutTransport when Timeout is configured", client.Transport)
+	}
+}
+
+// TestTimeoutTransportCutsOffAResponseThatStallsMidBody is the actual
+// behavior newHTTPClient's Timeout config exists for: an upstream that
+// answers headers promptly, then stalls before finishing the body, must not
+// hang the caller past the configured timeout.
+func TestTimeoutTransportCutsOffAResponseThatStallsMidBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // held open until the client's own timeout cancels it
+	}))
+	defer srv.Close()
+
+	client := newHTTPClient(&HttpClientConfig{Timeout: 100 * time.Millisecond}, nil)
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("client.Get() error = %v, want the headers to arrive before the timeout", err)
+	}
+	defer resp.Body.Close()
+
+	_, err = io.ReadAll(resp.Body)
+	if err == nil {
+		t.Fatal("io.ReadAll() on a stalled body = nil error, want the configured timeout to cut it off")
+	}
+}
+
+// TestCancelOnCloseSurvivesARepeatedClose guards the simplification that
+// dropped cancelOnClose's sync.Once: a context.CancelFunc is documented safe
+// to call more than once, so calling Close twice must not panic.
+func TestCancelOnCloseSurvivesARepeatedClose(t *testing.T) {
+	_, cancel := context.WithCancel(context.Background())
+	c := &cancelOnClose{ReadCloser: io.NopCloser(strings.NewReader("")), cancel: cancel}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("first Close() error = %v, want nil", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close() error = %v, want nil (CancelFunc must tolerate a repeat call)", err)
 	}
 }
 

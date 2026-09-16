@@ -126,16 +126,17 @@ func (t *timeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-// cancelOnClose releases the request context when the response body is closed.
+// cancelOnClose releases the request context when the response body is
+// closed. No guard against a repeated Close is needed: a context.CancelFunc
+// is itself documented safe to call more than once.
 type cancelOnClose struct {
 	io.ReadCloser
 	cancel context.CancelFunc
-	once   sync.Once
 }
 
 func (c *cancelOnClose) Close() error {
 	err := c.ReadCloser.Close()
-	c.once.Do(c.cancel)
+	c.cancel()
 	return err
 }
 
