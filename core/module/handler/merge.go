@@ -47,7 +47,7 @@ func itemsOf(body []byte, fieldPath string) ([]json.RawMessage, bool, error) {
 // never synthesizes a context of its own. A 200 carrying a Beckn error
 // envelope is kept (not a transport failure) but never donates: it has no
 // fieldPath, so hasItems is false regardless of target order.
-func mergeResponses(kept []keptResponse, fieldPath string, limit int, hasLimit bool) ([]byte, error) {
+func mergeResponses(kept []keptResponse, fieldPath string) ([]byte, error) {
 	donor := -1
 	for i, k := range kept {
 		if k.hasItems {
@@ -79,10 +79,7 @@ func mergeResponses(kept []keptResponse, fieldPath string, limit int, hasLimit b
 	for _, k := range kept {
 		perNetwork = append(perNetwork, k.items)
 	}
-	merged := dedupe(interleave(perNetwork))
-	if hasLimit && len(merged) > limit {
-		merged = merged[:limit]
-	}
+	merged := interleave(perNetwork)
 	if merged == nil {
 		merged = []json.RawMessage{}
 	}
@@ -167,33 +164,4 @@ func interleave(perNetwork [][]json.RawMessage) []json.RawMessage {
 		}
 	}
 	return out
-}
-
-// dedupe drops repeats of an item id, keeping the first occurrence. An item
-// with no readable id is kept rather than dropped: its absence means unknown,
-// not duplicate.
-func dedupe(items []json.RawMessage) []json.RawMessage {
-	seen := make(map[string]bool, len(items))
-	out := items[:0]
-	for _, item := range items {
-		id := itemID(item)
-		if id == "" || !seen[id] {
-			if id != "" {
-				seen[id] = true
-			}
-			out = append(out, item)
-		}
-	}
-	return out
-}
-
-// itemID reads an item's id without decoding the rest of it.
-func itemID(item json.RawMessage) string {
-	var fields struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(item, &fields); err != nil {
-		return ""
-	}
-	return fields.ID
 }

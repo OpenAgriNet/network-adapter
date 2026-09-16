@@ -3,7 +3,6 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -59,53 +58,6 @@ func sameIDs(got, want []string) bool {
 		}
 	}
 	return true
-}
-
-func TestFanoutQueryNonZeroOffsetIsRefused(t *testing.T) {
-	_, _, _, err := fanoutQuery(url.Values{"offset": {"20"}, "limit": {"10"}})
-	if err == nil {
-		t.Fatal("fanoutQuery() with offset=20 = nil error, want a refusal")
-	}
-	var coded *model.CodedErr
-	if !asCodedErr(err, &coded) {
-		t.Fatalf("fanoutQuery() error = %T, want a *model.CodedErr so it NACKs as a bad request", err)
-	}
-}
-
-func TestFanoutQueryZeroOffsetIsStrippedAndLimitKept(t *testing.T) {
-	out, limit, hasLimit, err := fanoutQuery(url.Values{"offset": {"0"}, "limit": {"25"}})
-	if err != nil {
-		t.Fatalf("fanoutQuery() error = %v", err)
-	}
-	if out.Has("offset") {
-		t.Error("fanoutQuery() forwarded offset; it means 'skip N in each network' and must be stripped")
-	}
-	if out.Get("limit") != "25" {
-		t.Errorf("fanoutQuery() limit = %q, want it forwarded unchanged", out.Get("limit"))
-	}
-	if !hasLimit || limit != 25 {
-		t.Errorf("fanoutQuery() = (%d, %v), want (25, true) for the merged truncation", limit, hasLimit)
-	}
-}
-
-func TestFanoutQueryNoLimitMeansNoTruncation(t *testing.T) {
-	_, limit, hasLimit, err := fanoutQuery(url.Values{})
-	if err != nil {
-		t.Fatalf("fanoutQuery() error = %v", err)
-	}
-	if hasLimit || limit != 0 {
-		t.Errorf("fanoutQuery() = (%d, %v), want (0, false): the default page size belongs to the discovery service", limit, hasLimit)
-	}
-}
-
-func TestFanoutQueryOtherParamsPassThrough(t *testing.T) {
-	out, _, _, err := fanoutQuery(url.Values{"domain": {"crop-advisory"}})
-	if err != nil {
-		t.Fatalf("fanoutQuery() error = %v", err)
-	}
-	if out.Get("domain") != "crop-advisory" {
-		t.Error("fanoutQuery() dropped a query parameter that is not paging")
-	}
 }
 
 // --- executor, over real listeners ------------------------------------------
@@ -335,26 +287,7 @@ func TestFanoutTargetSlowerThanBudgetIsReportedDegraded(t *testing.T) {
 	}
 }
 
-func TestFanoutNonZeroOffsetReturnsNackWithoutCallingAnyTarget(t *testing.T) {
-	called := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(onDiscover("m-10", "x"))
-	}))
-	defer srv.Close()
-
-	rec := runFanout(t, FanoutConfig{}, "offset=20&limit=10", srv.URL, srv.URL)
-
-	if rec.Code == http.StatusOK {
-		t.Error("fanout() accepted a non-zero offset; it cannot be expressed across networks")
-	}
-	if called {
-		t.Error("fanout() called a target despite refusing the request")
-	}
-}
-
-func TestFanoutTargetReceivesBodyAndDropsOffset(t *testing.T) {
+func TestFanoutTargetReceivesBodyAndQueryUnchanged(t *testing.T) {
 	type seen struct {
 		body  string
 		query url.Values
@@ -369,24 +302,63 @@ func TestFanoutTargetReceivesBodyAndDropsOffset(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	runFanout(t, FanoutConfig{}, "offset=0&limit=5", srv.URL, srv.URL)
+	runFanout(t, FanoutConfig{}, "foo=bar", srv.URL, srv.URL)
 
 	for i := 0; i < 2; i++ {
 		s := <-got
 		if s.body == "" {
 			t.Fatal("a target received an empty body: ctx.Body must be re-read per target, not streamed from r.Body")
 		}
-		if s.query.Has("offset") {
-			t.Error("a target received offset; it must be stripped before fan-out")
-		}
-		if s.query.Get("limit") != "5" {
-			t.Errorf("a target received limit=%q, want 5 forwarded unchanged", s.query.Get("limit"))
+		if s.query.Get("foo") != "bar" {
+			t.Errorf("a target received foo=%q, want bar forwarded unchanged", s.query.Get("foo"))
 		}
 	}
 }
 
-func asCodedErr(err error, target **model.CodedErr) bool {
-	return errors.As(err, target)
+// TestFanoutOffsetIsNoLongerRejectedOrStripped guards the removed behavior:
+// offset used to be refused outright (non-zero) or silently stripped (zero).
+// Neither happens now -- offset is just another query parameter, forwarded
+// to every target like any other.
+func TestFanoutOffsetIsNoLongerRejectedOrStripped(t *testing.T) {
+	seen := make(chan url.Values, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.URL.Query()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(onDiscover("m-off", "x"))
+	}))
+	defer srv.Close()
+
+	rec := runFanout(t, FanoutConfig{}, "offset=20", srv.URL, srv.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200: offset=20 must not be refused anymore. body: %s", rec.Code, rec.Body.String())
+	}
+	for i := 0; i < 2; i++ {
+		got := <-seen
+		if got.Get("offset") != "20" {
+			t.Errorf("a target received offset=%q, want 20 forwarded unchanged like any other param", got.Get("offset"))
+		}
+	}
+}
+
+// TestFanoutLimitDoesNotTruncateMergedResult guards the removed truncation:
+// limit used to be re-applied to the merged list after combining every
+// target's answer. It no longer is -- the caller gets everything every
+// target returned, regardless of what limit it sent.
+func TestFanoutLimitDoesNotTruncateMergedResult(t *testing.T) {
+	a := discoverServer(t, http.StatusOK, onDiscover("m-lim", "a1", "a2"), 0)
+	defer a.Close()
+	b := discoverServer(t, http.StatusOK, onDiscover("m-lim", "b1", "b2"), 0)
+	defer b.Close()
+
+	rec := runFanout(t, FanoutConfig{}, "limit=1", a.URL, b.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); len(got) != 4 {
+		t.Errorf("fanout() catalogs = %v, want all 4: limit=1 must not truncate the merged result", got)
+	}
 }
 
 func TestFanoutTargetAnswers200WithAnUnreadableBodyIsDegradedNotFatal(t *testing.T) {
@@ -479,7 +451,7 @@ func TestFanoutLeavesNoGoroutineBehindWhenTargetsMissTheBudget(t *testing.T) {
 	}
 }
 
-func TestFanoutKeepsATargetsOwnQueryAndStillDropsOffset(t *testing.T) {
+func TestFanoutKeepsATargetsOwnQueryAlongsideTheInboundOne(t *testing.T) {
 	seen := make(chan url.Values, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.URL.Query()
@@ -497,7 +469,7 @@ func TestFanoutKeepsATargetsOwnQueryAndStillDropsOffset(t *testing.T) {
 	plain, _ := url.Parse(srv.URL + "/discover")
 
 	body := []byte(`{"context":{"action":"discover","version":"2.0.0"},"message":{}}`)
-	req := httptest.NewRequest(http.MethodPost, "/discover?limit=5&offset=0", strings.NewReader(string(body)))
+	req := httptest.NewRequest(http.MethodPost, "/discover?limit=5", strings.NewReader(string(body)))
 	rec := httptest.NewRecorder()
 	ctx := &model.StepContext{
 		Context:    req.Context(),
@@ -516,9 +488,6 @@ func TestFanoutKeepsATargetsOwnQueryAndStillDropsOffset(t *testing.T) {
 		got := <-seen
 		if got.Get("limit") != "5" {
 			t.Errorf("target query = %v, want the inbound limit=5 carried to every target", got)
-		}
-		if got.Has("offset") {
-			t.Errorf("target query = %v, want offset dropped whatever its source", got)
 		}
 		if got.Get("network") == "maha" {
 			baked_seen++
@@ -925,13 +894,12 @@ func TestFanoutCutsOffATargetThatStallsMidBody(t *testing.T) {
 	}
 }
 
-// TestFanoutDuplicateTargetURLsAreCalledSeparatelyAndDedupedByItemID covers a
-// rule that (accidentally or not) names the same target twice: both are
-// still called as distinct targets (not collapsed to one call), and their
-// answers -- identical here, as a real duplicate would be -- are deduped by
-// item id in the merge, the same as if two DIFFERENT networks had returned
-// the same catalog.
-func TestFanoutDuplicateTargetURLsAreCalledSeparatelyAndDedupedByItemID(t *testing.T) {
+// TestFanoutDuplicateTargetURLsAreCalledSeparately covers a rule that
+// (accidentally or not) names the same target twice: both are still called
+// as distinct targets, not collapsed to one call. The merge does not dedupe,
+// so both answers -- identical here, as a real duplicate would be -- come
+// back in the merged list.
+func TestFanoutDuplicateTargetURLsAreCalledSeparately(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
@@ -948,8 +916,8 @@ func TestFanoutDuplicateTargetURLsAreCalledSeparatelyAndDedupedByItemID(t *testi
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Errorf("target received %d calls, want 2: a duplicated target entry must still be called once per occurrence, not collapsed", got)
 	}
-	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"shared-1"}) {
-		t.Errorf("fanout() catalogs = %v, want [shared-1] once, deduped by id", got)
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"shared-1", "shared-1"}) {
+		t.Errorf("fanout() catalogs = %v, want [shared-1, shared-1] (no dedupe)", got)
 	}
 }
 
