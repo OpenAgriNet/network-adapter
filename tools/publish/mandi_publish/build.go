@@ -322,7 +322,7 @@ func buildFromCollection(ctx context.Context, col Collection, cfg buildConfig, m
 
 			builtStates = append(builtStates, BuiltState{
 				StateCode: stateCode,
-				CatalogID: fmt.Sprintf("%s/%s-%s", cfg.participantID, catalogFilePrefix, slug),
+				CatalogID: fmt.Sprintf("catalog:mandi-price:%s", slug),
 				Path:      outFilePath,
 				Markets:   len(chunk),
 			})

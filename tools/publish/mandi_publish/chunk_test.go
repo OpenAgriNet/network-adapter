@@ -106,7 +106,7 @@ func TestStateWithinTheGeometryBudgetStaysOneUnsuffixedCatalog(t *testing.T) {
 	if len(built) != 1 {
 		t.Fatalf("built %d catalogs, want 1 at exactly the budget", len(built))
 	}
-	if built[0].CatalogID != "agmarknet-live/mandi-TN" {
+	if built[0].CatalogID != "catalog:mandi-price:TN" {
 		t.Errorf("catalog id = %q, want no chunk suffix", built[0].CatalogID)
 	}
 	if filepath.Base(built[0].Path) != "mandi-TN.json" {
@@ -123,7 +123,7 @@ func TestStateOverTheGeometryBudgetSplits(t *testing.T) {
 	}
 	wantCounts := []int{catalogGeometryBudget, 1}
 	for i, state := range built {
-		wantID := fmt.Sprintf("agmarknet-live/mandi-TN-%d", i+1)
+		wantID := fmt.Sprintf("catalog:mandi-price:TN-%d", i+1)
 		if state.CatalogID != wantID {
 			t.Errorf("catalog %d id = %q, want %q", i, state.CatalogID, wantID)
 		}
