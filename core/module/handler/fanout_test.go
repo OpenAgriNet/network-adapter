@@ -952,3 +952,49 @@ func TestFanoutDuplicateTargetURLsAreCalledSeparatelyAndDedupedByItemID(t *testi
 		t.Errorf("fanout() catalogs = %v, want [shared-1] once, deduped by id", got)
 	}
 }
+
+// countingRejectStep is a definition.ResponseStep that rejects its Nth
+// invocation and accepts every other. collect() runs response steps
+// serially in target order, so rejectOn deterministically picks which
+// target's answer gets rejected regardless of which one actually answered
+// first over the network.
+type countingRejectStep struct {
+	calls    int
+	rejectOn int
+}
+
+func (s *countingRejectStep) RunOnResponse(_ *model.StepContext, _ *model.ResponseStepContext) error {
+	s.calls++
+	if s.calls == s.rejectOn {
+		return fmt.Errorf("rejected by policy")
+	}
+	return nil
+}
+
+// TestFanoutResponseStepRejectionDegradesOneTargetWithoutFailingOthers covers
+// the one collect() branch every other test skips: a configured response
+// step other than the ack signer (validateAckSign, in production) rejecting
+// one target's answer. That target must be degraded, not merged, and must
+// not deny the caller what the other target returned.
+func TestFanoutResponseStepRejectionDegradesOneTargetWithoutFailingOthers(t *testing.T) {
+	a := discoverServer(t, http.StatusOK, onDiscover("m-reject", "a1"), 0)
+	defer a.Close()
+	b := discoverServer(t, http.StatusOK, onDiscover("m-reject", "b1"), 0)
+	defer b.Close()
+
+	step := &countingRejectStep{rejectOn: 2} // rejects the second target processed, i.e. b (target index 1)
+	rec := runFanoutWithSteps(t, []definition.ResponseStep{step}, a.URL, b.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200: one rejected target must not deny the caller the other. body: %s", rec.Code, rec.Body.String())
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"a1"}) {
+		t.Errorf("fanout() catalogs = %v, want [a1]: the rejected target must not be merged", got)
+	}
+	if h := rec.Header().Get(degradedCountHeader); h != "1" {
+		t.Errorf("fanout() %s = %q, want \"1\" for the target its response step rejected", degradedCountHeader, h)
+	}
+	if step.calls != 2 {
+		t.Errorf("response step called %d times, want 2 (once per target)", step.calls)
+	}
+}

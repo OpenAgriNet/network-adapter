@@ -222,8 +222,18 @@ func validateRules(rules []routingRule) error {
 			// Several targets means a fan-out, which merges one array -- the
 			// router serves every action, so it cannot guess where that array
 			// lives.
-			if len(targets) > 1 && rule.MergeFieldPath == "" {
-				return fmt.Errorf("invalid rule: mergeFieldPath is required when target.urls names more than one target -- e.g. mergeFieldPath: message.catalogs, or mergeFieldPath: message.contract.commitments for select")
+			if len(targets) > 1 {
+				if rule.MergeFieldPath == "" {
+					return fmt.Errorf("invalid rule: mergeFieldPath is required when target.urls names more than one target -- e.g. mergeFieldPath: message.catalogs, or mergeFieldPath: message.contract.commitments for select")
+				}
+				// Only message varies by action; context is fixed envelope
+				// shape. A path rooted anywhere else is a typo that would
+				// otherwise fail silently at request time -- every target
+				// looking like it "carries nothing" and the caller getting a
+				// confusing NACK instead of a clear load-time error.
+				if rule.MergeFieldPath != "message" && !strings.HasPrefix(rule.MergeFieldPath, "message.") {
+					return fmt.Errorf("invalid rule: mergeFieldPath %q must start with \"message.\" -- it names a path under the response's message, not the envelope root", rule.MergeFieldPath)
+				}
 			}
 		case targetTypePublisher:
 			if rule.Target.PublisherID == "" {
