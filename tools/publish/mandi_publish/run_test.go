@@ -27,7 +27,7 @@ func TestRunWritesCatalogsWithoutACollectionFile(t *testing.T) {
 		},
 		build: buildConfig{
 			catalogOut:    catalogOut,
-			participantID: "agmarknet-mock",
+			participantID: "agmarknet-live",
 			networkID:     "oan-dev",
 		},
 	})
