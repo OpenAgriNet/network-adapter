@@ -113,8 +113,8 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 		t.Fatalf("len(catalogs) = %d, want 1", len(catalogs))
 	}
 	catalog := catalogs[0].(map[string]any)
-	if catalog["id"] != "agmarknet-live/mandi-MH" {
-		t.Errorf("catalog.id = %v, want agmarknet-live/mandi-MH", catalog["id"])
+	if catalog["id"] != "catalog:mandi-price:MH" {
+		t.Errorf("catalog.id = %v, want catalog:mandi-price:MH", catalog["id"])
 	}
 	if catalog["isActive"] != true {
 		t.Errorf("isActive = %v, want true", catalog["isActive"])
@@ -148,8 +148,8 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 		t.Fatalf("len(resources) = %d, want 1", len(resources))
 	}
 	res := resources[0].(map[string]any)
-	if res["id"] != "res:agmarknet:market:1282" {
-		t.Errorf("res.id = %v, want res:agmarknet:market:1282", res["id"])
+	if res["id"] != "resource:mandi-price:market:1282" {
+		t.Errorf("res.id = %v, want resource:mandi-price:market:1282", res["id"])
 	}
 	resDesc := res["descriptor"].(map[string]any)
 	if resDesc["code"] != "1282" {
@@ -163,7 +163,7 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 	}
 
 	ra := res["resourceAttributes"].(map[string]any)
-	if ra["@context"] != "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/MandiPrice/v0.1/context.jsonld" {
+	if ra["@context"] != "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld" {
 		t.Errorf("@context = %v", ra["@context"])
 	}
 	if ra["@type"] != "openagrinet:MandiPrice" {
@@ -243,7 +243,7 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 		t.Fatalf("len(directives) = %d, want 1", len(directives))
 	}
 	dir := directives[0].(map[string]any)
-	if dir["catalogId"] != "agmarknet-live/mandi-MH" {
+	if dir["catalogId"] != "catalog:mandi-price:MH" {
 		t.Errorf("dir.catalogId = %v", dir["catalogId"])
 	}
 	if dir["catalogType"] != "REGULAR" {
@@ -634,7 +634,7 @@ func TestBuildEndToEndAgainstRealMHFile(t *testing.T) {
 		if state.StateCode != "MH" {
 			t.Errorf("chunk %d state = %q, want MH", i, state.StateCode)
 		}
-		wantID := fmt.Sprintf("agmarknet-live/mandi-MH-%d", i+1)
+		wantID := fmt.Sprintf("catalog:mandi-price:MH-%d", i+1)
 		if state.CatalogID != wantID {
 			t.Errorf("chunk %d id = %q, want %q", i, state.CatalogID, wantID)
 		}
@@ -680,7 +680,7 @@ func TestBuildEndToEndAgainstRealMHFile(t *testing.T) {
 		t.Fatalf("%d distinct resources across chunks, want 273", len(resourcesByID))
 	}
 
-	foundRes, ok := resourcesByID["res:agmarknet:market:1282"]
+	foundRes, ok := resourcesByID["resource:mandi-price:market:1282"]
 	if !ok {
 		t.Fatalf("market 1282 not found in any chunk")
 	}
