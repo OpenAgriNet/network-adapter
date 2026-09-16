@@ -364,6 +364,11 @@ type Route struct {
 	URL         *url.URL // For API calls
 	// URLs carries all target URLs for multi-target routing rules.
 	URLs []*url.URL
+	// MergeFieldPath is the full dot path, from the envelope root, to the
+	// array a multi-target fan-out merges: "message.catalogs" for discover,
+	// "message.contract.commitments" for select -- whatever the served
+	// action's response nests it under. Set only alongside URLs.
+	MergeFieldPath string
 }
 
 // Keyset represents a collection of cryptographic keys used for signing and encryption.

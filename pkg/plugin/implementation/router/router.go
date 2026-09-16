@@ -35,6 +35,11 @@ type routingRule struct {
 	TargetType string   `yaml:"targetType"` // "url", "publisher", "bpp"/"receiver", or "bap"/"sender"
 	Target     target   `yaml:"target,omitempty"`
 	Endpoints  []string `yaml:"endpoints"`
+	// MergeFieldPath is the full dot path, from the envelope root, to the
+	// array a fan-out merges across targets -- "message.catalogs" for
+	// discover, "message.contract.commitments" for select. Required whenever
+	// target.urls names more than one target.
+	MergeFieldPath string `yaml:"mergeFieldPath,omitempty"`
 }
 
 // Target contains destination-specific details.
@@ -148,15 +153,16 @@ func (r *Router) loadRules(configPath string) error {
 					}
 					parsed = append(parsed, parsedURL)
 				}
-				// URL is set on both paths so every existing reader of it keeps
-				// working untouched. URLs is populated only when there is more
-				// than one target, which is what the handler branches on.
+				// URL stays set to the first target for existing single-URL
+				// readers; URLs and MergeFieldPath are set only when there is
+				// more than one target -- that's what the handler branches on.
 				route = &model.Route{
 					TargetType: rule.TargetType,
 					URL:        parsed[0],
 				}
 				if len(parsed) > 1 {
 					route.URLs = parsed
+					route.MergeFieldPath = rule.MergeFieldPath
 				}
 			case targetTypeBPP, targetTypeBAP, targetTypeReceiver, targetTypeSender:
 				var parsedURL *url.URL
@@ -212,6 +218,12 @@ func validateRules(rules []routingRule) error {
 				if _, err := url.Parse(t); err != nil {
 					return fmt.Errorf("invalid URL - %s: %w", t, err)
 				}
+			}
+			// Several targets means a fan-out, which merges one array -- the
+			// router serves every action, so it cannot guess where that array
+			// lives.
+			if len(targets) > 1 && rule.MergeFieldPath == "" {
+				return fmt.Errorf("invalid rule: mergeFieldPath is required when target.urls names more than one target -- e.g. mergeFieldPath: message.catalogs, or mergeFieldPath: message.contract.commitments for select")
 			}
 		case targetTypePublisher:
 			if rule.Target.PublisherID == "" {

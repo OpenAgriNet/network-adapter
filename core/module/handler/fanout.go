@@ -3,15 +3,16 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -21,29 +22,32 @@ import (
 const (
 	defaultFanoutMaxConcurrency = 8
 	defaultFanoutTimeout        = 10 * time.Second
-	degradedHeader              = "X-Beckn-Degraded"
+
+	// maxTargetResponseBytes bounds one target's response read. Not
+	// configurable yet -- promote it if a deployment needs to tune it.
+	maxTargetResponseBytes = 10 << 20
 )
 
+// degradedCountHeader carries the COUNT of targets that did not contribute,
+// never their addresses (internal), never a body member (a v2 action is
+// additionalProperties:false).
+const degradedCountHeader = "X-Beckn-Degraded-Count"
+
 const (
-	contextKey  = "context"
-	messageKey  = "message"
-	catalogsKey = "catalogs"
 	limitParam  = "limit"
 	offsetParam = "offset"
 )
 
-// hopByHopHeaders are connection-scoped and must not be forwarded to a target.
+// codeAllTargetsUnreachable mirrors util.CodeUpstreamUnavailable, which this
+// package cannot import (internal to plugin/implementation).
+const codeAllTargetsUnreachable = "NET_DOWNSTREAM_UNAVAILABLE"
+
+// hopByHopHeaders are connection-scoped and must not be forwarded.
+// ReverseProxy strips these itself; http.Client.Do does not.
 var hopByHopHeaders = []string{
-	"Connection",
-	"Proxy-Connection",
-	"Keep-Alive",
-	"Proxy-Authenticate",
-	"Proxy-Authorization",
-	"Te",
-	"Trailer",
-	"Transfer-Encoding",
-	"Upgrade",
-	"Content-Length",
+	"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate",
+	"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
+	"Content-Length", // derived by http.NewRequest from the body; a copied one may disagree
 }
 
 // targetResult is one target's answer, or the reason there isn't one.
@@ -54,60 +58,74 @@ type targetResult struct {
 	err    error
 }
 
-type keptResponse struct {
-	body        []byte
-	catalogs    []json.RawMessage
-	hasCatalogs bool
-}
-
-// fanout calls every target of a multi-target route in parallel and answers with one merged response.
+// fanout calls every target of a multi-target route in parallel and answers
+// with one response, the array at mergeFieldPath merged across them. A
+// target that fails is counted in the degraded header rather than denying
+// the caller what the others returned; only a total failure NACKs.
+//
+// Merge policy (donor selection, dedupe, ordering) lives in merge.go, not
+// here -- this file is the executor.
 func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client, responseSteps []definition.ResponseStep, ackSigner *ackSignerStep, cfg FanoutConfig, signNack nackSignerFunc, responseBody *[]byte) {
 	targets := ctx.Route.URLs
+	mergeFieldPath := ctx.Route.MergeFieldPath
+
+	fail := func(err error) {
+		signNack(ctx, err)
+		*responseBody = sendNack(ctx, w, err)
+	}
 
 	query, limit, hasLimit, err := fanoutQuery(r.URL.Query())
 	if err != nil {
-		signNack(ctx, err)
-		*responseBody = sendNack(ctx, w, err)
+		fail(err)
 		return
 	}
 
 	results := callTargets(ctx, r, httpClient, targets, query, cfg)
 
-	kept, degraded := collect(ctx, targets, results, responseSteps)
+	kept, degraded := collect(ctx, targets, results, responseSteps, mergeFieldPath)
+	log.Infof(ctx.Context, "fanout: %d/%d targets contributed, %d degraded, mergeFieldPath=%s", len(kept), len(targets), len(degraded), mergeFieldPath)
 	if len(kept) == 0 {
-		err := fmt.Errorf("no target answered: %s", strings.Join(degraded, ", "))
-		signNack(ctx, err)
-		*responseBody = sendNack(ctx, w, err)
+		// Wire error carries only a count; the degraded hosts (already logged
+		// per-target in collect) stay out of it -- that's the whole point of
+		// the count-not-hosts header.
+		unreachable := model.NewCodedErr(http.StatusBadGateway, codeAllTargetsUnreachable,
+			fmt.Errorf("no target could be reached (%d unreachable)", len(degraded)))
+		log.Errorf(ctx.Context, unreachable, "fanout: every target unreachable: %s", strings.Join(degraded, ", "))
+		fail(unreachable)
 		return
 	}
 
-	merged, err := mergeCatalogs(kept, limit, hasLimit)
+	merged, err := mergeResponses(kept, mergeFieldPath, limit, hasLimit)
 	if err != nil {
-		log.Errorf(ctx.Context, err, "fanout: merge failed: %v", err)
-		signNack(ctx, err)
-		*responseBody = sendNack(ctx, w, err)
+		log.Errorf(ctx.Context, err, "fanout: merge failed across %d kept response(s) at mergeFieldPath=%s", len(kept), mergeFieldPath)
+		fail(err)
 		return
 	}
 
+	// Signed once, over the merged body: per-response signing writes into
+	// that upstream's own header map, which fan-out never copies out.
 	if ackSigner != nil {
 		ctx.ResponseBody = merged
 		if err := ackSigner.RunOnResponse(ctx, nil); err != nil {
-			log.Errorf(ctx.Context, err, "fanout: signing the merged response failed: %v", err)
-			signNack(ctx, err)
-			*responseBody = sendNack(ctx, w, err)
+			log.Errorf(ctx.Context, err, "fanout: signing the merged response failed")
+			fail(err)
 			return
 		}
 	}
 
-	// Before writeJSONResponse: that writes the status line, and a header set
-	// after it is a header nobody receives.
 	if len(degraded) > 0 {
-		w.Header().Set(degradedHeader, strconv.Itoa(len(degraded)))
+		w.Header().Set(degradedCountHeader, strconv.Itoa(len(degraded)))
 	}
 	*responseBody = writeJSONResponse(ctx, w, merged)
 }
 
-// fanoutQuery validates query parameters, stripping offset and extracting limit.
+// fanoutQuery resolves the outbound query string and the page size to apply
+// to the merged result.
+//
+// offset means "skip N in EACH network" if forwarded as-is -- not page two of
+// anything merged across them -- so it is refused. limit is forwarded (each
+// network pages its own retrieval) and re-applied to the merged list, so a
+// caller asking for 20 gets 20, not 20 per network.
 func fanoutQuery(in url.Values) (url.Values, int, bool, error) {
 	out := url.Values{}
 	for k, v := range in {
@@ -117,8 +135,7 @@ func fanoutQuery(in url.Values) (url.Values, int, bool, error) {
 	if raw := out.Get(offsetParam); raw != "" {
 		offset, err := strconv.Atoi(raw)
 		if err != nil {
-			return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT",
-				fmt.Errorf("offset is not a whole number"))
+			return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf("offset is not a whole number"))
 		}
 		if offset != 0 {
 			return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT",
@@ -133,16 +150,21 @@ func fanoutQuery(in url.Values) (url.Values, int, bool, error) {
 	}
 	limit, err := strconv.Atoi(raw)
 	if err != nil {
-		return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT",
-			fmt.Errorf("limit is not a whole number"))
+		return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf("limit is not a whole number"))
 	}
 	if limit <= 0 {
+		// Non-positive means "the service's default", which this cannot know.
 		return out, 0, false, nil
 	}
 	return out, limit, true, nil
 }
 
-// callTargets invokes all targets concurrently subject to timeout and concurrency limits.
+// callTargets calls every target in parallel under one deadline and one
+// concurrency cap, returning their answers in target order.
+//
+// One deadline for the fan-out as a whole, not per target: with a
+// concurrency cap, targets run in waves, and a per-target timeout would
+// become N waves x timeout.
 func callTargets(ctx *model.StepContext, r *http.Request, httpClient *http.Client, targets []*url.URL, query url.Values, cfg FanoutConfig) []targetResult {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -152,35 +174,45 @@ func callTargets(ctx *model.StepContext, r *http.Request, httpClient *http.Clien
 	if concurrency <= 0 {
 		concurrency = defaultFanoutMaxConcurrency
 	}
+	log.Infof(ctx.Context, "fanout: calling %d target(s), maxConcurrency=%d, timeout=%s", len(targets), concurrency, timeout)
 
 	fanCtx, cancel := context.WithTimeout(ctx.Context, timeout)
 	defer cancel()
 
+	group, groupCtx := errgroup.WithContext(fanCtx)
+	group.SetLimit(concurrency)
+
+	// Indexed, never appended: each goroutine owns one cell, so target order
+	// survives for the merge with no lock needed.
 	results := make([]targetResult, len(targets))
-	sem := make(chan struct{}, concurrency)
-
-	var wg sync.WaitGroup
 	for i, t := range targets {
-		wg.Add(1)
-		go func(i int, t *url.URL) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-fanCtx.Done():
-				results[i].err = fanCtx.Err()
-				return
-			}
-			results[i] = callTarget(fanCtx, ctx, r, httpClient, t, query)
-		}(i, t)
+		group.Go(func() error {
+			results[i] = callTarget(groupCtx, ctx, r, httpClient, t, query)
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = group.Wait() // callTarget never returns an error; failures live in targetResult.
 
+	// A target the deadline caught before it ever got a concurrency slot
+	// never wrote its cell.
+	for i, t := range targets {
+		if results[i].err == nil && results[i].body == nil && results[i].status == 0 {
+			results[i] = targetResult{err: fmt.Errorf("calling %s: %w", t, fanCtx.Err())}
+		}
+	}
 	return results
 }
 
-// callTarget forwards the payload to a single target URL.
+// callTarget sends the already-validated body to one target and reads its
+// whole answer.
+//
+// The body comes from ctx.Body: r.Body is a stream the first target would
+// drain, so each target gets its own bytes.Reader over the same backing
+// array instead.
 func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request, httpClient *http.Client, target *url.URL, query url.Values) targetResult {
+	// The target's own configured query survives; the inbound one is laid
+	// over it. offset is deleted last, unconditionally, so it cannot re-enter
+	// from either side.
 	u := *target
 	merged := u.Query()
 	for key, values := range query {
@@ -194,18 +226,32 @@ func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request,
 		return targetResult{err: fmt.Errorf("building request for %s: %w", &u, err)}
 	}
 
+	// The signature rides along in this copy: the body is identical at every
+	// target, so one signature is valid at all of them.
 	for name, values := range r.Header {
 		for _, v := range values {
 			req.Header.Add(name, v)
 		}
 	}
+	// Checked against r.Header, not req.Header: by the time hop-by-hop
+	// stripping runs below, the copy has already lost what it strips.
+	teTrailers := wantsTeTrailers(r.Header["Te"])
 	for _, named := range strings.Split(req.Header.Get("Connection"), ",") {
 		if name := strings.TrimSpace(named); name != "" {
-			req.Header.Del(name)
+			req.Header.Del(name) // RFC 7230 6.1: Connection can name further headers to strip
 		}
 	}
 	for _, h := range hopByHopHeaders {
 		req.Header.Del(h)
+	}
+	if teTrailers {
+		req.Header.Set("Te", "trailers") // re-added per RFC 7230 4.3, same as ReverseProxy does
+	}
+	if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
+			clientIP = prior + ", " + clientIP
+		}
+		req.Header.Set("X-Forwarded-For", clientIP)
 	}
 	req.Header.Set("X-Forwarded-Host", r.Host)
 	req.Host = u.Host
@@ -218,15 +264,38 @@ func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request,
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// +1 so a body exactly at the cap isn't mistaken for a truncated one.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTargetResponseBytes+1))
 	if err != nil {
 		return targetResult{err: fmt.Errorf("reading response from %s: %w", &u, err)}
+	}
+	if len(body) > maxTargetResponseBytes {
+		return targetResult{err: fmt.Errorf("response from %s exceeds %d bytes", &u, maxTargetResponseBytes)}
 	}
 	return targetResult{status: resp.StatusCode, header: resp.Header, body: body}
 }
 
-// collect filters target results and runs response validation steps.
-func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult, responseSteps []definition.ResponseStep) ([]keptResponse, []string) {
+// wantsTeTrailers reports whether values (a request's Te header) names
+// "trailers", per RFC 7230 4.3.
+func wantsTeTrailers(values []string) bool {
+	for _, v := range values {
+		for _, tok := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), "trailers") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// collect turns the per-target answers into the responses worth merging and
+// the hosts to report degraded.
+//
+// Response steps run here, serially, not inside the goroutines that made the
+// calls: ackSignerStep writes to the response writer's own header map, and
+// running steps concurrently would race that write. The ack signer itself is
+// skipped -- it runs once over the merged body in fanout instead.
+func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult, responseSteps []definition.ResponseStep, mergeFieldPath string) ([]keptResponse, []string) {
 	var (
 		kept     []keptResponse
 		degraded []string
@@ -235,7 +304,7 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 		host := targets[i].Host
 		switch {
 		case res.err != nil:
-			log.Errorf(ctx.Context, res.err, "fanout: target %s did not answer: %v", host, res.err)
+			log.Errorf(ctx.Context, res.err, "fanout: target %s did not answer, marking degraded", host)
 			degraded = append(degraded, host)
 			continue
 		case res.status < 200 || res.status >= 300:
@@ -244,18 +313,14 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 			continue
 		}
 
-		rctx := &model.ResponseStepContext{
-			StatusCode: res.status,
-			Header:     res.header,
-			Body:       res.body,
-		}
+		rctx := &model.ResponseStepContext{StatusCode: res.status, Header: res.header, Body: res.body}
 		failed := false
 		for _, step := range responseSteps {
 			if isAckSigner(step) {
 				continue
 			}
 			if err := step.RunOnResponse(ctx, rctx); err != nil {
-				log.Errorf(ctx.Context, err, "fanout: response step rejected target %s: %v", host, err)
+				log.Errorf(ctx.Context, err, "fanout: response step rejected target %s, marking degraded", host)
 				degraded = append(degraded, host)
 				failed = true
 				break
@@ -265,18 +330,19 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 			continue
 		}
 
-		catalogs, present, err := catalogsOf(res.body)
+		items, present, err := itemsOf(res.body, mergeFieldPath)
 		if err != nil {
-			log.Errorf(ctx.Context, err, "fanout: target %s answered %d with a body that cannot be read: %v", host, res.status, err)
+			log.Errorf(ctx.Context, err, "fanout: target %s (status %d) has an unreadable body at mergeFieldPath=%s, marking degraded", host, res.status, mergeFieldPath)
 			degraded = append(degraded, host)
 			continue
 		}
-		kept = append(kept, keptResponse{body: res.body, catalogs: catalogs, hasCatalogs: present})
+		kept = append(kept, keptResponse{body: res.body, items: items, hasItems: present})
 	}
 	return kept, degraded
 }
 
-// isAckSigner checks if a response step is an ack signer.
+// isAckSigner reports whether a response step is the ack signer, seeing
+// through the telemetry wrapper the handler puts around configured steps.
 func isAckSigner(step definition.ResponseStep) bool {
 	var inner any = step
 	if instrumented, ok := step.(*InstrumentedResponseStep); ok {
@@ -284,139 +350,4 @@ func isAckSigner(step definition.ResponseStep) bool {
 	}
 	_, ok := inner.(*ackSignerStep)
 	return ok
-}
-
-// mergeCatalogs merges catalog payloads from kept responses into a single response envelope.
-func mergeCatalogs(kept []keptResponse, limit int, hasLimit bool) ([]byte, error) {
-	donor := -1
-	for i, k := range kept {
-		if k.hasCatalogs {
-			donor = i
-			break
-		}
-	}
-	if donor < 0 {
-		return nil, fmt.Errorf("no response carried %q: fan-out merges catalogs, so a rule with several targets is only meaningful for an action whose replies carry them", catalogsKey)
-	}
-
-	var donorEnvelope map[string]json.RawMessage
-	if err := json.Unmarshal(kept[donor].body, &donorEnvelope); err != nil {
-		return nil, fmt.Errorf("donor response is not a JSON object: %w", err)
-	}
-
-	message := map[string]json.RawMessage{}
-	if raw, ok := donorEnvelope[messageKey]; ok {
-		if err := json.Unmarshal(raw, &message); err != nil {
-			return nil, fmt.Errorf("donor response has a non-object %q: %w", messageKey, err)
-		}
-	}
-
-	envelope := map[string]json.RawMessage{}
-	if raw, ok := donorEnvelope[contextKey]; ok {
-		envelope[contextKey] = raw
-	}
-
-	perNetwork := make([][]json.RawMessage, 0, len(kept))
-	for _, k := range kept {
-		perNetwork = append(perNetwork, k.catalogs)
-	}
-
-	merged := dedupe(interleave(perNetwork))
-	if hasLimit && len(merged) > limit {
-		merged = merged[:limit]
-	}
-	if merged == nil {
-		merged = []json.RawMessage{}
-	}
-
-	encoded, err := json.Marshal(merged)
-	if err != nil {
-		return nil, fmt.Errorf("encoding merged catalogs: %w", err)
-	}
-	message[catalogsKey] = encoded
-
-	encodedMessage, err := json.Marshal(message)
-	if err != nil {
-		return nil, fmt.Errorf("encoding merged message: %w", err)
-	}
-	envelope[messageKey] = encodedMessage
-
-	return json.Marshal(envelope)
-}
-
-// interleave round-robins catalogs across networks for balanced result representation.
-func interleave(perNetwork [][]json.RawMessage) []json.RawMessage {
-	total := 0
-	longest := 0
-	for _, catalogs := range perNetwork {
-		total += len(catalogs)
-		if len(catalogs) > longest {
-			longest = len(catalogs)
-		}
-	}
-
-	out := make([]json.RawMessage, 0, total)
-	for i := 0; i < longest; i++ {
-		for _, catalogs := range perNetwork {
-			if i < len(catalogs) {
-				out = append(out, catalogs[i])
-			}
-		}
-	}
-	return out
-}
-
-// dedupe drops duplicate catalogs by ID, preserving order of first appearance.
-func dedupe(catalogs []json.RawMessage) []json.RawMessage {
-	seen := make(map[string]bool, len(catalogs))
-	out := catalogs[:0]
-	for _, c := range catalogs {
-		id := catalogID(c)
-		if id == "" {
-			out = append(out, c)
-			continue
-		}
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, c)
-	}
-	return out
-}
-
-// catalogID extracts the catalog ID from a raw JSON catalog object.
-func catalogID(catalog json.RawMessage) string {
-	var fields struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(catalog, &fields); err != nil {
-		return ""
-	}
-	return fields.ID
-}
-
-// catalogsOf extracts catalog array items from a response envelope body.
-func catalogsOf(body []byte) ([]json.RawMessage, bool, error) {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, false, fmt.Errorf("not a JSON object: %w", err)
-	}
-	raw, ok := envelope[messageKey]
-	if !ok {
-		return nil, false, nil
-	}
-	var message map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &message); err != nil {
-		return nil, false, fmt.Errorf("non-object %q: %w", messageKey, err)
-	}
-	rawCatalogs, ok := message[catalogsKey]
-	if !ok {
-		return nil, false, nil
-	}
-	var catalogs []json.RawMessage
-	if err := json.Unmarshal(rawCatalogs, &catalogs); err != nil {
-		return nil, true, fmt.Errorf("non-array %q: %w", catalogsKey, err)
-	}
-	return catalogs, true, nil
 }

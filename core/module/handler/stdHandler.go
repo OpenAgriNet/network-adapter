@@ -103,7 +103,10 @@ func newHTTPClient(cfg *HttpClientConfig, wrapper definition.TransportWrapper) *
 	if timeout > 0 {
 		finalTransport = &timeoutTransport{base: finalTransport, timeout: timeout}
 	}
-	return &http.Client{Transport: finalTransport, Timeout: timeout}
+	// Client.Timeout is not set: the wrapper above already bounds every
+	// request via RoundTrip, which both ReverseProxy and Client.Do go
+	// through -- a second timeout here would just duplicate it.
+	return &http.Client{Transport: finalTransport}
 }
 
 // timeoutTransport applies a deadline to requests including the response body read.
