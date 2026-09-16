@@ -445,10 +445,11 @@ func (s *addRouteStep) Run(ctx *model.StepContext) error {
 		return fmt.Errorf("failed to determine route: %w", err)
 	}
 	ctx.Route = &model.Route{
-		TargetType:  route.TargetType,
-		PublisherID: route.PublisherID,
-		URL:         route.URL,
-		URLs:        route.URLs,
+		TargetType:     route.TargetType,
+		PublisherID:    route.PublisherID,
+		URL:            route.URL,
+		URLs:           route.URLs,
+		MergeFieldPath: route.MergeFieldPath,
 	}
 	if s.metrics != nil && ctx.Route != nil {
 		s.metrics.RoutingDecisionsTotal.Add(ctx.Context, 1,
