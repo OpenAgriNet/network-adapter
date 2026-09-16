@@ -37,6 +37,13 @@ response: |
         $hasCoords := $exists($row.latitude) and $exists($row.longitude);
         $coords := [$row.longitude, $row.latitude];
 
+        /* Agmarknet's own state code is a 2-letter alpha code (e.g. "MH") that,
+           for every state seeded so far, matches the ISO 3166-2 subdivision
+           suffix for India. Not verified against the full state list -- if a
+           newly seeded state's Agmarknet code diverges from its ISO suffix,
+           this produces a wrong areaCode and needs a real lookup table. */
+        $isoStateCode := "IN-" & $uppercase($row.stateCode);
+
         $marketObj := {
           "marketCode": $string($row.marketId),
           "marketName": $trim($row.marketName),
@@ -44,25 +51,25 @@ response: |
           "state": $row.stateCode
         };
 
-        $coverageAreas := $hasCoords ? [
+        $coverageAreas := $append($hasCoords ? [
           {
             "type": "Point",
             "coordinates": $coords
+          }
+        ] : [], [
+          {
+            "codeScheme": "AGMARKNET-DISTRICT",
+            "areaCode": $string($row.districtId),
+            "areaLevel": "District",
+            "areaName": $trim($row.districtName)
           },
           {
-            "codeScheme": "AGMARKNET-DISTRICT",
-            "areaCode": $string($row.districtId),
-            "areaLevel": "District",
-            "areaName": $trim($row.districtName)
+            "codeScheme": "ISO-3166-2",
+            "areaCode": $isoStateCode,
+            "areaLevel": "State",
+            "areaName": $trim($row.stateName)
           }
-        ] : [
-          {
-            "codeScheme": "AGMARKNET-DISTRICT",
-            "areaCode": $string($row.districtId),
-            "areaLevel": "District",
-            "areaName": $trim($row.districtName)
-          }
-        ];
+        ]);
 
         /* Deduplicate and sort commodities */
         $distinctCommodities := [ $distinct($row.commodities) ];
@@ -81,7 +88,8 @@ response: |
           "descriptor": {
             "code": $string($row.marketId),
             "name": $trim($row.marketName),
-            "shortDesc": "Mandi prices at " & $trim($row.marketName) & ", " & $trim($row.districtName) & ", " & $trim($row.stateName)
+            "shortDesc": "Mandi prices at " & $trim($row.marketName) & ", " & $trim($row.districtName) & ", " & $trim($row.stateName),
+            "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for " & $trim($row.marketName) & ". The result uses the same MandiPrice type in Direct information mode."
           },
           "resourceAttributes": {
             "@context": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/MandiPrice/v0.1/context.jsonld",
@@ -90,6 +98,11 @@ response: |
             "subjectCategories": [
               "Market"
             ],
+            "source": {
+              "sourceId": "agmarknet",
+              "sourceName": "Agmarknet Vistaar",
+              "sourceUri": "https://agmarknet.gov.in/"
+            },
             "market": $marketObj,
             "supportedCommodities": $sortedCommodities,
             "supportedPriceFields": [
@@ -138,7 +151,8 @@ response: |
               "id": _local.participantId,
               "descriptor": {
                 "code": "AGMARKNET-01",
-                "name": "Agmarknet Vistaar"
+                "name": "Agmarknet Vistaar",
+                "shortDesc": "Provider of live agricultural market price information."
               }
             },
             "validity": {

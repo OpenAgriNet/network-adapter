@@ -49,7 +49,7 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 
 	cfg := buildConfig{
 		catalogOut:       tmpDir,
-		participantID:    "agmarknet-mock",
+		participantID:    "agmarknet-live",
 		networkID:        "oan-dev",
 		withoutGeometry:  withoutGeometryPublish,
 		fixedTxnID:       "txn-123",
@@ -113,8 +113,8 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 		t.Fatalf("len(catalogs) = %d, want 1", len(catalogs))
 	}
 	catalog := catalogs[0].(map[string]any)
-	if catalog["id"] != "agmarknet-mock/mandi-MH" {
-		t.Errorf("catalog.id = %v, want agmarknet-mock/mandi-MH", catalog["id"])
+	if catalog["id"] != "agmarknet-live/mandi-MH" {
+		t.Errorf("catalog.id = %v, want agmarknet-live/mandi-MH", catalog["id"])
 	}
 	if catalog["isActive"] != true {
 		t.Errorf("isActive = %v, want true", catalog["isActive"])
@@ -129,8 +129,8 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 	}
 
 	prov := catalog["provider"].(map[string]any)
-	if prov["id"] != "agmarknet-mock" {
-		t.Errorf("provider.id = %v, want agmarknet-mock", prov["id"])
+	if prov["id"] != "agmarknet-live" {
+		t.Errorf("provider.id = %v, want agmarknet-live", prov["id"])
 	}
 
 	// Catalog validity: startDate / endDate
@@ -215,8 +215,8 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 
 	// Coverage areas
 	covAreas := ra["coverageAreas"].([]any)
-	if len(covAreas) != 2 {
-		t.Fatalf("len(coverageAreas) = %d, want 2", len(covAreas))
+	if len(covAreas) != 3 {
+		t.Fatalf("len(coverageAreas) = %d, want 3", len(covAreas))
 	}
 	covPoint := covAreas[0].(map[string]any)
 	if covPoint["type"] != "Point" {
@@ -231,6 +231,11 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 		covAdmin["areaLevel"] != "District" || covAdmin["areaName"] != "Ahmednagar" {
 		t.Errorf("covAdmin = %+v", covAdmin)
 	}
+	covState := covAreas[2].(map[string]any)
+	if covState["codeScheme"] != "ISO-3166-2" || covState["areaCode"] != "IN-MH" ||
+		covState["areaLevel"] != "State" || covState["areaName"] != "Maharashtra" {
+		t.Errorf("covState = %+v", covState)
+	}
 
 	// Publish Directives
 	directives := msgObj["publishDirectives"].([]any)
@@ -238,7 +243,7 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 		t.Fatalf("len(directives) = %d, want 1", len(directives))
 	}
 	dir := directives[0].(map[string]any)
-	if dir["catalogId"] != "agmarknet-mock/mandi-MH" {
+	if dir["catalogId"] != "agmarknet-live/mandi-MH" {
 		t.Errorf("dir.catalogId = %v", dir["catalogId"])
 	}
 	if dir["catalogType"] != "REGULAR" {
@@ -434,12 +439,16 @@ func TestBuildGeometryLessMarket(t *testing.T) {
 		t.Errorf("market.location exists, want absent")
 	}
 	covAreas := ra["coverageAreas"].([]any)
-	if len(covAreas) != 1 {
-		t.Fatalf("len(coverageAreas) = %d, want 1 (admin area only)", len(covAreas))
+	if len(covAreas) != 2 {
+		t.Fatalf("len(coverageAreas) = %d, want 2 (admin areas only, no geometry)", len(covAreas))
 	}
 	admin := covAreas[0].(map[string]any)
 	if admin["codeScheme"] != "AGMARKNET-DISTRICT" {
 		t.Errorf("codeScheme = %v", admin["codeScheme"])
+	}
+	adminState := covAreas[1].(map[string]any)
+	if adminState["codeScheme"] != "ISO-3166-2" || adminState["areaCode"] != "IN-MH" {
+		t.Errorf("adminState = %+v", adminState)
 	}
 
 	// 2. When withoutGeometry == "skip"
@@ -604,7 +613,7 @@ func TestBuildEndToEndAgainstRealMHFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := buildConfig{
 		catalogOut:      tmpDir,
-		participantID:   "agmarknet-mock",
+		participantID:   "agmarknet-live",
 		networkID:       "oan-dev",
 		withoutGeometry: withoutGeometryPublish,
 	}
@@ -625,7 +634,7 @@ func TestBuildEndToEndAgainstRealMHFile(t *testing.T) {
 		if state.StateCode != "MH" {
 			t.Errorf("chunk %d state = %q, want MH", i, state.StateCode)
 		}
-		wantID := fmt.Sprintf("agmarknet-mock/mandi-MH-%d", i+1)
+		wantID := fmt.Sprintf("agmarknet-live/mandi-MH-%d", i+1)
 		if state.CatalogID != wantID {
 			t.Errorf("chunk %d id = %q, want %q", i, state.CatalogID, wantID)
 		}
