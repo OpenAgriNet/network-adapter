@@ -10,12 +10,14 @@
 #
 # `mergeFieldPath` is the full dot path, from the envelope root, to the array
 # the fan-out merges across targets. It is required whenever target.urls
-# names more than one target, must start with "message." (or be exactly
-# "message"), and a fan-out rule may only list ONE endpoint -- different
-# actions nest their array at different depths (discover's is
-# message.catalogs, select's is message.contract.commitments), so an action
-# needing a different path gets its own rule below rather than sharing this
-# one.
+# names more than one target, and must start with "message." (or be exactly
+# "message") -- both checked at load time. What is NOT checked: giving a
+# fan-out rule several endpoints applies that one path to all of them, which
+# is wrong the moment they nest their array at different depths (discover's
+# is message.catalogs, select's is message.contract.commitments). So an
+# action needing a different path gets its own rule below -- one endpoint per
+# fan-out rule is a convention this file follows, not something the loader
+# enforces.
 routingRules:
   - version: "2.0.0"
     targetType: "url"
