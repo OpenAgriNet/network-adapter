@@ -29,7 +29,7 @@ func TestPublishWiringMatchesMandiFilePrefix(t *testing.T) {
 	result, err := catalogpublish.Publish(context.Background(), catalogpublish.Config{
 		PublishURL:     server.URL,
 		CatalogIn:      dir,
-		FilenamePrefix: "mandi",
+		FilenamePrefix: catalogFilePrefix,
 	})
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
@@ -53,7 +53,7 @@ func TestPublishWiringRetiresTheStatedOldCatalogID(t *testing.T) {
 		CatalogIn:      t.TempDir(), // empty; RetireOld alone must still post
 		RetireOld:      true,
 		OldCatalogID:   oldCatalogID,
-		FilenamePrefix: "mandi",
+		FilenamePrefix: catalogFilePrefix,
 	})
 	if err != nil {
 		t.Fatalf("Publish: %v", err)

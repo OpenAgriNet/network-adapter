@@ -148,8 +148,7 @@ func chunkMarkets(markets []CollectedMarket, budget int) [][]CollectedMarket {
 // buildCollection builds from a collection already in memory.
 //
 // This is what the one-stage run uses: collect hands its result straight here,
-// so a publish no longer has to go through a file on disk. build() is the same
-// thing with a file read in front of it.
+// so a publish no longer has to go through a file on disk.
 func buildCollection(ctx context.Context, collection Collection, cfg buildConfig) ([]BuiltState, SkipSummary, error) {
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
@@ -315,7 +314,7 @@ func buildFromCollection(ctx context.Context, col Collection, cfg buildConfig, m
 				return nil, summary, fmt.Errorf("indent JSON for state %s: %w", slug, err)
 			}
 
-			outFileName := fmt.Sprintf("mandi-%s.json", slug)
+			outFileName := fmt.Sprintf("%s-%s.json", catalogFilePrefix, slug)
 			outFilePath := filepath.Join(cfg.catalogOut, outFileName)
 			if err := os.WriteFile(outFilePath, indented.Bytes(), 0o644); err != nil {
 				return nil, summary, fmt.Errorf("write catalog file %s: %w", outFilePath, err)
@@ -323,7 +322,7 @@ func buildFromCollection(ctx context.Context, col Collection, cfg buildConfig, m
 
 			builtStates = append(builtStates, BuiltState{
 				StateCode: stateCode,
-				CatalogID: fmt.Sprintf("%s/mandi-%s", cfg.participantID, slug),
+				CatalogID: fmt.Sprintf("%s/%s-%s", cfg.participantID, catalogFilePrefix, slug),
 				Path:      outFilePath,
 				Markets:   len(chunk),
 			})

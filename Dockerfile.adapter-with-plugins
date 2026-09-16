@@ -24,10 +24,13 @@ RUN go build -ldflags "-X github.com/beckn-one/beckn-onix/pkg/version.Version=${
 
 # Build all publish tools. Output goes to bin/ so adding a new tool under
 # tools/publish/ automatically lands in the image without touching this file.
+# Enumerated via `go list` (main packages only) rather than a directory glob,
+# so a non-main library directory like tools/publish/internal does not get
+# handed to `go build` as if it were a tool.
 RUN mkdir -p /workspace/app/bin && \
-    for tool in tools/publish/*/; do \
+    for tool in $(go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./tools/publish/...); do \
       name=$(basename "$tool"); \
-      go build -o /workspace/app/bin/"$name" ./"$tool"; \
+      go build -o /workspace/app/bin/"$name" "$tool"; \
     done
 
 # Make the build script executable and run it to build plugins. The version

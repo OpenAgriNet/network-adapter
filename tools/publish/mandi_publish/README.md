@@ -17,6 +17,7 @@ second one is: copy this directory, then only touch the files marked
 | `env.go` | CLI/env utilities | copy as-is |
 | `report.go` | stderr presentation | copy as-is |
 | `run.go` | orchestrator | copy as-is |
+| `mappings.go` | embed declaration | copy as-is |
 | `build.go` | chunking / geometry budget / exclusion reporting | copy, adapt type names |
 | `client.go` | upstream auth + HTTP | rewrite |
 | `collect.go` | domain shapes (`Market`, `Collection`, ...) + `collect()` | rewrite |
@@ -90,4 +91,4 @@ Notes and tips
 - If you need to re-post catalogs reviewed on disk, use `--catalog-in` together with `--publish`.
 - To retire the old India-wide polygon catalog, run with `--retire-old` and `MANDI_PUBLISH_URL` set.
 
-For design rationale and invariants (zero-commodity filtering, coordinate handling, deterministic ordering), see the code in `build.go` and `main.go`.
+For design rationale and invariants (zero-commodity filtering, coordinate handling, deterministic ordering), see the code in `build.go` and `collect.go`.

@@ -315,11 +315,14 @@ func TestPublishRetiresTheOldCatalogWhenAsked(t *testing.T) {
 	}))
 	defer server.Close()
 
+	const testRetiredName = "Retired: superseded by the test catalogs"
+
 	result, err := Publish(context.Background(), Config{
 		PublishURL:     server.URL,
 		CatalogIn:      catalogDir(t, "test"),
 		RetireOld:      true,
 		OldCatalogID:   testOldCatalogID,
+		RetiredName:    testRetiredName,
 		FilenamePrefix: "test",
 	})
 	if err != nil {
@@ -347,6 +350,10 @@ func TestPublishRetiresTheOldCatalogWhenAsked(t *testing.T) {
 	}
 	if catalog["id"] != testOldCatalogID {
 		t.Errorf("tombstone id = %v", catalog["id"])
+	}
+	descriptor := catalog["descriptor"].(map[string]any)
+	if descriptor["name"] != testRetiredName {
+		t.Errorf("descriptor name = %v, want %q", descriptor["name"], testRetiredName)
 	}
 }
 

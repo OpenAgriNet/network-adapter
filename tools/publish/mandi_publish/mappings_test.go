@@ -12,7 +12,7 @@ import (
 func TestServeMappingsIsFetchableByTheMapper(t *testing.T) {
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -46,7 +46,7 @@ func TestServeMappingsIsFetchableByTheMapper(t *testing.T) {
 func TestMasterStatesRequestHalfBuildsTheQuery(t *testing.T) {
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
