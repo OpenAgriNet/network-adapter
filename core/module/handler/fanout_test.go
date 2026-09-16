@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,20 +49,6 @@ func mergedIDs(t *testing.T, body []byte) []string {
 	return ids
 }
 
-// merge is the old mergeCatalogs signature, kept for the merge tests: bodies in,
-// merged envelope out. Parsing now happens in collect, so the tests parse here.
-func merge(bodies [][]byte, limit int, hasLimit bool) ([]byte, error) {
-	kept := make([]keptResponse, 0, len(bodies))
-	for _, b := range bodies {
-		catalogs, present, err := catalogsOf(b)
-		if err != nil {
-			return nil, err
-		}
-		kept = append(kept, keptResponse{body: b, catalogs: catalogs, hasCatalogs: present})
-	}
-	return mergeCatalogs(kept, limit, hasLimit)
-}
-
 func sameIDs(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
@@ -69,124 +59,6 @@ func sameIDs(got, want []string) bool {
 		}
 	}
 	return true
-}
-
-func TestMergeCatalogsSeveralNetworksInterleavedRoundRobin(t *testing.T) {
-	merged, err := merge([][]byte{
-		onDiscover("m-1", "bharat-1", "bharat-2", "bharat-3"),
-		onDiscover("m-1", "maha-1"),
-		onDiscover("m-1", "third-1", "third-2"),
-	}, 0, false)
-	if err != nil {
-		t.Fatalf("mergeCatalogs() error = %v", err)
-	}
-
-	want := []string{"bharat-1", "maha-1", "third-1", "bharat-2", "third-2", "bharat-3"}
-	if got := mergedIDs(t, merged); !sameIDs(got, want) {
-		t.Errorf("mergeCatalogs() = %v, want %v", got, want)
-	}
-}
-
-func TestMergeCatalogsFirstResponseContextPreserved(t *testing.T) {
-	merged, err := merge([][]byte{
-		onDiscover("m-2", "a"),
-		onDiscover("m-2", "b"),
-	}, 0, false)
-	if err != nil {
-		t.Fatalf("mergeCatalogs() error = %v", err)
-	}
-	var env struct {
-		Context struct {
-			MessageID string `json:"messageId"`
-			Action    string `json:"action"`
-		} `json:"context"`
-	}
-	if err := json.Unmarshal(merged, &env); err != nil {
-		t.Fatalf("merged body has no readable context: %v", err)
-	}
-	if env.Context.MessageID != "m-2" || env.Context.Action != "on_discover" {
-		t.Errorf("mergeCatalogs() context = %+v, want the first response's context kept whole", env.Context)
-	}
-}
-
-func TestMergeCatalogsRepeatedIDKeepsFirstOccurrence(t *testing.T) {
-	merged, err := merge([][]byte{
-		onDiscover("m-3", "shared", "bharat-only"),
-		onDiscover("m-3", "shared", "maha-only"),
-	}, 0, false)
-	if err != nil {
-		t.Fatalf("mergeCatalogs() error = %v", err)
-	}
-	want := []string{"shared", "bharat-only", "maha-only"}
-	if got := mergedIDs(t, merged); !sameIDs(got, want) {
-		t.Errorf("mergeCatalogs() = %v, want %v", got, want)
-	}
-}
-
-func TestMergeCatalogsLimitPresentTruncatesMergedList(t *testing.T) {
-	merged, err := merge([][]byte{
-		onDiscover("m-4", "a1", "a2", "a3"),
-		onDiscover("m-4", "b1", "b2", "b3"),
-	}, 3, true)
-	if err != nil {
-		t.Fatalf("mergeCatalogs() error = %v", err)
-	}
-	// Interleaved first, so the cut keeps both networks represented.
-	want := []string{"a1", "b1", "a2"}
-	if got := mergedIDs(t, merged); !sameIDs(got, want) {
-		t.Errorf("mergeCatalogs() = %v, want %v", got, want)
-	}
-}
-
-func TestMergeCatalogsLimitAbsentReturnsEverything(t *testing.T) {
-	merged, err := merge([][]byte{
-		onDiscover("m-5", "a1", "a2"),
-		onDiscover("m-5", "b1", "b2"),
-	}, 0, false)
-	if err != nil {
-		t.Fatalf("mergeCatalogs() error = %v", err)
-	}
-	if got := mergedIDs(t, merged); len(got) != 4 {
-		t.Errorf("mergeCatalogs() returned %d catalogs, want all 4 kept when no limit was sent", len(got))
-	}
-}
-
-func TestMergeCatalogsNetworkWithNoCatalogsContributesNothing(t *testing.T) {
-	merged, err := merge([][]byte{
-		onDiscover("m-6", "only"),
-		[]byte(`{"context":{"messageId":"m-6"},"message":{}}`),
-	}, 0, false)
-	if err != nil {
-		t.Fatalf("mergeCatalogs() error = %v", err)
-	}
-	if got := mergedIDs(t, merged); !sameIDs(got, []string{"only"}) {
-		t.Errorf("mergeCatalogs() = %v, want [only]", got)
-	}
-}
-
-func TestMergeCatalogsUnknownCatalogMembersSurvive(t *testing.T) {
-	body := []byte(`{"context":{},"message":{"catalogs":[{"id":"a","futureMember":42}]}}`)
-	merged, err := merge([][]byte{body}, 0, false)
-	if err != nil {
-		t.Fatalf("mergeCatalogs() error = %v", err)
-	}
-	var env struct {
-		Message struct {
-			Catalogs []map[string]json.RawMessage `json:"catalogs"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(merged, &env); err != nil {
-		t.Fatalf("merged body unreadable: %v", err)
-	}
-	if _, ok := env.Message.Catalogs[0]["futureMember"]; !ok {
-		t.Error("mergeCatalogs() dropped a catalog member it does not know about")
-	}
-}
-
-func TestMergeCatalogsNonObjectResponseReturnsError(t *testing.T) {
-	if _, err := merge([][]byte{[]byte(`["not an envelope"]`)}, 0, false); err == nil {
-		t.Error("mergeCatalogs() with a non-object response = nil error, want an error")
-	}
 }
 
 func TestFanoutQueryNonZeroOffsetIsRefused(t *testing.T) {
@@ -275,7 +147,7 @@ func runFanout(t *testing.T, cfg FanoutConfig, rawQuery string, targets ...strin
 		Request:    req,
 		Body:       body,
 		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: urls[0], URLs: urls},
+		Route:      &model.Route{TargetType: "url", URL: urls[0], URLs: urls, MergeFieldPath: "message.catalogs"},
 	}
 
 	var responseBody []byte
@@ -309,7 +181,7 @@ func runFanoutWithSteps(t *testing.T, steps []definition.ResponseStep, targets .
 		MessageID:            "msg-sign-1",
 		SubID:                "bap.example.com",
 		InboundAuthSignature: "inboundSig==",
-		Route:                &model.Route{TargetType: "url", URL: urls[0], URLs: urls},
+		Route:                &model.Route{TargetType: "url", URL: urls[0], URLs: urls, MergeFieldPath: "message.catalogs"},
 	}
 
 	var responseBody []byte
@@ -337,8 +209,8 @@ func TestFanoutEveryTargetAnswersCatalogsAreMerged(t *testing.T) {
 	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"a1", "b1"}) {
 		t.Errorf("fanout() catalogs = %v, want [a1 b1]", got)
 	}
-	if h := rec.Header().Get(degradedHeader); h != "" {
-		t.Errorf("fanout() set %s=%q with every target healthy", degradedHeader, h)
+	if h := rec.Header().Get(degradedCountHeader); h != "" {
+		t.Errorf("fanout() set %s=%q with every target healthy", degradedCountHeader, h)
 	}
 }
 
@@ -356,11 +228,11 @@ func TestFanoutOneTargetFailsOthersStillAnswerAndItIsReportedDegraded(t *testing
 	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"good-1"}) {
 		t.Errorf("fanout() catalogs = %v, want [good-1]", got)
 	}
-	if h := rec.Header().Get(degradedHeader); h != "1" {
-		t.Errorf("fanout() %s = %q, want \"1\" for the one target that did not contribute", degradedHeader, h)
+	if h := rec.Header().Get(degradedCountHeader); h != "1" {
+		t.Errorf("fanout() %s = %q, want \"1\" for the one target that did not contribute", degradedCountHeader, h)
 	}
 	badHost, _ := url.Parse(bad.URL)
-	if strings.Contains(rec.Header().Get(degradedHeader), badHost.Hostname()) {
+	if strings.Contains(rec.Header().Get(degradedCountHeader), badHost.Hostname()) {
 		t.Error("fanout() put an upstream address in the degraded header; it must not disclose topology")
 	}
 }
@@ -373,9 +245,75 @@ func TestFanoutEveryTargetFailsReturnsNack(t *testing.T) {
 
 	rec := runFanout(t, FanoutConfig{}, "", bad.URL, alsoBad.URL)
 
-	if rec.Code == http.StatusOK {
-		t.Errorf("fanout() status = 200 with no target answering; an empty catalog list is indistinguishable from no matches")
+	// 502, not the default 500: every network being unreachable is upstream's
+	// failure, not this adapter's.
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("fanout() status = %d, want %d", rec.Code, http.StatusBadGateway)
 	}
+	badHost, _ := url.Parse(bad.URL)
+	if strings.Contains(rec.Body.String(), badHost.Hostname()) {
+		t.Error("fanout() put an upstream address in the NACK body; it must not disclose topology")
+	}
+}
+
+func TestFanoutCapsPerTargetResponseSize(t *testing.T) {
+	huge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxTargetResponseBytes+1))
+	}))
+	defer huge.Close()
+	good := discoverServer(t, http.StatusOK, onDiscover("m-cap", "good-1"), 0)
+	defer good.Close()
+
+	rec := runFanout(t, FanoutConfig{}, "", good.URL, huge.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200: an oversized target must not deny the caller the others", rec.Code)
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"good-1"}) {
+		t.Errorf("fanout() catalogs = %v, want [good-1]", got)
+	}
+	if h := rec.Header().Get(degradedCountHeader); h != "1" {
+		t.Errorf("fanout() %s = %q, want \"1\" for the target over the response cap", degradedCountHeader, h)
+	}
+}
+
+func TestFanoutForwardsClientIPAndPreservesTeTrailers(t *testing.T) {
+	// Buffered for both targets (below): a full channel would block a
+	// handler goroutine before it ever writes a response, and the test would
+	// only finish once the fan-out's own deadline gave up on it.
+	seen := make(chan http.Header, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(onDiscover("m-xff", "x"))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL + "/discover")
+	body := []byte(`{"context":{"action":"discover","version":"2.0.0"},"message":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/discover", strings.NewReader(string(body)))
+	req.RemoteAddr = "203.0.113.7:54321"
+	req.Header.Set("Te", "trailers, gzip")
+	rec := httptest.NewRecorder()
+	ctx := &model.StepContext{
+		Context:    req.Context(),
+		Request:    req,
+		Body:       body,
+		RespHeader: rec.Header(),
+		Route:      &model.Route{TargetType: "url", URL: u, URLs: []*url.URL{u, u}, MergeFieldPath: "message.catalogs"},
+	}
+	var responseBody []byte
+	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
+
+	got := <-seen
+	if got.Get("X-Forwarded-For") != "203.0.113.7" {
+		t.Errorf("X-Forwarded-For = %q, want the caller's IP", got.Get("X-Forwarded-For"))
+	}
+	if got.Get("Te") != "trailers" {
+		t.Errorf("Te = %q, want \"trailers\" preserved for a client that named it", got.Get("Te"))
+	}
+	<-seen // drain the second target so its handler goroutine is not left blocked
 }
 
 func TestFanoutTargetSlowerThanBudgetIsReportedDegraded(t *testing.T) {
@@ -392,8 +330,8 @@ func TestFanoutTargetSlowerThanBudgetIsReportedDegraded(t *testing.T) {
 	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"fast-1"}) {
 		t.Errorf("fanout() catalogs = %v, want only [fast-1]", got)
 	}
-	if h := rec.Header().Get(degradedHeader); h != "1" {
-		t.Errorf("fanout() %s = %q, want \"1\" for the target that missed the budget", degradedHeader, h)
+	if h := rec.Header().Get(degradedCountHeader); h != "1" {
+		t.Errorf("fanout() %s = %q, want \"1\" for the target that missed the budget", degradedCountHeader, h)
 	}
 }
 
@@ -468,8 +406,8 @@ func TestFanoutTargetAnswers200WithAnUnreadableBodyIsDegradedNotFatal(t *testing
 	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"good-1"}) {
 		t.Errorf("fanout() catalogs = %v, want [good-1]", got)
 	}
-	if h := rec.Header().Get(degradedHeader); h != "1" {
-		t.Errorf("fanout() %s = %q, want \"1\" for the target that sent an unreadable body", degradedHeader, h)
+	if h := rec.Header().Get(degradedCountHeader); h != "1" {
+		t.Errorf("fanout() %s = %q, want \"1\" for the target that sent an unreadable body", degradedCountHeader, h)
 	}
 }
 
@@ -566,7 +504,7 @@ func TestFanoutKeepsATargetsOwnQueryAndStillDropsOffset(t *testing.T) {
 		Request:    req,
 		Body:       body,
 		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: baked, URLs: []*url.URL{baked, plain}},
+		Route:      &model.Route{TargetType: "url", URL: baked, URLs: []*url.URL{baked, plain}, MergeFieldPath: "message.catalogs"},
 	}
 	var responseBody []byte
 	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
@@ -612,7 +550,7 @@ func TestFanoutStripsHeadersNamedByConnection(t *testing.T) {
 		Request:    req,
 		Body:       body,
 		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: u, URLs: []*url.URL{u, u}},
+		Route:      &model.Route{TargetType: "url", URL: u, URLs: []*url.URL{u, u}, MergeFieldPath: "message.catalogs"},
 	}
 	var responseBody []byte
 	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
@@ -644,29 +582,373 @@ func TestFanoutRefusesAnActionWhoseRepliesCarryNoCatalogs(t *testing.T) {
 	if rec.Code == http.StatusOK {
 		t.Errorf("fanout() merged replies that carry no catalogs: %s", rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), catalogsKey) {
+	if strings.Contains(rec.Body.String(), "catalogs") {
 		t.Error("fanout() wrote a catalogs member into a response that had none")
 	}
 }
 
-func TestMergeCatalogsErrorEnvelopeDoesNotDonateTheEnvelope(t *testing.T) {
-	// 200 with a Beckn error envelope and no catalogs: kept, but it must not
-	// be the envelope the caller receives.
-	merged, err := merge([][]byte{
-		[]byte(`{"context":{"messageId":"m-e"},"error":{"code":"NET_SOMETHING"}}`),
-		onDiscover("m-e", "real-1"),
-	}, 0, false)
-	if err != nil {
-		t.Fatalf("merge() error = %v", err)
+// TestFanoutSameExecutorMergesSelectByConfigAlone proves the executor itself
+// (not just merge.go's functions) handles select the same way it handles
+// discover, purely because the route's MergeFieldPath says where -- fanout()
+// has no branch for "this is discover" or "this is select" anywhere in it.
+func TestFanoutSameExecutorMergesSelectByConfigAlone(t *testing.T) {
+	onSelect := func(offerID string) []byte {
+		return []byte(`{"context":{"action":"on_select","version":"2.0.0"},"message":{"contract":{` +
+			`"status":{"descriptor":{"code":"ACTIVE"}},` +
+			`"commitments":[{"offer":{"id":"` + offerID + `"}}]}}}`)
 	}
-	var env map[string]json.RawMessage
-	if err := json.Unmarshal(merged, &env); err != nil {
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(onSelect("offer:agmarknet"))
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(onSelect("offer:mausamgram"))
+	}))
+	defer b.Close()
+
+	urlA, _ := url.Parse(a.URL + "/select")
+	urlB, _ := url.Parse(b.URL + "/select")
+	body := []byte(`{"context":{"action":"select","version":"2.0.0"},"message":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/select", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	ctx := &model.StepContext{
+		Context:    req.Context(),
+		Request:    req,
+		Body:       body,
+		RespHeader: rec.Header(),
+		Route:      &model.Route{TargetType: "url", URL: urlA, URLs: []*url.URL{urlA, urlB}, MergeFieldPath: "message.contract.commitments"},
+	}
+	var responseBody []byte
+	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Message struct {
+			Contract struct {
+				Commitments []struct {
+					Offer struct {
+						ID string `json:"id"`
+					} `json:"offer"`
+				} `json:"commitments"`
+			} `json:"contract"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
 		t.Fatalf("merged body unreadable: %v", err)
 	}
-	if _, ok := env["error"]; ok {
-		t.Error("merge() carried one network's error member into the merged answer")
+	if len(env.Message.Contract.Commitments) != 2 {
+		t.Fatalf("fanout() merged %d commitments, want 2 (one per target): %s", len(env.Message.Contract.Commitments), rec.Body.String())
 	}
-	if got := mergedIDs(t, merged); !sameIDs(got, []string{"real-1"}) {
-		t.Errorf("merge() = %v, want [real-1]", got)
+	if h := rec.Header().Get(degradedCountHeader); h != "" {
+		t.Errorf("fanout() set %s=%q with both select targets healthy", degradedCountHeader, h)
+	}
+}
+
+// TestFanoutEveryTargetAnsweringEmptyIsNotTreatedAsNoTarget covers the
+// "present but empty" state itemsOf/mergeResponses key their donor and
+// no-target-carried-it decisions on: every network genuinely having zero
+// matches is a valid 200 with catalogs: [], not the NACK a response
+// carrying no catalogs member AT ALL gets refused for.
+func TestFanoutEveryTargetAnsweringEmptyIsNotTreatedAsNoTarget(t *testing.T) {
+	a := discoverServer(t, http.StatusOK, onDiscover("m-empty"), 0)
+	defer a.Close()
+	b := discoverServer(t, http.StatusOK, onDiscover("m-empty"), 0)
+	defer b.Close()
+
+	rec := runFanout(t, FanoutConfig{}, "", a.URL, b.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200: every network answering zero matches is a real answer, not a failure. body: %s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Message struct {
+			Catalogs []json.RawMessage `json:"catalogs"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("merged body unreadable: %v", err)
+	}
+	if env.Message.Catalogs == nil {
+		t.Error("fanout() omitted the catalogs member entirely; want an empty array, not absent")
+	}
+	if len(env.Message.Catalogs) != 0 {
+		t.Errorf("fanout() catalogs = %v, want none", env.Message.Catalogs)
+	}
+	if h := rec.Header().Get(degradedCountHeader); h != "" {
+		t.Errorf("fanout() set %s=%q; every target answered, none should be degraded", degradedCountHeader, h)
+	}
+}
+
+// TestFanoutMaxConcurrencyBoundsInFlightTargets proves MaxConcurrency is an
+// enforced cap, not just a config field that gets read and forgotten.
+func TestFanoutMaxConcurrencyBoundsInFlightTargets(t *testing.T) {
+	const targets, maxConcurrent = 5, 2
+
+	var (
+		mu      sync.Mutex
+		current int
+		peak    int
+	)
+	enter := func() {
+		mu.Lock()
+		current++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+	}
+	leave := func() {
+		mu.Lock()
+		current--
+		mu.Unlock()
+	}
+
+	urls := make([]string, targets)
+	for i := 0; i < targets; i++ {
+		srv := discoverServerFunc(t, func(w http.ResponseWriter, r *http.Request) {
+			enter()
+			time.Sleep(80 * time.Millisecond)
+			leave()
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(onDiscover("m-cc", "x"))
+		})
+		defer srv.Close()
+		urls[i] = srv.URL
+	}
+
+	runFanout(t, FanoutConfig{MaxConcurrency: maxConcurrent}, "", urls...)
+
+	if peak > maxConcurrent {
+		t.Errorf("peak concurrent targets = %d, want <= %d (MaxConcurrency): the cap was not enforced", peak, maxConcurrent)
+	}
+	if peak < 2 {
+		t.Errorf("peak concurrent targets = %d, want >= 2: with a slot to spare and %d slower targets this should never have run fully serial", peak, targets)
+	}
+}
+
+// discoverServerFunc is discoverServer with a caller-supplied handler, for
+// tests that need to observe concurrency rather than just answer a fixed body.
+func discoverServerFunc(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(handler)
+}
+
+// TestFanoutSkipsAckSignerThroughItsTelemetryWrapperToo is the production
+// shape isAckSigner has to handle: stdHandler.go always wraps the ack signer
+// in InstrumentedResponseStep before handing it to fanout(), so a test built
+// only on a bare *ackSignerStep (as the other signing tests are) never
+// exercises the unwrap this depends on. If isAckSigner ever failed to see
+// through the wrapper, this would sign every target's own response instead
+// of the merged one -- and every other signing test would stay green,
+// because none of them wrap it.
+func TestFanoutSkipsAckSignerThroughItsTelemetryWrapperToo(t *testing.T) {
+	a := discoverServer(t, http.StatusOK, onDiscover("m-wrap", "a1"), 0)
+	defer a.Close()
+	b := discoverServer(t, http.StatusOK, onDiscover("m-wrap", "b1"), 0)
+	defer b.Close()
+
+	signer := &mockSigner{returnSig: "wrappedsig=="}
+	km := &mockKM{keyset: &model.Keyset{UniqueKeyID: "key-1", SigningPrivate: "priv"}}
+	step, err := newAckSignerStep(signer, km)
+	if err != nil {
+		t.Fatalf("newAckSignerStep(): %v", err)
+	}
+	concrete := step.(*ackSignerStep)
+	// The exact production shape: stdHandler.go keeps the CONCRETE step
+	// (passed to fanout() as ackSigner, run once over the merged body) and
+	// puts a WRAPPED one in responseSteps (what collect() iterates per
+	// target) -- two references to the same signer, one plain and one
+	// wrapped. runFanoutWithSteps only ever hands fanout() a bare
+	// *ackSignerStep in both places, so it can't exercise this.
+	wrapped, err := NewInstrumentedResponseStep(concrete, "signAck", "test-module")
+	if err != nil {
+		t.Fatalf("NewInstrumentedResponseStep(): %v", err)
+	}
+
+	urls := []*url.URL{}
+	for _, target := range []string{a.URL, b.URL} {
+		u, err := url.Parse(target + "/discover")
+		if err != nil {
+			t.Fatalf("parsing target %q: %v", target, err)
+		}
+		urls = append(urls, u)
+	}
+	body := []byte(`{"context":{"action":"discover","version":"2.0.0"},"message":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/discover", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	ctx := &model.StepContext{
+		Context:              req.Context(),
+		Request:              req,
+		Body:                 body,
+		RespHeader:           rec.Header(),
+		ProtocolVersion:      "2.0.0",
+		MessageID:            "msg-wrap-1",
+		SubID:                "bap.example.com",
+		InboundAuthSignature: "inboundSig==",
+		Route:                &model.Route{TargetType: "url", URL: urls[0], URLs: urls, MergeFieldPath: "message.catalogs"},
+	}
+	var responseBody []byte
+	fanout(ctx, req, rec, &http.Client{}, []definition.ResponseStep{wrapped}, concrete, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"a1", "b1"}) {
+		t.Errorf("fanout() catalogs = %v, want [a1 b1]: a wrapped ack signer not recognized as one would have run per-target instead of merging", got)
+	}
+	if sig := rec.Header().Get("Signature"); sig == "" {
+		t.Error("fanout() sent the merged response with no Signature header")
+	}
+	if !bytes.Equal(signer.signedBody, rec.Body.Bytes()) {
+		t.Errorf("fanout() signed %s\nbut sent   %s", signer.signedBody, rec.Body.Bytes())
+	}
+	// The real regression this test exists for: an unrecognized wrapper does
+	// not change the FINAL signature (it's overwritten by the correct merged
+	// call that runs after collect()), so only a call count catches it -- if
+	// isAckSigner failed to see through InstrumentedResponseStep, collect()
+	// would run it as an ordinary response step against BOTH targets too,
+	// signing each one's own body before the merged call overwrites the result.
+	if signer.signAckCalls != 1 {
+		t.Errorf("SignAck called %d times, want 1: it must run once over the merged body, not once per target plus once for the merge", signer.signAckCalls)
+	}
+}
+
+// TestFanoutOnlyOneOfSeveralHasAnsweredWhenBudgetExpires is the scenario
+// asked about directly: discover is slow, and by the time the shared budget
+// expires only one network out of several has actually answered. The
+// merged reply must be exactly that one network's catalogs, with every
+// other target counted degraded -- not a NACK, and not a wait for the rest.
+func TestFanoutOnlyOneOfSeveralHasAnsweredWhenBudgetExpires(t *testing.T) {
+	fast := discoverServer(t, http.StatusOK, onDiscover("m-slow-others", "fast-1"), 0)
+	defer fast.Close()
+
+	slowURLs := make([]string, 4)
+	for i := range slowURLs {
+		slow := discoverServer(t, http.StatusOK, onDiscover("m-slow-others", fmt.Sprintf("slow-%d", i)), 2*time.Second)
+		defer slow.Close()
+		slowURLs[i] = slow.URL
+	}
+	targets := append([]string{fast.URL}, slowURLs...)
+
+	rec := runFanout(t, FanoutConfig{Timeout: 150 * time.Millisecond}, "", targets...)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200 with the one answer that arrived in time. body: %s", rec.Code, rec.Body.String())
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"fast-1"}) {
+		t.Errorf("fanout() catalogs = %v, want only [fast-1]: the 4 that had not answered yet must not block or leak into the merge", got)
+	}
+	if h := rec.Header().Get(degradedCountHeader); h != "4" {
+		t.Errorf("fanout() %s = %q, want \"4\" for the four still in flight when the budget expired", degradedCountHeader, h)
+	}
+}
+
+// TestFanoutMoreTargetsThanConcurrencyStillMergesEveryOne proves more than
+// ten targets, well past the default MaxConcurrency of 8, still all get
+// called and merged correctly -- the second wave is not dropped, starved, or
+// raced against the first.
+func TestFanoutMoreTargetsThanConcurrencyStillMergesEveryOne(t *testing.T) {
+	const n = 15
+	urls := make([]string, n)
+	ids := make([]string, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("network-%02d", i)
+		ids[i] = id
+		srv := discoverServer(t, http.StatusOK, onDiscover("m-many", id), 5*time.Millisecond)
+		defer srv.Close()
+		urls[i] = srv.URL
+	}
+
+	// Default MaxConcurrency (8): with 15 targets this runs in waves.
+	rec := runFanout(t, FanoutConfig{}, "", urls...)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+	got := mergedIDs(t, rec.Body.Bytes())
+	if len(got) != n {
+		t.Fatalf("fanout() merged %d catalogs, want all %d -- a later wave was dropped or starved", len(got), n)
+	}
+	sortedGot := append([]string(nil), got...)
+	sortedWant := append([]string(nil), ids...)
+	sort.Strings(sortedGot)
+	sort.Strings(sortedWant)
+	if !sameIDs(sortedGot, sortedWant) {
+		t.Errorf("fanout() catalogs = %v, want every one of %v (any order)", got, ids)
+	}
+	if h := rec.Header().Get(degradedCountHeader); h != "" {
+		t.Errorf("fanout() set %s=%q with all %d targets healthy", degradedCountHeader, h, n)
+	}
+}
+
+// TestFanoutCutsOffATargetThatStallsMidBody covers the case the whole-round-
+// trip deadline exists for: a target that answers 200 promptly, starts
+// writing its body, then stalls -- no more bytes, connection held open --
+// past the fan-out's own budget. The single-target httpClientConfig.timeout
+// is a separate, per-request bound; this proves the fan-out budget alone,
+// with no httpClientConfig configured, still cuts a stalled body read off
+// rather than hanging until some other timeout (or never).
+func TestFanoutCutsOffATargetThatStallsMidBody(t *testing.T) {
+	stalling := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"context":{"action":"on_discover"},"message":{"catalogs":`)) // deliberately unterminated
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done() // held open until the fan-out's own deadline cancels it
+	}))
+	defer stalling.Close()
+	fast := discoverServer(t, http.StatusOK, onDiscover("m-stall", "fast-1"), 0)
+	defer fast.Close()
+
+	// Not a goroutine-leak check here: that depends on the TEST SERVER
+	// noticing its client disconnected (r.Context().Done()), a TCP-layer
+	// detail outside fanout.go's own control and prone to outlast the
+	// deadline in exactly the way this test would otherwise flag as a leak.
+	// callTarget's own goroutine hygiene is already covered, on a harness
+	// that doesn't depend on that, by
+	// TestFanoutLeavesNoGoroutineBehindWhenTargetsMissTheBudget.
+	rec := runFanout(t, FanoutConfig{Timeout: 150 * time.Millisecond}, "", fast.URL, stalling.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200: the healthy target must not be denied by one that stalled mid-body", rec.Code)
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"fast-1"}) {
+		t.Errorf("fanout() catalogs = %v, want only [fast-1]", got)
+	}
+	if h := rec.Header().Get(degradedCountHeader); h != "1" {
+		t.Errorf("fanout() %s = %q, want \"1\" for the target that stalled mid-body", degradedCountHeader, h)
+	}
+}
+
+// TestFanoutDuplicateTargetURLsAreCalledSeparatelyAndDedupedByItemID covers a
+// rule that (accidentally or not) names the same target twice: both are
+// still called as distinct targets (not collapsed to one call), and their
+// answers -- identical here, as a real duplicate would be -- are deduped by
+// item id in the merge, the same as if two DIFFERENT networks had returned
+// the same catalog.
+func TestFanoutDuplicateTargetURLsAreCalledSeparatelyAndDedupedByItemID(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(onDiscover("m-dup", "shared-1"))
+	}))
+	defer srv.Close()
+
+	rec := runFanout(t, FanoutConfig{}, "", srv.URL, srv.URL)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200. body: %s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Errorf("target received %d calls, want 2: a duplicated target entry must still be called once per occurrence, not collapsed", got)
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"shared-1"}) {
+		t.Errorf("fanout() catalogs = %v, want [shared-1] once, deduped by id", got)
 	}
 }
