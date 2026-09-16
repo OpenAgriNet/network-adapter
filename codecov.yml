@@ -1,0 +1,34 @@
+# Codecov's behaviour, in the repo rather than in the dashboard.
+#
+# Every setting here is also a toggle on codecov.io. In the repo it is
+# reviewable, it arrives with the branch that needs it, and it cannot be
+# changed by someone with dashboard access and no commit — which matters more
+# than usual on a public repo where the badge is a claim to strangers.
+#
+# The service exists here to publish ONE number to the README badge. It is
+# deliberately given no authority over a PR:
+
+# No bot comment. ci.yml already posts a coverage comment, from make cover-diff,
+# scoped to the files the PR changed. A second comment reporting the whole
+# repo's total would disagree with it on almost every PR — not because either
+# is wrong, but because they measure different things — and the reader has no
+# way to tell which one to act on.
+comment: false
+
+coverage:
+  status:
+    # informational on both: report the number, never fail the check. The
+    # coverage gate is make cover-diff with MIN_COVERAGE, in the Makefile,
+    # where the threshold lives beside every other CI pin. Two gates on one
+    # subject is how a repo ends up with a rule nobody can find the source of.
+    #
+    # This matters more here than in most repos: the existing whole-repo total
+    # is well under MIN_COVERAGE, which is precisely why ci.yml gates the diff
+    # instead. A project status that could fail would block every PR on a
+    # backlog none of them created.
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
