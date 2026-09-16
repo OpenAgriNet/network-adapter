@@ -15,14 +15,14 @@ import (
 
 func TestPublishWiringMatchesMandiFilePrefix(t *testing.T) {
 	dir := t.TempDir()
-	body := `{"context":{"action":"catalog/publish"},"message":{"catalogs":[{"id":"agmarknet-mock/mandi-MH"}],` +
-		`"publishDirectives":[{"catalogId":"agmarknet-mock/mandi-MH"}]}}`
+	body := `{"context":{"action":"catalog/publish"},"message":{"catalogs":[{"id":"agmarknet-live/mandi-MH"}],` +
+		`"publishDirectives":[{"catalogId":"agmarknet-live/mandi-MH"}]}}`
 	if err := os.WriteFile(filepath.Join(dir, "mandi-MH.json"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write catalog file: %v", err)
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"message":{"results":[{"catalogId":"agmarknet-mock/mandi-MH","status":"ACCEPTED"}]}}`))
+		_, _ = w.Write([]byte(`{"message":{"results":[{"catalogId":"agmarknet-live/mandi-MH","status":"ACCEPTED"}]}}`))
 	}))
 	defer server.Close()
 
