@@ -42,9 +42,9 @@ const publishTimeout = 180 * time.Second
 
 // Config is one publish run's inputs.
 //
-// FilenamePrefix, AddressHint and OldCatalogID are the whole per-tool
-// customization surface: this package otherwise carries no knowledge of any
-// specific source or catalog domain.
+// FilenamePrefix, AddressHint, OldCatalogID and RetiredName are the whole
+// per-tool customization surface: this package otherwise carries no knowledge
+// of any specific source or catalog domain.
 type Config struct {
 	PublishURL string
 	CatalogIn  string
@@ -62,6 +62,10 @@ type Config struct {
 	// OldCatalogID is the catalog to retire when RetireOld is set. Ignored
 	// otherwise.
 	OldCatalogID string
+
+	// RetiredName is the retired catalog's descriptor name, shown in
+	// tombstone()'s payload when RetireOld is set. Ignored otherwise.
+	RetiredName string
 }
 
 // Outcome is what happened to one catalog.
@@ -142,7 +146,7 @@ func Publish(ctx context.Context, cfg Config) (Result, error) {
 
 	if cfg.RetireOld {
 		outcome := publishEnvelope(ctx, client, base, "", cfg.OldCatalogID,
-			tombstone(cfg.OldCatalogID), cfg.DryRun)
+			tombstone(cfg.OldCatalogID, cfg.RetiredName), cfg.DryRun)
 		result.RetiredOld = &outcome
 	}
 	return result, nil
@@ -334,7 +338,7 @@ func firstLine(body []byte) string {
 // rejected as unsupported, and MERGE's removal semantics are documented
 // nowhere in these repos, so republishing the catalog WITHOUT the unwanted
 // resource cannot be relied on to remove it.
-func tombstone(catalogID string) []byte {
+func tombstone(catalogID, retiredName string) []byte {
 	body, _ := json.Marshal(map[string]any{
 		"context": map[string]any{
 			"action":        "catalog/publish",
@@ -349,7 +353,7 @@ func tombstone(catalogID string) []byte {
 				"isActive": false,
 				"descriptor": map[string]any{
 					"code": catalogID,
-					"name": "Retired: superseded by the per-state market catalogs",
+					"name": retiredName,
 				},
 				"resources": []any{},
 			}},

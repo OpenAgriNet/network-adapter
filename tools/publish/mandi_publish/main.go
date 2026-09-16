@@ -39,6 +39,12 @@ import (
 // answer carries a resource that says only "somewhere in India".
 const oldCatalogID = "cat-agmarknet-mandi-prices"
 
+// catalogFilePrefix is the filename prefix build.go writes catalogs under
+// (mandi-<STATE>[-N].json) and publish matches on via
+// catalogpublish.Config.FilenamePrefix -- the contract between build and
+// publish.
+const catalogFilePrefix = "mandi"
+
 // config is one run's inputs, gathered so collect can be tested without flags.
 type config struct {
 	baseURL  string
@@ -80,9 +86,10 @@ func main() {
 		States:         splitStates(*states),
 		DryRun:         *dryRun,
 		RetireOld:      *retireOldFlag,
-		FilenamePrefix: "mandi",
+		FilenamePrefix: catalogFilePrefix,
 		AddressHint:    "pass --publish-url or set MANDI_PUBLISH_URL",
 		OldCatalogID:   oldCatalogID,
+		RetiredName:    "Retired: superseded by the per-state market catalogs",
 	}
 
 	// --catalog-in publishes what is already on disk and collects nothing. It
@@ -161,4 +168,3 @@ func publishAndExit(ctx context.Context, cfg catalogpublish.Config) {
 		os.Exit(1)
 	}
 }
-

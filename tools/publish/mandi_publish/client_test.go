@@ -103,7 +103,7 @@ func TestStatesFetchesAndMapsTheStateList(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -143,7 +143,7 @@ func TestCallRefusesAnObjectResponse(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -175,7 +175,7 @@ func TestStatesSurvivesASingleRowAnswer(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
