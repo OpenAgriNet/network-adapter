@@ -44,6 +44,11 @@ RUN chmod +x install/build-plugins.sh && \
 
 # Create minimal runtime image
 FROM cgr.dev/chainguard/wolfi-base:latest
+
+# Force a fresh apk index so a CVE patched upstream (e.g. zlib) lands even
+# when the :latest base layer itself is stale in the local/CI docker cache.
+RUN apk upgrade --no-cache zlib
+
 WORKDIR /app
 
 # Copy binary and plugins built with same Go version

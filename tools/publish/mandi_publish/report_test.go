@@ -1,9 +1,36 @@
 package main
 
 import (
+	"io"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/beckn-one/beckn-onix/tools/publish/internal/catalogpublish"
 )
+
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// everything written to it. The report functions write straight to
+// os.Stderr rather than taking a writer, so this is the seam a test has.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	return string(out)
+}
 
 func TestReportNamesEveryExcludedMarketAndWhy(t *testing.T) {
 	summary := SkipSummary{
@@ -73,6 +100,93 @@ func TestReportShowsChunkingWhenAStateIsSplit(t *testing.T) {
 	}
 	if !strings.Contains(report, "136") {
 		t.Errorf("report does not total the state's markets across chunks:\n%s", report)
+	}
+}
+
+func TestCountQualityCountsOnlyTheMatchingVerdict(t *testing.T) {
+	markets := []CollectedMarket{
+		{CoordinateQuality: coordinateMissing},
+		{CoordinateQuality: coordinateOK},
+		{CoordinateQuality: coordinateMissing},
+		{CoordinateQuality: coordinateSuspect},
+	}
+	if got := countQuality(markets, coordinateMissing); got != 2 {
+		t.Errorf("countQuality(missing) = %d, want 2", got)
+	}
+	if got := countQuality(markets, coordinateOutOfBounds); got != 0 {
+		t.Errorf("countQuality(outOfBounds) = %d, want 0", got)
+	}
+}
+
+func TestPrintCollectionSummaryNamesEveryFactAboutTheRun(t *testing.T) {
+	collection := Collection{
+		Markets: []CollectedMarket{
+			{CoordinateQuality: coordinateMissing},
+			{CoordinateQuality: coordinateOK},
+		},
+		EmptyStates: []string{"GA", "KL"},
+		StateErrors: []StateError{{StateCode: "TN", Reason: "upstream timed out"}},
+	}
+
+	out := captureStderr(t, func() { printCollectionSummary(collection) })
+
+	for _, want := range []string{"collected 2 markets", "1 markets have missing", "GA, KL", "TN FAILED: upstream timed out"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("collection summary does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintBuildSummaryPrintsTheReportLines(t *testing.T) {
+	built := []BuiltState{{StateCode: "TN", CatalogID: "catalog:mandi-price:TN", Path: "catalog/mandi-TN.json", Markets: 12}}
+
+	out := captureStderr(t, func() { printBuildSummary(built, SkipSummary{}, buildConfig{catalogOut: "catalog"}) })
+
+	if !strings.Contains(out, "catalog:mandi-price:TN") {
+		t.Errorf("build summary does not name the catalog:\n%s", out)
+	}
+}
+
+func TestPrintPublishSummaryReportsEachOutcome(t *testing.T) {
+	res := catalogpublish.Result{
+		Outcomes: []catalogpublish.Outcome{
+			{StateCode: "MH", CatalogID: "catalog:mandi-price:MH", Status: catalogpublish.StatusPublished},
+			{StateCode: "TN", CatalogID: "catalog:mandi-price:TN", Status: catalogpublish.StatusRejected, Reason: "bad schema"},
+			{StateCode: "KA", CatalogID: "catalog:mandi-price:KA", Status: catalogpublish.StatusTransportError, Reason: "connection refused"},
+		},
+		RetiredOld: &catalogpublish.Outcome{CatalogID: "cat-agmarknet-mandi-prices", Status: catalogpublish.StatusPublished},
+	}
+
+	out := captureStderr(t, func() { printPublishSummary(res, catalogpublish.Config{}) })
+
+	for _, want := range []string{
+		"catalog:mandi-price:MH -> ACCEPTED",
+		"catalog:mandi-price:TN -> REJECTED: bad schema",
+		"catalog:mandi-price:KA -> ERROR: connection refused",
+		"retired old catalog cat-agmarknet-mandi-prices -> ACCEPTED",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("publish summary does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestPrintPublishSummaryAnnouncesADryRun(t *testing.T) {
+	res := catalogpublish.Result{
+		Outcomes: []catalogpublish.Outcome{
+			{StateCode: "MH", CatalogID: "catalog:mandi-price:MH", Status: catalogpublish.StatusDryRun},
+		},
+	}
+
+	out := captureStderr(t, func() {
+		printPublishSummary(res, catalogpublish.Config{DryRun: true, PublishURL: "http://localhost:9200/"})
+	})
+
+	if !strings.Contains(out, "dry-run: would publish to http://localhost:9200/publish") {
+		t.Errorf("publish summary does not announce the dry-run target:\n%s", out)
+	}
+	if !strings.Contains(out, "catalog:mandi-price:MH -> would POST") {
+		t.Errorf("publish summary does not report the dry-run outcome:\n%s", out)
 	}
 }
 

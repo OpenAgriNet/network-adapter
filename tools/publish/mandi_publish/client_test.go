@@ -90,6 +90,65 @@ func TestAsQueryRendersScalarsAndRefusesTheRest(t *testing.T) {
 	}
 }
 
+func TestAsQueryRendersBoolAndNumber(t *testing.T) {
+	got, err := asQuery([]byte(`{"flag":true,"lat":19.9975}`))
+	if err != nil {
+		t.Fatalf("asQuery: %v", err)
+	}
+	if !strings.Contains(got, "flag=true") {
+		t.Errorf("asQuery = %q, want it to carry flag=true", got)
+	}
+	// 'g' with -1 precision must not invent trailing zeros.
+	if !strings.Contains(got, "lat=19.9975") {
+		t.Errorf("asQuery = %q, want it to carry lat=19.9975 unrounded", got)
+	}
+}
+
+func TestAsQueryRejectsMalformedJSON(t *testing.T) {
+	if _, err := asQuery([]byte(`not json`)); err == nil {
+		t.Error("want an error for input that is not a JSON object")
+	}
+}
+
+func TestTokenReportsATransportFailure(t *testing.T) {
+	client := &Client{BaseURL: "http://127.0.0.1:0", HTTP: http.DefaultClient}
+	if _, err := client.Token(context.Background(), "u", "p"); err == nil {
+		t.Fatal("want an error when the token endpoint cannot be reached")
+	}
+}
+
+func TestTokenRejectsANonJSONResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer srv.Close()
+
+	client := &Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	if _, err := client.Token(context.Background(), "u", "p"); err == nil {
+		t.Fatal("want an error when the token response is not JSON")
+	}
+}
+
+func TestJSONShapeNamesEveryDecodedType(t *testing.T) {
+	cases := []struct {
+		value any
+		want  string
+	}{
+		{nil, "null"},
+		{true, "boolean"},
+		{float64(1), "number"},
+		{"s", "string"},
+		{map[string]any{}, "object"},
+		{[]any{}, "array"},
+		{42, "int"},
+	}
+	for _, c := range cases {
+		if got := jsonShape(c.value); got != c.want {
+			t.Errorf("jsonShape(%#v) = %q, want %q", c.value, got, c.want)
+		}
+	}
+}
+
 func TestStatesFetchesAndMapsTheStateList(t *testing.T) {
 	var gotQuery string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
