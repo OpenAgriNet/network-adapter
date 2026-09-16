@@ -1240,6 +1240,44 @@ func TestValidateRulesSingleUrlNeedsNoMerge(t *testing.T) {
 	}
 }
 
+// TestValidateRulesRejectsMergeFieldPathNotUnderMessage catches a typo class
+// that would otherwise fail silently at request time: a path rooted anywhere
+// but message finds nothing on every target, and the caller gets a confusing
+// "no response carried X" NACK instead of a clear error at load.
+func TestValidateRulesRejectsMergeFieldPathNotUnderMessage(t *testing.T) {
+	for _, path := range []string{"catalogs", "context.messageId", "Message.catalogs"} {
+		err := validateRules([]routingRule{{
+			Version:        "2.0.0",
+			TargetType:     "url",
+			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+			Endpoints:      []string{"discover"},
+			MergeFieldPath: path,
+		}})
+		if err == nil {
+			t.Errorf("validateRules() accepted mergeFieldPath %q, want it rejected for not starting with \"message.\"", path)
+		}
+	}
+}
+
+// TestValidateRulesAcceptsMergeFieldPathUnderMessage covers the accepted
+// shapes: a nested path, and the bare "message" itself (the whole message
+// object as the array -- unusual, but not the mistake the check above guards
+// against).
+func TestValidateRulesAcceptsMergeFieldPathUnderMessage(t *testing.T) {
+	for _, path := range []string{"message.catalogs", "message.contract.commitments", "message"} {
+		err := validateRules([]routingRule{{
+			Version:        "2.0.0",
+			TargetType:     "url",
+			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+			Endpoints:      []string{"discover"},
+			MergeFieldPath: path,
+		}})
+		if err != nil {
+			t.Errorf("validateRules() with mergeFieldPath %q = %v, want accepted", path, err)
+		}
+	}
+}
+
 func TestLoadRulesSingleUrlLeavesUrlsEmpty(t *testing.T) {
 	path := writeRoutingConfig(t, `
 routingRules:
