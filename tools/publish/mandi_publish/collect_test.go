@@ -57,7 +57,7 @@ func TestMarketsMapsRowsAndTrimsNames(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -109,7 +109,7 @@ func TestMarketsDropsANonNumericCoordinateInsteadOfFailingTheWholeMap(t *testing
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -150,7 +150,7 @@ func TestStateMarketsCarriesEveryCodeASelectNeeds(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -202,7 +202,7 @@ func TestStateMarketsSurvivesAMarketWithOneCommodity(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -236,7 +236,7 @@ func TestStateMarketsRefusesAStateNameInPlaceOfACode(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 

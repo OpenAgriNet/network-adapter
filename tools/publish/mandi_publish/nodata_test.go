@@ -51,7 +51,7 @@ func TestStateMarketsReportsNoDataDistinctly(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -82,7 +82,7 @@ func TestNoDataErrorNeverQuotesTheToken(t *testing.T) {
 
 	base, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 

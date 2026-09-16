@@ -59,7 +59,7 @@ func TestBuildOneMarketResourceExactMatch(t *testing.T) {
 
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -279,7 +279,7 @@ func TestBuildMarketWithOneCommodityWrapsArray(t *testing.T) {
 
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -345,7 +345,7 @@ func TestBuildMarketWithZeroCommoditiesSkipped(t *testing.T) {
 
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -374,7 +374,7 @@ func TestBuildMarketWithZeroCommoditiesSkipped(t *testing.T) {
 func TestBuildGeometryLessMarket(t *testing.T) {
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -488,7 +488,7 @@ func TestBuildCommodityDedupeAndSort(t *testing.T) {
 
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
@@ -533,7 +533,7 @@ func TestBuildDeterministicOutput(t *testing.T) {
 
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 

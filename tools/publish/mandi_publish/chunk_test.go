@@ -39,7 +39,7 @@ func buildInto(t *testing.T, dir string, markets []CollectedMarket) ([]BuiltStat
 
 	mappingBase, stop, err := catalogpublish.ServeMappings(mappingFiles, "mappings")
 	if err != nil {
-		t.Fatalf("serveMappings: %v", err)
+		t.Fatalf("ServeMappings: %v", err)
 	}
 	defer stop()
 
