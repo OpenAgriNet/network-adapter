@@ -33,11 +33,6 @@ const (
 // additionalProperties:false).
 const degradedCountHeader = "X-Beckn-Degraded-Count"
 
-const (
-	limitParam  = "limit"
-	offsetParam = "offset"
-)
-
 // codeAllTargetsUnreachable mirrors util.CodeUpstreamUnavailable, which this
 // package cannot import (internal to plugin/implementation).
 const codeAllTargetsUnreachable = "NET_DOWNSTREAM_UNAVAILABLE"
@@ -63,8 +58,8 @@ type targetResult struct {
 // target that fails is counted in the degraded header rather than denying
 // the caller what the others returned; only a total failure NACKs.
 //
-// Merge policy (donor selection, dedupe, ordering) lives in merge.go, not
-// here -- this file is the executor.
+// Merge policy (donor selection, ordering) lives in merge.go, not here --
+// this file is the executor.
 func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client, responseSteps []definition.ResponseStep, ackSigner *ackSignerStep, cfg FanoutConfig, signNack nackSignerFunc, responseBody *[]byte) {
 	targets := ctx.Route.URLs
 	mergeFieldPath := ctx.Route.MergeFieldPath
@@ -74,13 +69,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		*responseBody = sendNack(ctx, w, err)
 	}
 
-	query, limit, hasLimit, err := fanoutQuery(r.URL.Query())
-	if err != nil {
-		fail(err)
-		return
-	}
-
-	results := callTargets(ctx, r, httpClient, targets, query, cfg)
+	results := callTargets(ctx, r, httpClient, targets, r.URL.Query(), cfg)
 
 	kept, degraded := collect(ctx, targets, results, responseSteps, mergeFieldPath)
 	log.Infof(ctx.Context, "fanout: %d/%d targets contributed, %d degraded, mergeFieldPath=%s", len(kept), len(targets), len(degraded), mergeFieldPath)
@@ -95,7 +84,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		return
 	}
 
-	merged, err := mergeResponses(kept, mergeFieldPath, limit, hasLimit)
+	merged, err := mergeResponses(kept, mergeFieldPath)
 	if err != nil {
 		log.Errorf(ctx.Context, err, "fanout: merge failed across %d kept response(s) at mergeFieldPath=%s", len(kept), mergeFieldPath)
 		fail(err)
@@ -117,46 +106,6 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		w.Header().Set(degradedCountHeader, strconv.Itoa(len(degraded)))
 	}
 	*responseBody = writeJSONResponse(ctx, w, merged)
-}
-
-// fanoutQuery resolves the outbound query string and the page size to apply
-// to the merged result.
-//
-// offset means "skip N in EACH network" if forwarded as-is -- not page two of
-// anything merged across them -- so it is refused. limit is forwarded (each
-// network pages its own retrieval) and re-applied to the merged list, so a
-// caller asking for 20 gets 20, not 20 per network.
-func fanoutQuery(in url.Values) (url.Values, int, bool, error) {
-	out := url.Values{}
-	for k, v := range in {
-		out[k] = v
-	}
-
-	if raw := out.Get(offsetParam); raw != "" {
-		offset, err := strconv.Atoi(raw)
-		if err != nil {
-			return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf("offset is not a whole number"))
-		}
-		if offset != 0 {
-			return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT",
-				fmt.Errorf("offset is not supported when an action is served by several networks: paging past the first page cannot be expressed across them"))
-		}
-	}
-	out.Del(offsetParam)
-
-	raw := out.Get(limitParam)
-	if raw == "" {
-		return out, 0, false, nil
-	}
-	limit, err := strconv.Atoi(raw)
-	if err != nil {
-		return nil, 0, false, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf("limit is not a whole number"))
-	}
-	if limit <= 0 {
-		// Non-positive means "the service's default", which this cannot know.
-		return out, 0, false, nil
-	}
-	return out, limit, true, nil
 }
 
 // callTargets calls every target in parallel under one deadline and one
@@ -211,14 +160,12 @@ func callTargets(ctx *model.StepContext, r *http.Request, httpClient *http.Clien
 // array instead.
 func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request, httpClient *http.Client, target *url.URL, query url.Values) targetResult {
 	// The target's own configured query survives; the inbound one is laid
-	// over it. offset is deleted last, unconditionally, so it cannot re-enter
-	// from either side.
+	// over it.
 	u := *target
 	merged := u.Query()
 	for key, values := range query {
 		merged[key] = values
 	}
-	merged.Del(offsetParam)
 	u.RawQuery = merged.Encode()
 
 	req, err := http.NewRequestWithContext(fanCtx, r.Method, u.String(), bytes.NewReader(ctx.Body))

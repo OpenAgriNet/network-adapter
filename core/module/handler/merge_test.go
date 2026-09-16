@@ -9,7 +9,7 @@ import (
 // merged envelope out. onDiscover, mergedIDs and sameIDs are shared with
 // fanout_test.go -- both files exercise the same envelope shape, one at the
 // merge level and one through the executor.
-func mergeDiscover(bodies [][]byte, limit int, hasLimit bool) ([]byte, error) {
+func mergeDiscover(bodies [][]byte) ([]byte, error) {
 	kept := make([]keptResponse, 0, len(bodies))
 	for _, b := range bodies {
 		items, present, err := itemsOf(b, "message.catalogs")
@@ -18,7 +18,7 @@ func mergeDiscover(bodies [][]byte, limit int, hasLimit bool) ([]byte, error) {
 		}
 		kept = append(kept, keptResponse{body: b, items: items, hasItems: present})
 	}
-	return mergeResponses(kept, "message.catalogs", limit, hasLimit)
+	return mergeResponses(kept, "message.catalogs")
 }
 
 func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
@@ -26,7 +26,7 @@ func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
 		onDiscover("m-1", "bharat-1", "bharat-2", "bharat-3"),
 		onDiscover("m-1", "maha-1"),
 		onDiscover("m-1", "third-1", "third-2"),
-	}, 0, false)
+	})
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
@@ -41,7 +41,7 @@ func TestResponsesFirstResponseContextPreserved(t *testing.T) {
 	merged, err := mergeDiscover([][]byte{
 		onDiscover("m-2", "a"),
 		onDiscover("m-2", "b"),
-	}, 0, false)
+	})
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
@@ -59,45 +59,34 @@ func TestResponsesFirstResponseContextPreserved(t *testing.T) {
 	}
 }
 
-func TestResponsesRepeatedIDKeepsFirstOccurrence(t *testing.T) {
+// TestResponsesRepeatedIDIsReturnedFromEveryNetwork locks in that merging no
+// longer dedupes: the same catalog id published by two networks is the same
+// resource served by two different providers -- each occurrence is returned,
+// not collapsed to one.
+func TestResponsesRepeatedIDIsReturnedFromEveryNetwork(t *testing.T) {
 	merged, err := mergeDiscover([][]byte{
 		onDiscover("m-3", "shared", "bharat-only"),
 		onDiscover("m-3", "shared", "maha-only"),
-	}, 0, false)
+	})
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
-	want := []string{"shared", "bharat-only", "maha-only"}
+	want := []string{"shared", "shared", "bharat-only", "maha-only"}
 	if got := mergedIDs(t, merged); !sameIDs(got, want) {
-		t.Errorf("mergeResponses() = %v, want %v", got, want)
+		t.Errorf("mergeResponses() = %v, want %v (no dedupe)", got, want)
 	}
 }
 
-func TestResponsesLimitPresentTruncatesMergedList(t *testing.T) {
-	merged, err := mergeDiscover([][]byte{
-		onDiscover("m-4", "a1", "a2", "a3"),
-		onDiscover("m-4", "b1", "b2", "b3"),
-	}, 3, true)
-	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
-	}
-	// Interleaved first, so the cut keeps both networks represented.
-	want := []string{"a1", "b1", "a2"}
-	if got := mergedIDs(t, merged); !sameIDs(got, want) {
-		t.Errorf("mergeResponses() = %v, want %v", got, want)
-	}
-}
-
-func TestResponsesLimitAbsentReturnsEverything(t *testing.T) {
+func TestResponsesReturnsEverythingNoTruncation(t *testing.T) {
 	merged, err := mergeDiscover([][]byte{
 		onDiscover("m-5", "a1", "a2"),
 		onDiscover("m-5", "b1", "b2"),
-	}, 0, false)
+	})
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
 	if got := mergedIDs(t, merged); len(got) != 4 {
-		t.Errorf("mergeResponses() returned %d catalogs, want all 4 kept when no limit was sent", len(got))
+		t.Errorf("mergeResponses() returned %d catalogs, want all 4 kept", len(got))
 	}
 }
 
@@ -105,7 +94,7 @@ func TestResponsesNetworkWithNoCatalogsContributesNothing(t *testing.T) {
 	merged, err := mergeDiscover([][]byte{
 		onDiscover("m-6", "only"),
 		[]byte(`{"context":{"messageId":"m-6"},"message":{}}`),
-	}, 0, false)
+	})
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
@@ -116,7 +105,7 @@ func TestResponsesNetworkWithNoCatalogsContributesNothing(t *testing.T) {
 
 func TestResponsesUnknownCatalogMembersSurvive(t *testing.T) {
 	body := []byte(`{"context":{},"message":{"catalogs":[{"id":"a","futureMember":42}]}}`)
-	merged, err := mergeDiscover([][]byte{body}, 0, false)
+	merged, err := mergeDiscover([][]byte{body})
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
@@ -134,7 +123,7 @@ func TestResponsesUnknownCatalogMembersSurvive(t *testing.T) {
 }
 
 func TestResponsesNonObjectResponseReturnsError(t *testing.T) {
-	if _, err := mergeDiscover([][]byte{[]byte(`["not an envelope"]`)}, 0, false); err == nil {
+	if _, err := mergeDiscover([][]byte{[]byte(`["not an envelope"]`)}); err == nil {
 		t.Error("mergeResponses() with a non-object response = nil error, want an error")
 	}
 }
@@ -145,7 +134,7 @@ func TestResponsesErrorEnvelopeDoesNotDonateTheEnvelope(t *testing.T) {
 	merged, err := mergeDiscover([][]byte{
 		[]byte(`{"context":{"messageId":"m-e"},"error":{"code":"NET_SOMETHING"}}`),
 		onDiscover("m-e", "real-1"),
-	}, 0, false)
+	})
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
@@ -175,7 +164,7 @@ func TestFieldPathIsConfigurableNotHardcodedToCatalogs(t *testing.T) {
 		kept = append(kept, keptResponse{body: b, items: items, hasItems: present})
 	}
 
-	merged, err := mergeResponses(kept, "message.orders", 0, false)
+	merged, err := mergeResponses(kept, "message.orders")
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
@@ -215,7 +204,7 @@ func TestFieldPathReachesNestedArraysLikeSelectsCommitments(t *testing.T) {
 		kept = append(kept, keptResponse{body: b, items: items, hasItems: present})
 	}
 
-	merged, err := mergeResponses(kept, "message.contract.commitments", 0, false)
+	merged, err := mergeResponses(kept, "message.contract.commitments")
 	if err != nil {
 		t.Fatalf("mergeResponses() error = %v", err)
 	}
