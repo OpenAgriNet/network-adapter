@@ -145,8 +145,8 @@ func setAtPath(node map[string]json.RawMessage, segments []string, items []json.
 }
 
 // interleave takes one item from each network in turn until all are drained,
-// so a limit gives every network proportional presence instead of the first
-// network in the routing config filling the whole page.
+// so every network gets proportional presence in the result instead of the
+// first network in the routing config filling the front of it.
 func interleave(perNetwork [][]json.RawMessage) []json.RawMessage {
 	total, longest := 0, 0
 	for _, items := range perNetwork {
