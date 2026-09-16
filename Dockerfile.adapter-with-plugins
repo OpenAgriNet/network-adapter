@@ -6,6 +6,7 @@ WORKDIR /workspace/app
 COPY cmd/adapter/ ./cmd/adapter/
 COPY core/ ./core/
 COPY pkg/ ./pkg/
+COPY tools/ ./tools/
 COPY install/build-plugins.sh ./install/build-plugins.sh
 COPY install/scripts/version-vars.sh ./install/scripts/version-vars.sh
 COPY go.mod .
@@ -21,6 +22,17 @@ ARG BUILD_DATE=unknown
 # Build main server
 RUN go build -ldflags "-X github.com/beckn-one/beckn-onix/pkg/version.Version=${ONIX_VERSION} -X github.com/beckn-one/beckn-onix/pkg/version.GitCommit=${GIT_COMMIT} -X github.com/beckn-one/beckn-onix/pkg/version.GitTreeState=${GIT_TREE_STATE} -X github.com/beckn-one/beckn-onix/pkg/version.BuildDate=${BUILD_DATE}" -o server cmd/adapter/main.go
 
+# Build all publish tools. Output goes to bin/ so adding a new tool under
+# tools/publish/ automatically lands in the image without touching this file.
+# Enumerated via `go list` (main packages only) rather than a directory glob,
+# so a non-main library directory like tools/publish/internal does not get
+# handed to `go build` as if it were a tool.
+RUN mkdir -p /workspace/app/bin && \
+    for tool in $(go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./tools/publish/...); do \
+      name=$(basename "$tool"); \
+      go build -o /workspace/app/bin/"$name" "$tool"; \
+    done
+
 # Make the build script executable and run it to build plugins. The version
 # ARGs are passed through as environment variables so the otelsetup plugin
 # (a separate .so, a separate link unit from the server binary above) gets
@@ -32,10 +44,16 @@ RUN chmod +x install/build-plugins.sh && \
 
 # Create minimal runtime image
 FROM cgr.dev/chainguard/wolfi-base:latest
+
+# Force a fresh apk index so a CVE patched upstream (e.g. zlib) lands even
+# when the :latest base layer itself is stale in the local/CI docker cache.
+RUN apk upgrade --no-cache zlib
+
 WORKDIR /app
 
 # Copy binary and plugins built with same Go version
 COPY --from=builder /workspace/app/server .
+COPY --from=builder /workspace/app/bin ./bin
 COPY --from=builder /workspace/app/plugins ./plugins
 
 EXPOSE 8081
