@@ -485,6 +485,7 @@ type mockSigner struct {
 	signCalled    bool
 	signAckCalled bool
 	signAckErr    error
+	signAckCalls  int    // how many times SignAck ran -- fan-out must sign the merged body exactly once, not once per target
 	returnSig     string // returned by SignAck
 	returnSignSig string // returned by Sign (default "")
 	signedBody    []byte // the body SignAck was last asked to cover
@@ -497,6 +498,7 @@ func (m *mockSigner) Sign(_ context.Context, _ []byte, _ string, _, _ int64) (st
 
 func (m *mockSigner) SignAck(_ context.Context, body []byte, _ string, _ string, _, _ int64) (string, error) {
 	m.signAckCalled = true
+	m.signAckCalls++
 	m.signedBody = body
 	if m.signAckErr != nil {
 		return "", m.signAckErr

@@ -1189,6 +1189,7 @@ routingRules:
       urls:
         - "http://bharat:9201"
         - "http://maha:9201"
+    mergeFieldPath: message.catalogs
     endpoints:
       - discover
 `)
@@ -1209,6 +1210,33 @@ routingRules:
 	}
 	if route.URL != route.URLs[0] {
 		t.Error("URL must stay set to the first target so single-target readers keep working")
+	}
+	if route.MergeFieldPath != "message.catalogs" {
+		t.Errorf("route.MergeFieldPath = %q, want the configured merge path carried through", route.MergeFieldPath)
+	}
+}
+
+func TestValidateRulesRequiresMergeWhenSeveralUrls(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:    "2.0.0",
+		TargetType: "url",
+		Target:     target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+		Endpoints:  []string{"discover"},
+	}})
+	if err == nil {
+		t.Fatal("validateRules() accepted several urls with no mergeFieldPath")
+	}
+}
+
+func TestValidateRulesSingleUrlNeedsNoMerge(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:    "2.0.0",
+		TargetType: "url",
+		Target:     target{URL: "http://only:9201"},
+		Endpoints:  []string{"discover"},
+	}})
+	if err != nil {
+		t.Errorf("validateRules() = %v, want a single target to need no mergeFieldPath", err)
 	}
 }
 
@@ -1245,6 +1273,7 @@ routingRules:
       urls:
         - "http://bharat:9201"
         - "http://maha:9201"
+    mergeFieldPath: message.catalogs
     endpoints:
       - discover
 `)
@@ -1279,6 +1308,7 @@ routingRules:
       urls:
         - "http://bharat:9201"
         - "http://maha:9201"
+    mergeFieldPath: message.catalogs
     endpoints:
       - discover
 `)
@@ -1313,5 +1343,42 @@ routingRules:
 		if u.RawQuery != "limit=10" {
 			t.Errorf("first request target %d query changed to %q: the routes share backing URLs", i, u.RawQuery)
 		}
+	}
+}
+
+func TestValidateRules_EmptyEntryInURLs(t *testing.T) {
+	rules := []routingRule{
+		{
+			Version:    "2.0.0",
+			TargetType: targetTypeURL,
+			Target: target{
+				URLs: []string{"http://valid:8080", "   "},
+			},
+			Endpoints: []string{"discover"},
+		},
+	}
+	err := validateRules(rules)
+	if err == nil || !strings.Contains(err.Error(), "urls holds an empty entry") {
+		t.Errorf("validateRules() err = %v, want empty entry error", err)
+	}
+}
+
+func TestWithRawQuery_InvalidQueryAndExistingQuery(t *testing.T) {
+	u1, _ := url.Parse("http://maha:9201?network=maha")
+	u2, _ := url.Parse("http://bharat:9201")
+	rt := &model.Route{
+		TargetType: targetTypeURL,
+		URL:        u1,
+		URLs:       []*url.URL{u1, u2},
+	}
+
+	outInvalid := withRawQuery(rt, "%zz")
+	if outInvalid.URL.RawQuery != "%zz" {
+		t.Errorf("withRawQuery(%%zz) = %q, want %%zz", outInvalid.URL.RawQuery)
+	}
+
+	outMerged := withRawQuery(rt, "limit=5")
+	if !strings.Contains(outMerged.URL.RawQuery, "network=maha") || !strings.Contains(outMerged.URL.RawQuery, "limit=5") {
+		t.Errorf("withRawQuery(limit=5) = %q, want merged query containing network=maha and limit=5", outMerged.URL.RawQuery)
 	}
 }
