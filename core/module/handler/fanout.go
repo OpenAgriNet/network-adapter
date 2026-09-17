@@ -66,7 +66,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		*responseBody = sendNack(ctx, w, err)
 	}
 
-	results := callTargets(ctx.Context, ctx.Body, r, httpClient, targets, r.URL.Query(), cfg)
+	results := callTargets(ctx.Context, ctx.Body, r, httpClient, targets, cfg)
 
 	kept, degraded := collect(ctx, targets, results, responseSteps, mergeFieldPath)
 	log.Infof(ctx.Context, "fanout: %d/%d targets contributed, %d degraded, mergeFieldPath=%s", len(kept), len(targets), len(degraded), mergeFieldPath)
@@ -111,7 +111,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 // One deadline for the fan-out as a whole, not per target: with a
 // concurrency cap, targets run in waves, and a per-target timeout would
 // become N waves x timeout.
-func callTargets(parentCtx context.Context, body []byte, r *http.Request, httpClient *http.Client, targets []*url.URL, query url.Values, cfg FanoutConfig) []targetResult {
+func callTargets(parentCtx context.Context, body []byte, r *http.Request, httpClient *http.Client, targets []*url.URL, cfg FanoutConfig) []targetResult {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = defaultFanoutTimeout
@@ -133,7 +133,7 @@ func callTargets(parentCtx context.Context, body []byte, r *http.Request, httpCl
 	results := make([]targetResult, len(targets))
 	for i, t := range targets {
 		group.Go(func() error {
-			results[i] = callTarget(groupCtx, body, r, httpClient, t, query)
+			results[i] = callTarget(groupCtx, body, r, httpClient, t)
 			return nil
 		})
 	}
@@ -155,19 +155,16 @@ func callTargets(parentCtx context.Context, body []byte, r *http.Request, httpCl
 // body is ctx.Body, passed down rather than r.Body: r.Body is a stream the
 // first target would drain, so each target gets its own bytes.Reader over
 // the same backing array instead.
-func callTarget(fanCtx context.Context, body []byte, r *http.Request, httpClient *http.Client, target *url.URL, query url.Values) targetResult {
-	// The target's own configured query survives; the inbound one is laid
-	// over it.
-	u := *target
-	merged := u.Query()
-	for key, values := range query {
-		merged[key] = values
-	}
-	u.RawQuery = merged.Encode()
-
-	req, err := http.NewRequestWithContext(fanCtx, r.Method, u.String(), bytes.NewReader(body))
+//
+// target's query string is used as-is, not re-merged with the inbound
+// request's: the router already lays the caller's query over each target's
+// own (withRawQuery, in the router plugin) before this ever runs, the same
+// way proxy() trusts route.URL as-is for the single-target path. Redoing it
+// here was dead work on every fan-out call.
+func callTarget(fanCtx context.Context, body []byte, r *http.Request, httpClient *http.Client, target *url.URL) targetResult {
+	req, err := http.NewRequestWithContext(fanCtx, r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {
-		return targetResult{err: fmt.Errorf("building request for %s: %w", &u, err)}
+		return targetResult{err: fmt.Errorf("building request for %s: %w", target, err)}
 	}
 
 	// The signature rides along in this copy: the body is identical at every
@@ -198,23 +195,23 @@ func callTarget(fanCtx context.Context, body []byte, r *http.Request, httpClient
 		req.Header.Set("X-Forwarded-For", clientIP)
 	}
 	req.Header.Set("X-Forwarded-Host", r.Host)
-	req.Host = u.Host
+	req.Host = target.Host
 
 	log.Request(fanCtx, req, body)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return targetResult{err: fmt.Errorf("calling %s: %w", &u, err)}
+		return targetResult{err: fmt.Errorf("calling %s: %w", target, err)}
 	}
 	defer resp.Body.Close()
 
 	// +1 so a body exactly at the cap isn't mistaken for a truncated one.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxTargetResponseBytes+1))
 	if err != nil {
-		return targetResult{err: fmt.Errorf("reading response from %s: %w", &u, err)}
+		return targetResult{err: fmt.Errorf("reading response from %s: %w", target, err)}
 	}
 	if len(respBody) > maxTargetResponseBytes {
-		return targetResult{err: fmt.Errorf("response from %s exceeds %d bytes", &u, maxTargetResponseBytes)}
+		return targetResult{err: fmt.Errorf("response from %s exceeds %d bytes", target, maxTargetResponseBytes)}
 	}
 	return targetResult{status: resp.StatusCode, header: resp.Header, body: respBody}
 }
@@ -240,6 +237,11 @@ func wantsTeTrailers(values []string) bool {
 // running steps concurrently would race that write. The ack signer itself is
 // skipped -- it runs once over the merged body in fanout instead.
 func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult, responseSteps []definition.ResponseStep, mergeFieldPath string) ([]merge.KeptResponse, []string) {
+	// Filtered once, not per target: which steps are the ack signer never
+	// changes across a fan-out call, so checking it again for every
+	// (target, step) pair below is wasted work that scales with target count.
+	steps := nonAckSignerSteps(responseSteps)
+
 	var (
 		kept     []merge.KeptResponse
 		degraded []string
@@ -259,10 +261,7 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 
 		rctx := &model.ResponseStepContext{StatusCode: res.status, Header: res.header, Body: res.body}
 		failed := false
-		for _, step := range responseSteps {
-			if isAckSigner(step) {
-				continue
-			}
+		for _, step := range steps {
 			if err := step.RunOnResponse(ctx, rctx); err != nil {
 				log.Errorf(ctx.Context, err, "fanout: response step rejected target %s, marking degraded", host)
 				degraded = append(degraded, host)
@@ -294,4 +293,16 @@ func isAckSigner(step definition.ResponseStep) bool {
 	}
 	_, ok := inner.(*ackSignerStep)
 	return ok
+}
+
+// nonAckSignerSteps filters the ack signer out of responseSteps, once per
+// fan-out call rather than once per (target, step) pair inside collect.
+func nonAckSignerSteps(responseSteps []definition.ResponseStep) []definition.ResponseStep {
+	steps := make([]definition.ResponseStep, 0, len(responseSteps))
+	for _, step := range responseSteps {
+		if !isAckSigner(step) {
+			steps = append(steps, step)
+		}
+	}
+	return steps
 }

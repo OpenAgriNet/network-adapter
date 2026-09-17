@@ -22,8 +22,10 @@
 # Fan-out config lives in two homes, deliberately: mergeFieldPath is HERE,
 # per-action semantics, because the extraction point depends on what the
 # action's reply looks like; maxConcurrency and timeout are operational, and
-# live in the handler's own config (httpClientConfig.fanout) instead, since
-# they are about how hard to hit the network rather than what a reply means.
+# live in the handler's own config, under its own top-level fanout: key
+# (a sibling of httpClientConfig, not nested inside it -- see config.go's
+# Config struct) instead, since they are about how hard to hit the network
+# rather than what a reply means.
 #
 # mergeFieldPath is also the ONLY part of merge policy that varies per
 # deployment. Ordering (round-robin interleave) and donor selection (first
