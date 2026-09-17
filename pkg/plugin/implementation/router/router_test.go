@@ -1359,6 +1359,19 @@ func TestValidateRulesEmptyUrlsEntryIsRejected(t *testing.T) {
 	}
 }
 
+func TestValidateRulesRejectsMergeFieldPathOnASingleTarget(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:        "2.0.0",
+		TargetType:     "url",
+		Target:         target{URL: "http://ok:9201"},
+		Endpoints:      []string{"discover"},
+		MergeFieldPath: "message.catalogs",
+	}})
+	if err == nil {
+		t.Fatal("validateRules() accepted mergeFieldPath on a single-target rule")
+	}
+}
+
 func TestRouteQueryStringAppliedToEveryTargetWithoutMutatingTheRule(t *testing.T) {
 	path := writeRoutingConfig(t, `
 routingRules:
@@ -1461,23 +1474,6 @@ routingRules:
 		}(i)
 	}
 	wg.Wait()
-}
-
-func TestValidateRules_EmptyEntryInURLs(t *testing.T) {
-	rules := []routingRule{
-		{
-			Version:    "2.0.0",
-			TargetType: targetTypeURL,
-			Target: target{
-				URLs: []string{"http://valid:8080", "   "},
-			},
-			Endpoints: []string{"discover"},
-		},
-	}
-	err := validateRules(rules)
-	if err == nil || !strings.Contains(err.Error(), "urls holds an empty entry") {
-		t.Errorf("validateRules() err = %v, want empty entry error", err)
-	}
 }
 
 func TestWithRawQuery_InvalidQueryAndExistingQuery(t *testing.T) {
