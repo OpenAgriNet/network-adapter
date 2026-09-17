@@ -618,7 +618,7 @@ func TestFanoutSameExecutorMergesSelectByConfigAlone(t *testing.T) {
 }
 
 // TestFanoutEveryTargetAnsweringEmptyIsNotTreatedAsNoTarget covers the
-// "present but empty" state itemsOf/mergeResponses key their donor and
+// "present but empty" state merge.ItemsOf/merge.Responses key their donor and
 // no-target-carried-it decisions on: every network genuinely having zero
 // matches is a valid 200 with catalogs: [], not the NACK a response
 // carrying no catalogs member AT ALL gets refused for.

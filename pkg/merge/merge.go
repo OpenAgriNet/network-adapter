@@ -1,4 +1,8 @@
-package handler
+// Package merge folds several targets' Beckn v2 envelope responses into one,
+// over a caller-configured field path. It has no knowledge of HTTP, routing,
+// or any specific action -- catalogs, commitments or anything else nested
+// under message is the caller's business, not this package's.
+package merge
 
 import (
 	"encoding/json"
@@ -15,23 +19,23 @@ const (
 	messageKey = "message"
 )
 
-// keptResponse is one target's accepted answer: the envelope body it sent,
+// KeptResponse is one target's accepted answer: the envelope body it sent,
 // and the array read out of it at the configured field path (nil if it had
 // none -- a network with no matches is a valid answer, not an error).
-type keptResponse struct {
-	body     []byte
-	items    []json.RawMessage
-	hasItems bool
+type KeptResponse struct {
+	Body     []byte
+	Items    []json.RawMessage
+	HasItems bool
 }
 
-// itemsOf pulls the array at fieldPath (a dot path from the envelope root,
+// ItemsOf pulls the array at fieldPath (a dot path from the envelope root,
 // e.g. "message.catalogs" or "message.contract.commitments") out of one
 // response body, without decoding the items themselves so a member this
 // build does not know about is re-emitted byte for byte rather than dropped.
 //
 // A response carrying nothing at fieldPath contributes nothing rather than
 // failing the merge: a network with no matches is a valid answer.
-func itemsOf(body []byte, fieldPath string) ([]json.RawMessage, bool, error) {
+func ItemsOf(body []byte, fieldPath string) ([]json.RawMessage, bool, error) {
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, false, fmt.Errorf("not a JSON object: %w", err)
@@ -39,18 +43,18 @@ func itemsOf(body []byte, fieldPath string) ([]json.RawMessage, bool, error) {
 	return arrayAtPath(envelope, strings.Split(fieldPath, "."))
 }
 
-// mergeResponses folds several kept responses into one envelope, merging the
+// Responses folds several kept responses into one envelope, merging the
 // array at fieldPath across all of them.
 //
 // The donor -- the first kept response in TARGET ORDER (not arrival order)
 // that carries fieldPath -- supplies context and message verbatim; this code
 // never synthesizes a context of its own. A 200 carrying a Beckn error
 // envelope is kept (not a transport failure) but never donates: it has no
-// fieldPath, so hasItems is false regardless of target order.
-func mergeResponses(kept []keptResponse, fieldPath string) ([]byte, error) {
+// fieldPath, so HasItems is false regardless of target order.
+func Responses(kept []KeptResponse, fieldPath string) ([]byte, error) {
 	donor := -1
 	for i, k := range kept {
-		if k.hasItems {
+		if k.HasItems {
 			donor = i
 			break
 		}
@@ -60,7 +64,7 @@ func mergeResponses(kept []keptResponse, fieldPath string) ([]byte, error) {
 	}
 
 	var donorEnvelope map[string]json.RawMessage
-	if err := json.Unmarshal(kept[donor].body, &donorEnvelope); err != nil {
+	if err := json.Unmarshal(kept[donor].Body, &donorEnvelope); err != nil {
 		return nil, fmt.Errorf("donor response is not a JSON object: %w", err)
 	}
 
@@ -77,7 +81,7 @@ func mergeResponses(kept []keptResponse, fieldPath string) ([]byte, error) {
 
 	perNetwork := make([][]json.RawMessage, 0, len(kept))
 	for _, k := range kept {
-		perNetwork = append(perNetwork, k.items)
+		perNetwork = append(perNetwork, k.Items)
 	}
 	merged := interleave(perNetwork)
 	if merged == nil {

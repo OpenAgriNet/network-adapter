@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/merge"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
@@ -54,7 +55,7 @@ type targetResult struct {
 // target that fails is counted in the degraded header rather than denying
 // the caller what the others returned; only a total failure NACKs.
 //
-// Merge policy (donor selection, ordering) lives in merge.go, not here --
+// Merge policy (donor selection, ordering) lives in pkg/merge, not here --
 // this file is the executor.
 func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client, responseSteps []definition.ResponseStep, ackSigner *ackSignerStep, cfg FanoutConfig, signNack nackSignerFunc, responseBody *[]byte) {
 	targets := ctx.Route.URLs
@@ -80,7 +81,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		return
 	}
 
-	merged, err := mergeResponses(kept, mergeFieldPath)
+	merged, err := merge.Responses(kept, mergeFieldPath)
 	if err != nil {
 		log.Errorf(ctx.Context, err, "fanout: merge failed across %d kept response(s) at mergeFieldPath=%s", len(kept), mergeFieldPath)
 		fail(err)
@@ -238,9 +239,9 @@ func wantsTeTrailers(values []string) bool {
 // calls: ackSignerStep writes to the response writer's own header map, and
 // running steps concurrently would race that write. The ack signer itself is
 // skipped -- it runs once over the merged body in fanout instead.
-func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult, responseSteps []definition.ResponseStep, mergeFieldPath string) ([]keptResponse, []string) {
+func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult, responseSteps []definition.ResponseStep, mergeFieldPath string) ([]merge.KeptResponse, []string) {
 	var (
-		kept     []keptResponse
+		kept     []merge.KeptResponse
 		degraded []string
 	)
 	for i, res := range results {
@@ -273,13 +274,13 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 			continue
 		}
 
-		items, present, err := itemsOf(res.body, mergeFieldPath)
+		items, present, err := merge.ItemsOf(res.body, mergeFieldPath)
 		if err != nil {
 			log.Errorf(ctx.Context, err, "fanout: target %s (status %d) has an unreadable body at mergeFieldPath=%s, marking degraded", host, res.status, mergeFieldPath)
 			degraded = append(degraded, host)
 			continue
 		}
-		kept = append(kept, keptResponse{body: res.body, items: items, hasItems: present})
+		kept = append(kept, merge.KeptResponse{Body: res.body, Items: items, HasItems: present})
 	}
 	return kept, degraded
 }
