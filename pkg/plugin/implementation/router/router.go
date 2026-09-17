@@ -237,6 +237,8 @@ func validateRules(rules []routingRule) error {
 				if !model.ValidMergeFieldPath(rule.MergeFieldPath) {
 					return fmt.Errorf("invalid rule: mergeFieldPath %q must start with \"message.\" -- it names a path under the response's message, not the envelope root", rule.MergeFieldPath)
 				}
+			} else if rule.MergeFieldPath != "" {
+				return fmt.Errorf("invalid rule: mergeFieldPath is only meaningful when target.urls names more than one target")
 			}
 		case targetTypePublisher:
 			if rule.Target.PublisherID == "" {
