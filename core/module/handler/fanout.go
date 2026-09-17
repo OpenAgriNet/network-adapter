@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultFanoutMaxConcurrency = 8
-	defaultFanoutTimeout        = 10 * time.Second
+	defaultFanoutTimeout        = 30 * time.Second
 
 	// maxTargetResponseBytes bounds one target's response read. Not
 	// configurable yet -- promote it if a deployment needs to tune it.

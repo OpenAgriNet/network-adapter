@@ -194,6 +194,13 @@ type CodedErr struct {
 // off the wire.
 const defaultUnclassifiedCode = "NET_INTERNAL_ERROR"
 
+// CodeUpstreamUnavailable: a downstream the adapter called could not be
+// reached or failed to answer. Not this adapter's own fault and not the
+// caller's -- shared across every layer that classifies that condition (a
+// single capability plugin's own upstream, or every target of a fan-out),
+// so it is defined once here rather than copied wherever it is needed.
+const CodeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
+
 // NewCodedErr creates a CodedErr with an explicit HTTP status and taxonomy
 // code. A plugin that classifies several kinds of failure, such as
 // vcvalidator, needs only this constructor.
