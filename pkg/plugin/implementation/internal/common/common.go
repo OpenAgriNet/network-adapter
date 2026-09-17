@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -73,6 +74,46 @@ type Config struct {
 
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+
+	// Connection pooling for the provider client. EVERY ONE IS OPTIONAL and
+	// zero means "leave Go's default alone", so a config that sets none of
+	// them gets exactly the transport this step had before these existed.
+	//
+	// Worth setting at all because Go's default MaxIdleConnsPerHost is 2:
+	// past two concurrent calls to one provider, each further call is a fresh
+	// TCP connect and TLS handshake, and that time lands inside the duration
+	// this step reports as the provider's.
+	MaxIdleConns          int           `yaml:"maxIdleConns" json:"maxIdleConns"`
+	MaxIdleConnsPerHost   int           `yaml:"maxIdleConnsPerHost" json:"maxIdleConnsPerHost"`
+	IdleConnTimeout       time.Duration `yaml:"idleConnTimeout" json:"idleConnTimeout"`
+	ResponseHeaderTimeout time.Duration `yaml:"responseHeaderTimeout" json:"responseHeaderTimeout"`
+}
+
+// providerTransport builds the provider client's transport.
+//
+// A clone of http.DefaultTransport with only the explicitly configured values
+// overridden -- the same contract core/module/handler's newHTTPClient follows,
+// so an operator who has tuned one does not have to learn a second set of
+// rules for the other.
+//
+// No Client.Timeout: each attempt already carries a context deadline from the
+// registry's budget, and a second one here would silently take precedence over
+// what the registry published.
+func providerTransport(cfg *Config) http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.MaxIdleConns > 0 {
+		transport.MaxIdleConns = cfg.MaxIdleConns
+	}
+	if cfg.MaxIdleConnsPerHost > 0 {
+		transport.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
+	}
+	if cfg.IdleConnTimeout > 0 {
+		transport.IdleConnTimeout = cfg.IdleConnTimeout
+	}
+	if cfg.ResponseHeaderTimeout > 0 {
+		transport.ResponseHeaderTimeout = cfg.ResponseHeaderTimeout
+	}
+	return transport
 }
 
 // Step serves whatever capabilities a domain package configures it for. It is
@@ -118,7 +159,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		registry:      registry,
 		mapper:        mapper,
 		// The timeout is per request, from the registry's budget.
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: providerTransport(cfg)},
 		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
 	}
 	for provider, profile := range cfg.AuthByProvider {

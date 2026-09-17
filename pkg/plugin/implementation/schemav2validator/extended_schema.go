@@ -335,7 +335,13 @@ func (c *schemaCache) cleanupExpired() int {
 	return len(expired)
 }
 
-func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string, ttl, timeout time.Duration, allowedDomains []string, localSchema bool) (*openapi3.T, error) {
+func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string, ttl, timeout time.Duration, allowedDomains []string, localSchema bool) (doc *openapi3.T, err error) {
+	// Named returns above so the deferred record below sees whatever any of
+	// this function's several exits returned, without a touch to the
+	// resolution chain itself.
+	ctx, load := startSchemaLoad(ctx, schemaPath)
+	defer func() { load.done(ctx, err) }()
+
 	urlHash := hashURL(schemaPath)
 
 	u, parseErr := url.Parse(schemaPath)
@@ -357,9 +363,6 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 	// the file read itself, which in that mode is the operator's stated
 	// intent rather than something a payload asked for.
 	loader.ReadFromURIFunc = payloadDirectedReader(allowedDomains, localSchema)
-
-	var doc *openapi3.T
-	var err error
 
 	// Schema lookup chain:
 	//   1. rawSchemas — in-memory preloaded schemas, keyed by TypeName/attributes.yaml (localSchema mode only)
@@ -399,6 +402,7 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 			}
 			c.set(urlHash, doc, ttl)
 			log.Debugf(ctx, "Loaded and cached schema from memory: %s", schemaPath)
+			load.source = sourceMemory
 			return doc, nil
 		}
 	}
@@ -406,6 +410,7 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 	// Step 2: LRU schemaCache — previously parsed docs.
 	if doc, found := c.get(urlHash); found {
 		log.Debugf(ctx, "Schema LRU cache hit for: %s", schemaPath)
+		load.source = sourceLRU
 		return doc, nil
 	}
 
@@ -415,11 +420,13 @@ func (c *schemaCache) loadSchemaFromPath(ctx context.Context, schemaPath string,
 		return nil, fmt.Errorf("invalid schema path: %s", schemaPath)
 	}
 	if u.Scheme == "http" || u.Scheme == "https" {
+		load.source = sourceNetwork
 		loadCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		loader.Context = loadCtx
 		doc, err = loader.LoadFromURI(u)
 	} else {
+		load.source = sourceFile
 		filePath := schemaPath
 		if u.Scheme == "file" {
 			filePath = u.Path

@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -50,6 +51,12 @@ const (
 	attrStatusCode  = attribute.Key("http.response.status_code")
 	attrStatusClass = attribute.Key("http.response.status_class")
 	attrBodyBytes   = attribute.Key("http.response.body.size")
+
+	// The Beckn transaction, which outlives a trace: search, select and confirm
+	// are three requests and three traces, one transaction. Span-only, never a
+	// metric label -- it is unique per transaction, so as a label it would mint
+	// a time series per request and melt the backend.
+	attrTransaction = attribute.Key("oan.transaction_id")
 )
 
 // Outcomes. Coarse on purpose: these are metric label values, so the set has
@@ -67,6 +74,15 @@ const (
 	// failing nor the call succeeding, and lumping it under either would put
 	// a limit of ours on somebody else's error rate.
 	outcomeRejected = "rejected"
+)
+
+// Capability-level outcomes, named for what the CALLER got rather than for the
+// Go error type that produced it.
+const (
+	outcomeRefused  = "refused"  // the payload was wrong: 4xx
+	outcomeUpstream = "upstream" // the provider did not answer: 502
+	outcomeNotFound = "not_found"
+	outcomeInternal = "internal" // this adapter failed
 )
 
 // bindingCtxKey carries the binding key from serve() down to the call layer.
@@ -95,10 +111,34 @@ func bindingFrom(ctx context.Context) (provider, capability string) {
 	return strings.TrimSpace(provider), strings.TrimSpace(capability)
 }
 
+// transactionFrom reads the Beckn transaction id the request pipeline put on
+// the context, or "" when there is none.
+//
+// Empty rather than absent, for the same reason bindingFrom returns blanks:
+// nothing in this file may fail a request. A blank attribute is a span that
+// cannot be grouped by transaction; a panic here is a request that never
+// completes.
+//
+// It reads model.ContextKeyTxnID, which reqpreprocessor populates from the
+// payload -- so a deployment that does not configure that middleware gets
+// blanks here, exactly as its logs do.
+func transactionFrom(ctx context.Context) string {
+	id, _ := ctx.Value(model.ContextKeyTxnID).(string)
+	return id
+}
+
 // instruments holds what this package records. Built once per meter provider.
 type instruments struct {
 	duration metric.Float64Histogram
 	calls    metric.Int64Counter
+
+	// The capability as a whole, which is NOT the same population as the
+	// provider call. A request refused by a mapping's precondition -- a mandi
+	// select naming a district by name rather than by code -- never reaches a
+	// provider, so it appears in neither instrument above. From the metrics
+	// alone those requests simply would not exist.
+	served       metric.Float64Histogram
+	capabilities metric.Int64Counter
 }
 
 // Rebuilt when the global provider is replaced, matching
@@ -150,6 +190,24 @@ func getInstruments() (*instruments, error) {
 	); err != nil {
 		return nil, fmt.Errorf("oan_provider_calls_total: %w", err)
 	}
+	// Wider buckets than the provider call: this covers the mapping fetch,
+	// prerequisites, the call itself and the response transform, so a cold
+	// cache puts it seconds above the hop it contains.
+	if i.served, err = meter.Float64Histogram(
+		"oan_capability_duration_seconds",
+		metric.WithDescription("Time to serve one capability request end to end, including the provider call"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
+	); err != nil {
+		return nil, fmt.Errorf("oan_capability_duration_seconds: %w", err)
+	}
+	if i.capabilities, err = meter.Int64Counter(
+		"oan_capability_requests_total",
+		metric.WithDescription("Capability requests this step served, by outcome"),
+		metric.WithUnit("{request}"),
+	); err != nil {
+		return nil, fmt.Errorf("oan_capability_requests_total: %w", err)
+	}
 
 	instrumentCache.provider = current
 	instrumentCache.i = i
@@ -190,6 +248,7 @@ func startProviderCall(ctx context.Context, method, url string, attempt, attempt
 			attrCapability.String(capability),
 			attrAttempt.Int(attempt),
 			attribute.Int("oan.attempts_allowed", attempts),
+			attrTransaction.String(transactionFrom(ctx)),
 		))
 
 	return ctx, &providerCall{
@@ -257,6 +316,58 @@ func (c *providerCall) done(ctx context.Context, status, bodyBytes int, err erro
 	)
 	i.duration.Record(ctx, elapsed.Seconds(), attrs)
 	i.calls.Add(ctx, 1, attrs)
+}
+
+// recordServed reports one capability request, whether or not it reached a
+// provider.
+//
+// Deliberately separate from the provider-call instruments: a precondition
+// refusal never dials anything, so counting it there would inflate a
+// provider's error rate with failures that were never the provider's.
+func recordServed(ctx context.Context, elapsed time.Duration, err error) {
+	i, instrErr := getInstruments()
+	if instrErr != nil {
+		return
+	}
+	provider, capability := bindingFrom(ctx)
+	attrs := metric.WithAttributes(
+		attrProvider.String(provider),
+		attrCapability.String(capability),
+		attrOutcome.String(servedOutcome(err)),
+	)
+	i.served.Record(ctx, elapsed.Seconds(), attrs)
+	i.capabilities.Add(ctx, 1, attrs)
+}
+
+// servedOutcome names how a capability request ended, in the terms the CALLER
+// sees: the status this error would become on the wire, not its Go type.
+//
+// That is the useful split for an operator. "refused" and "upstream" have
+// different owners -- one is the caller's payload, the other is somebody
+// else's service -- and lumping them together is what makes an error-rate
+// graph unactionable.
+func servedOutcome(err error) string {
+	if err == nil {
+		return outcomeOK
+	}
+	var coded *model.CodedErr
+	if errors.As(err, &coded) {
+		switch status := coded.HTTPStatus(); {
+		case status == http.StatusNotFound:
+			return outcomeNotFound
+		case status == http.StatusBadGateway:
+			return outcomeUpstream
+		case status >= http.StatusBadRequest && status < http.StatusInternalServerError:
+			return outcomeRefused
+		}
+	}
+	var schemaErr *model.SchemaValidationErr
+	if errors.As(err, &schemaErr) {
+		return outcomeRefused
+	}
+	// Everything left is this adapter failing: an unreadable provider answer, a
+	// response half that produced nothing, a missing credential profile.
+	return outcomeInternal
 }
 
 // classify reduces an outcome to one of a small closed set, because these are

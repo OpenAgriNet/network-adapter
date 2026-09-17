@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -469,5 +471,219 @@ func TestAMissingBindingIsBlankRatherThanAFailure(t *testing.T) {
 	provider, capability := bindingFrom(context.Background())
 	if provider != "" || capability != "" {
 		t.Errorf("got (%q, %q), want two empty strings", provider, capability)
+	}
+}
+
+// --- the capability instruments ----------------------------------------------
+
+// A precondition refusal never dials a provider, so the provider instruments
+// cannot see it. Before this counter, those requests did not exist in metrics
+// at all -- and a mandi select naming a district by name rather than by code is
+// exactly that shape, which is a mistake callers make constantly.
+func TestACapabilityRefusedBeforeTheCallIsStillCounted(t *testing.T) {
+	collect := recordMetrics(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the provider must not be called when a precondition failed")
+	}))
+	defer upstream.Close()
+
+	refusal := model.NewBadReqErr("", errors.New("this capability needs Agmarknet's codes"))
+	mapper := &stubMapper{verifyErr: refusal, requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+
+	if _, err := runStep(t, step, selectBody); err == nil {
+		t.Fatal("expected the precondition to refuse the request")
+	}
+
+	collected := collect()
+	if got := sumFor(t, collected, "oan_capability_requests_total", outcomeRefused); got != 1 {
+		t.Errorf("capability_requests_total{outcome=refused} = %d, want 1", got)
+	}
+	// The provider counter must stay empty: nothing was asked of the provider,
+	// so nothing may land on its error rate.
+	for _, outcome := range []string{outcomeOK, outcomeClientErr, outcomeServerErr, outcomeTransport} {
+		if got := sumFor(t, collected, "oan_provider_calls_total", outcome); got != 0 {
+			t.Errorf("provider_calls_total{outcome=%s} = %d, want 0 -- no provider was called", outcome, got)
+		}
+	}
+	if got := histogramCount(t, collected, "oan_capability_duration_seconds"); got != 1 {
+		t.Errorf("capability duration recorded %d observations, want 1", got)
+	}
+}
+
+// A served request is counted too, so the counter is a denominator and not an
+// error log: an error rate needs both halves.
+func TestACapabilityThatSucceedsIsCountedAsOK(t *testing.T) {
+	collect := recordMetrics(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"fcstday1":{"rain":12.4}}`)
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"ok":true}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+
+	collected := collect()
+	if got := sumFor(t, collected, "oan_capability_requests_total", outcomeOK); got != 1 {
+		t.Errorf("capability_requests_total{outcome=ok} = %d, want 1", got)
+	}
+}
+
+// The labels are named for what the CALLER got, not for the Go type that
+// produced it. That is the split an operator needs: "refused" is the caller's
+// payload, "upstream" is somebody else's service, and a graph that merges them
+// cannot be acted on.
+func TestServedOutcomeNamesWhatTheCallerGot(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"served", nil, outcomeOK},
+		{"the payload was refused", model.NewBadReqErr("", errors.New("bad shape")), outcomeRefused},
+		{"schema validation refused it", &model.SchemaValidationErr{
+			Errors: []model.Error{{Code: "SCH_INVALID_FORMAT", Message: "no"}}}, outcomeRefused},
+		{"the binding is not published", model.NewNotFoundErr("", errors.New("gone")), outcomeNotFound},
+		{"the provider did not answer", model.NewCodedErr(
+			http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE", errors.New("no answer")), outcomeUpstream},
+		{"anything else is ours", errors.New("the response half produced nothing"), outcomeInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := servedOutcome(tc.err); got != tc.want {
+				t.Errorf("servedOutcome(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- the transaction on the span ---------------------------------------------
+
+// trace_id correlates one request chain. transaction_id is the Beckn thread
+// across several: search, select and confirm are three traces and one
+// transaction. Without it on the span, a trace backend can group the logs of a
+// transaction but not its traces.
+func TestTheSpanCarriesTheTransactionForGrouping(t *testing.T) {
+	spans := recordSpans(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"fcstday1":{"rain":12.4}}`)
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"ok":true}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+
+	// As the request pipeline leaves it: reqpreprocessor puts the id here.
+	ctx := &model.StepContext{
+		Context: context.WithValue(t.Context(), model.ContextKeyTxnID, "txn-9f2c"),
+		Body:    []byte(selectBody),
+	}
+	if err := step.Run(ctx); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+
+	calls := providerCallSpans(spans())
+	if len(calls) != 1 {
+		t.Fatalf("got %d provider call spans, want 1", len(calls))
+	}
+	if got := attrOf(t, calls[0].Attributes, attrTransaction).AsString(); got != "txn-9f2c" {
+		t.Errorf("oan.transaction_id = %q, want txn-9f2c", got)
+	}
+}
+
+// A deployment that does not configure reqpreprocessor has no transaction id to
+// carry. Blank, never a panic: nothing in the telemetry path may fail a request
+// that would otherwise have been served.
+func TestAMissingTransactionIsBlankRatherThanAFailure(t *testing.T) {
+	if got := transactionFrom(context.Background()); got != "" {
+		t.Errorf("transactionFrom(empty) = %q, want an empty string", got)
+	}
+}
+
+// --- the provider client's transport -----------------------------------------
+
+// THE NEGATIVE CONTROL FOR THE ONE CHANGE THAT COULD ALTER BEHAVIOUR. Every
+// pooling setting is optional, and a config naming none of them must leave the
+// client exactly as it was before these existed -- Go's own defaults, untouched.
+func TestAnUnconfiguredTransportKeepsGoesDefaults(t *testing.T) {
+	t.Parallel()
+
+	standard := http.DefaultTransport.(*http.Transport)
+	got, ok := providerTransport(&Config{}).(*http.Transport)
+	if !ok {
+		t.Fatalf("providerTransport returned %T, want *http.Transport", got)
+	}
+
+	if got.MaxIdleConns != standard.MaxIdleConns {
+		t.Errorf("MaxIdleConns = %d, want Go's default %d", got.MaxIdleConns, standard.MaxIdleConns)
+	}
+	if got.MaxIdleConnsPerHost != standard.MaxIdleConnsPerHost {
+		t.Errorf("MaxIdleConnsPerHost = %d, want Go's default %d",
+			got.MaxIdleConnsPerHost, standard.MaxIdleConnsPerHost)
+	}
+	if got.IdleConnTimeout != standard.IdleConnTimeout {
+		t.Errorf("IdleConnTimeout = %v, want Go's default %v", got.IdleConnTimeout, standard.IdleConnTimeout)
+	}
+	if got.ResponseHeaderTimeout != standard.ResponseHeaderTimeout {
+		t.Errorf("ResponseHeaderTimeout = %v, want Go's default %v",
+			got.ResponseHeaderTimeout, standard.ResponseHeaderTimeout)
+	}
+}
+
+// And each setting takes effect when an operator does name it. MaxIdleConnsPerHost
+// is the one worth having: Go defaults it to 2, so past two concurrent calls to
+// one provider every further call pays a fresh TCP connect and TLS handshake --
+// time that lands inside the duration this step reports as the provider's.
+func TestAConfiguredTransportAppliesEverySetting(t *testing.T) {
+	t.Parallel()
+
+	got, ok := providerTransport(&Config{
+		MaxIdleConns:          256,
+		MaxIdleConnsPerHost:   64,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 7 * time.Second,
+	}).(*http.Transport)
+	if !ok {
+		t.Fatalf("providerTransport returned %T, want *http.Transport", got)
+	}
+
+	if got.MaxIdleConns != 256 {
+		t.Errorf("MaxIdleConns = %d, want 256", got.MaxIdleConns)
+	}
+	if got.MaxIdleConnsPerHost != 64 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want 64", got.MaxIdleConnsPerHost)
+	}
+	if got.IdleConnTimeout != 90*time.Second {
+		t.Errorf("IdleConnTimeout = %v, want 90s", got.IdleConnTimeout)
+	}
+	if got.ResponseHeaderTimeout != 7*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want 7s", got.ResponseHeaderTimeout)
+	}
+}
+
+// The clone must be a clone: overriding one setting must not silently reset the
+// rest of http.DefaultTransport's tuning, which is the bug a naive
+// &http.Transport{...} would introduce.
+func TestOverridingOneSettingLeavesTheRestOfTheDefaultAlone(t *testing.T) {
+	t.Parallel()
+
+	standard := http.DefaultTransport.(*http.Transport)
+	got := providerTransport(&Config{MaxIdleConnsPerHost: 64}).(*http.Transport)
+
+	if got.TLSHandshakeTimeout != standard.TLSHandshakeTimeout {
+		t.Errorf("TLSHandshakeTimeout = %v, want Go's default %v",
+			got.TLSHandshakeTimeout, standard.TLSHandshakeTimeout)
+	}
+	if got.ExpectContinueTimeout != standard.ExpectContinueTimeout {
+		t.Errorf("ExpectContinueTimeout = %v, want Go's default %v",
+			got.ExpectContinueTimeout, standard.ExpectContinueTimeout)
+	}
+	if got.MaxIdleConns != standard.MaxIdleConns {
+		t.Errorf("MaxIdleConns = %d, want Go's default %d", got.MaxIdleConns, standard.MaxIdleConns)
 	}
 }

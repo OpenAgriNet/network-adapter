@@ -370,10 +370,18 @@ func asBool(result []byte) (bool, bool) {
 
 // compiled returns the compiled mapping for a reference, fetching and compiling
 // it on first use. A failure is cached too, for a shorter time.
-func (m *Mapper) compiled(ctx context.Context, mappingRef string) (cacheEntry, error) {
-	if entry, found := m.cached(mappingRef); found {
-		return entry, entry.err
+func (m *Mapper) compiled(ctx context.Context, mappingRef string) (entry cacheEntry, err error) {
+	// Named returns so the deferred record sees whichever exit ran, without
+	// restructuring the singleflight below.
+	ctx, load := startMappingLoad(ctx, mappingRef)
+	defer func() { load.done(ctx, err) }()
+
+	if cached, found := m.cached(mappingRef); found {
+		return cached, cached.err
 	}
+	// Past the fast path: something here pays, whether this goroutine does the
+	// fetch or waits on the one that does.
+	load.source = mappingLoaded
 
 	// One fetch per reference, however many requests miss at once.
 	//
@@ -387,7 +395,8 @@ func (m *Mapper) compiled(ctx context.Context, mappingRef string) (cacheEntry, e
 	// singleflight's known trade: if that caller goes away the work is
 	// cancelled for everyone waiting on it. Bounded here by fetchTimeout, and
 	// the losers see a cancellation they can retry rather than a wrong answer.
-	shared, err, _ := m.inflight.Do(mappingRef, func() (any, error) {
+	var shared any
+	shared, err, _ = m.inflight.Do(mappingRef, func() (any, error) {
 		// Re-checked inside the group: a concurrent store may have landed
 		// between the miss above and the turn to run, and reusing it is both
 		// cheaper and more consistent than fetching a second copy.
@@ -397,7 +406,7 @@ func (m *Mapper) compiled(ctx context.Context, mappingRef string) (cacheEntry, e
 		directions, checks, err := m.fetchAndCompile(ctx, mappingRef)
 		return m.remember(mappingRef, directions, checks, err), err
 	})
-	entry, _ := shared.(cacheEntry)
+	entry, _ = shared.(cacheEntry)
 	return entry, err
 }
 

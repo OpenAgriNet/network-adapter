@@ -52,7 +52,28 @@ func (s *Step) Run(ctx *model.StepContext) error {
 		return fmt.Errorf("no call plan for %s: %w", binding.Key(), err)
 	}
 
-	return s.serve(ctx, plan)
+	// Which provider capability this request is serving, put on the context so
+	// everything below can label its spans and metrics without growing two
+	// more parameters. StepContext embeds the Go context, so this travels the
+	// whole way down.
+	//
+	// Set HERE rather than inside serve: serve returns early for an action the
+	// record does not publish, and a refusal labelled with a blank provider is
+	// a refusal nobody can attribute.
+	ctx.Context = withBinding(ctx.Context, plan.BindingKey)
+
+	// Timed and counted from HERE, not inside serve: a request refused before
+	// the call -- an unserved action, a precondition, a missing credential --
+	// is still a request this capability handled, and the point of the
+	// capability instruments is that they see what the provider ones cannot.
+	//
+	// Only requests this step actually serves are recorded. The pass-throughs
+	// above return before this line, so a step sitting in the pipeline for
+	// somebody else's capability contributes nothing.
+	started := time.Now()
+	err = s.serve(ctx, plan)
+	recordServed(ctx, time.Since(started), err)
+	return err
 }
 
 // resolve runs this capability's prerequisite work, returning what the mapping
@@ -96,12 +117,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 			plan.BindingKey, action, strings.Join(plan.ServedActions(), ", ")))
 	}
 
-	// Which provider capability this request is serving, put on the context so
-	// the call layer can label its span and metrics without call() and
-	// attempt() growing two more parameters. StepContext embeds the Go
-	// context, so this travels the whole way down.
 	started := time.Now()
-	ctx.Context = withBinding(ctx.Context, plan.BindingKey)
 
 	beckn, err := decodeBody(ctx.Body)
 	if err != nil {
