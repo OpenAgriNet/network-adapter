@@ -1,24 +1,68 @@
-package handler
+package merge
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
-// mergeDiscover is mergeResponses fixed to "message.catalogs", bodies in and
-// merged envelope out. onDiscover, mergedIDs and sameIDs are shared with
-// fanout_test.go -- both files exercise the same envelope shape, one at the
-// merge level and one through the executor.
+// onDiscover builds an on_discover envelope carrying catalogs with the given
+// ids. A local copy of core/module/handler/fanout_test.go's helper of the
+// same name: that one exercises the executor against real servers, this one
+// exercises the merge in isolation, and neither package should import the
+// other's test-only code just to share a JSON fixture builder.
+func onDiscover(messageID string, ids ...string) []byte {
+	catalogs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		catalogs = append(catalogs, `{"id":"`+id+`"}`)
+	}
+	return []byte(`{"context":{"messageId":"` + messageID + `","action":"on_discover"},` +
+		`"message":{"catalogs":[` + strings.Join(catalogs, ",") + `]}}`)
+}
+
+func mergedIDs(t *testing.T, body []byte) []string {
+	t.Helper()
+	var env struct {
+		Message struct {
+			Catalogs []struct {
+				ID string `json:"id"`
+			} `json:"catalogs"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("merged body is not a readable on_discover envelope: %v", err)
+	}
+	ids := make([]string, 0, len(env.Message.Catalogs))
+	for _, c := range env.Message.Catalogs {
+		ids = append(ids, c.ID)
+	}
+	return ids
+}
+
+func sameIDs(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeDiscover is Responses fixed to "message.catalogs", bodies in and
+// merged envelope out.
 func mergeDiscover(bodies [][]byte) ([]byte, error) {
-	kept := make([]keptResponse, 0, len(bodies))
+	kept := make([]KeptResponse, 0, len(bodies))
 	for _, b := range bodies {
-		items, present, err := itemsOf(b, "message.catalogs")
+		items, present, err := ItemsOf(b, "message.catalogs")
 		if err != nil {
 			return nil, err
 		}
-		kept = append(kept, keptResponse{body: b, items: items, hasItems: present})
+		kept = append(kept, KeptResponse{Body: b, Items: items, HasItems: present})
 	}
-	return mergeResponses(kept, "message.catalogs")
+	return Responses(kept, "message.catalogs")
 }
 
 func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
@@ -28,12 +72,12 @@ func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
 		onDiscover("m-1", "third-1", "third-2"),
 	})
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 
 	want := []string{"bharat-1", "maha-1", "third-1", "bharat-2", "third-2", "bharat-3"}
 	if got := mergedIDs(t, merged); !sameIDs(got, want) {
-		t.Errorf("mergeResponses() = %v, want %v", got, want)
+		t.Errorf("Responses() = %v, want %v", got, want)
 	}
 }
 
@@ -43,7 +87,7 @@ func TestResponsesFirstResponseContextPreserved(t *testing.T) {
 		onDiscover("m-2", "b"),
 	})
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 	var env struct {
 		Context struct {
@@ -55,7 +99,7 @@ func TestResponsesFirstResponseContextPreserved(t *testing.T) {
 		t.Fatalf("merged body has no readable context: %v", err)
 	}
 	if env.Context.MessageID != "m-2" || env.Context.Action != "on_discover" {
-		t.Errorf("mergeResponses() context = %+v, want the first response's context kept whole", env.Context)
+		t.Errorf("Responses() context = %+v, want the first response's context kept whole", env.Context)
 	}
 }
 
@@ -69,11 +113,11 @@ func TestResponsesRepeatedIDIsReturnedFromEveryNetwork(t *testing.T) {
 		onDiscover("m-3", "shared", "maha-only"),
 	})
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 	want := []string{"shared", "shared", "bharat-only", "maha-only"}
 	if got := mergedIDs(t, merged); !sameIDs(got, want) {
-		t.Errorf("mergeResponses() = %v, want %v (no dedupe)", got, want)
+		t.Errorf("Responses() = %v, want %v (no dedupe)", got, want)
 	}
 }
 
@@ -83,10 +127,10 @@ func TestResponsesReturnsEverythingNoTruncation(t *testing.T) {
 		onDiscover("m-5", "b1", "b2"),
 	})
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 	if got := mergedIDs(t, merged); len(got) != 4 {
-		t.Errorf("mergeResponses() returned %d catalogs, want all 4 kept", len(got))
+		t.Errorf("Responses() returned %d catalogs, want all 4 kept", len(got))
 	}
 }
 
@@ -96,10 +140,10 @@ func TestResponsesNetworkWithNoCatalogsContributesNothing(t *testing.T) {
 		[]byte(`{"context":{"messageId":"m-6"},"message":{}}`),
 	})
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 	if got := mergedIDs(t, merged); !sameIDs(got, []string{"only"}) {
-		t.Errorf("mergeResponses() = %v, want [only]", got)
+		t.Errorf("Responses() = %v, want [only]", got)
 	}
 }
 
@@ -107,7 +151,7 @@ func TestResponsesUnknownCatalogMembersSurvive(t *testing.T) {
 	body := []byte(`{"context":{},"message":{"catalogs":[{"id":"a","futureMember":42}]}}`)
 	merged, err := mergeDiscover([][]byte{body})
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 	var env struct {
 		Message struct {
@@ -118,13 +162,13 @@ func TestResponsesUnknownCatalogMembersSurvive(t *testing.T) {
 		t.Fatalf("merged body unreadable: %v", err)
 	}
 	if _, ok := env.Message.Catalogs[0]["futureMember"]; !ok {
-		t.Error("mergeResponses() dropped a catalog member it does not know about")
+		t.Error("Responses() dropped a catalog member it does not know about")
 	}
 }
 
 func TestResponsesNonObjectResponseReturnsError(t *testing.T) {
 	if _, err := mergeDiscover([][]byte{[]byte(`["not an envelope"]`)}); err == nil {
-		t.Error("mergeResponses() with a non-object response = nil error, want an error")
+		t.Error("Responses() with a non-object response = nil error, want an error")
 	}
 }
 
@@ -136,17 +180,17 @@ func TestResponsesErrorEnvelopeDoesNotDonateTheEnvelope(t *testing.T) {
 		onDiscover("m-e", "real-1"),
 	})
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(merged, &env); err != nil {
 		t.Fatalf("merged body unreadable: %v", err)
 	}
 	if _, ok := env["error"]; ok {
-		t.Error("mergeResponses() carried one network's error member into the merged answer")
+		t.Error("Responses() carried one network's error member into the merged answer")
 	}
 	if got := mergedIDs(t, merged); !sameIDs(got, []string{"real-1"}) {
-		t.Errorf("mergeResponses() = %v, want [real-1]", got)
+		t.Errorf("Responses() = %v, want [real-1]", got)
 	}
 }
 
@@ -154,19 +198,19 @@ func TestFieldPathIsConfigurableNotHardcodedToCatalogs(t *testing.T) {
 	order := func(id string) []byte {
 		return []byte(`{"context":{},"message":{"orders":[{"id":"` + id + `"}]}}`)
 	}
-	kept := make([]keptResponse, 0, 2)
+	kept := make([]KeptResponse, 0, 2)
 	for _, id := range []string{"o1", "o2"} {
 		b := order(id)
-		items, present, err := itemsOf(b, "message.orders")
+		items, present, err := ItemsOf(b, "message.orders")
 		if err != nil {
-			t.Fatalf("itemsOf() error = %v", err)
+			t.Fatalf("ItemsOf() error = %v", err)
 		}
-		kept = append(kept, keptResponse{body: b, items: items, hasItems: present})
+		kept = append(kept, KeptResponse{Body: b, Items: items, HasItems: present})
 	}
 
-	merged, err := mergeResponses(kept, "message.orders")
+	merged, err := Responses(kept, "message.orders")
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 	var env struct {
 		Message struct {
@@ -179,7 +223,7 @@ func TestFieldPathIsConfigurableNotHardcodedToCatalogs(t *testing.T) {
 		t.Fatalf("merged body unreadable: %v", err)
 	}
 	if len(env.Message.Orders) != 2 {
-		t.Errorf("mergeResponses() with fieldPath=%q merged %d, want 2: the field path must not be hardcoded", "message.orders", len(env.Message.Orders))
+		t.Errorf("Responses() with fieldPath=%q merged %d, want 2: the field path must not be hardcoded", "message.orders", len(env.Message.Orders))
 	}
 }
 
@@ -194,19 +238,19 @@ func TestFieldPathReachesNestedArraysLikeSelectsCommitments(t *testing.T) {
 			`"commitments":[{"offer":{"id":"` + offerID + `"}}]}}}`)
 	}
 
-	kept := make([]keptResponse, 0, 2)
+	kept := make([]KeptResponse, 0, 2)
 	for _, offerID := range []string{"offer:a", "offer:b"} {
 		b := onSelect(offerID)
-		items, present, err := itemsOf(b, "message.contract.commitments")
+		items, present, err := ItemsOf(b, "message.contract.commitments")
 		if err != nil {
-			t.Fatalf("itemsOf() error = %v", err)
+			t.Fatalf("ItemsOf() error = %v", err)
 		}
-		kept = append(kept, keptResponse{body: b, items: items, hasItems: present})
+		kept = append(kept, KeptResponse{Body: b, Items: items, HasItems: present})
 	}
 
-	merged, err := mergeResponses(kept, "message.contract.commitments")
+	merged, err := Responses(kept, "message.contract.commitments")
 	if err != nil {
-		t.Fatalf("mergeResponses() error = %v", err)
+		t.Fatalf("Responses() error = %v", err)
 	}
 
 	var env struct {
@@ -229,9 +273,9 @@ func TestFieldPathReachesNestedArraysLikeSelectsCommitments(t *testing.T) {
 		t.Fatalf("merged body unreadable: %v", err)
 	}
 	if len(env.Message.Contract.Commitments) != 2 {
-		t.Errorf("mergeResponses() with fieldPath=%q merged %d commitments, want 2", "message.contract.commitments", len(env.Message.Contract.Commitments))
+		t.Errorf("Responses() with fieldPath=%q merged %d commitments, want 2", "message.contract.commitments", len(env.Message.Contract.Commitments))
 	}
 	if env.Message.Contract.Status.Descriptor.Code != "ACTIVE" {
-		t.Error("mergeResponses() lost contract.status, a sibling of commitments at the same nesting level")
+		t.Error("Responses() lost contract.status, a sibling of commitments at the same nesting level")
 	}
 }
