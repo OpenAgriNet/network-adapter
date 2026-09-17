@@ -371,6 +371,37 @@ type Route struct {
 	MergeFieldPath string
 }
 
+// Clone returns a shallow copy of r, safe for a caller to hold and mutate
+// independently of the Route a Router reuses across requests -- Route() in
+// the router plugin builds one Route per configured rule at load time and
+// returns the SAME pointer to every request matching it.
+//
+// Copying the whole struct value rather than naming fields is deliberate:
+// URL, URLs and MergeFieldPath carry invariants a reader has to know by
+// convention (URL always set, URLs only when there is more than one target,
+// MergeFieldPath only alongside URLs), and a field-by-field copy elsewhere
+// once silently dropped MergeFieldPath when a new field was added and that
+// list wasn't. Clone cannot repeat that mistake: it doesn't enumerate
+// fields, so a field added later is copied automatically.
+func (r *Route) Clone() *Route {
+	clone := *r
+	return &clone
+}
+
+// ValidMergeFieldPath reports whether path is a legal fan-out merge path: it
+// must be rooted at "message" (or be exactly "message"), because context is
+// fixed envelope shape across every Beckn v2 action -- only message varies.
+//
+// The rule lives here, not in the routing plugin that validates a
+// MergeFieldPath at load time: a router resolves destinations from an
+// action, and shouldn't also need to know that a reply has a "message"
+// member. This is the one place both that plugin and whatever merges
+// responses at this path can share the same answer to "is this legal"
+// without either depending on the other.
+func ValidMergeFieldPath(path string) bool {
+	return path == "message" || strings.HasPrefix(path, "message.")
+}
+
 // Keyset represents a collection of cryptographic keys used for signing and encryption.
 type Keyset struct {
 	SubscriberID   string
