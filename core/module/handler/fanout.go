@@ -33,10 +33,6 @@ const (
 // additionalProperties:false).
 const degradedCountHeader = "X-Beckn-Degraded-Count"
 
-// codeAllTargetsUnreachable mirrors util.CodeUpstreamUnavailable, which this
-// package cannot import (internal to plugin/implementation).
-const codeAllTargetsUnreachable = "NET_DOWNSTREAM_UNAVAILABLE"
-
 // hopByHopHeaders are connection-scoped and must not be forwarded.
 // ReverseProxy strips these itself; http.Client.Do does not.
 var hopByHopHeaders = []string{
@@ -69,7 +65,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		*responseBody = sendNack(ctx, w, err)
 	}
 
-	results := callTargets(ctx, r, httpClient, targets, r.URL.Query(), cfg)
+	results := callTargets(ctx.Context, ctx.Body, r, httpClient, targets, r.URL.Query(), cfg)
 
 	kept, degraded := collect(ctx, targets, results, responseSteps, mergeFieldPath)
 	log.Infof(ctx.Context, "fanout: %d/%d targets contributed, %d degraded, mergeFieldPath=%s", len(kept), len(targets), len(degraded), mergeFieldPath)
@@ -77,7 +73,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		// Wire error carries only a count; the degraded hosts (already logged
 		// per-target in collect) stay out of it -- that's the whole point of
 		// the count-not-hosts header.
-		unreachable := model.NewCodedErr(http.StatusBadGateway, codeAllTargetsUnreachable,
+		unreachable := model.NewCodedErr(http.StatusBadGateway, model.CodeUpstreamUnavailable,
 			fmt.Errorf("no target could be reached (%d unreachable)", len(degraded)))
 		log.Errorf(ctx.Context, unreachable, "fanout: every target unreachable: %s", strings.Join(degraded, ", "))
 		fail(unreachable)
@@ -114,7 +110,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 // One deadline for the fan-out as a whole, not per target: with a
 // concurrency cap, targets run in waves, and a per-target timeout would
 // become N waves x timeout.
-func callTargets(ctx *model.StepContext, r *http.Request, httpClient *http.Client, targets []*url.URL, query url.Values, cfg FanoutConfig) []targetResult {
+func callTargets(parentCtx context.Context, body []byte, r *http.Request, httpClient *http.Client, targets []*url.URL, query url.Values, cfg FanoutConfig) []targetResult {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = defaultFanoutTimeout
@@ -123,9 +119,9 @@ func callTargets(ctx *model.StepContext, r *http.Request, httpClient *http.Clien
 	if concurrency <= 0 {
 		concurrency = defaultFanoutMaxConcurrency
 	}
-	log.Infof(ctx.Context, "fanout: calling %d target(s), maxConcurrency=%d, timeout=%s", len(targets), concurrency, timeout)
+	log.Infof(parentCtx, "fanout: calling %d target(s), maxConcurrency=%d, timeout=%s", len(targets), concurrency, timeout)
 
-	fanCtx, cancel := context.WithTimeout(ctx.Context, timeout)
+	fanCtx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	group, groupCtx := errgroup.WithContext(fanCtx)
@@ -136,7 +132,7 @@ func callTargets(ctx *model.StepContext, r *http.Request, httpClient *http.Clien
 	results := make([]targetResult, len(targets))
 	for i, t := range targets {
 		group.Go(func() error {
-			results[i] = callTarget(groupCtx, ctx, r, httpClient, t, query)
+			results[i] = callTarget(groupCtx, body, r, httpClient, t, query)
 			return nil
 		})
 	}
@@ -155,10 +151,10 @@ func callTargets(ctx *model.StepContext, r *http.Request, httpClient *http.Clien
 // callTarget sends the already-validated body to one target and reads its
 // whole answer.
 //
-// The body comes from ctx.Body: r.Body is a stream the first target would
-// drain, so each target gets its own bytes.Reader over the same backing
-// array instead.
-func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request, httpClient *http.Client, target *url.URL, query url.Values) targetResult {
+// body is ctx.Body, passed down rather than r.Body: r.Body is a stream the
+// first target would drain, so each target gets its own bytes.Reader over
+// the same backing array instead.
+func callTarget(fanCtx context.Context, body []byte, r *http.Request, httpClient *http.Client, target *url.URL, query url.Values) targetResult {
 	// The target's own configured query survives; the inbound one is laid
 	// over it.
 	u := *target
@@ -168,7 +164,7 @@ func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request,
 	}
 	u.RawQuery = merged.Encode()
 
-	req, err := http.NewRequestWithContext(fanCtx, r.Method, u.String(), bytes.NewReader(ctx.Body))
+	req, err := http.NewRequestWithContext(fanCtx, r.Method, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return targetResult{err: fmt.Errorf("building request for %s: %w", &u, err)}
 	}
@@ -203,7 +199,7 @@ func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request,
 	req.Header.Set("X-Forwarded-Host", r.Host)
 	req.Host = u.Host
 
-	log.Request(fanCtx, req, ctx.Body)
+	log.Request(fanCtx, req, body)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -212,14 +208,14 @@ func callTarget(fanCtx context.Context, ctx *model.StepContext, r *http.Request,
 	defer resp.Body.Close()
 
 	// +1 so a body exactly at the cap isn't mistaken for a truncated one.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTargetResponseBytes+1))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxTargetResponseBytes+1))
 	if err != nil {
 		return targetResult{err: fmt.Errorf("reading response from %s: %w", &u, err)}
 	}
-	if len(body) > maxTargetResponseBytes {
+	if len(respBody) > maxTargetResponseBytes {
 		return targetResult{err: fmt.Errorf("response from %s exceeds %d bytes", &u, maxTargetResponseBytes)}
 	}
-	return targetResult{status: resp.StatusCode, header: resp.Header, body: body}
+	return targetResult{status: resp.StatusCode, header: resp.Header, body: respBody}
 }
 
 // wantsTeTrailers reports whether values (a request's Te header) names
