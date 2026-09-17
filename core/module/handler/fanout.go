@@ -71,7 +71,7 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 	kept, degraded := collect(ctx, targets, results, responseSteps, mergeFieldPath)
 	log.Infof(ctx.Context, "fanout: %d/%d targets contributed, %d degraded, mergeFieldPath=%s", len(kept), len(targets), len(degraded), mergeFieldPath)
 	if len(kept) == 0 {
-		// Wire error carries only a count; the degraded hosts (already logged
+		// Wire error carries only a count; the degraded targets (already logged
 		// per-target in collect) stay out of it -- that's the whole point of
 		// the count-not-hosts header.
 		unreachable := model.NewCodedErr(http.StatusBadGateway, model.CodeUpstreamUnavailable,
@@ -247,15 +247,15 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 		degraded []string
 	)
 	for i, res := range results {
-		host := targets[i].Host
+		targetURL := targets[i].String()
 		switch {
 		case res.err != nil:
-			log.Errorf(ctx.Context, res.err, "fanout: target %s did not answer, marking degraded", host)
-			degraded = append(degraded, host)
+			log.Errorf(ctx.Context, res.err, "fanout: target %s did not answer, marking degraded", targetURL)
+			degraded = append(degraded, targetURL)
 			continue
 		case res.status < 200 || res.status >= 300:
-			log.Warnf(ctx, "fanout: target %s answered %d, excluding it from the merge", host, res.status)
-			degraded = append(degraded, host)
+			log.Warnf(ctx, "fanout: target %s answered %d, excluding it from the merge", targetURL, res.status)
+			degraded = append(degraded, targetURL)
 			continue
 		}
 
@@ -263,8 +263,8 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 		failed := false
 		for _, step := range steps {
 			if err := step.RunOnResponse(ctx, rctx); err != nil {
-				log.Errorf(ctx.Context, err, "fanout: response step rejected target %s, marking degraded", host)
-				degraded = append(degraded, host)
+				log.Errorf(ctx.Context, err, "fanout: response step rejected target %s, marking degraded", targetURL)
+				degraded = append(degraded, targetURL)
 				failed = true
 				break
 			}
@@ -275,8 +275,8 @@ func collect(ctx *model.StepContext, targets []*url.URL, results []targetResult,
 
 		items, present, err := merge.ItemsOf(res.body, mergeFieldPath)
 		if err != nil {
-			log.Errorf(ctx.Context, err, "fanout: target %s (status %d) has an unreadable body at mergeFieldPath=%s, marking degraded", host, res.status, mergeFieldPath)
-			degraded = append(degraded, host)
+			log.Errorf(ctx.Context, err, "fanout: target %s (status %d) has an unreadable body at mergeFieldPath=%s, marking degraded", targetURL, res.status, mergeFieldPath)
+			degraded = append(degraded, targetURL)
 			continue
 		}
 		kept = append(kept, merge.KeptResponse{Body: res.body, Items: items, HasItems: present})
