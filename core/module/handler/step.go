@@ -444,13 +444,10 @@ func (s *addRouteStep) Run(ctx *model.StepContext) error {
 	if err != nil {
 		return fmt.Errorf("failed to determine route: %w", err)
 	}
-	ctx.Route = &model.Route{
-		TargetType:     route.TargetType,
-		PublisherID:    route.PublisherID,
-		URL:            route.URL,
-		URLs:           route.URLs,
-		MergeFieldPath: route.MergeFieldPath,
-	}
+	// Cloned rather than aliased: router.Route() returns the SAME *Route for
+	// every request matching a rule, and Clone (unlike a field-by-field
+	// copy) cannot silently drop a field added to Route later.
+	ctx.Route = route.Clone()
 	if s.metrics != nil && ctx.Route != nil {
 		s.metrics.RoutingDecisionsTotal.Add(ctx.Context, 1,
 			metric.WithAttributes(
