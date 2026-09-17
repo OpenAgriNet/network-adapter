@@ -399,7 +399,21 @@ func (r *Route) Clone() *Route {
 // responses at this path can share the same answer to "is this legal"
 // without either depending on the other.
 func ValidMergeFieldPath(path string) bool {
-	return path == "message" || strings.HasPrefix(path, "message.")
+	if path != "message" && !strings.HasPrefix(path, "message.") {
+		return false
+	}
+	// A trailing or doubled dot ("message.", "message..catalogs") passes the
+	// check above but splits into an empty segment, and stray whitespace
+	// ("message. catalogs") splits into a segment no real JSON key ever
+	// matches -- neither resolves to anything, exactly the silent "every
+	// target carries nothing" failure this function exists to catch at load
+	// time instead of request time.
+	for _, seg := range strings.Split(path, ".") {
+		if seg == "" || seg != strings.TrimSpace(seg) {
+			return false
+		}
+	}
+	return true
 }
 
 // Keyset represents a collection of cryptographic keys used for signing and encryption.

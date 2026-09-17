@@ -360,6 +360,36 @@ func TestValidMergeFieldPathRejectsPathsNotRootedAtMessage(t *testing.T) {
 	}
 }
 
+// TestValidMergeFieldPathRejectsEmptySegments guards a path that is rooted
+// at "message" but malformed further in -- a trailing or doubled dot passes
+// the prefix check alone but splits into an empty segment, which never
+// resolves to anything at request time. Caught by counter-example: found by
+// a self-review, not by the original test suite.
+func TestValidMergeFieldPathRejectsEmptySegments(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"message.", "message..catalogs", "message.catalogs."} {
+		if ValidMergeFieldPath(path) {
+			t.Errorf("ValidMergeFieldPath(%q) = true, want false: an empty segment resolves nothing", path)
+		}
+	}
+}
+
+// TestValidMergeFieldPathRejectsWhitespacePaddedSegments guards a
+// non-empty-but-still-broken segment: "message. catalogs" has no empty
+// segment, so the check above alone would accept it, but " catalogs" (with
+// its leading space) is not a JSON key any real response carries either.
+// Found by a self-review, not by the original test suite.
+func TestValidMergeFieldPathRejectsWhitespacePaddedSegments(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"message. catalogs", "message.catalogs ", " message.catalogs"} {
+		if ValidMergeFieldPath(path) {
+			t.Errorf("ValidMergeFieldPath(%q) = true, want false: a whitespace-padded segment resolves nothing", path)
+		}
+	}
+}
+
 func TestRouteCloneReturnsADistinctEqualCopy(t *testing.T) {
 	t.Parallel()
 

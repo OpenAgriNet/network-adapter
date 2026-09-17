@@ -429,7 +429,15 @@ func handleProtocolMapping(route *model.Route, npURI, endpoint, rawQuery string)
 	return &model.Route{TargetType: targetTypeURL, URL: targetURL}, nil
 }
 
-// withRawQuery returns a copy of a URL-type route with the inbound query string applied to all targets.
+// withRawQuery returns a copy of a URL-type route with the inbound query
+// string applied to all targets.
+//
+// Built from Clone(), not a fresh &model.Route{} literal: both call sites
+// already guard on TargetType == targetTypeURL before calling this, so
+// route.TargetType is safe to carry through unchanged, and Clone means a
+// field this function doesn't know to touch (MergeFieldPath, at the time
+// this bug was found) is preserved rather than silently dropped -- the same
+// class of bug Route.Clone exists to close off in addRouteStep.
 func withRawQuery(route *model.Route, rawQuery string) *model.Route {
 	inbound, err := url.ParseQuery(rawQuery)
 	if err != nil {
@@ -438,7 +446,9 @@ func withRawQuery(route *model.Route, rawQuery string) *model.Route {
 		inbound = nil
 	}
 
-	out := &model.Route{TargetType: targetTypeURL, URL: mergeQuery(route.URL, rawQuery, inbound)}
+	out := route.Clone()
+	out.URL = mergeQuery(route.URL, rawQuery, inbound)
+	out.URLs = nil
 	for _, u := range route.URLs {
 		out.URLs = append(out.URLs, mergeQuery(u, rawQuery, inbound))
 	}
@@ -448,15 +458,23 @@ func withRawQuery(route *model.Route, rawQuery string) *model.Route {
 // mergeQuery clones one target with the inbound query laid over its own.
 func mergeQuery(u *url.URL, rawQuery string, inbound url.Values) *url.URL {
 	clone := *u
-	if inbound == nil || clone.RawQuery == "" {
+	switch {
+	case clone.RawQuery == "":
+		// Nothing of its own to preserve either way.
 		clone.RawQuery = rawQuery
-		return &clone
+	case inbound == nil:
+		// Unparseable inbound, but this target already has a working query
+		// of its own -- append the raw (invalid) string after it rather
+		// than overwrite, so an upstream selector like ?network=maha
+		// survives a caller sending a malformed query on top of it.
+		clone.RawQuery = clone.RawQuery + "&" + rawQuery
+	default:
+		merged := clone.Query()
+		for key, values := range inbound {
+			merged[key] = values
+		}
+		clone.RawQuery = merged.Encode()
 	}
-	merged := clone.Query()
-	for key, values := range inbound {
-		merged[key] = values
-	}
-	clone.RawQuery = merged.Encode()
 	return &clone
 }
 

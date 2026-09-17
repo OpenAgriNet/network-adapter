@@ -2,11 +2,14 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/router"
 )
 
 // onDiscover builds an on_discover envelope carrying catalogs with the given ids.
@@ -87,6 +91,11 @@ func runFanout(t *testing.T, cfg FanoutConfig, rawQuery string, targets ...strin
 		if err != nil {
 			t.Fatalf("parsing target %q: %v", target, err)
 		}
+		// The router bakes the inbound query onto every target before fanout
+		// ever runs (withRawQuery, in the router plugin) -- fanout no longer
+		// does this itself, so the test harness has to stand in for that step
+		// to exercise anything query-related at this level.
+		u.RawQuery = rawQuery
 		urls = append(urls, u)
 	}
 
@@ -287,7 +296,14 @@ func TestFanoutTargetSlowerThanBudgetIsReportedDegraded(t *testing.T) {
 	}
 }
 
-func TestFanoutTargetReceivesBodyAndQueryUnchanged(t *testing.T) {
+// TestFanoutTargetReceivesBodyAndTargetURLUntouched covers two things
+// callTarget must not corrupt: the body (re-read per target from ctx.Body,
+// not streamed from r.Body, which the first target would drain) and the
+// target URL's query string, which runFanout bakes in here standing in for
+// what the router already does in production (withRawQuery) -- fanout no
+// longer merges a query onto targets itself, so this only guards that
+// whatever the router already baked in survives callTarget unmodified.
+func TestFanoutTargetReceivesBodyAndTargetURLUntouched(t *testing.T) {
 	type seen struct {
 		body  string
 		query url.Values
@@ -451,53 +467,6 @@ func TestFanoutLeavesNoGoroutineBehindWhenTargetsMissTheBudget(t *testing.T) {
 	}
 }
 
-func TestFanoutKeepsATargetsOwnQueryAlongsideTheInboundOne(t *testing.T) {
-	seen := make(chan url.Values, 4)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- r.URL.Query()
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(onDiscover("m-q", "x"))
-	}))
-	defer srv.Close()
-
-	// A target configured with a query of its own, as a rule naming several
-	// networks may well be.
-	baked, err := url.Parse(srv.URL + "/discover?network=maha")
-	if err != nil {
-		t.Fatalf("parsing target: %v", err)
-	}
-	plain, _ := url.Parse(srv.URL + "/discover")
-
-	body := []byte(`{"context":{"action":"discover","version":"2.0.0"},"message":{}}`)
-	req := httptest.NewRequest(http.MethodPost, "/discover?limit=5", strings.NewReader(string(body)))
-	rec := httptest.NewRecorder()
-	ctx := &model.StepContext{
-		Context:    req.Context(),
-		Request:    req,
-		Body:       body,
-		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: baked, URLs: []*url.URL{baked, plain}, MergeFieldPath: "message.catalogs"},
-	}
-	var responseBody []byte
-	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
-
-	// Both targets are read: they answer in whatever order they finish, and
-	// only one of them carries a configured query.
-	baked_seen := 0
-	for i := 0; i < 2; i++ {
-		got := <-seen
-		if got.Get("limit") != "5" {
-			t.Errorf("target query = %v, want the inbound limit=5 carried to every target", got)
-		}
-		if got.Get("network") == "maha" {
-			baked_seen++
-		}
-	}
-	if baked_seen != 1 {
-		t.Errorf("network=maha reached %d targets, want exactly the one configured with it", baked_seen)
-	}
-}
-
 func TestFanoutStripsHeadersNamedByConnection(t *testing.T) {
 	seen := make(chan http.Header, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -553,6 +522,69 @@ func TestFanoutRefusesAnActionWhoseRepliesCarryNoCatalogs(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "catalogs") {
 		t.Error("fanout() wrote a catalogs member into a response that had none")
+	}
+}
+
+// TestRouterIntoFanoutRealComposition is the seam TestAddRouteStep_Run and
+// runFanout each simulate their own half of: a real router.Router, loaded
+// from an actual config file, resolves a route (going through withRawQuery,
+// since the request below carries a query string) and hands it straight to
+// fanout() -- not a hand-built *model.Route standing in for what the router
+// would have produced. This is exactly the composition the original
+// MergeFieldPath-dropping bug lived in; router_test.go and fanout_test.go's
+// own unit tests cover each half well, but neither exercised them wired
+// together until this test.
+func TestRouterIntoFanoutRealComposition(t *testing.T) {
+	a := discoverServer(t, http.StatusOK, onDiscover("m-int", "a1"), 0)
+	defer a.Close()
+	b := discoverServer(t, http.StatusOK, onDiscover("m-int", "b1"), 0)
+	defer b.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "routing.yaml")
+	cfg := "routingRules:\n" +
+		"  - version: \"2.0.0\"\n" +
+		"    targetType: \"url\"\n" +
+		"    target:\n" +
+		"      urls:\n" +
+		"        - \"" + a.URL + "\"\n" +
+		"        - \"" + b.URL + "\"\n" +
+		"    mergeFieldPath: message.catalogs\n" +
+		"    endpoints:\n" +
+		"      - discover\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("writing routing config: %v", err)
+	}
+
+	rt, _, err := router.New(context.Background(), &router.Config{RoutingConfig: cfgPath})
+	if err != nil {
+		t.Fatalf("router.New() error = %v", err)
+	}
+
+	body := []byte(`{"context":{"action":"discover","version":"2.0.0"},"message":{}}`)
+	req := httptest.NewRequest(http.MethodPost, "/discover?limit=5", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+
+	route, err := rt.Route(req.Context(), &url.URL{Path: "discover", RawQuery: "limit=5"}, body)
+	if err != nil {
+		t.Fatalf("Route() error = %v", err)
+	}
+
+	ctx := &model.StepContext{
+		Context:    req.Context(),
+		Request:    req,
+		Body:       body,
+		RespHeader: rec.Header(),
+		Route:      route,
+	}
+
+	var responseBody []byte
+	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fanout() status = %d, want 200 through the real router-into-fanout composition. body: %s", rec.Code, rec.Body.String())
+	}
+	if got := mergedIDs(t, rec.Body.Bytes()); !sameIDs(got, []string{"a1", "b1"}) {
+		t.Errorf("fanout() catalogs = %v, want [a1 b1]: MergeFieldPath must survive router.Route() (including withRawQuery) into fanout()", got)
 	}
 }
 

@@ -3,11 +3,13 @@ package router
 import (
 	"context"
 	"embed"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -1259,6 +1261,26 @@ func TestValidateRulesRejectsMergeFieldPathNotUnderMessage(t *testing.T) {
 	}
 }
 
+// TestValidateRulesRejectsMalformedMergeFieldPath covers paths that ARE
+// rooted at "message" but still resolve to nothing -- an empty segment
+// (trailing/doubled dot) or a whitespace-padded one. Round-tripped through
+// validateRules, not just model.ValidMergeFieldPath directly, so a future
+// change that bypasses or short-circuits this call would be caught here too.
+func TestValidateRulesRejectsMalformedMergeFieldPath(t *testing.T) {
+	for _, path := range []string{"message.", "message..catalogs", "message. catalogs"} {
+		err := validateRules([]routingRule{{
+			Version:        "2.0.0",
+			TargetType:     "url",
+			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+			Endpoints:      []string{"discover"},
+			MergeFieldPath: path,
+		}})
+		if err == nil {
+			t.Errorf("validateRules() accepted mergeFieldPath %q, want it rejected: it resolves to nothing", path)
+		}
+	}
+}
+
 // TestValidateRulesAcceptsMergeFieldPathUnderMessage covers the accepted
 // shapes: a nested path, and the bare "message" itself (the whole message
 // object as the array -- unusual, but not the mistake the check above guards
@@ -1366,6 +1388,13 @@ routingRules:
 			t.Errorf("target %d query = %q, want limit=10 on every target", i, u.RawQuery)
 		}
 	}
+	// withRawQuery rebuilds the route to carry the query string; regression
+	// coverage for a real bug where that rebuild silently dropped
+	// MergeFieldPath (a fan-out route with a query string on it merged
+	// nothing, ever, in production, until this was caught).
+	if first.MergeFieldPath != "message.catalogs" {
+		t.Errorf("MergeFieldPath = %q after withRawQuery, want %q preserved", first.MergeFieldPath, "message.catalogs")
+	}
 
 	// A second request through the same rule must not see the first one's query.
 	second, err := r.Route(context.Background(), &url.URL{Path: "discover", RawQuery: "limit=99"}, body)
@@ -1382,6 +1411,56 @@ routingRules:
 			t.Errorf("first request target %d query changed to %q: the routes share backing URLs", i, u.RawQuery)
 		}
 	}
+}
+
+// TestRouteConcurrentRequestsThroughSameRuleDoNotShareState is the -race
+// regression guard for the exact hazard Route.Clone exists to prevent:
+// router.Route() hands the SAME *model.Route to every request matching a
+// rule, so a fresh copy per request (not a mutation of the shared one) is
+// what keeps one request's query string from leaking into a concurrent
+// request through the same rule.
+func TestRouteConcurrentRequestsThroughSameRuleDoNotShareState(t *testing.T) {
+	path := writeRoutingConfig(t, `
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      urls:
+        - "http://bharat:9201"
+        - "http://maha:9201"
+    mergeFieldPath: message.catalogs
+    endpoints:
+      - discover
+`)
+	r, _, err := New(context.Background(), &Config{RoutingConfig: path})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	body := []byte(`{"context":{"version":"2.0.0"}}`)
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			q := fmt.Sprintf("req=%d", i)
+			route, err := r.Route(context.Background(), &url.URL{Path: "discover", RawQuery: q}, body)
+			if err != nil {
+				t.Errorf("Route() error = %v", err)
+				return
+			}
+			if route.MergeFieldPath != "message.catalogs" {
+				t.Errorf("request %d: MergeFieldPath = %q, want message.catalogs", i, route.MergeFieldPath)
+			}
+			for _, u := range route.URLs {
+				if u.RawQuery != q {
+					t.Errorf("request %d: target query = %q, want %q -- a concurrent request's query leaked in", i, u.RawQuery, q)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func TestValidateRules_EmptyEntryInURLs(t *testing.T) {
@@ -1410,13 +1489,37 @@ func TestWithRawQuery_InvalidQueryAndExistingQuery(t *testing.T) {
 		URLs:       []*url.URL{u1, u2},
 	}
 
+	// An unparseable inbound query must not wipe a target's own working
+	// query -- it is appended after it, not substituted for it. u2 has
+	// nothing of its own, so it just gets the raw string directly.
 	outInvalid := withRawQuery(rt, "%zz")
-	if outInvalid.URL.RawQuery != "%zz" {
-		t.Errorf("withRawQuery(%%zz) = %q, want %%zz", outInvalid.URL.RawQuery)
+	if !strings.Contains(outInvalid.URL.RawQuery, "network=maha") || !strings.HasSuffix(outInvalid.URL.RawQuery, "%zz") {
+		t.Errorf("withRawQuery(%%zz).URL.RawQuery = %q, want network=maha preserved with %%zz appended", outInvalid.URL.RawQuery)
+	}
+	if len(outInvalid.URLs) != 2 {
+		t.Fatalf("withRawQuery(%%zz).URLs has %d entries, want 2", len(outInvalid.URLs))
+	}
+	if !strings.Contains(outInvalid.URLs[0].RawQuery, "network=maha") || !strings.HasSuffix(outInvalid.URLs[0].RawQuery, "%zz") {
+		t.Errorf("withRawQuery(%%zz).URLs[0] = %q, want network=maha preserved with %%zz appended", outInvalid.URLs[0].RawQuery)
+	}
+	if outInvalid.URLs[1].RawQuery != "%zz" {
+		t.Errorf("withRawQuery(%%zz).URLs[1] = %q, want %%zz (this target had no query of its own)", outInvalid.URLs[1].RawQuery)
 	}
 
+	// A parseable inbound query merges with each target's own -- checked on
+	// both .URL (the single-target reader) and every entry of .URLs (what
+	// fan-out actually reads), not just the first.
 	outMerged := withRawQuery(rt, "limit=5")
 	if !strings.Contains(outMerged.URL.RawQuery, "network=maha") || !strings.Contains(outMerged.URL.RawQuery, "limit=5") {
-		t.Errorf("withRawQuery(limit=5) = %q, want merged query containing network=maha and limit=5", outMerged.URL.RawQuery)
+		t.Errorf("withRawQuery(limit=5).URL.RawQuery = %q, want merged query containing network=maha and limit=5", outMerged.URL.RawQuery)
+	}
+	if len(outMerged.URLs) != 2 {
+		t.Fatalf("withRawQuery(limit=5).URLs has %d entries, want 2", len(outMerged.URLs))
+	}
+	if !strings.Contains(outMerged.URLs[0].RawQuery, "network=maha") || !strings.Contains(outMerged.URLs[0].RawQuery, "limit=5") {
+		t.Errorf("withRawQuery(limit=5).URLs[0] = %q, want merged query containing network=maha and limit=5", outMerged.URLs[0].RawQuery)
+	}
+	if outMerged.URLs[1].RawQuery != "limit=5" {
+		t.Errorf("withRawQuery(limit=5).URLs[1] = %q, want limit=5 (this target had no query of its own)", outMerged.URLs[1].RawQuery)
 	}
 }
