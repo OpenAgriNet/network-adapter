@@ -2,6 +2,13 @@
 // over a caller-configured field path. It has no knowledge of HTTP, routing,
 // or any specific action -- catalogs, commitments or anything else nested
 // under message is the caller's business, not this package's.
+//
+// The field path is the only configurable part of the merge policy.
+// Ordering (round-robin interleave, in interleave) and donor selection
+// (first target in caller order that carries the path, in Responses) are
+// fixed here, deliberately: no deployment has needed either to vary, and
+// adding knobs ahead of an actual need is speculative complexity this
+// package would then have to carry and test regardless.
 package merge
 
 import (
