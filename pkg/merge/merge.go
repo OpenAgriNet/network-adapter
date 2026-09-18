@@ -54,11 +54,17 @@ func ItemsOf(body []byte, fieldPath string) ([]json.RawMessage, bool, error) {
 // array at fieldPath across all of them.
 //
 // The donor -- the first kept response in TARGET ORDER (not arrival order)
-// that carries fieldPath -- supplies context and message verbatim; this code
-// never synthesizes a context of its own. A 200 carrying a Beckn error
-// envelope is kept (not a transport failure) but never donates: it has no
-// fieldPath, so HasItems is false regardless of target order.
-func Responses(kept []KeptResponse, fieldPath string) ([]byte, error) {
+// that carries fieldPath -- supplies message verbatim; this code never
+// synthesizes one of its own. A 200 carrying a Beckn error envelope is kept
+// (not a transport failure) but never donates: it has no fieldPath, so
+// HasItems is false regardless of target order.
+//
+// context comes from requestBody instead, action replaced with action --
+// never from a donor. A target is the caller's proxy for one catalog, not
+// this adapter's identity; echoing a donor's context would have the merged
+// reply claim to be whichever target happened to answer first, and that
+// claim would change depending on who's up.
+func Responses(kept []KeptResponse, fieldPath string, requestBody []byte, action string) ([]byte, error) {
 	donor := -1
 	for i, k := range kept {
 		if k.HasItems {
@@ -75,13 +81,15 @@ func Responses(kept []KeptResponse, fieldPath string) ([]byte, error) {
 		return nil, fmt.Errorf("donor response is not a JSON object: %w", err)
 	}
 
+	replyContext, err := contextWithAction(requestBody, action)
+	if err != nil {
+		return nil, err
+	}
+
 	// Rebuilt rather than edited in place: only context and message belong in
 	// the answer. message is seeded from the donor here so setAtPath below
 	// preserves every sibling along fieldPath instead of starting empty.
-	envelope := map[string]json.RawMessage{}
-	if raw, ok := donorEnvelope[contextKey]; ok {
-		envelope[contextKey] = raw
-	}
+	envelope := map[string]json.RawMessage{contextKey: replyContext}
 	if raw, ok := donorEnvelope[messageKey]; ok {
 		envelope[messageKey] = raw
 	}
@@ -99,6 +107,37 @@ func Responses(kept []KeptResponse, fieldPath string) ([]byte, error) {
 		return nil, fmt.Errorf("writing merged %s: %w", fieldPath, err)
 	}
 	return json.Marshal(envelope)
+}
+
+// contextWithAction reads context out of requestBody -- the caller's own
+// inbound envelope -- and returns it with its action member replaced by
+// action (e.g. "on_discover"), everything else (bapId/bapUri, transactionId,
+// messageId, version...) carried through unchanged: they are the caller's
+// own identity, genuinely correct to echo back, not this package's to
+// invent or verify.
+func contextWithAction(requestBody []byte, action string) (json.RawMessage, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(requestBody, &envelope); err != nil {
+		return nil, fmt.Errorf("request body is not a JSON object: %w", err)
+	}
+	rawContext, ok := envelope[contextKey]
+	if !ok {
+		return nil, fmt.Errorf("request carries no %s", contextKey)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawContext, &fields); err != nil {
+		return nil, fmt.Errorf("request context is not a JSON object: %w", err)
+	}
+	encodedAction, err := json.Marshal(action)
+	if err != nil {
+		return nil, fmt.Errorf("encoding action %q: %w", action, err)
+	}
+	fields["action"] = encodedAction
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding request context: %w", err)
+	}
+	return encoded, nil
 }
 
 // arrayAtPath walks a dot path of object keys from the given node ("message",

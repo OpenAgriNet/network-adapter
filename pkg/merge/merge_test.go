@@ -51,8 +51,12 @@ func sameIDs(got, want []string) bool {
 	return true
 }
 
-// mergeDiscover is Responses fixed to "message.catalogs", bodies in and
-// merged envelope out.
+// discoverRequest is a stand-in inbound request: what Responses now takes its
+// reply context from, instead of any target's response.
+var discoverRequest = []byte(`{"context":{"messageId":"req-1","action":"discover"}}`)
+
+// mergeDiscover is Responses fixed to "message.catalogs" against
+// discoverRequest, bodies in and merged envelope out.
 func mergeDiscover(bodies [][]byte) ([]byte, error) {
 	kept := make([]KeptResponse, 0, len(bodies))
 	for _, b := range bodies {
@@ -62,7 +66,7 @@ func mergeDiscover(bodies [][]byte) ([]byte, error) {
 		}
 		kept = append(kept, KeptResponse{Body: b, Items: items, HasItems: present})
 	}
-	return Responses(kept, "message.catalogs")
+	return Responses(kept, "message.catalogs", discoverRequest, "on_discover")
 }
 
 func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
@@ -81,7 +85,12 @@ func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
 	}
 }
 
-func TestResponsesFirstResponseContextPreserved(t *testing.T) {
+// TestResponsesContextComesFromRequestNotDonor locks in the fix for the
+// review finding that the merged reply used to echo whichever target
+// answered first, claiming an identity that wasn't its own. The responses
+// below carry a different messageId ("m-2") than the request
+// (discoverRequest's "req-1") specifically to prove which one wins.
+func TestResponsesContextComesFromRequestNotDonor(t *testing.T) {
 	merged, err := mergeDiscover([][]byte{
 		onDiscover("m-2", "a"),
 		onDiscover("m-2", "b"),
@@ -98,8 +107,11 @@ func TestResponsesFirstResponseContextPreserved(t *testing.T) {
 	if err := json.Unmarshal(merged, &env); err != nil {
 		t.Fatalf("merged body has no readable context: %v", err)
 	}
-	if env.Context.MessageID != "m-2" || env.Context.Action != "on_discover" {
-		t.Errorf("Responses() context = %+v, want the first response's context kept whole", env.Context)
+	if env.Context.MessageID != "req-1" {
+		t.Errorf("Responses() context.messageId = %q, want the request's %q, not a donor response's", env.Context.MessageID, "req-1")
+	}
+	if env.Context.Action != "on_discover" {
+		t.Errorf("Responses() context.action = %q, want %q", env.Context.Action, "on_discover")
 	}
 }
 
@@ -208,7 +220,7 @@ func TestFieldPathIsConfigurableNotHardcodedToCatalogs(t *testing.T) {
 		kept = append(kept, KeptResponse{Body: b, Items: items, HasItems: present})
 	}
 
-	merged, err := Responses(kept, "message.orders")
+	merged, err := Responses(kept, "message.orders", discoverRequest, "on_discover")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
@@ -248,7 +260,8 @@ func TestFieldPathReachesNestedArraysLikeSelectsCommitments(t *testing.T) {
 		kept = append(kept, KeptResponse{Body: b, Items: items, HasItems: present})
 	}
 
-	merged, err := Responses(kept, "message.contract.commitments")
+	selectRequest := []byte(`{"context":{"action":"select"}}`)
+	merged, err := Responses(kept, "message.contract.commitments", selectRequest, "on_select")
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}

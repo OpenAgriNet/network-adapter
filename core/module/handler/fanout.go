@@ -81,7 +81,19 @@ func fanout(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, http
 		return
 	}
 
-	merged, err := merge.Responses(kept, mergeFieldPath)
+	// The reply's context is the caller's own, action flipped -- not a
+	// donor's. A target is the caller's proxy for one catalog, not this
+	// adapter's identity, so echoing a donor's context would have the merged
+	// reply claim to be whichever target happened to answer first.
+	requestAction := extractBecknAction(ctx.Body)
+	if requestAction == "" {
+		err := fmt.Errorf("request context carries no action, cannot build a reply context")
+		log.Errorf(ctx.Context, err, "fanout: merge aborted")
+		fail(err)
+		return
+	}
+
+	merged, err := merge.Responses(kept, mergeFieldPath, ctx.Body, "on_"+requestAction)
 	if err != nil {
 		log.Errorf(ctx.Context, err, "fanout: merge failed across %d kept response(s) at mergeFieldPath=%s", len(kept), mergeFieldPath)
 		fail(err)
@@ -197,7 +209,11 @@ func callTarget(fanCtx context.Context, body []byte, r *http.Request, httpClient
 	req.Header.Set("X-Forwarded-Host", r.Host)
 	req.Host = target.Host
 
-	log.Request(fanCtx, req, body)
+	// Debug, not log.Request: the body is identical at every target (see the
+	// comment on this function), and stdHandler.go already logs it once for
+	// the inbound request -- logging it again here per target is pure
+	// duplication, N times over for N targets.
+	log.Debugf(fanCtx, "fanout: calling %s", target)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
