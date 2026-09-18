@@ -1877,6 +1877,43 @@ func TestUnzipFailure(t *testing.T) {
 			},
 			expectedError: "permission denied",
 		},
+		{
+			name: "zip slip entry escaping destination",
+			setupFunc: func() (string, string, func()) {
+				tempDir, err := os.MkdirTemp("", "unzip-test-*")
+				if err != nil {
+					t.Fatalf("Failed to create temp dir: %v", err)
+				}
+
+				zipPath := filepath.Join(tempDir, "evil.zip")
+				zipFile, err := os.Create(zipPath)
+				if err != nil {
+					t.Fatalf("Failed to create zip file: %v", err)
+				}
+
+				zipWriter := zip.NewWriter(zipFile)
+				defer zipWriter.Close()
+
+				// A traversal path outside dest, the classic zip-slip vector.
+				evilFile, err := zipWriter.Create("../../evil.txt")
+				if err != nil {
+					t.Fatalf("Failed to create file in zip: %v", err)
+				}
+				_, err = evilFile.Write([]byte("pwned"))
+				if err != nil {
+					t.Fatalf("Failed to write to file: %v", err)
+				}
+
+				zipWriter.Close()
+				zipFile.Close()
+
+				destDir := filepath.Join(tempDir, "extracted")
+				return zipPath, destDir, func() {
+					os.RemoveAll(tempDir)
+				}
+			},
+			expectedError: "illegal file path in zip",
+		},
 	}
 
 	for _, tt := range tests {
