@@ -1094,3 +1094,270 @@ func TestProxy_QueryParamsForwardedToUpstream(t *testing.T) {
 		t.Errorf("upstream received RawQuery = %q, want %q", capturedRawQuery, "subscriptionId=test123&page=2")
 	}
 }
+
+// The load* helpers below are thin argument-validation wrappers around a
+// PluginManager call. loaderStubManager overrides only the methods they reach;
+// everything else falls through to noopPluginManager.
+type loaderStubManager struct {
+	noopPluginManager
+	km      definition.KeyManager
+	loader  definition.ManifestLoader
+	store   definition.PayloadStore
+	checker definition.PolicyChecker
+	step    definition.Step
+	err     error
+}
+
+func (m loaderStubManager) KeyManager(context.Context, definition.RegistryLookup, *plugin.Config) (definition.KeyManager, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.km, nil
+}
+
+func (m loaderStubManager) ManifestLoader(context.Context, definition.Cache, definition.RegistryMetadataLookup, *plugin.Config) (definition.ManifestLoader, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.loader, nil
+}
+
+func (m loaderStubManager) PayloadStore(context.Context, definition.Cache, string, *plugin.Config) (definition.PayloadStore, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.store, nil
+}
+
+func (m loaderStubManager) PolicyChecker(context.Context, definition.ManifestLoader, *plugin.Config) (definition.PolicyChecker, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.checker, nil
+}
+
+func (m loaderStubManager) Step(context.Context, *plugin.Config) (definition.Step, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.step, nil
+}
+
+type loaderStubKeyManager struct{ definition.KeyManager }
+type loaderStubPolicyChecker struct{ definition.PolicyChecker }
+type loaderStubStep struct{ definition.Step }
+type loaderStubManifestLoader struct{ definition.ManifestLoader }
+type loaderStubPayloadStore struct{ definition.PayloadStore }
+type loaderStubCache struct{ definition.Cache }
+
+// plainRegistry implements RegistryLookup only -- loadManifestLoader must
+// reject it, because resolving a manifest needs the metadata lookup too.
+type plainRegistry struct{ definition.RegistryLookup }
+
+// metadataRegistry implements both, which is what loadManifestLoader requires.
+type metadataRegistry struct {
+	definition.RegistryLookup
+	definition.RegistryMetadataLookup
+}
+
+func mustErrContain(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected an error containing %q, got nil", want)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, want it to contain %q", err, want)
+	}
+}
+
+func TestLoadKeyManager(t *testing.T) {
+	ctx := context.Background()
+	cfg := &plugin.Config{ID: "km"}
+	km := &loaderStubKeyManager{}
+
+	t.Run("nil config skips the plugin", func(t *testing.T) {
+		got, err := LoadKeyManager(ctx, loaderStubManager{}, &plainRegistry{}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("got %v, want nil when no config is supplied", got)
+		}
+	})
+
+	t.Run("nil registry is rejected", func(t *testing.T) {
+		_, err := LoadKeyManager(ctx, loaderStubManager{}, nil, cfg)
+		mustErrContain(t, err, "Registry plugin not configured")
+	})
+
+	t.Run("manager error is wrapped", func(t *testing.T) {
+		_, err := LoadKeyManager(ctx, loaderStubManager{err: errors.New("boom")}, &plainRegistry{}, cfg)
+		mustErrContain(t, err, "boom")
+	})
+
+	t.Run("success returns the key manager", func(t *testing.T) {
+		got, err := LoadKeyManager(ctx, loaderStubManager{km: km}, &plainRegistry{}, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != definition.KeyManager(km) {
+			t.Errorf("got %v, want %v", got, km)
+		}
+	})
+}
+
+func TestLoadManifestLoader(t *testing.T) {
+	ctx := context.Background()
+	cfg := &plugin.Config{ID: "manifest"}
+	loader := &loaderStubManifestLoader{}
+
+	t.Run("nil config skips the plugin", func(t *testing.T) {
+		got, err := loadManifestLoader(ctx, loaderStubManager{}, &loaderStubCache{}, &metadataRegistry{}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("got %v, want nil when no config is supplied", got)
+		}
+	})
+
+	t.Run("nil cache is rejected", func(t *testing.T) {
+		_, err := loadManifestLoader(ctx, loaderStubManager{}, nil, &metadataRegistry{}, cfg)
+		mustErrContain(t, err, "Cache plugin not configured")
+	})
+
+	t.Run("nil registry is rejected", func(t *testing.T) {
+		_, err := loadManifestLoader(ctx, loaderStubManager{}, &loaderStubCache{}, nil, cfg)
+		mustErrContain(t, err, "Registry plugin not configured")
+	})
+
+	t.Run("registry without metadata lookup is rejected", func(t *testing.T) {
+		_, err := loadManifestLoader(ctx, loaderStubManager{}, &loaderStubCache{}, &plainRegistry{}, cfg)
+		mustErrContain(t, err, "RegistryMetadataLookup")
+	})
+
+	t.Run("manager error is wrapped", func(t *testing.T) {
+		_, err := loadManifestLoader(ctx, loaderStubManager{err: errors.New("boom")}, &loaderStubCache{}, &metadataRegistry{}, cfg)
+		mustErrContain(t, err, "boom")
+	})
+
+	t.Run("success returns the loader", func(t *testing.T) {
+		got, err := loadManifestLoader(ctx, loaderStubManager{loader: loader}, &loaderStubCache{}, &metadataRegistry{}, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != definition.ManifestLoader(loader) {
+			t.Errorf("got %v, want %v", got, loader)
+		}
+	})
+}
+
+func TestLoadPayloadStore(t *testing.T) {
+	ctx := context.Background()
+	cfg := &plugin.Config{ID: "store"}
+	store := &loaderStubPayloadStore{}
+
+	t.Run("nil config skips the plugin", func(t *testing.T) {
+		got, err := loadPayloadStore(ctx, loaderStubManager{}, &loaderStubCache{}, "ns", nil, model.RoleBAP)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("got %v, want nil when no config is supplied", got)
+		}
+	})
+
+	t.Run("nil cache is rejected", func(t *testing.T) {
+		_, err := loadPayloadStore(ctx, loaderStubManager{}, nil, "ns", cfg, model.RoleBAP)
+		mustErrContain(t, err, "Cache plugin not configured")
+	})
+
+	// A BAP turning storeSignature off only warns; it must still load.
+	t.Run("a BAP disabling storeSignature still loads", func(t *testing.T) {
+		bapCfg := &plugin.Config{ID: "store", Config: map[string]string{"storeSignature": "false"}}
+		got, err := loadPayloadStore(ctx, loaderStubManager{store: store}, &loaderStubCache{}, "ns", bapCfg, model.RoleBAP)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != definition.PayloadStore(store) {
+			t.Errorf("got %v, want %v", got, store)
+		}
+	})
+
+	t.Run("manager error is wrapped", func(t *testing.T) {
+		_, err := loadPayloadStore(ctx, loaderStubManager{err: errors.New("boom")}, &loaderStubCache{}, "ns", cfg, model.RoleBPP)
+		mustErrContain(t, err, "boom")
+	})
+
+	t.Run("success returns the store", func(t *testing.T) {
+		got, err := loadPayloadStore(ctx, loaderStubManager{store: store}, &loaderStubCache{}, "ns", cfg, model.RoleBPP)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != definition.PayloadStore(store) {
+			t.Errorf("got %v, want %v", got, store)
+		}
+	})
+}
+
+func TestLoadPolicyChecker(t *testing.T) {
+	ctx := context.Background()
+	cfg := &plugin.Config{ID: "policy"}
+	checker := &loaderStubPolicyChecker{}
+
+	t.Run("nil config skips the plugin", func(t *testing.T) {
+		got, err := LoadPolicyChecker(ctx, loaderStubManager{}, &loaderStubManifestLoader{}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("got %v, want nil when no config is supplied", got)
+		}
+	})
+
+	t.Run("manager error is wrapped", func(t *testing.T) {
+		_, err := LoadPolicyChecker(ctx, loaderStubManager{err: errors.New("boom")}, &loaderStubManifestLoader{}, cfg)
+		mustErrContain(t, err, "boom")
+	})
+
+	t.Run("success returns the checker", func(t *testing.T) {
+		got, err := LoadPolicyChecker(ctx, loaderStubManager{checker: checker}, &loaderStubManifestLoader{}, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != definition.PolicyChecker(checker) {
+			t.Errorf("got %v, want %v", got, checker)
+		}
+	})
+}
+
+func TestLoadPayloadTransformerStep(t *testing.T) {
+	ctx := context.Background()
+	cfg := &plugin.Config{ID: "transformer"}
+	step := &loaderStubStep{}
+
+	t.Run("nil config skips the plugin", func(t *testing.T) {
+		got, err := loadPayloadTransformerStep(ctx, loaderStubManager{}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != nil {
+			t.Errorf("got %v, want nil when no config is supplied", got)
+		}
+	})
+
+	t.Run("manager error is wrapped", func(t *testing.T) {
+		_, err := loadPayloadTransformerStep(ctx, loaderStubManager{err: errors.New("boom")}, cfg)
+		mustErrContain(t, err, "boom")
+	})
+
+	t.Run("success returns the step", func(t *testing.T) {
+		got, err := loadPayloadTransformerStep(ctx, loaderStubManager{step: step}, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != definition.Step(step) {
+			t.Errorf("got %v, want %v", got, step)
+		}
+	})
+}

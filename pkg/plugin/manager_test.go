@@ -3124,3 +3124,318 @@ func TestSignerCloserPanicsOnError(t *testing.T) {
 	require.Len(t, m.closers, 1)
 	assert.Panics(t, func() { m.closers[0]() })
 }
+
+// The six provider accessors below follow the same shape as PayloadStore and
+// ManifestLoader above: look the provider up, call New, register the closer.
+// Each is covered for the success path, a failing provider, and an unregistered
+// plugin.
+
+type mockCatalogPublisher struct{ definition.CatalogPublisher }
+
+type mockCatalogPublisherProvider struct {
+	publisher *mockCatalogPublisher
+	err       error
+}
+
+func (m *mockCatalogPublisherProvider) New(ctx context.Context, km definition.KeyManager, blobStore definition.CatalogBlobStore, registry definition.RegistryLookup, registryMetadata definition.RegistryMetadataLookup, cfg map[string]string) (definition.CatalogPublisher, func() error, error) {
+	if m.err != nil {
+		return nil, nil, m.err
+	}
+	return m.publisher, func() error { return nil }, nil
+}
+
+type mockCatalogBlobStore struct{ definition.CatalogBlobStore }
+
+type mockCatalogBlobStoreProvider struct {
+	store *mockCatalogBlobStore
+	err   error
+}
+
+func (m *mockCatalogBlobStoreProvider) New(ctx context.Context, cfg map[string]string) (definition.CatalogBlobStore, func() error, error) {
+	if m.err != nil {
+		return nil, nil, m.err
+	}
+	return m.store, func() error { return nil }, nil
+}
+
+type mockCrawler struct{ definition.Crawler }
+
+type mockCrawlerProvider struct {
+	crawler *mockCrawler
+	err     error
+}
+
+func (m *mockCrawlerProvider) New(ctx context.Context, registry definition.RegistryLookup, metadataLookup definition.RegistryMetadataLookup, cfg map[string]string) (definition.Crawler, func() error, error) {
+	if m.err != nil {
+		return nil, nil, m.err
+	}
+	return m.crawler, func() error { return nil }, nil
+}
+
+type mockMapper struct{ definition.Mapper }
+
+type mockMapperProvider struct {
+	mapper *mockMapper
+	err    error
+}
+
+func (m *mockMapperProvider) New(ctx context.Context, cfg map[string]string) (definition.Mapper, func() error, error) {
+	if m.err != nil {
+		return nil, nil, m.err
+	}
+	return m.mapper, func() error { return nil }, nil
+}
+
+type mockProviderRecordLookup struct {
+	definition.ProviderRecordLookup
+}
+
+type mockProviderStepProvider struct {
+	step *mockStep
+	err  error
+}
+
+func (m *mockProviderStepProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg map[string]string) (definition.Step, func() error, error) {
+	if m.err != nil {
+		return nil, nil, m.err
+	}
+	return m.step, func() error { return nil }, nil
+}
+
+type mockSchemaVersionMediator struct {
+	definition.SchemaVersionMediator
+}
+
+type mockSchemaVersionMediatorProvider struct {
+	mediator *mockSchemaVersionMediator
+	err      error
+}
+
+func (m *mockSchemaVersionMediatorProvider) New(ctx context.Context, loader definition.ManifestLoader, cfg map[string]string) (definition.SchemaVersionMediator, func() error, error) {
+	if m.err != nil {
+		return nil, nil, m.err
+	}
+	return m.mediator, func() error { return nil }, nil
+}
+
+// TestCatalogPublisher_Success tests CatalogPublisher returns the publisher on success.
+func TestCatalogPublisher_Success(t *testing.T) {
+	publisher := &mockCatalogPublisher{}
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"catalogpublisher": &mockPlugin{symbol: &mockCatalogPublisherProvider{publisher: publisher}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "catalogpublisher", Config: map[string]string{}}
+	got, err := m.CatalogPublisher(context.Background(), &mockKeyManager{}, &mockCatalogBlobStore{}, &mockRegistryLookup{}, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, publisher, got)
+	assert.Len(t, m.closers, 1)
+}
+
+// TestCatalogPublisher_ProviderError tests CatalogPublisher returns an error when the provider fails.
+func TestCatalogPublisher_ProviderError(t *testing.T) {
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"catalogpublisher": &mockPlugin{symbol: &mockCatalogPublisherProvider{err: errors.New("publisher error")}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "catalogpublisher", Config: map[string]string{}}
+	_, err := m.CatalogPublisher(context.Background(), &mockKeyManager{}, &mockCatalogBlobStore{}, &mockRegistryLookup{}, cfg)
+	assert.Error(t, err)
+}
+
+// TestCatalogPublisher_PluginNotFound tests CatalogPublisher returns an error when the plugin is not registered.
+func TestCatalogPublisher_PluginNotFound(t *testing.T) {
+	m := &Manager{plugins: map[string]onixPlugin{}, closers: []func(){}}
+	cfg := &Config{ID: "missing-catalogpublisher", Config: map[string]string{}}
+	_, err := m.CatalogPublisher(context.Background(), &mockKeyManager{}, &mockCatalogBlobStore{}, &mockRegistryLookup{}, cfg)
+	assert.Error(t, err)
+}
+
+// TestCatalogBlobStore_Success tests CatalogBlobStore returns the store on success.
+func TestCatalogBlobStore_Success(t *testing.T) {
+	store := &mockCatalogBlobStore{}
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"blobstore": &mockPlugin{symbol: &mockCatalogBlobStoreProvider{store: store}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "blobstore", Config: map[string]string{}}
+	got, err := m.CatalogBlobStore(context.Background(), cfg)
+	require.NoError(t, err)
+	assert.Equal(t, store, got)
+	assert.Len(t, m.closers, 1)
+}
+
+// TestCatalogBlobStore_ProviderError tests CatalogBlobStore returns an error when the provider fails.
+func TestCatalogBlobStore_ProviderError(t *testing.T) {
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"blobstore": &mockPlugin{symbol: &mockCatalogBlobStoreProvider{err: errors.New("blobstore error")}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "blobstore", Config: map[string]string{}}
+	_, err := m.CatalogBlobStore(context.Background(), cfg)
+	assert.Error(t, err)
+}
+
+// TestCatalogBlobStore_PluginNotFound tests CatalogBlobStore returns an error when the plugin is not registered.
+func TestCatalogBlobStore_PluginNotFound(t *testing.T) {
+	m := &Manager{plugins: map[string]onixPlugin{}, closers: []func(){}}
+	cfg := &Config{ID: "missing-blobstore", Config: map[string]string{}}
+	_, err := m.CatalogBlobStore(context.Background(), cfg)
+	assert.Error(t, err)
+}
+
+// TestCrawler_Success tests Crawler returns the crawler on success.
+func TestCrawler_Success(t *testing.T) {
+	crawler := &mockCrawler{}
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"crawler": &mockPlugin{symbol: &mockCrawlerProvider{crawler: crawler}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "crawler", Config: map[string]string{}}
+	got, err := m.Crawler(context.Background(), &mockRegistryLookup{}, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, crawler, got)
+	assert.Len(t, m.closers, 1)
+}
+
+// TestCrawler_ProviderError tests Crawler returns an error when the provider fails.
+func TestCrawler_ProviderError(t *testing.T) {
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"crawler": &mockPlugin{symbol: &mockCrawlerProvider{err: errors.New("crawler error")}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "crawler", Config: map[string]string{}}
+	_, err := m.Crawler(context.Background(), &mockRegistryLookup{}, cfg)
+	assert.Error(t, err)
+}
+
+// TestCrawler_PluginNotFound tests Crawler returns an error when the plugin is not registered.
+func TestCrawler_PluginNotFound(t *testing.T) {
+	m := &Manager{plugins: map[string]onixPlugin{}, closers: []func(){}}
+	cfg := &Config{ID: "missing-crawler", Config: map[string]string{}}
+	_, err := m.Crawler(context.Background(), &mockRegistryLookup{}, cfg)
+	assert.Error(t, err)
+}
+
+// TestMapper_Success tests Mapper returns the mapper on success.
+func TestMapper_Success(t *testing.T) {
+	mapper := &mockMapper{}
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"mapper": &mockPlugin{symbol: &mockMapperProvider{mapper: mapper}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "mapper", Config: map[string]string{}}
+	got, err := m.Mapper(context.Background(), cfg)
+	require.NoError(t, err)
+	assert.Equal(t, mapper, got)
+	assert.Len(t, m.closers, 1)
+}
+
+// TestMapper_ProviderError tests Mapper returns an error when the provider fails.
+func TestMapper_ProviderError(t *testing.T) {
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"mapper": &mockPlugin{symbol: &mockMapperProvider{err: errors.New("mapper error")}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "mapper", Config: map[string]string{}}
+	_, err := m.Mapper(context.Background(), cfg)
+	assert.Error(t, err)
+}
+
+// TestMapper_PluginNotFound tests Mapper returns an error when the plugin is not registered.
+func TestMapper_PluginNotFound(t *testing.T) {
+	m := &Manager{plugins: map[string]onixPlugin{}, closers: []func(){}}
+	cfg := &Config{ID: "missing-mapper", Config: map[string]string{}}
+	_, err := m.Mapper(context.Background(), cfg)
+	assert.Error(t, err)
+}
+
+// TestProviderStep_Success tests ProviderStep returns the step on success.
+func TestProviderStep_Success(t *testing.T) {
+	step := &mockStep{}
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"providerstep": &mockPlugin{symbol: &mockProviderStepProvider{step: step}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "providerstep", Config: map[string]string{}}
+	got, err := m.ProviderStep(context.Background(), &mockProviderRecordLookup{}, &mockMapper{}, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, step, got)
+	assert.Len(t, m.closers, 1)
+}
+
+// TestProviderStep_ProviderError tests ProviderStep returns an error when the provider fails.
+func TestProviderStep_ProviderError(t *testing.T) {
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"providerstep": &mockPlugin{symbol: &mockProviderStepProvider{err: errors.New("step error")}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "providerstep", Config: map[string]string{}}
+	_, err := m.ProviderStep(context.Background(), &mockProviderRecordLookup{}, &mockMapper{}, cfg)
+	assert.Error(t, err)
+}
+
+// TestProviderStep_PluginNotFound tests ProviderStep returns an error when the plugin is not registered.
+func TestProviderStep_PluginNotFound(t *testing.T) {
+	m := &Manager{plugins: map[string]onixPlugin{}, closers: []func(){}}
+	cfg := &Config{ID: "missing-providerstep", Config: map[string]string{}}
+	_, err := m.ProviderStep(context.Background(), &mockProviderRecordLookup{}, &mockMapper{}, cfg)
+	assert.Error(t, err)
+}
+
+// TestSchemaVersionMediator_Success tests SchemaVersionMediator returns the mediator on success.
+func TestSchemaVersionMediator_Success(t *testing.T) {
+	mediator := &mockSchemaVersionMediator{}
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"mediator": &mockPlugin{symbol: &mockSchemaVersionMediatorProvider{mediator: mediator}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "mediator", Config: map[string]string{}}
+	got, err := m.SchemaVersionMediator(context.Background(), &mockManifestLoader{}, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, mediator, got)
+	assert.Len(t, m.closers, 1)
+}
+
+// TestSchemaVersionMediator_ProviderError tests SchemaVersionMediator returns an error when the provider fails.
+func TestSchemaVersionMediator_ProviderError(t *testing.T) {
+	m := &Manager{
+		plugins: map[string]onixPlugin{
+			"mediator": &mockPlugin{symbol: &mockSchemaVersionMediatorProvider{err: errors.New("mediator error")}},
+		},
+		closers: []func(){},
+	}
+	cfg := &Config{ID: "mediator", Config: map[string]string{}}
+	_, err := m.SchemaVersionMediator(context.Background(), &mockManifestLoader{}, cfg)
+	assert.Error(t, err)
+}
+
+// TestSchemaVersionMediator_PluginNotFound tests SchemaVersionMediator returns an error when the plugin is not registered.
+func TestSchemaVersionMediator_PluginNotFound(t *testing.T) {
+	m := &Manager{plugins: map[string]onixPlugin{}, closers: []func(){}}
+	cfg := &Config{ID: "missing-mediator", Config: map[string]string{}}
+	_, err := m.SchemaVersionMediator(context.Background(), &mockManifestLoader{}, cfg)
+	assert.Error(t, err)
+}
