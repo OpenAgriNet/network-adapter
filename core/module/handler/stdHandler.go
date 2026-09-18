@@ -22,7 +22,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	auditlog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -39,23 +38,23 @@ const (
 )
 
 type stdHandler struct {
-	signer             definition.Signer
-	steps              []definition.Step
-	responseSteps      []definition.ResponseStep
-	signValidator      definition.SignValidator
-	cache              definition.Cache
-	registry           definition.RegistryLookup
-	manifestLoader     definition.ManifestLoader
-	km                 definition.KeyManager
-	schemaValidator    definition.SchemaValidator
+	signer                definition.Signer
+	steps                 []definition.Step
+	responseSteps         []definition.ResponseStep
+	signValidator         definition.SignValidator
+	cache                 definition.Cache
+	registry              definition.RegistryLookup
+	manifestLoader        definition.ManifestLoader
+	km                    definition.KeyManager
+	schemaValidator       definition.SchemaValidator
 	policyChecker         definition.PolicyChecker
 	schemaVersionMediator definition.SchemaVersionMediator
 	router                definition.Router
-	publisher          definition.Publisher
-	transportWrapper   definition.TransportWrapper
-	payloadTransformer definition.Step
-	payloadStore       definition.PayloadStore
-	mapper             definition.Mapper
+	publisher             definition.Publisher
+	transportWrapper      definition.TransportWrapper
+	payloadTransformer    definition.Step
+	payloadStore          definition.PayloadStore
+	mapper                definition.Mapper
 	// ackSigner is non-nil only when the "signAck" step is configured (Receiver
 	// modules). It is also used to sign pipeline-NACK responses so that ALL
 	// synchronous responses carry a Signature header per NFH-007 CON-004-02.
@@ -65,10 +64,10 @@ type stdHandler struct {
 	// request a dead end rather than work in flight -- see ServeHTTP.
 	hasProviderSteps bool
 	SubscriberID     string
-	role         model.Role
-	basePath     string
-	httpClient   *http.Client
-	moduleName   string
+	role             model.Role
+	basePath         string
+	httpClient       *http.Client
+	moduleName       string
 }
 
 // newHTTPClient creates a new HTTP client with a custom transport configuration.
@@ -196,9 +195,9 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		body := stepCtx.Body
-		telemetry.EmitAuditLogs(r.Context(), body, r.Header, auditlog.String("audit.direction", "request"), auditlog.Int("http.response.status_code", wrapped.statusCode), auditlog.String("http.request.error", errString(err)), auditlog.String("sender.id", senderID), auditlog.String("receiver.id", receiverID))
+		telemetry.EmitAuditLogs(r.Context(), body, r.Header, attribute.String("audit.direction", "request"), attribute.Int("http.response.status_code", wrapped.statusCode), attribute.String("http.request.error", errString(err)), attribute.String("sender.id", senderID), attribute.String("receiver.id", receiverID))
 		if len(responseBody) > 0 {
-			telemetry.EmitAuditLogs(r.Context(), responseBody, nil, auditlog.String("audit.direction", "response"), auditlog.Int("http.response.status_code", wrapped.statusCode), auditlog.String("http.request.error", errString(err)), auditlog.String("sender.id", senderID), auditlog.String("receiver.id", receiverID))
+			telemetry.EmitAuditLogs(r.Context(), responseBody, nil, attribute.String("audit.direction", "response"), attribute.Int("http.response.status_code", wrapped.statusCode), attribute.String("http.request.error", errString(err)), attribute.String("sender.id", senderID), attribute.String("receiver.id", receiverID))
 		}
 		span.End()
 	}()
