@@ -29,8 +29,8 @@
 # rather than what a reply means.
 #
 # mergeFieldPath is also the ONLY part of merge policy that varies per
-# deployment. Ordering (round-robin interleave) and donor selection (first
-# target in rule order that carries the path) are fixed in pkg/merge, not
+# deployment. Ordering (concatenation, in rule order) and donor selection
+# (first target in rule order that carries the path) are fixed in pkg/merge, not
 # configurable here -- that is deliberate, not an unfinished asymmetry: no
 # deployment has needed a different order or a different donor rule yet, and
 # adding knobs for that ahead of an actual need is exactly the "someone tries

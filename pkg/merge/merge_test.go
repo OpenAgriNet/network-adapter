@@ -69,7 +69,10 @@ func mergeDiscover(bodies [][]byte) ([]byte, error) {
 	return Responses(kept, "message.catalogs", discoverRequest, "on_discover")
 }
 
-func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
+// TestResponsesConcatenatesInRuleOrder locks in that ordering is simple
+// concatenation: everything from the first target, then everything from
+// the second, and so on -- not an interleave.
+func TestResponsesConcatenatesInRuleOrder(t *testing.T) {
 	merged, err := mergeDiscover([][]byte{
 		onDiscover("m-1", "bharat-1", "bharat-2", "bharat-3"),
 		onDiscover("m-1", "maha-1"),
@@ -79,7 +82,7 @@ func TestResponsesSeveralNetworksInterleavedRoundRobin(t *testing.T) {
 		t.Fatalf("Responses() error = %v", err)
 	}
 
-	want := []string{"bharat-1", "maha-1", "third-1", "bharat-2", "third-2", "bharat-3"}
+	want := []string{"bharat-1", "bharat-2", "bharat-3", "maha-1", "third-1", "third-2"}
 	if got := mergedIDs(t, merged); !sameIDs(got, want) {
 		t.Errorf("Responses() = %v, want %v", got, want)
 	}
@@ -127,7 +130,7 @@ func TestResponsesRepeatedIDIsReturnedFromEveryNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Responses() error = %v", err)
 	}
-	want := []string{"shared", "shared", "bharat-only", "maha-only"}
+	want := []string{"shared", "bharat-only", "shared", "maha-only"}
 	if got := mergedIDs(t, merged); !sameIDs(got, want) {
 		t.Errorf("Responses() = %v, want %v (no dedupe)", got, want)
 	}
