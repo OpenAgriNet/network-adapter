@@ -108,7 +108,7 @@ func runFanout(t *testing.T, cfg FanoutConfig, rawQuery string, targets ...strin
 		Request:    req,
 		Body:       body,
 		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: urls[0], URLs: urls, MergeFieldPath: "message.catalogs"},
+		Route:      &model.Route{TargetType: "urls", URLs: urls, MergeFieldPath: "message.catalogs"},
 	}
 
 	var responseBody []byte
@@ -142,7 +142,7 @@ func runFanoutWithSteps(t *testing.T, steps []definition.ResponseStep, targets .
 		MessageID:            "msg-sign-1",
 		SubID:                "bap.example.com",
 		InboundAuthSignature: "inboundSig==",
-		Route:                &model.Route{TargetType: "url", URL: urls[0], URLs: urls, MergeFieldPath: "message.catalogs"},
+		Route:                &model.Route{TargetType: "urls", URLs: urls, MergeFieldPath: "message.catalogs"},
 	}
 
 	var responseBody []byte
@@ -262,7 +262,7 @@ func TestFanoutForwardsClientIPAndPreservesTeTrailers(t *testing.T) {
 		Request:    req,
 		Body:       body,
 		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: u, URLs: []*url.URL{u, u}, MergeFieldPath: "message.catalogs"},
+		Route:      &model.Route{TargetType: "urls", URLs: []*url.URL{u, u}, MergeFieldPath: "message.catalogs"},
 	}
 	var responseBody []byte
 	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
@@ -488,7 +488,7 @@ func TestFanoutStripsHeadersNamedByConnection(t *testing.T) {
 		Request:    req,
 		Body:       body,
 		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: u, URLs: []*url.URL{u, u}, MergeFieldPath: "message.catalogs"},
+		Route:      &model.Route{TargetType: "urls", URLs: []*url.URL{u, u}, MergeFieldPath: "message.catalogs"},
 	}
 	var responseBody []byte
 	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
@@ -543,7 +543,7 @@ func TestRouterIntoFanoutRealComposition(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "routing.yaml")
 	cfg := "routingRules:\n" +
 		"  - version: \"2.0.0\"\n" +
-		"    targetType: \"url\"\n" +
+		"    targetType: \"urls\"\n" +
 		"    target:\n" +
 		"      urls:\n" +
 		"        - \"" + a.URL + "\"\n" +
@@ -619,7 +619,7 @@ func TestFanoutSameExecutorMergesSelectByConfigAlone(t *testing.T) {
 		Request:    req,
 		Body:       body,
 		RespHeader: rec.Header(),
-		Route:      &model.Route{TargetType: "url", URL: urlA, URLs: []*url.URL{urlA, urlB}, MergeFieldPath: "message.contract.commitments"},
+		Route:      &model.Route{TargetType: "urls", URLs: []*url.URL{urlA, urlB}, MergeFieldPath: "message.contract.commitments"},
 	}
 	var responseBody []byte
 	fanout(ctx, req, rec, &http.Client{}, nil, nil, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)
@@ -790,7 +790,7 @@ func TestFanoutSkipsAckSignerThroughItsTelemetryWrapperToo(t *testing.T) {
 		MessageID:            "msg-wrap-1",
 		SubID:                "bap.example.com",
 		InboundAuthSignature: "inboundSig==",
-		Route:                &model.Route{TargetType: "url", URL: urls[0], URLs: urls, MergeFieldPath: "message.catalogs"},
+		Route:                &model.Route{TargetType: "urls", URLs: urls, MergeFieldPath: "message.catalogs"},
 	}
 	var responseBody []byte
 	fanout(ctx, req, rec, &http.Client{}, []definition.ResponseStep{wrapped}, concrete, FanoutConfig{}, func(*model.StepContext, error) {}, &responseBody)

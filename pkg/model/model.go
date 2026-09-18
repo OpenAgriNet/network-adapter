@@ -359,15 +359,17 @@ func ResolveSubscriberID(reqContext map[string]interface{}, role Role) string {
 
 // Route represents a network route for message processing.
 type Route struct {
-	TargetType  string   // "url" or "publisher"
+	TargetType  string   // "url", "urls" (fan-out), or "publisher"
 	PublisherID string   // For message queues
-	URL         *url.URL // For API calls
-	// URLs carries all target URLs for multi-target routing rules.
+	URL         *url.URL // Set for targetType "url"; nil for "urls"
+	// URLs carries every target for targetType "urls" (fan-out). Nil for
+	// "url".
 	URLs []*url.URL
 	// MergeFieldPath is the full dot path, from the envelope root, to the
-	// array a multi-target fan-out merges: "message.catalogs" for discover,
-	// "message.contract.commitments" for select -- whatever the served
-	// action's response nests it under. Set only alongside URLs.
+	// array a fan-out merges across targets: "message.catalogs" for
+	// discover, "message.contract.commitments" for select -- whatever the
+	// served action's response nests it under. Set only for targetType
+	// "urls", which is the only type that reads it.
 	MergeFieldPath string
 }
 
@@ -377,12 +379,10 @@ type Route struct {
 // returns the SAME pointer to every request matching it.
 //
 // Copying the whole struct value rather than naming fields is deliberate:
-// URL, URLs and MergeFieldPath carry invariants a reader has to know by
-// convention (URL always set, URLs only when there is more than one target,
-// MergeFieldPath only alongside URLs), and a field-by-field copy elsewhere
-// once silently dropped MergeFieldPath when a new field was added and that
-// list wasn't. Clone cannot repeat that mistake: it doesn't enumerate
-// fields, so a field added later is copied automatically.
+// a field-by-field copy elsewhere once silently dropped MergeFieldPath when
+// a new field was added and that list wasn't. Clone cannot repeat that
+// mistake: it doesn't enumerate fields, so a field added later is copied
+// automatically.
 func (r *Route) Clone() *Route {
 	clone := *r
 	return &clone

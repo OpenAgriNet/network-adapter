@@ -417,13 +417,12 @@ func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb de
 	log.Debugf(ctx, "Routing to ctx.Route to %#v", ctx.Route)
 	switch ctx.Route.TargetType {
 	case "url":
-		if len(ctx.Route.URLs) > 1 {
-			log.Infof(ctx.Context, "Fanning request out to %d targets", len(ctx.Route.URLs))
-			fanoutFunc(ctx, r, w, httpClient, responseSteps, ackSigner, fanoutCfg, signNack, responseBody)
-			return
-		}
 		log.Infof(ctx.Context, "Forwarding request to URL: %s", ctx.Route.URL)
 		proxyFunc(ctx, r, w, httpClient, responseSteps, responseBody)
+		return
+	case "urls":
+		log.Infof(ctx.Context, "Fanning request out to %d targets", len(ctx.Route.URLs))
+		fanoutFunc(ctx, r, w, httpClient, responseSteps, ackSigner, fanoutCfg, signNack, responseBody)
 		return
 	case "publisher":
 		if pb == nil {

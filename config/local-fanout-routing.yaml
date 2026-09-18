@@ -2,16 +2,17 @@
 # discover reaches several networks at once, and their answers are merged
 # into one response.
 #
-# `target.urls` (plural) instead of `target.url` is the switch: naming more
-# than one target turns this into a fan-out rule. Every target is called in
+# `targetType: "urls"` (plural, with `target.urls`, at least 2 entries) is
+# the fan-out type -- a sibling of `targetType: "url"`, not inferred from
+# how many entries `urls:` happens to have. Every target is called in
 # parallel; a target that fails, answers non-2xx, or misses the handler's
 # fanout timeout is counted in the X-Beckn-Degraded response header and the
 # rest still answer -- only a total failure is a NACK.
 #
 # `mergeFieldPath` is the full dot path, from the envelope root, to the array
-# the fan-out merges across targets. It is required whenever target.urls
-# names more than one target, and must start with "message." (or be exactly
-# "message") -- both checked at load time. What is NOT checked: giving a
+# the fan-out merges across targets. It is required for targetType "urls",
+# and must start with "message." (or be exactly "message") -- both checked
+# at load time. What is NOT checked: giving a
 # fan-out rule several endpoints applies that one path to all of them, which
 # is wrong the moment they nest their array at different depths (discover's
 # is message.catalogs, select's is message.contract.commitments). So an
@@ -36,7 +37,7 @@
 # to finish it later" this comment exists to head off.
 routingRules:
   - version: "2.0.0"
-    targetType: "url"
+    targetType: "urls"
     target:
       urls:
         - "http://network-adapter-bharat-vistar:9201"
@@ -48,7 +49,7 @@ routingRules:
   # select nests its array elsewhere (message.contract.commitments), so it
   # is its own fan-out rule rather than sharing discover's above.
   - version: "2.0.0"
-    targetType: "url"
+    targetType: "urls"
     target:
       urls:
         - "http://network-adapter-bharat-vistar:9201"
