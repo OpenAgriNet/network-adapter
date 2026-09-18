@@ -352,7 +352,7 @@ func TestValidateRulesFailure(t *testing.T) {
 					Endpoints: []string{"search", "select"},
 				},
 			},
-			wantErr: "invalid rule: url or urls is required for targetType 'url'",
+			wantErr: "invalid rule: target.url is required for targetType 'url'",
 		},
 		{
 			name: "Invalid URL format for targetType: url",
@@ -1186,7 +1186,7 @@ func TestLoadRulesSeveralUrlsBuildsOneTargetPerEntry(t *testing.T) {
 	path := writeRoutingConfig(t, `
 routingRules:
   - version: "2.0.0"
-    targetType: "url"
+    targetType: "urls"
     target:
       urls:
         - "http://bharat:9201"
@@ -1210,8 +1210,8 @@ routingRules:
 	if got := route.URLs[1].String(); got != "http://maha:9201/discover" {
 		t.Errorf("second target = %q, want the action appended", got)
 	}
-	if route.URL != route.URLs[0] {
-		t.Error("URL must stay set to the first target so single-target readers keep working")
+	if route.URL != nil {
+		t.Error("a targetType 'urls' route must leave URL unset -- proxy() must never read it")
 	}
 	if route.MergeFieldPath != "message.catalogs" {
 		t.Errorf("route.MergeFieldPath = %q, want the configured merge path carried through", route.MergeFieldPath)
@@ -1221,7 +1221,7 @@ routingRules:
 func TestValidateRulesRequiresMergeWhenSeveralUrls(t *testing.T) {
 	err := validateRules([]routingRule{{
 		Version:    "2.0.0",
-		TargetType: "url",
+		TargetType: "urls",
 		Target:     target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
 		Endpoints:  []string{"discover"},
 	}})
@@ -1250,7 +1250,7 @@ func TestValidateRulesRejectsMergeFieldPathNotUnderMessage(t *testing.T) {
 	for _, path := range []string{"catalogs", "context.messageId", "Message.catalogs"} {
 		err := validateRules([]routingRule{{
 			Version:        "2.0.0",
-			TargetType:     "url",
+			TargetType:     "urls",
 			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
 			Endpoints:      []string{"discover"},
 			MergeFieldPath: path,
@@ -1270,7 +1270,7 @@ func TestValidateRulesRejectsMalformedMergeFieldPath(t *testing.T) {
 	for _, path := range []string{"message.", "message..catalogs", "message. catalogs"} {
 		err := validateRules([]routingRule{{
 			Version:        "2.0.0",
-			TargetType:     "url",
+			TargetType:     "urls",
 			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
 			Endpoints:      []string{"discover"},
 			MergeFieldPath: path,
@@ -1289,7 +1289,7 @@ func TestValidateRulesAcceptsMergeFieldPathUnderMessage(t *testing.T) {
 	for _, path := range []string{"message.catalogs", "message.contract.commitments", "message"} {
 		err := validateRules([]routingRule{{
 			Version:        "2.0.0",
-			TargetType:     "url",
+			TargetType:     "urls",
 			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
 			Endpoints:      []string{"discover"},
 			MergeFieldPath: path,
@@ -1323,11 +1323,11 @@ routingRules:
 	}
 }
 
-func TestLoadRulesUrlsWinsOverUrl(t *testing.T) {
+func TestLoadRulesRejectsURLAlongsideURLsUnderURLsType(t *testing.T) {
 	path := writeRoutingConfig(t, `
 routingRules:
   - version: "2.0.0"
-    targetType: "url"
+    targetType: "urls"
     target:
       url: "http://legacy:9201"
       urls:
@@ -1337,20 +1337,15 @@ routingRules:
     endpoints:
       - discover
 `)
-	r, _, err := New(context.Background(), &Config{RoutingConfig: path})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	route := r.rules["*"]["2.0.0"]["discover"]
-	if len(route.URLs) != 2 || strings.Contains(route.URLs[0].String(), "legacy") {
-		t.Errorf("targets = %v, want only the urls list", route.URLs)
+	if _, _, err := New(context.Background(), &Config{RoutingConfig: path}); err == nil {
+		t.Fatal("New() accepted target.url alongside target.urls under targetType 'urls'")
 	}
 }
 
 func TestValidateRulesEmptyUrlsEntryIsRejected(t *testing.T) {
 	err := validateRules([]routingRule{{
 		Version:    "2.0.0",
-		TargetType: "url",
+		TargetType: "urls",
 		Target:     target{URLs: []string{"http://ok:9201", "  "}},
 		Endpoints:  []string{"discover"},
 	}})
@@ -1392,7 +1387,7 @@ func TestRouteQueryStringAppliedToEveryTargetWithoutMutatingTheRule(t *testing.T
 	path := writeRoutingConfig(t, `
 routingRules:
   - version: "2.0.0"
-    targetType: "url"
+    targetType: "urls"
     target:
       urls:
         - "http://bharat:9201"
@@ -1452,7 +1447,7 @@ func TestRouteConcurrentRequestsThroughSameRuleDoNotShareState(t *testing.T) {
 	path := writeRoutingConfig(t, `
 routingRules:
   - version: "2.0.0"
-    targetType: "url"
+    targetType: "urls"
     target:
       urls:
         - "http://bharat:9201"
