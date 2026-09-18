@@ -4,11 +4,11 @@
 // under message is the caller's business, not this package's.
 //
 // The field path is the only configurable part of the merge policy.
-// Ordering (round-robin interleave, in interleave) and donor selection
-// (first target in caller order that carries the path, in Responses) are
-// fixed here, deliberately: no deployment has needed either to vary, and
-// adding knobs ahead of an actual need is speculative complexity this
-// package would then have to carry and test regardless.
+// Ordering (rule order, in concatenate) and donor selection (first target
+// in caller order that carries the path, in Responses) are fixed here,
+// deliberately: no deployment has needed either to vary, and adding knobs
+// ahead of an actual need is speculative complexity this package would
+// then have to carry and test regardless.
 package merge
 
 import (
@@ -98,7 +98,7 @@ func Responses(kept []KeptResponse, fieldPath string, requestBody []byte, action
 	for _, k := range kept {
 		perNetwork = append(perNetwork, k.Items)
 	}
-	merged := interleave(perNetwork)
+	merged := concatenate(perNetwork)
 	if merged == nil {
 		merged = []json.RawMessage{}
 	}
@@ -194,24 +194,16 @@ func setAtPath(node map[string]json.RawMessage, segments []string, items []json.
 	return nil
 }
 
-// interleave takes one item from each network in turn until all are drained,
-// so every network gets proportional presence in the result instead of the
-// first network in the routing config filling the front of it.
-func interleave(perNetwork [][]json.RawMessage) []json.RawMessage {
-	total, longest := 0, 0
+// concatenate appends every network's items in rule order: everything from
+// the first target, then everything from the second, and so on.
+func concatenate(perNetwork [][]json.RawMessage) []json.RawMessage {
+	total := 0
 	for _, items := range perNetwork {
 		total += len(items)
-		if len(items) > longest {
-			longest = len(items)
-		}
 	}
 	out := make([]json.RawMessage, 0, total)
-	for i := 0; i < longest; i++ {
-		for _, items := range perNetwork {
-			if i < len(items) {
-				out = append(out, items[i])
-			}
-		}
+	for _, items := range perNetwork {
+		out = append(out, items...)
 	}
 	return out
 }
