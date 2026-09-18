@@ -250,6 +250,13 @@ func validateRules(rules []routingRule) error {
 					return fmt.Errorf("invalid URL - %s defined in routing config for target type %s: %w", rule.Target.URL, rule.TargetType, err)
 				}
 			}
+			// Fan-out (target.urls, several destinations merged into one
+			// reply) only exists for targetType 'url' -- loadRules' branch
+			// for this type never reads it, so a rule setting it here would
+			// parse clean and silently route to nothing instead of erroring.
+			if len(rule.Target.URLs) > 0 {
+				return fmt.Errorf("invalid rule: target.urls is not supported for targetType %q -- fan-out is only available for targetType 'url'", rule.TargetType)
+			}
 			continue
 		default:
 			return fmt.Errorf("invalid rule: unknown targetType '%s'", rule.TargetType)

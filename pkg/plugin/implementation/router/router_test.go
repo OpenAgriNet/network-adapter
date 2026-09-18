@@ -1372,6 +1372,22 @@ func TestValidateRulesRejectsMergeFieldPathOnASingleTarget(t *testing.T) {
 	}
 }
 
+// TestValidateRulesRejectsURLsUnderBPPTargetType locks in that target.urls
+// (fan-out) is refused for targetType 'bpp' -- loadRules' branch for that
+// type never reads target.urls, so without this check the config would
+// parse clean and silently route to nothing.
+func TestValidateRulesRejectsURLsUnderBPPTargetType(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:    "2.0.0",
+		TargetType: "bpp",
+		Target:     target{URLs: []string{"http://a:9200", "http://b:9200"}},
+		Endpoints:  []string{"select"},
+	}})
+	if err == nil {
+		t.Fatal("validateRules() accepted target.urls under targetType 'bpp'")
+	}
+}
+
 func TestRouteQueryStringAppliedToEveryTargetWithoutMutatingTheRule(t *testing.T) {
 	path := writeRoutingConfig(t, `
 routingRules:
