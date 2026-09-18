@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -336,5 +337,81 @@ func TestProviderRecordServedActionsOnAnEmptyRecord(t *testing.T) {
 
 	if got := (&ProviderRecord{}).ServedActions(); len(got) != 0 {
 		t.Errorf("ServedActions() = %v, want empty", got)
+	}
+}
+
+func TestValidMergeFieldPathAcceptsMessageRootedPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"message", "message.catalogs", "message.contract.commitments"} {
+		if !ValidMergeFieldPath(path) {
+			t.Errorf("ValidMergeFieldPath(%q) = false, want true", path)
+		}
+	}
+}
+
+func TestValidMergeFieldPathRejectsPathsNotRootedAtMessage(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"", "catalogs", "context.messageId", "Message.catalogs", "messagex"} {
+		if ValidMergeFieldPath(path) {
+			t.Errorf("ValidMergeFieldPath(%q) = true, want false", path)
+		}
+	}
+}
+
+// TestValidMergeFieldPathRejectsEmptySegments guards a path that is rooted
+// at "message" but malformed further in -- a trailing or doubled dot passes
+// the prefix check alone but splits into an empty segment, which never
+// resolves to anything at request time. Caught by counter-example: found by
+// a self-review, not by the original test suite.
+func TestValidMergeFieldPathRejectsEmptySegments(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"message.", "message..catalogs", "message.catalogs."} {
+		if ValidMergeFieldPath(path) {
+			t.Errorf("ValidMergeFieldPath(%q) = true, want false: an empty segment resolves nothing", path)
+		}
+	}
+}
+
+// TestValidMergeFieldPathRejectsWhitespacePaddedSegments guards a
+// non-empty-but-still-broken segment: "message. catalogs" has no empty
+// segment, so the check above alone would accept it, but " catalogs" (with
+// its leading space) is not a JSON key any real response carries either.
+// Found by a self-review, not by the original test suite.
+func TestValidMergeFieldPathRejectsWhitespacePaddedSegments(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{"message. catalogs", "message.catalogs ", " message.catalogs"} {
+		if ValidMergeFieldPath(path) {
+			t.Errorf("ValidMergeFieldPath(%q) = true, want false: a whitespace-padded segment resolves nothing", path)
+		}
+	}
+}
+
+func TestRouteCloneReturnsADistinctEqualCopy(t *testing.T) {
+	t.Parallel()
+
+	u, _ := url.Parse("http://example.com/discover")
+	original := &Route{
+		TargetType:     "url",
+		PublisherID:    "topic",
+		URL:            u,
+		URLs:           []*url.URL{u},
+		MergeFieldPath: "message.catalogs",
+	}
+
+	clone := original.Clone()
+
+	if clone == original {
+		t.Fatal("Clone() returned the same pointer, want a distinct copy")
+	}
+	if clone.TargetType != original.TargetType ||
+		clone.PublisherID != original.PublisherID ||
+		clone.URL != original.URL ||
+		clone.MergeFieldPath != original.MergeFieldPath ||
+		!slices.Equal(clone.URLs, original.URLs) {
+		t.Errorf("Clone() = %+v, want an equal copy of %+v", *clone, *original)
 	}
 }

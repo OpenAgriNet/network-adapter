@@ -39,23 +39,23 @@ const (
 )
 
 type stdHandler struct {
-	signer             definition.Signer
-	steps              []definition.Step
-	responseSteps      []definition.ResponseStep
-	signValidator      definition.SignValidator
-	cache              definition.Cache
-	registry           definition.RegistryLookup
-	manifestLoader     definition.ManifestLoader
-	km                 definition.KeyManager
-	schemaValidator    definition.SchemaValidator
+	signer                definition.Signer
+	steps                 []definition.Step
+	responseSteps         []definition.ResponseStep
+	signValidator         definition.SignValidator
+	cache                 definition.Cache
+	registry              definition.RegistryLookup
+	manifestLoader        definition.ManifestLoader
+	km                    definition.KeyManager
+	schemaValidator       definition.SchemaValidator
 	policyChecker         definition.PolicyChecker
 	schemaVersionMediator definition.SchemaVersionMediator
 	router                definition.Router
-	publisher          definition.Publisher
-	transportWrapper   definition.TransportWrapper
-	payloadTransformer definition.Step
-	payloadStore       definition.PayloadStore
-	mapper             definition.Mapper
+	publisher             definition.Publisher
+	transportWrapper      definition.TransportWrapper
+	payloadTransformer    definition.Step
+	payloadStore          definition.PayloadStore
+	mapper                definition.Mapper
 	// ackSigner is non-nil only when the "signAck" step is configured (Receiver
 	// modules). It is also used to sign pipeline-NACK responses so that ALL
 	// synchronous responses carry a Signature header per NFH-007 CON-004-02.
@@ -65,10 +65,12 @@ type stdHandler struct {
 	// request a dead end rather than work in flight -- see ServeHTTP.
 	hasProviderSteps bool
 	SubscriberID     string
-	role         model.Role
-	basePath     string
-	httpClient   *http.Client
-	moduleName   string
+	role             model.Role
+	basePath         string
+	httpClient       *http.Client
+	moduleName       string
+	// fanout bounds routing rules naming more than one target.
+	fanout FanoutConfig
 }
 
 // newHTTPClient creates a new HTTP client with a custom transport configuration.
@@ -91,12 +93,51 @@ func newHTTPClient(cfg *HttpClientConfig, wrapper definition.TransportWrapper) *
 		transport.ResponseHeaderTimeout = cfg.ResponseHeaderTimeout
 	}
 
+	timeout := cfg.Timeout
+
 	var finalTransport http.RoundTripper = transport
 	if wrapper != nil {
 		log.Debugf(context.Background(), "Applying custom transport wrapper")
 		finalTransport = wrapper.Wrap(transport)
 	}
+	if timeout > 0 {
+		finalTransport = &timeoutTransport{base: finalTransport, timeout: timeout}
+	}
+	// Client.Timeout is not set: the wrapper above already bounds every
+	// request via RoundTrip, which both ReverseProxy and Client.Do go
+	// through -- a second timeout here would just duplicate it.
 	return &http.Client{Transport: finalTransport}
+}
+
+// timeoutTransport applies a deadline to requests including the response body read.
+type timeoutTransport struct {
+	base    http.RoundTripper
+	timeout time.Duration
+}
+
+func (t *timeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(req.Context(), t.timeout)
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+// cancelOnClose releases the request context when the response body is
+// closed. No guard against a repeated Close is needed: a context.CancelFunc
+// is itself documented safe to call more than once.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // NewStdHandler initializes a new processor with plugins and steps.
@@ -115,6 +156,7 @@ func NewStdHandler(ctx context.Context, mgr PluginManager, cfg *Config, moduleNa
 	}
 	// Initialize HTTP client after plugins so transport wrapper can be applied.
 	h.httpClient = newHTTPClient(&cfg.HttpClientConfig, h.transportWrapper)
+	h.fanout = cfg.Fanout
 	// Initialize steps.
 	if err := h.initSteps(ctx, mgr, cfg); err != nil {
 		return nil, fmt.Errorf("failed to initialize steps: %w", err)
@@ -285,7 +327,7 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Handle routing based on the defined route type.
-		route(stepCtx, r, wrapped, h.publisher, h.httpClient, h.responseSteps, h.signNackResponse, &responseBody)
+		route(stepCtx, r, wrapped, h.publisher, h.httpClient, h.responseSteps, h.ackSigner, h.fanout, h.signNackResponse, &responseBody)
 	}
 }
 
@@ -361,18 +403,26 @@ var proxyFunc = func(ctx *model.StepContext, r *http.Request, w http.ResponseWri
 	proxy(ctx, r, w, httpClient, responseSteps, responseBody)
 }
 
+var fanoutFunc = func(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client, responseSteps []definition.ResponseStep, ackSigner *ackSignerStep, cfg FanoutConfig, signNack nackSignerFunc, responseBody *[]byte) {
+	fanout(ctx, r, w, httpClient, responseSteps, ackSigner, cfg, signNack, responseBody)
+}
+
 // nackSignerFunc is the function type used to sign NACK responses before they
 // are written to the wire. On Receiver modules h.signNackResponse is passed;
 // on Caller modules (no ackSigner) the function is a no-op.
 type nackSignerFunc func(ctx *model.StepContext, err error)
 
 // route handles request forwarding or message publishing based on the routing type.
-func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client, responseSteps []definition.ResponseStep, signNack nackSignerFunc, responseBody *[]byte) {
+func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client, responseSteps []definition.ResponseStep, ackSigner *ackSignerStep, fanoutCfg FanoutConfig, signNack nackSignerFunc, responseBody *[]byte) {
 	log.Debugf(ctx, "Routing to ctx.Route to %#v", ctx.Route)
 	switch ctx.Route.TargetType {
 	case "url":
 		log.Infof(ctx.Context, "Forwarding request to URL: %s", ctx.Route.URL)
 		proxyFunc(ctx, r, w, httpClient, responseSteps, responseBody)
+		return
+	case "urls":
+		log.Infof(ctx.Context, "Fanning request out to %d targets", len(ctx.Route.URLs))
+		fanoutFunc(ctx, r, w, httpClient, responseSteps, ackSigner, fanoutCfg, signNack, responseBody)
 		return
 	case "publisher":
 		if pb == nil {
