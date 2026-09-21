@@ -73,11 +73,15 @@ request: |
 #   in the live corpus the four hits carry four DISTINCT passages (no two share
 #   a text checksum), so collapsing them loses content.
 #
-#   hits[]._id, hits[].filename and hits[].section ARE mapped, though the guide
-#   lists all three as never-mapped. _id is the only per-hit identifier,
-#   filename the only per-hit label for the document a passage came from, and
-#   section the only per-hit short label -- doc_short_description, the field
-#   that looks right for it, is "" on every hit.
+#   hits[]._id, hits[].name_en and hits[].section ARE mapped, though the guide
+#   lists _id and section as never-mapped. _id is the only per-hit identifier,
+#   name_en the document's human title, and section the only per-hit short
+#   label -- doc_short_description, the field that looks right for it, is ""
+#   on every hit.
+#
+#   hits[].filename is NOT mapped. It labels the document too, but with the
+#   ingestion pipeline's artefact name, which identifies nothing a reader can
+#   place. Where name_en is blank, sourceName is blank.
 #
 #   supportingResourceIds is NOT emitted. It named the document a passage came
 #   from, which source.sourceId now does directly, and the ids it minted
@@ -240,17 +244,28 @@ response: |
                     "rationale": $exists($text($h.instance_name))
                       ? $counts & " from the " & $text($h.instance_name) & " corpus."
                       : $counts & ".",
-                    /* The document behind this passage IS its source:
-                       doc_id identifies it, filename is its human label. Two
-                       upstream fields that look like better candidates are
-                       traps, and the guide says so -- hits[].instance is a
-                       provider-internal code ("bv") and hits[].source names
-                       the ingestion pipeline ("docs-pipeline"). */
-                    "source": $merge([
-                      { "sourceId": $h.doc_id },
-                      $exists($text($h.filename))
-                        ? { "sourceName": $text($h.filename) } : {}
-                    ])
+                    /* The document behind this passage IS its source: doc_id
+                       identifies it, and name_en is its human label -- an
+                       actual title ("ICAR En-Kharif Agro-Advisories for
+                       Farmers 2025") rather than the pipeline artefact name
+                       that filename carries ("doc-bc286f0d5bef-rerun-...").
+
+                       BLANK WHEN THE PROVIDER HAS NO NAME, not absent and not
+                       filled from somewhere else. A document with no name_en
+                       is a gap in the corpus, and echoing it as "" says so;
+                       substituting filename would hide it behind a string no
+                       reader can place, and omitting the key would leave a
+                       consumer unable to tell "unnamed" from "not reported".
+
+                       Three upstream fields that look like candidates are not.
+                       title_en comes back empty on this corpus, hits[].instance
+                       is a provider-internal code ("bv"), and hits[].source
+                       names the ingestion pipeline ("docs-pipeline"). */
+                    "source": {
+                      "sourceId": $h.doc_id,
+                      "sourceName": $exists($text($h.name_en))
+                        ? $text($h.name_en) : ""
+                    }
                   },
                   /* Optional, so emitted only when this hit's type maps. */
                   $exists($cat) ? { "subjectCategories": [ $cat ] } : {},

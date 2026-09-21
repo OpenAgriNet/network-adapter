@@ -115,7 +115,7 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        $exists($ra.location) and $ra.location.type = "Point"
+        $exists($ra.location.geo) and $ra.location.geo.type = "Point"
       )
     message: "this capability needs a Point location; the provider forecasts one point at a time"
 
@@ -143,8 +143,8 @@ request: |
   (
     $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
     {
-      "lat": $ra.location.coordinates[1],
-      "lon": $ra.location.coordinates[0]
+      "lat": $ra.location.geo.coordinates[1],
+      "lon": $ra.location.geo.coordinates[0]
     }
   )
 
@@ -170,7 +170,7 @@ response: |
        (3) is not a fabrication: it is the point the provider was asked about,
        merely unsnapped. Every source here is the same point to within one cell;
        none of them invents a location the answer does not describe. */
-    $asked := beckn.message.contract.commitments[0].resources[0].resourceAttributes.location.coordinates;
+    $asked := beckn.message.contract.commitments[0].resources[0].resourceAttributes.location.geo.coordinates;
     $lat := $exists(response.lat_r) ? response.lat_r
           : $exists(response.location.lat) ? response.location.lat
           : $asked[1];
@@ -402,10 +402,17 @@ response: |
                       "sourceUri": "https://mausamgram.imd.gov.in/"
                     },
                     /* The same point on every resource: one call answers one
-                       location, and $lat/$lon resolved it once at the top. */
+                       location, and $lat/$lon resolved it once at the top.
+
+                       A Beckn Location, with the geometry under `geo`. The pack
+                       moved off a bare GeoJSON geometry so a resolved location
+                       can also carry a postal address; this upstream reports
+                       none, so geo is the whole of it. */
                     "location": {
-                      "type": "Point",
-                      "coordinates": [$lon, $lat]
+                      "geo": {
+                        "type": "Point",
+                        "coordinates": [$lon, $lat]
+                      }
                     },
                     "generatedAt": $generatedAt,
                     "modelRunAt": $modelRunAt,
