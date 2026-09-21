@@ -60,6 +60,85 @@ plugins:
   #     discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
   #     participantId: "bpp.example.org"
   #     bppUri: "https://bpp.example.org"
+
+  # --- Mandi variant of the block above (see dev_docs/plan-crawler-mandi/) ---
+  #
+  # Differs from the generic example in two ways, both load-bearing:
+  #
+  # 1. registry is sunbirdRegistry, not dediregistry -- matching
+  #    config/provider-adapter.yaml, the config that already serves
+  #    openagrinet:MandiPrice today. sunbirdRegistry does NOT implement
+  #    RegistryMetadataLookup (verified: no QueryByNetwork on it), and
+  #    catalogcrawler.go refuses to start if `networks` is set without a
+  #    registry that implements it. So `networks` is left OUT here on
+  #    purpose -- staticIndexUrls is the only discovery mode SunbirdRC
+  #    deployments can use with this crawler today.
+  #
+  # 2. There is deliberately NO publish-target key here for mandi. The mandi
+  #    catalogue is BUILT locally by the pipeline and published by the
+  #    pipeline's own `publish:` block, straight to the provider-adapter
+  #    (MANDI_PUBLISH_URL=http://localhost:9200 in .env, container
+  #    `provider-adapter`, which signs and forwards to discovery). It never
+  #    passes through the crawler's sink -- verified: the crawler's sink is
+  #    handed once to crawlmanager.Params (catalogcrawler.go:157) and the
+  #    Crawler interface has no entry point to submit a locally-generated
+  #    catalogue. discoveryPushUrl below serves the CRAWL path only, which
+  #    this plan leaves untouched.
+  #    (A separate, unrelated piece of work adds a second sink to the crawl
+  #    path -- docs/superpowers/plans/2026-09-18-crawler-publish-sink.md.
+  #    That is not part of the mandi path and is not configured here.)
+  #
+  # 3. pipeline.<capability> keys are added -- also NOT YET IMPLEMENTED.
+  #    This is where "know the capability, then find its YAML" lives: one
+  #    key per capability this deployment publishes, valued with the path
+  #    to the pipeline YAML that serves it. The crawler's plugin config is
+  #    a map[string]string, so an arbitrary key name per capability is
+  #    natively supported -- one readable line each, no comma-packing.
+  #
+  #    The polling layer then, per key:
+  #      1. load the YAML at that path
+  #      2. check its metadata.capability MATCHES the config key (a
+  #         mismatch is an Integrity error -- config and pipeline must
+  #         agree, neither silently wins)
+  #      3. check the registry confirms this participantId is actually
+  #         bound to that capability (see the Registry Gate in
+  #         plan-2-low-level-design.md) -- an unregistered capability is
+  #         refused, not run
+  #      4. run it on its OWN schedule.at, from its own YAML
+  #
+  #    Adding capability #2, #3, ... N: one more pipeline.* line here, plus
+  #    the folder it points at. No existing pipeline's YAML is touched.
+  #
+  # registry:
+  #   id: sunbirdRegistry
+  #   config:
+  #     url: http://registry:8081/api/v1
+  #     entity: Participant
+  #     providerEntity: ProviderSchema
+  #     timeout: 2
+  #     retry_max: 1
+  #     retry_wait_min: 100ms
+  #     retry_wait_max: 500ms
+  # cache:
+  #   id: cache
+  #   config:
+  #     addr: redis:6379
+  # crawler:
+  #   id: catalogcrawler
+  #   config:
+  #     dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
+  #     staticIndexUrls: "https://mandi.example.org/catalog/index/becknCatalogs.index.json"
+  #     discoveryPushUrl: "https://discovery.example.org/beckn/catalog/publish"  # crawl path only
+  #     participantId: "agmarknet"
+  #     bppUri: "https://bpp.example.org"
+  #
+  #     # One key per capability. Key = the capability code, value = path to
+  #     # the pipeline YAML serving it. NEW, not yet implemented.
+  #     pipeline.openagrinet:MandiPrice: "MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml"
+  #
+  #     # Adding a second capability is one more line like the above, plus
+  #     # the folder it points at:
+  #     # pipeline.openagrinet:WeatherObservation: "WeatherObservation/cataloguepublish-mausamgram/weather-observation-mausamgram.yaml"
 modules:
   - name: bppTxnReceiver
     path: /bpp/receiver/

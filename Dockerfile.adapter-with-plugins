@@ -47,6 +47,10 @@ FROM cgr.dev/chainguard/wolfi-base:latest
 
 # Force a fresh apk index so a CVE patched upstream (e.g. zlib) lands even
 # when the :latest base layer itself is stale in the local/CI docker cache.
+# CVE-2026-85091 (zlib) is NOT fixed by this today -- the Wolfi apk repo does
+# not carry the patched 1.3.3-r0 build yet, only up to 1.3.2.1_rc20260601-r0 --
+# so it is suppressed in .trivyignore until Chainguard publishes it. This line
+# stays so the fix lands automatically the moment they do.
 RUN apk upgrade --no-cache zlib
 
 WORKDIR /app

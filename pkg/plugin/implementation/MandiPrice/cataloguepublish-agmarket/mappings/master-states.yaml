@@ -1,0 +1,26 @@
+# Agmarknet Vistaar master data, option 4 -- the state list, which is what
+# drives this tool's per-state loop.
+#
+# Both halves in one file, the same shape the adapter's own mappings use, so a
+# reader who knows mandi-price.select.yaml already knows this one.
+#
+# The token is NOT in this file and must never be: it is minted at runtime and
+# reaches the request half under _local, exactly as prerequisites reach a
+# mapping in the adapter.
+request: |
+  {
+    "option": "4",
+    "token": _local.token
+  }
+
+# WRAPPED IN [...] DELIBERATELY. JSONata collapses a one-element sequence to a
+# bare value, so a deployment with one state would return an object where every
+# other count returns a list, and the caller's decode into a slice would fail on
+# exactly the input nobody tests with.
+response: |
+  [$map(response, function($state) {
+    {
+      "code": $state.agm_state_code,
+      "name": $state.state_name
+    }
+  })]
