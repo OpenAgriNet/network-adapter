@@ -14,16 +14,59 @@ import (
 )
 
 // Spec is the whole pipeline definition, one file mapped one-to-one.
+//
+// EVERY top-level block in the file has a field here, including ones nothing
+// reads yet. yaml.v3 drops unknown keys silently, so a block left out of this
+// struct parses "successfully" while vanishing -- which is how a rule written
+// in the file (an exclusion, a refusal, a catalogId template) can be believed
+// to be in force while no code ever sees it.
 type Spec struct {
 	APIVersion string           `yaml:"apiVersion"`
 	Kind       string           `yaml:"kind"`
 	Metadata   Metadata         `yaml:"metadata"`
+	Discover   Discover         `yaml:"discover"`
 	Schedule   Schedule         `yaml:"schedule"`
+	Registry   Registry         `yaml:"registry"`
 	Inputs     map[string]Input `yaml:"inputs"`
 	Upstream   Upstream         `yaml:"upstream"`
 	Pipeline   []Step           `yaml:"pipeline"`
 	Catalog    Catalog          `yaml:"catalog"`
 	Publish    Publish          `yaml:"publish"`
+	Report     Report           `yaml:"report"`
+}
+
+// Discover is where this package sits and where its mappings live, so the
+// polling layer can integrity-check the pair before running anything.
+type Discover struct {
+	Path        string `yaml:"path"`
+	MappingsDir string `yaml:"mappingsDir"`
+}
+
+// Registry is the metadata lookup that gates a run: no confirmed
+// provider/capability binding, no publish. Kind names which registry
+// implementation answers it (sunbirdRC today).
+type Registry struct {
+	Kind           string         `yaml:"kind"`
+	URL            string         `yaml:"url"`
+	Entity         string         `yaml:"entity"`
+	ProviderEntity string         `yaml:"providerEntity"`
+	Lookup         RegistryLookup `yaml:"lookup"`
+	Fields         []string       `yaml:"fields"`
+}
+
+// RegistryLookup is the pair the bindingKey is built from:
+// "<participantId>|<capabilityCode>", never typed twice.
+type RegistryLookup struct {
+	ParticipantID  string `yaml:"participantId"`
+	CapabilityCode string `yaml:"capabilityCode"`
+}
+
+// Report is what a run prints, per stage.
+type Report struct {
+	Collection      []string `yaml:"collection"`
+	Build           []string `yaml:"build"`
+	Publish         []string `yaml:"publish"`
+	ExitNonZeroWhen []string `yaml:"exitNonZeroWhen"`
 }
 
 // Metadata identifies this pipeline for registry lookups (see the file's
@@ -54,10 +97,41 @@ type Input struct {
 	Secret  bool        `yaml:"secret,omitempty"`
 }
 
-// Upstream is the one service this pipeline calls and how it authenticates.
+// Upstream is the one service this pipeline calls, how it authenticates, how
+// its failures are classified, and the limits every call is held to.
 type Upstream struct {
-	BaseURL string `yaml:"baseUrl"`
-	Auth    Auth   `yaml:"auth"`
+	BaseURL string      `yaml:"baseUrl"`
+	Auth    Auth        `yaml:"auth"`
+	Errors  []ErrorRule `yaml:"errors"`
+	Guards  Guards      `yaml:"guards"`
+}
+
+// ErrorRule classifies one upstream failure. Classification, not cosmetics:
+// recording "no rows" as a failure once turned 27 of 36 states into 27
+// outages on a collection that was as complete as the upstream allows.
+//
+// A rule either matches on When or is the Default catch-all, never both.
+type ErrorRule struct {
+	When     *ErrorMatch `yaml:"when,omitempty"`
+	Classify string      `yaml:"classify,omitempty"`
+	Default  string      `yaml:"default,omitempty"`
+}
+
+// ErrorMatch is what an ErrorRule matches on. Status is one code or several,
+// so it stays `any` rather than forcing the file to write a list for the
+// single-status case.
+type ErrorMatch struct {
+	Status       any    `yaml:"status,omitempty"`
+	BodyContains string `yaml:"bodyContains,omitempty"`
+}
+
+// Guards are the per-call limits. NeverQuoteBodyInErrors is not decoration:
+// this upstream echoes the request back in error bodies, and the request
+// carries the token in its query string.
+type Guards struct {
+	ResponseMustBe         string `yaml:"responseMustBe"`
+	NeverQuoteBodyInErrors bool   `yaml:"neverQuoteBodyInErrors"`
+	MaxResponseBytes       string `yaml:"maxResponseBytes"`
 }
 
 // Auth is the token-exchange upstream auth needs: no expiry in the response,
@@ -118,9 +192,53 @@ type With struct {
 
 // Catalog is how a collection becomes catalog files, one per group.
 type Catalog struct {
-	GroupBy string `yaml:"groupBy"`
-	Chunk   Chunk  `yaml:"chunk"`
-	Render  Render `yaml:"render"`
+	GroupBy  string         `yaml:"groupBy"`
+	Exclude  []ExcludeRule  `yaml:"exclude"`
+	Annotate []AnnotateRule `yaml:"annotate"`
+	Order    Order          `yaml:"order"`
+	Chunk    Chunk          `yaml:"chunk"`
+	Identity Identity       `yaml:"identity"`
+	Render   Render         `yaml:"render"`
+	Output   Output         `yaml:"output"`
+}
+
+// ExcludeRule keeps a market out of the catalog entirely, with a stated
+// reason. Every excluded market is NAMED in the report rather than merely
+// counted: "95 markets have missing coordinates" tells nobody which ones, and
+// the reason for reporting them at all is that somebody can look one up.
+type ExcludeRule struct {
+	When   string `yaml:"when"`
+	Reason string `yaml:"reason"`
+}
+
+// AnnotateRule labels a market that still publishes. A geometry-less market
+// is findable by state or district but by no proximity search, which is a
+// fact about the result worth carrying rather than hiding.
+type AnnotateRule struct {
+	When string `yaml:"when"`
+	As   string `yaml:"as"`
+	Note string `yaml:"note,omitempty"`
+}
+
+// Order makes a run read the same way twice.
+type Order struct {
+	By        string `yaml:"by"`
+	Direction string `yaml:"direction"`
+}
+
+// Identity is the id templates a rendered catalog and its resources carry.
+type Identity struct {
+	CatalogID  string `yaml:"catalogId"`
+	ResourceID string `yaml:"resourceId"`
+}
+
+// Output is where a rendered catalog lands. FilenamePrefix is the contract
+// between what build writes and what publish matches -- one value, both
+// sides.
+type Output struct {
+	Dir            string `yaml:"dir"`
+	File           string `yaml:"file"`
+	FilenamePrefix string `yaml:"filenamePrefix"`
 }
 
 // Chunk is the geometry-budget split described in CatalogGeometryBudget's
@@ -140,12 +258,31 @@ type Render struct {
 }
 
 // Publish is where catalog files go and what counts as success.
+//
+// RefuseWhen is a safety rule, not a preference: a state that failed to
+// collect is not a state with no markets, so a partial collection must never
+// publish as though it were whole.
 type Publish struct {
-	URL            string   `yaml:"url"`
-	Concurrency    int      `yaml:"concurrency,omitempty"`
-	Timeout        string   `yaml:"timeout,omitempty"`
-	Accept         []string `yaml:"accept"`
-	TreatAsFailure []string `yaml:"treatAsFailure,omitempty"`
+	URL            string    `yaml:"url"`
+	Concurrency    int       `yaml:"concurrency,omitempty"`
+	Timeout        string    `yaml:"timeout,omitempty"`
+	Accept         []string  `yaml:"accept"`
+	TreatAsFailure []string  `yaml:"treatAsFailure,omitempty"`
+	RefuseWhen     string    `yaml:"refuseWhen,omitempty"`
+	RetireOld      RetireOld `yaml:"retireOld,omitempty"`
+}
+
+// RetireOld deactivates a superseded catalog. Deactivating it is how its
+// resources go away: updateMode FULL is rejected as unsupported, and MERGE's
+// removal semantics are documented nowhere, so republishing without the
+// unwanted resource cannot be relied on to remove it.
+type RetireOld struct {
+	Enabled        string `yaml:"enabled"`
+	CatalogID      string `yaml:"catalogId"`
+	DescriptorName string `yaml:"descriptorName"`
+	IsActive       bool   `yaml:"isActive"`
+	UpdateMode     string `yaml:"updateMode"`
+	CatalogType    string `yaml:"catalogType"`
 }
 
 // LoadSpec reads and parses the pipeline definition at path inside files.
