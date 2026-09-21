@@ -11,7 +11,49 @@ package agmarket
 
 import (
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+// TestLoadSpecCapturesEveryTopLevelBlock guards the failure this struct is
+// most exposed to: yaml.v3 drops unknown keys silently, so a block present in
+// the file but absent from Spec parses "successfully" while vanishing. A rule
+// written in the file -- an exclusion, a refusal, a catalogId template -- can
+// then be believed to be in force while no code ever sees it. This compares
+// the file's own top-level keys against the ones Spec declares.
+func TestLoadSpecCapturesEveryTopLevelBlock(t *testing.T) {
+	raw, err := Files.ReadFile(PipelinePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", PipelinePath, err)
+	}
+
+	var asMap map[string]any
+	if err := yaml.Unmarshal(raw, &asMap); err != nil {
+		t.Fatalf("parse %s as a bare map: %v", PipelinePath, err)
+	}
+
+	// Round-tripping Spec back to a map yields exactly the keys Spec knows
+	// how to hold, which is what the file's keys must be a subset of.
+	spec, err := LoadSpec(Files, PipelinePath)
+	if err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	encoded, err := yaml.Marshal(spec)
+	if err != nil {
+		t.Fatalf("re-marshal Spec: %v", err)
+	}
+	var known map[string]any
+	if err := yaml.Unmarshal(encoded, &known); err != nil {
+		t.Fatalf("parse re-marshalled Spec: %v", err)
+	}
+
+	for key := range asMap {
+		if _, ok := known[key]; !ok {
+			t.Errorf("%s declares top-level block %q, but Spec has no field for it -- "+
+				"yaml.v3 is silently dropping it", PipelinePath, key)
+		}
+	}
+}
 
 func TestLoadSpec(t *testing.T) {
 	spec, err := LoadSpec(Files, PipelinePath)
