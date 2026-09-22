@@ -1,0 +1,41 @@
+# A minimal but complete pipeline file, used to prove LoadSpec reads each block
+# without depending on any real capability's file.
+metadata:
+  name: example
+  capability: example:Thing
+  provider: exampleco
+  summary: a fixture
+
+schedule:
+  cron: "0 0 * * *"
+  timezone: Asia/Kolkata
+
+inputs:
+  baseUrl:
+    flag: base-url
+    env: EXAMPLE_BASE_URL
+    default: http://example.test
+  tokenUser:
+    env: EXAMPLE_TOKEN_USER
+  tokenSecret:
+    env: EXAMPLE_TOKEN_SECRET
+    secret: true
+  publishUrl:
+    env: EXAMPLE_PUBLISH_URL
+
+upstream:
+  baseUrl: ${inputs.baseUrl}
+  auth:
+    kind: tokenExchange
+    token:
+      at: $.token
+
+pipeline:
+  - id: things
+    uses: listThings
+    when: always
+
+publish:
+  url: ${inputs.publishUrl}/publish
+  accept: [ACCEPTED]
+  treatAsFailure: [PARTIAL, REJECTED]

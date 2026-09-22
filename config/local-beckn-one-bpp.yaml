@@ -88,30 +88,30 @@ plugins:
   #    path -- docs/superpowers/plans/2026-09-18-crawler-publish-sink.md.
   #    That is not part of the mandi path and is not configured here.)
   #
-  # 3. pipeline.<capability> keys are added -- also NOT YET IMPLEMENTED.
-  #    This is where "know the capability, then find its YAML" lives: one
-  #    key per capability this deployment publishes, valued with the path
-  #    to the pipeline YAML that serves it. The crawler's plugin config is
-  #    a map[string]string, so an arbitrary key name per capability is
-  #    natively supported -- one readable line each, no comma-packing.
+  # 3. The mandi publish pipeline is turned on with mandiBindingKey.
   #
-  #    The polling layer then, per key:
-  #      1. load the YAML at that path
-  #      2. check its metadata.capability MATCHES the config key (a
-  #         mismatch is an Integrity error -- config and pipeline must
-  #         agree, neither silently wins)
-  #      3. check the registry confirms this participantId is actually
-  #         bound to that capability (see the Registry Gate in
-  #         plan-2-low-level-design.md) -- an unregistered capability is
-  #         refused, not run
-  #      4. run it on its OWN schedule.at, from its own YAML
+  #    "Know the capability, then find its YAML" is answered by the
+  #    REGISTRY, not by this file. The crawler looks the binding key up in
+  #    SunbirdRC, filters the record's actions for action == "publish", and
+  #    reads that action's `mappings` field for the pipeline path. A
+  #    capability with no publish action has no pipeline, which is a fact
+  #    rather than a misconfiguration -- every other capability on this
+  #    network is select-only.
   #
-  #    Adding capability #2, #3, ... N: one more pipeline.* line here, plus
-  #    the folder it points at. No existing pipeline's YAML is touched.
+  #    So adding capability #2 is a registry edit, not a config edit: give
+  #    its ProviderSchema record a publish action naming its own pipeline
+  #    YAML, and add one more mandiBindingKey-style entry here.
+  #
+  #    Deriving the path from the capability's name instead would mean
+  #    guessing a filesystem layout and running a pipeline the registry
+  #    never sanctioned.
   #
   # registry:
   #   id: sunbirdRegistry
   #   config:
+  #     # Use a hostname the ADAPTER can resolve, never localhost: inside a
+  #     # container localhost is the adapter itself. The /api/v1 base path is
+  #     # required -- without it every lookup 404s on /ProviderSchema/search.
   #     url: http://registry:8081/api/v1
   #     entity: Participant
   #     providerEntity: ProviderSchema
@@ -132,13 +132,40 @@ plugins:
   #     participantId: "agmarknet"
   #     bppUri: "https://bpp.example.org"
   #
-  #     # One key per capability. Key = the capability code, value = path to
-  #     # the pipeline YAML serving it. NEW, not yet implemented.
-  #     pipeline.openagrinet:MandiPrice: "MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml"
+  #     # --- the scheduled mandi publish ---
   #
-  #     # Adding a second capability is one more line like the above, plus
-  #     # the folder it points at:
-  #     # pipeline.openagrinet:WeatherObservation: "WeatherObservation/cataloguepublish-mausamgram/weather-observation-mausamgram.yaml"
+  #     # Supplying this key is what turns the pipeline on: a deployment
+  #     # that names no capability has nothing to publish. Format is
+  #     # "<participantId>|<capabilityCode>", the same binding key the
+  #     # registry is indexed by.
+  #     mandiBindingKey: "agmarknet-live|openagrinet:MandiPrice"
+  #
+  #     # How often to CHECK whether the pipeline is due -- not how often it
+  #     # runs. The cadence itself lives in the pipeline YAML as a standard
+  #     # cron expression ("0 0 * * *", Asia/Kolkata), because it belongs to
+  #     # the pipeline rather than to this deployment. Default 300s.
+  #     mandiTickIntervalSeconds: "300"
+  #
+  #     # Reaching the network is a SEPARATE decision from turning the
+  #     # schedule on, and defaults to off. Left false, each run still
+  #     # collects and builds catalogues -- observable and reversible --
+  #     # and simply does not send them.
+  #     mandiPublish: "false"
+  #
+  #     # Optional. Keeps each run's catalogues on disk for inspection;
+  #     # empty means a temporary directory the run cleans up.
+  #     mandiCatalogOutputDir: "/var/lib/oan/mandi-catalogs"
+  #
+  #     # The registry plugin above must implement ProviderRecordLookup
+  #     # (sunbirdRegistry does; dediregistry does not). Without it there is
+  #     # no way to learn whether this capability may publish, so the
+  #     # crawler refuses to start rather than publishing unsanctioned.
+  #
+  #     # The pipeline also needs its own inputs from the environment:
+  #     # SUNBIRD_REGISTRY_URL, MANDI_API_URI, MANDI_TOKEN_USER,
+  #     # MANDI_TOKEN_SECRET, MANDI_PUBLISH_URL, MANDI_PARTICIPANT_ID.
+  #     # See pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/
+  #     # mandi-price-agmarket.yaml for the full list.
 modules:
   - name: bppTxnReceiver
     path: /bpp/receiver/

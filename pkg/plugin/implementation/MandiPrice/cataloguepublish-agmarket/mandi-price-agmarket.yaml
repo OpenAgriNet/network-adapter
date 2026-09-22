@@ -48,7 +48,11 @@ discover:
 # works").
 # ---------------------------------------------------------------------------
 schedule:
-  at: "00:00"
+  # Standard five-field cron: minute hour day-of-month month day-of-week.
+  # "0 0 * * *" is every day at midnight. The expression is resolved in
+  # `timezone`, NOT the host's clock -- a UTC host reading this off its own
+  # clock would fire on the wrong calendar day and ask for yesterday's prices.
+  cron: "0 0 * * *"
   timezone: Asia/Kolkata
 
 # ---------------------------------------------------------------------------
@@ -92,10 +96,22 @@ registry:
 # tools/publish/mandi_publish's proven flag>env>default resolution.
 # ---------------------------------------------------------------------------
 inputs:
+  # Deliberately NO default. config/provider-adapter.yaml carries the same
+  # warning for the same field and the same reason: no deployment is obliged
+  # to name the service "registry", and a baked-in hostname that resolves
+  # nowhere fails as a DNS error far from here rather than as "you did not
+  # configure the registry". Use a hostname the ADAPTER can resolve, never
+  # localhost -- inside a container localhost is the adapter itself.
+  #
+  #   compose      http://registry:8081/api/v1
+  #   kubernetes   http://registry.oan.svc.cluster.local:8081/api/v1
+  #   from a shell http://localhost:8081/api/v1
+  #
+  # Note the /api/v1 base path: without it every lookup 404s on
+  # /ProviderSchema/search.
   registryUrl:
     flag: registry-url
     env: SUNBIRD_REGISTRY_URL
-    default: http://registry:8081/api/v1
   baseUrl:
     flag: base-url
     env: MANDI_API_URI
@@ -104,13 +120,20 @@ inputs:
     flag: states
     type: list
     default: []          # empty means every state the upstream reports
+  # The window is env-settable, not flag-only: this pipeline runs inside a
+  # long-lived server process with no command line, so a flag-only window
+  # would be permanently stuck at "today" -- no backfill after an outage, and
+  # no way to widen it on a day the mandis are shut (a Sunday returns no rows
+  # for every state, which is correct and useless).
   fromDate:
     flag: from
+    env: MANDI_FROM_DATE
     type: date
     format: dd-MM-yyyy   # what this upstream reads; not ISO
     default: today
   toDate:
     flag: to
+    env: MANDI_TO_DATE
     type: date
     format: dd-MM-yyyy
     default: today
