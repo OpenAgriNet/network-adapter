@@ -1,0 +1,26 @@
+# A SECOND pipeline fixture, so a test can prove two pipelines do not tread on
+# each other. Its capability and metadata.name both differ from minimal.yaml,
+# which is what makes the directory and the filename prefix differ.
+metadata:
+  name: other
+  capability: example:Other
+  provider: otherco
+
+schedule:
+  cron: "0 0 * * *"
+  timezone: Asia/Kolkata
+
+inputs:
+  baseUrl:
+    env: EXAMPLE_BASE_URL
+  tokenUser:
+    env: EXAMPLE_TOKEN_USER
+  tokenSecret:
+    env: EXAMPLE_TOKEN_SECRET
+    secret: true
+  publishUrl:
+    env: EXAMPLE_PUBLISH_URL
+
+pipeline:
+  - id: things
+    uses: listThings

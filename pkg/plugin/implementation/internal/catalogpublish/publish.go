@@ -1,3 +1,14 @@
+// Package catalogpublish posts built catalogues to the provider adapter's
+// /publish module, and serves the JSONata mappings a pipeline transforms
+// through. It is the publishing half of the scheduled publish pipelines --
+// the crawl half is catalogcrawler/internal/sink.
+//
+// It sits under implementation/internal/ beside common and pipeline, which is
+// what makes it reachable from BOTH the crawler that ticks a pipeline and the
+// capability packages that define one. Placement here has been got wrong
+// twice: at tools/publish/internal/catalogpublish nothing under pkg/ could
+// import it, and under catalogcrawler/ the capability packages could not.
+// Moving it inside any narrower internal/ breaks one of its two consumers.
 package catalogpublish
 
 // Posting built catalogs to the provider adapter's own /publish module, which

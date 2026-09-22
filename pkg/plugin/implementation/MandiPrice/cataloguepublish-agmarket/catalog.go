@@ -17,14 +17,12 @@ package agmarket
 // Go.
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/pipeline"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
@@ -63,6 +61,13 @@ type SkipSummary struct {
 	ZeroCommodities int
 	GeometryLess    int
 
+	// EmptyStates counts states that had markets but none that could be
+	// published, so the state produced no catalog at all. Without it such a
+	// state simply vanishes from the run: no catalog, no error, nothing in
+	// the report. The file's report block still asks for this line
+	// ("${count} states returned no data").
+	EmptyStates int
+
 	// Excluded are markets kept OUT of the catalog entirely.
 	Excluded []ExcludedMarket
 
@@ -100,7 +105,7 @@ type catalogBuildConfig struct {
 // A state left with nothing publishable produces no catalog rather than an
 // empty one: publishing a catalog with zero resources would retire the
 // state's markets from the network on the next MERGE.
-func buildCatalogs(ctx context.Context, m mapperRunner, mappingRef string, markets []CollectedMarket, cfg catalogBuildConfig) ([]BuiltCatalog, SkipSummary, error) {
+func buildCatalogs(ctx context.Context, m pipeline.Mapper, mappingRef string, markets []CollectedMarket, cfg catalogBuildConfig) ([]BuiltCatalog, SkipSummary, error) {
 	var summary SkipSummary
 
 	if cfg.WithoutGeometry == "" {
@@ -170,6 +175,7 @@ func buildCatalogs(ctx context.Context, m mapperRunner, mappingRef string, marke
 		}
 
 		if len(publishable) == 0 {
+			summary.EmptyStates++
 			continue
 		}
 
@@ -221,29 +227,4 @@ func buildCatalogs(ctx context.Context, m mapperRunner, mappingRef string, marke
 	}
 
 	return built, summary, nil
-}
-
-// writeCatalogs writes each built catalog to <dir>/<filenamePrefix>-<slug>.json.
-//
-// Indented, because these files exist to be read: somebody reviews what is
-// about to go onto the network, and a single-line document of several hundred
-// markets cannot be reviewed. The publish step reads the same directory back,
-// which is why the naming is fixed rather than a caller's choice.
-func writeCatalogs(built []BuiltCatalog, dir, filenamePrefix string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("create catalog output directory: %w", err)
-	}
-
-	for _, catalog := range built {
-		var indented bytes.Buffer
-		if err := json.Indent(&indented, catalog.Content, "", "  "); err != nil {
-			return fmt.Errorf("indent JSON for state %s: %w", catalog.Slug, err)
-		}
-
-		path := filepath.Join(dir, fmt.Sprintf("%s-%s.json", filenamePrefix, catalog.Slug))
-		if err := os.WriteFile(path, indented.Bytes(), 0o644); err != nil {
-			return fmt.Errorf("write catalog file %s: %w", path, err)
-		}
-	}
-	return nil
 }

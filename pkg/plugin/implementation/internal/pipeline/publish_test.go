@@ -1,4 +1,4 @@
-package agmarket
+package pipeline
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/beckn-one/beckn-onix/tools/publish/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/catalogpublish"
 )
 
 // publishTestPrefix is the filename prefix the pipeline's build step writes
@@ -74,7 +74,7 @@ func TestPublishCatalogsReportsAnAcceptedCatalogAsPublished(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	result, err := publishCatalogs(context.Background(), goodSpec(),
+	result, err := PublishCatalogues(context.Background(), goodSpec(),
 		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
@@ -103,7 +103,7 @@ func TestPublishCatalogsTreatsPartialAsAFailure(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	result, err := publishCatalogs(context.Background(), goodSpec(),
+	result, err := PublishCatalogues(context.Background(), goodSpec(),
 		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
@@ -123,7 +123,7 @@ func TestPublishCatalogsRefusesAPartialCollection(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	_, err := publishCatalogs(context.Background(), goodSpec(),
+	_, err := PublishCatalogues(context.Background(), goodSpec(),
 		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 3)
 	if err == nil {
 		t.Fatal("publishCatalogs published a collection with 3 failed states")
@@ -146,7 +146,7 @@ func TestPublishCatalogsPublishesWhenRefuseWhenIsNotDeclared(t *testing.T) {
 	spec := goodSpec()
 	spec.RefuseWhen = ""
 
-	if _, err := publishCatalogs(context.Background(), spec,
+	if _, err := PublishCatalogues(context.Background(), spec,
 		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 3); err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestPublishCatalogsPublishesWhenRefuseWhenIsNotDeclared(t *testing.T) {
 }
 
 func TestPublishCatalogsNeedsAPublishURL(t *testing.T) {
-	_, err := publishCatalogs(context.Background(), goodSpec(),
+	_, err := PublishCatalogues(context.Background(), goodSpec(),
 		map[string]string{}, t.TempDir(), publishTestPrefix, 0)
 	if err == nil {
 		t.Fatal("publishCatalogs accepted an empty publish address")
@@ -176,7 +176,7 @@ func TestPublishCatalogsRejectsASpecThatAcceptsPartial(t *testing.T) {
 	spec := goodSpec()
 	spec.Accept = []string{"PARTIAL"}
 
-	_, err := publishCatalogs(context.Background(), spec,
+	_, err := PublishCatalogues(context.Background(), spec,
 		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
 	if err == nil {
 		t.Fatal("publishCatalogs honoured a spec accepting PARTIAL it cannot honour")
@@ -193,8 +193,93 @@ func TestPublishCatalogsRejectsASpecThatDoesNotFailOnPartial(t *testing.T) {
 	spec := goodSpec()
 	spec.TreatAsFailure = []string{"REJECTED"}
 
-	if _, err := publishCatalogs(context.Background(), spec,
-		map[string]string{"publishUrl": "http://127.0.0.1:1"}, t.TempDir(), publishTestPrefix, 0); err == nil {
+	// A real catalogue file and a live server, so the call would otherwise
+	// SUCCEED. With an empty directory this test passed even with the
+	// judgement check removed -- catalogpublish would have returned "no
+	// catalog files in ..." and the assertion could not tell the two apart.
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+	server, _ := answerServer(t, "ACCEPTED")
+
+	_, err := PublishCatalogues(context.Background(), spec,
+		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
+	if err == nil {
 		t.Fatal("publishCatalogs honoured a spec that does not treat PARTIAL as a failure")
+	}
+	if !strings.Contains(err.Error(), "PARTIAL") {
+		t.Errorf("error %q does not name PARTIAL, so it may be reporting something else entirely", err)
+	}
+}
+
+// TestPublishCatalogsRejectsAPublishURLItWouldIgnore: the address actually
+// used comes from inputs.publishUrl, so a publish.url pointing anywhere else
+// would be silently ignored -- an operator's edit taking no effect, with no
+// message saying so.
+func TestPublishCatalogsRejectsAPublishURLItWouldIgnore(t *testing.T) {
+	spec := goodSpec()
+	spec.URL = "https://somewhere.else.test/publish"
+
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+
+	_, err := PublishCatalogues(context.Background(), spec,
+		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0)
+	if err == nil {
+		t.Fatal("publishCatalogs accepted a publish.url it does not honour")
+	}
+	if !strings.Contains(err.Error(), "somewhere.else.test") {
+		t.Errorf("error %q does not quote the ignored url", err)
+	}
+}
+
+// TestPublishCatalogsRefusesAnUnresolvableRetireOld: the file's retireOld
+// block is gated on ${inputs.retireOld}, an input the file never declares.
+// Reading that as "off" would silently skip a retirement somebody wrote the
+// block specifically to get.
+func TestPublishCatalogsRefusesAnUnresolvableRetireOld(t *testing.T) {
+	spec := goodSpec()
+	spec.RetireOld = RetireOld{
+		Enabled:        "${inputs.retireOld}",
+		CatalogID:      "cat-agmarknet-mandi-prices",
+		DescriptorName: "Retired: superseded by the per-state market catalogs",
+	}
+
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+
+	_, err := PublishCatalogues(context.Background(), spec,
+		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0)
+	if err == nil {
+		t.Fatal("publishCatalogs accepted a retireOld gated on an undeclared input")
+	}
+	if !strings.Contains(err.Error(), "retireOld") {
+		t.Errorf("error %q does not name the block it refused", err)
+	}
+}
+
+// TestPublishCatalogsCarriesAnEnabledRetireOld proves the block reaches
+// catalogpublish rather than being parsed and dropped: an enabled retirement
+// posts a tombstone for the named catalog alongside the current ones.
+func TestPublishCatalogsCarriesAnEnabledRetireOld(t *testing.T) {
+	spec := goodSpec()
+	spec.RetireOld = RetireOld{
+		Enabled:        "${inputs.retireOld}",
+		CatalogID:      "cat-agmarknet-mandi-prices",
+		DescriptorName: "Retired: superseded by the per-state market catalogs",
+	}
+
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+	server, _ := answerServer(t, "ACCEPTED")
+
+	result, err := PublishCatalogues(context.Background(), spec, map[string]string{
+		"publishUrl": server.URL,
+		"retireOld":  "true",
+	}, dir, publishTestPrefix, 0)
+	if err != nil {
+		t.Fatalf("publishCatalogs: %v", err)
+	}
+	if result.RetiredOld == nil {
+		t.Fatal("retireOld was declared and enabled, but no retirement was attempted")
 	}
 }

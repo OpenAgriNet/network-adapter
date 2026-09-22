@@ -4,7 +4,7 @@
 // directly; this file is a faithful port, not a redesign, and keeps the same
 // reasoning in its comments because that reasoning comes from measured
 // real-world defects in the upstream Agmarknet data, not from taste.
-package agmarket
+package pipeline
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ const maxResponseBytes = 32 << 20
 // An interface rather than the concrete type so a test can substitute one,
 // and so each call site states which of the mapper's abilities it depends
 // on. Ported from tools/publish/mandi_publish/client.go's mapperRunner.
-type mapperRunner interface {
+type Mapper interface {
 	Transform(ctx context.Context, ref string, d definition.Direction, in any) ([]byte, error)
 	Verify(ctx context.Context, ref string, in any) error
 }
@@ -42,7 +42,7 @@ type mapperRunner interface {
 // response-size ceiling, and nothing else about them differs enough to earn a
 // type each. This is the package-private counterpart of the reference tool's
 // Client.
-type pipelineClient struct {
+type Client struct {
 	baseURL string
 	http    *http.Client
 }
@@ -50,8 +50,8 @@ type pipelineClient struct {
 // newPipelineClient builds a pipelineClient with a timeout that suits the
 // largest call: master data option 6 is roughly 600 KB and takes seconds,
 // not milliseconds.
-func newPipelineClient(baseURL string) *pipelineClient {
-	return &pipelineClient{baseURL: baseURL, http: &http.Client{Timeout: 120 * time.Second}}
+func NewClient(baseURL string) *Client {
+	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 120 * time.Second}}
 }
 
 // tokenResponse is the whole of what this client reads from the token
@@ -65,7 +65,7 @@ type tokenResponse struct {
 // The credentials are marshalled rather than concatenated, so a secret
 // carrying a quote or a backslash cannot break out of the JSON it travels
 // in.
-func (c *pipelineClient) token(ctx context.Context, user, secret string) (string, error) {
+func (c *Client) Token(ctx context.Context, user, secret string) (string, error) {
 	payload, err := json.Marshal(map[string]string{
 		"access_name": user,
 		"password":    secret,
@@ -138,7 +138,7 @@ func asQuery(mapped []byte) (string, error) {
 }
 
 // get makes one GET and returns the body of a 2xx.
-func (c *pipelineClient) get(ctx context.Context, path, query string) ([]byte, error) {
+func (c *Client) fetch(ctx context.Context, path, query string) ([]byte, error) {
 	endpoint := c.baseURL + path
 	if query != "" {
 		endpoint += "?" + query
@@ -164,7 +164,7 @@ func (c *pipelineClient) get(ctx context.Context, path, query string) ([]byte, e
 	// empty. The BODY IS INSPECTED BUT NEVER QUOTED: this upstream echoes the
 	// request, and the request carries the token in its query string.
 	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(body, []byte("No data available")) {
-		return nil, errNoUpstreamData
+		return nil, ErrNoUpstreamData
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("GET %s returned %s", path, resp.Status)
@@ -183,7 +183,7 @@ func (c *pipelineClient) get(ctx context.Context, path, query string) ([]byte, e
 // worth writing: without this call the guards would parse, compile, and
 // never evaluate, so a malformed state code would reach the upstream and
 // come back as an empty 200 that reads as "this state has no markets".
-func (c *pipelineClient) httpGet(ctx context.Context, m mapperRunner, mappingRef, path string, local map[string]any) ([]byte, error) {
+func (c *Client) Get(ctx context.Context, m Mapper, mappingRef, path string, local map[string]any) ([]byte, error) {
 	input := map[string]any{"_local": local}
 	if err := m.Verify(ctx, mappingRef, input); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -198,7 +198,7 @@ func (c *pipelineClient) httpGet(ctx context.Context, m mapperRunner, mappingRef
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	body, err := c.get(ctx, path, query)
+	body, err := c.fetch(ctx, path, query)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +249,7 @@ func jsonShape(v any) string {
 	}
 }
 
-// errNoUpstreamData reports that the upstream answered "no rows", not that
+// ErrNoUpstreamData reports that the upstream answered "no rows", not that
 // the call went wrong.
 //
 // The service says this with an HTTP 400 and {"success":false,"message":"No
@@ -261,4 +261,4 @@ func jsonShape(v any) string {
 // Recording it as a failure previously turned those 27 states into false
 // outages, which is why callers must be able to tell "no data" apart from
 // "broken" instead of collapsing both into one generic error.
-var errNoUpstreamData = errors.New("upstream reports no data for this request")
+var ErrNoUpstreamData = errors.New("upstream reports no data for this request")

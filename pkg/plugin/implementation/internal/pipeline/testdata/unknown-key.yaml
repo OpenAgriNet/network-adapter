@@ -1,0 +1,17 @@
+# Same file with a block the schema does not declare. UnmappedKeys must report
+# it; LoadSpec must still succeed, which is exactly the silent failure mode.
+metadata:
+  name: example
+  capability: example:Thing
+
+schedule:
+  cron: "0 0 * * *"
+  timezone: Asia/Kolkata
+
+thisBlockIsNotInTheSchema:
+  someRule: refuse everything
+
+pipeline:
+  - id: things
+    uses: listThings
+    aKeyStepDoesNotHave: true

@@ -4,7 +4,7 @@
 // polling layer will need to validate and read the file with -- not a
 // pipeline executor. Field names and shapes come straight from the file, not
 // from what would be convenient to build later.
-package agmarket
+package pipeline
 
 import (
 	"embed"
@@ -78,9 +78,10 @@ type Metadata struct {
 	Summary    string `yaml:"summary"`
 }
 
-// Schedule is when the polling layer should run this pipeline.
+// Schedule is when the polling layer should run this pipeline, as a standard
+// five-field cron expression resolved in Timezone (see cron.go).
 type Schedule struct {
-	At       string `yaml:"at"`
+	Cron     string `yaml:"cron"`
 	Timezone string `yaml:"timezone"`
 }
 
@@ -161,11 +162,55 @@ type AuthTokenSpec struct {
 
 // Step is one pipeline stage. Only With's fields a given step actually sets
 // are populated; the rest stay zero.
+//
+// The fields beyond id/uses/with/out are not decoration, and leaving them out
+// of this struct is how the file can state a rule that nothing enforces: each
+// one carries a decision the reference tool paid for in production.
 type Step struct {
 	ID   string `yaml:"id"`
 	Uses string `yaml:"uses"`
 	With With   `yaml:"with"`
 	Out  string `yaml:"out,omitempty"`
+
+	// When and Else make a step conditional: `states` only calls the upstream
+	// when no state list was supplied, otherwise the supplied list IS the
+	// result.
+	When string   `yaml:"when,omitempty"`
+	Else StepElse `yaml:"else,omitempty"`
+
+	// FailWhenEmpty is a refusal, not a warning. Walking an empty state list
+	// produces a well-formed, zero-error, empty collection -- a run that reads
+	// as "India has no markets" and exits zero.
+	FailWhenEmpty string `yaml:"failWhenEmpty,omitempty"`
+
+	// ForEach/As drive the per-state loop. Concurrency is deliberately 1:
+	// thirty-six calls against a service that publishes no rate limit is the
+	// polite default, and parallelism would buy seconds while risking a
+	// throttle that looks exactly like data loss.
+	ForEach     string `yaml:"forEach,omitempty"`
+	As          string `yaml:"as,omitempty"`
+	Concurrency int    `yaml:"concurrency,omitempty"`
+
+	// OnError and OnEmptyOutput are the 27-of-36-states lesson written as
+	// data: an upstream saying "no rows for this state" is a coverage fact to
+	// record and continue past, not a failure to abort on.
+	OnError       map[string]StepOutcome `yaml:"onError,omitempty"`
+	OnEmptyOutput StepOutcome            `yaml:"onEmptyOutput,omitempty"`
+}
+
+// StepElse is what a conditional step yields when its When is false. Const is
+// a literal rather than another call: `states` falls back to the list the
+// operator already supplied.
+type StepElse struct {
+	Const string `yaml:"const,omitempty"`
+}
+
+// StepOutcome is what to do with a classified result: name the bucket it is
+// recorded in, and whether the run carries on. Continue is what keeps one
+// state's empty answer from ending a thirty-six state collection.
+type StepOutcome struct {
+	Record   string `yaml:"record,omitempty"`
+	Continue bool   `yaml:"continue,omitempty"`
 }
 
 // With is a step's parameters. It is the union of every field any step in

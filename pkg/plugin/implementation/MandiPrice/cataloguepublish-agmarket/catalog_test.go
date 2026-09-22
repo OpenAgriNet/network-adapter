@@ -10,12 +10,9 @@ package agmarket
 // returns a perfectly valid document.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -410,53 +407,33 @@ func TestBuildCatalogs_RejectsUnknownGeometryOption(t *testing.T) {
 	}
 }
 
-func TestWriteCatalogs_WritesOneFilePerSlug(t *testing.T) {
+// TestBuildCatalogs_CountsStatesLeftWithNothingPublishable: a state whose
+// every market was excluded produces no catalogue, and without a counter it
+// disappears from the run entirely -- no catalogue, no error, nothing to
+// report. The file's report block still asks for this number.
+func TestBuildCatalogs_CountsStatesLeftWithNothingPublishable(t *testing.T) {
 	mapper, mappingBase := testMapper(t)
 
-	cfg := testCatalogConfig()
-	cfg.Budget = 1
-
+	// Both markets are excluded: one has no commodities, the other has an
+	// unusable coordinate under `skip`.
 	markets := []CollectedMarket{
-		testCollectedMarket(1, "Pune", "MH", "Maharashtra"),
-		testCollectedMarket(2, "Nashik", "MH", "Maharashtra"),
-		testCollectedMarket(3, "Mysuru", "KA", "Karnataka"),
+		{MarketID: 1, StateCode: "MH", StateName: "Maharashtra", CoordinateQuality: "ok"},
+		{MarketID: 2, StateCode: "MH", StateName: "Maharashtra", CoordinateQuality: "missing",
+			Commodities: []Commodity{{Code: 1, Name: "Onion"}}},
 	}
 
-	built, _, err := buildCatalogs(context.Background(), mapper, mappingBase+"/catalog.yaml", markets, cfg)
+	cfg := testCatalogConfig()
+	cfg.WithoutGeometry = withoutGeometrySkip
+
+	built, summary, err := buildCatalogs(context.Background(), mapper, mappingBase+"/catalog.yaml", markets, cfg)
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
-
-	// A directory that does not exist yet: writeCatalogs is what a fresh run
-	// relies on to create its output directory.
-	dir := filepath.Join(t.TempDir(), "catalog")
-	if err := writeCatalogs(built, dir, "mandi"); err != nil {
-		t.Fatalf("writeCatalogs: %v", err)
+	if len(built) != 0 {
+		t.Fatalf("built %d catalogues from markets that were all excluded", len(built))
 	}
-
-	for _, name := range []string{"mandi-KA.json", "mandi-MH.json", "mandi-MH-2.json"} {
-		content, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		var doc map[string]any
-		if err := json.Unmarshal(content, &doc); err != nil {
-			t.Errorf("%s is not valid JSON: %v", name, err)
-		}
-		// Pretty-printed for the human who reviews these files before a
-		// publish, which is the only reason they hit disk at all.
-		if !bytes.Contains(content, []byte("\n  \"context\"")) {
-			t.Errorf("%s is not indented: %s", name, content)
-		}
-	}
-
-	// And nothing else: a stale file from an earlier slug would be published
-	// as though it were current.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
-	if len(entries) != 3 {
-		t.Errorf("wrote %d files, want 3", len(entries))
+	if summary.EmptyStates != 1 {
+		t.Errorf("EmptyStates = %d, want 1 -- a state that produced no catalogue must still be counted",
+			summary.EmptyStates)
 	}
 }

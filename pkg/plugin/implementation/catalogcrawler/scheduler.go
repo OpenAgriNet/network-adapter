@@ -12,6 +12,7 @@ package catalogcrawler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -77,6 +78,42 @@ type Scheduler struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// extra are additional loops on their own cadences, registered before
+	// Start. They exist because a deployment can carry work that is neither
+	// an index poll nor a catalog sync -- a scheduled publish pipeline, say --
+	// and such work wants this Scheduler's lifecycle (one context, one
+	// WaitGroup, Stop drains it) rather than a second, differently-shutdown
+	// goroutine of its own.
+	extra []periodicTask
+}
+
+// periodicTask is one registered extra loop.
+type periodicTask struct {
+	interval time.Duration
+	fn       func(context.Context)
+}
+
+// AddPeriodic registers fn to run immediately on Start and then every
+// interval, under the Scheduler's own lifecycle.
+//
+// It must be called BEFORE Start -- a task registered afterwards would never
+// be launched, and silently doing nothing is the worst way for a scheduled
+// publish to fail, so this reports that rather than accepting it.
+func (s *Scheduler) AddPeriodic(interval time.Duration, fn func(context.Context)) error {
+	if interval <= 0 {
+		return fmt.Errorf("catalogcrawler: a periodic task needs a positive interval, got %s", interval)
+	}
+	if fn == nil {
+		return fmt.Errorf("catalogcrawler: a periodic task needs a function")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx != nil {
+		return fmt.Errorf("catalogcrawler: periodic tasks must be registered before Start")
+	}
+	s.extra = append(s.extra, periodicTask{interval: interval, fn: fn})
+	return nil
 }
 
 // NewScheduler builds a Scheduler over params, driven at cfg's cadence. log
@@ -99,6 +136,9 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.loop(ctx, s.cfg.indexInterval(), s.pollTick)
 	s.loop(ctx, s.cfg.catalogInterval(), s.syncTick)
 	s.loop(ctx, s.cfg.parkSweepInterval(), s.parkSweepTick)
+	for _, task := range s.extra {
+		s.loop(ctx, task.interval, task.fn)
+	}
 }
 
 // Stop signals both loops and waits for the in-flight tick (if any), and any

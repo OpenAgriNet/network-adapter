@@ -1,22 +1,25 @@
 package agmarket
 
-// client_test.go proves pipelineClient's two calls -- minting a token and
-// making a mapped GET -- against both a synthetic upstream and, for the
-// mapped GET, the real master-states.yaml mapping this package embeds. The
-// no-data classification is exercised directly because it is the whole
-// reason this client distinguishes an empty result from a failure: recording
-// it as a failure previously turned 27 of 36 states into false outages (see
-// errNoUpstreamData in client.go).
+// client_test.go exercises the frame's upstream Client against THIS pipeline's
+// real mappings. That pairing is the point: the mappings decide what a request
+// looks like and how a response is read, so testing the client without them
+// would prove only that Go can make an HTTP call.
+//
+// The client itself is internal/pipeline's and is tested there against a
+// synthetic upstream. What is here is what needs mandi's own mapping files.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/beckn-one/beckn-onix/tools/publish/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/pipeline"
 )
 
 // testMapper serves this package's embedded mappings over a loopback
@@ -24,12 +27,12 @@ import (
 // exercises the actual mapping file rather than a stand-in for it.
 //
 // catalogpublish used to live under tools/publish/internal/, which Go's
-// internal-import rule kept out of reach of anything outside the
-// tools/publish tree -- this package briefly reimplemented ServeMappings and
-// NewMapper locally for that reason. catalogpublish has since moved to
-// tools/publish/catalogpublish (no longer internal), so this now imports the
-// real thing instead of a parallel copy.
-func testMapper(t *testing.T) (mapperRunner, string) {
+// internal-import rule kept out of reach of anything outside that tree --
+// this package briefly reimplemented ServeMappings and NewMapper locally for
+// that reason. It now lives at implementation/internal/catalogpublish, reachable by every
+// package under implementation/, so this imports the real thing instead of a
+// parallel copy.
+func testMapper(t *testing.T) (pipeline.Mapper, string) {
 	t.Helper()
 
 	base, stop, err := catalogpublish.ServeMappings(Files, "mappings")
@@ -46,43 +49,6 @@ func testMapper(t *testing.T) (mapperRunner, string) {
 
 	return mapper, base
 }
-
-func TestPipelineClient_Token_ExchangesCredentials(t *testing.T) {
-	var gotBody map[string]string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
-		}
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_, _ = w.Write([]byte(`{"token":"tok-abc"}`))
-	}))
-	defer srv.Close()
-
-	client := newPipelineClient(srv.URL)
-	token, err := client.token(context.Background(), "user1", "secret1")
-	if err != nil {
-		t.Fatalf("token: %v", err)
-	}
-	if token != "tok-abc" {
-		t.Errorf("token = %q, want %q", token, "tok-abc")
-	}
-	if gotBody["access_name"] != "user1" || gotBody["password"] != "secret1" {
-		t.Errorf("body = %v, want access_name=user1 password=secret1", gotBody)
-	}
-}
-
-func TestPipelineClient_Token_RejectsNonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"message":"invalid credentials"}`, http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	client := newPipelineClient(srv.URL)
-	if _, err := client.token(context.Background(), "user1", "secret1"); err == nil {
-		t.Fatal("want an error for a 401 response")
-	}
-}
-
 func TestPipelineClient_HTTPGet_MasterStates_TransformsRealMapping(t *testing.T) {
 	mapper, mappingBase := testMapper(t)
 
@@ -98,10 +64,9 @@ func TestPipelineClient_HTTPGet_MasterStates_TransformsRealMapping(t *testing.T)
 	}))
 	defer upstream.Close()
 
-	client := newPipelineClient(upstream.URL)
-	client.http = upstream.Client()
+	client := pipeline.NewClient(upstream.URL)
 
-	out, err := client.httpGet(context.Background(), mapper, mappingBase+"/master-states.yaml",
+	out, err := client.Get(context.Background(), mapper, mappingBase+"/master-states.yaml",
 		"/v1/fetch-agmarknet-master-data", map[string]any{"token": "tok-abc"})
 	if err != nil {
 		t.Fatalf("httpGet: %v", err)
@@ -118,7 +83,6 @@ func TestPipelineClient_HTTPGet_MasterStates_TransformsRealMapping(t *testing.T)
 		t.Fatalf("states = %+v, want one MH/Maharashtra entry", states)
 	}
 }
-
 func TestPipelineClient_HTTPGet_ClassifiesNoDataAsEmptyResult(t *testing.T) {
 	mapper, mappingBase := testMapper(t)
 
@@ -127,15 +91,127 @@ func TestPipelineClient_HTTPGet_ClassifiesNoDataAsEmptyResult(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	client := newPipelineClient(upstream.URL)
-	client.http = upstream.Client()
+	client := pipeline.NewClient(upstream.URL)
 
-	_, err := client.httpGet(context.Background(), mapper, mappingBase+"/master-states.yaml",
+	_, err := client.Get(context.Background(), mapper, mappingBase+"/master-states.yaml",
 		"/v1/fetch-agmarknet-master-data", map[string]any{"token": "tok-abc"})
 	if err == nil {
 		t.Fatal("want an error for a no-data upstream response")
 	}
-	if err != errNoUpstreamData {
-		t.Errorf("err = %v, want errNoUpstreamData", err)
+	// errors.Is, not ==: the moment any caller wraps this, a == comparison
+	// starts silently reporting "broken" for what is actually "no rows".
+	if !errors.Is(err, pipeline.ErrNoUpstreamData) {
+		t.Errorf("err = %v, want pipeline.ErrNoUpstreamData", err)
+	}
+}
+
+// secretToken is distinctive enough that finding it anywhere in an error is
+// unambiguous rather than a coincidental substring.
+const secretToken = "tok-SECRET-do-not-leak-7f3a9c"
+
+// TestPipelineClient_HTTPGet_NeverLeaksTheTokenInAnError is the test the
+// comments throughout client.go were asserting and nothing was checking.
+//
+// This upstream carries its auth token in the QUERY STRING and echoes the
+// request back inside error bodies, so the obvious implementations all leak:
+// quoting a response body leaks it, wrapping Go's transport error leaks it
+// (Go quotes the whole URL), and printing the decoded response leaks it. Each
+// case below is one of those routes.
+func TestPipelineClient_HTTPGet_NeverLeaksTheTokenInAnError(t *testing.T) {
+	mapper, mappingBase := testMapper(t)
+
+	// An error body that echoes the request back, token and all -- this is
+	// what the real upstream does.
+	echoRequest := func(w http.ResponseWriter, r *http.Request, status int) {
+		http.Error(w, `{"error":"bad request","received":"`+r.URL.String()+`"}`, status)
+	}
+
+	cases := map[string]http.HandlerFunc{
+		"400 echoing the request": func(w http.ResponseWriter, r *http.Request) {
+			echoRequest(w, r, http.StatusBadRequest)
+		},
+		"500 echoing the request": func(w http.ResponseWriter, r *http.Request) {
+			echoRequest(w, r, http.StatusInternalServerError)
+		},
+		"non-JSON body echoing the request": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("upstream is down; your request was " + r.URL.String()))
+		},
+		"JSON object instead of an array": func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"message":"no data found","received":"` + r.URL.String() + `"}`))
+		},
+	}
+
+	for name, handler := range cases {
+		t.Run(name, func(t *testing.T) {
+			upstream := httptest.NewServer(handler)
+			defer upstream.Close()
+
+			client := pipeline.NewClient(upstream.URL)
+
+			_, err := client.Get(context.Background(), mapper,
+				mappingBase+"/master-states.yaml", "/v1/fetch-agmarknet-master-data",
+				map[string]any{"token": secretToken})
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			assertNoTokenLeak(t, err)
+		})
+	}
+
+	t.Run("transport failure", func(t *testing.T) {
+		// A closed listener: Go's own transport error quotes the whole URL,
+		// which is exactly why get() rebuilds its message from the path.
+		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		addr := upstream.URL
+		upstream.Close()
+
+		client := pipeline.NewClient(addr)
+		_, err := client.Get(context.Background(), mapper,
+			mappingBase+"/master-states.yaml", "/v1/fetch-agmarknet-master-data",
+			map[string]any{"token": secretToken})
+		if err == nil {
+			t.Fatal("want an error from an unreachable upstream")
+		}
+		assertNoTokenLeak(t, err)
+	})
+}
+
+// assertNoTokenLeak checks every way an error commonly reaches a log or a
+// ticket, not just err.Error().
+func assertNoTokenLeak(t *testing.T, err error) {
+	t.Helper()
+	for _, form := range []string{err.Error(), fmt.Sprint(err), fmt.Sprintf("%v", err), fmt.Sprintf("%+v", err)} {
+		if strings.Contains(form, secretToken) {
+			t.Errorf("the token reached an error message: %s", form)
+		}
+	}
+}
+
+// TestPipelineClient_HTTPGet_RefusesANonArrayResponse covers the guard that
+// stops an upstream error object from becoming a phantom market.
+//
+// JSONata's $map over an object yields one element whose every field is
+// undefined, which Go then decodes as a zero-valued row -- marketId 0 -- that
+// would flow on and be published as a real resource.
+func TestPipelineClient_HTTPGet_RefusesANonArrayResponse(t *testing.T) {
+	mapper, mappingBase := testMapper(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":"no data found"}`))
+	}))
+	defer upstream.Close()
+
+	client := pipeline.NewClient(upstream.URL)
+
+	_, err := client.Get(context.Background(), mapper, mappingBase+"/master-states.yaml",
+		"/v1/fetch-agmarknet-master-data", map[string]any{"token": secretToken})
+	if err == nil {
+		t.Fatal("an object response was accepted where an array was required")
+	}
+	if !strings.Contains(err.Error(), "object") {
+		t.Errorf("error %q does not name the shape that was received", err)
+	}
+	if strings.Contains(err.Error(), "no data found") {
+		t.Errorf("error %q quotes the response body", err)
 	}
 }

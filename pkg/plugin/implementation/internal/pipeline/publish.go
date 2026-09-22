@@ -1,7 +1,8 @@
-package agmarket
+package pipeline
 
 // The pipeline's publish step. It is deliberately thin: the publishing itself,
-// including how an answer is judged, lives in tools/publish/catalogpublish and
+// including how an answer is judged, lives in
+// pkg/plugin/implementation/internal/catalogpublish and
 // is not reimplemented here. This file only turns the YAML's declared publish
 // block into that package's Config, and refuses the run outright in the one
 // case the YAML says it must.
@@ -11,7 +12,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/beckn-one/beckn-onix/tools/publish/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/catalogpublish"
 )
 
 // publishAddressHint names the two ways an operator can supply the address, so
@@ -35,7 +36,7 @@ const stateErrorsRule = "collection.stateErrors > 0"
 // stateErrors is how many states failed to collect. A state that failed to
 // collect is not a state with no markets, so publishing then would replace a
 // whole state's catalog with a partial one, or with nothing.
-func publishCatalogs(ctx context.Context, spec Publish, resolved map[string]string,
+func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]string,
 	catalogDir, filenamePrefix string, stateErrors int) (catalogpublish.Result, error) {
 	var result catalogpublish.Result
 
@@ -65,17 +66,83 @@ func publishCatalogs(ctx context.Context, spec Publish, resolved map[string]stri
 	// So the BASE address goes in, not the YAML's rendered url. Passing the
 	// rendered url would post to /publish/publish, which fails as a 404 far
 	// from here and reads like an unreachable adapter rather than a bug.
+	if err := checkPublishURL(spec); err != nil {
+		return result, err
+	}
+
 	publishURL := strings.TrimSpace(resolved["publishUrl"])
 	if publishURL == "" {
 		return result, fmt.Errorf("no publish address: %s", publishAddressHint)
 	}
 
-	return catalogpublish.Publish(ctx, catalogpublish.Config{
+	cfg := catalogpublish.Config{
 		PublishURL:     publishURL,
 		CatalogIn:      catalogDir,
 		FilenamePrefix: filenamePrefix,
 		AddressHint:    publishAddressHint,
-	})
+	}
+	if err := applyRetireOld(spec.RetireOld, resolved, &cfg); err != nil {
+		return result, err
+	}
+
+	return catalogpublish.Publish(ctx, cfg)
+}
+
+// expectedPublishURL is the only publish.url this step can honour, for the
+// reason given where the address is resolved: the base goes to
+// catalogpublish, which appends the path itself.
+const expectedPublishURL = "${inputs.publishUrl}/publish"
+
+// checkPublishURL refuses a publish.url this step would ignore.
+//
+// The address actually used comes from inputs.publishUrl, not from this
+// field. Without this check an operator could repoint publish.url at another
+// host, watch the edit take no effect, and have the catalog posted to
+// MANDI_PUBLISH_URL anyway -- the same silent-divergence failure checkJudgement
+// exists to prevent, and the reason refuseWhen is compared literally above.
+func checkPublishURL(spec Publish) error {
+	if url := strings.TrimSpace(spec.URL); url != expectedPublishURL {
+		return fmt.Errorf(
+			"publish.url is %q, but this step publishes to inputs.publishUrl and would ignore it; "+
+				"only %q is honoured", url, expectedPublishURL)
+	}
+	return nil
+}
+
+// applyRetireOld carries the declared retireOld block into the publish config.
+//
+// catalogpublish can deactivate a superseded catalog (it posts a tombstone),
+// so a declared retireOld that never reached it would be a rule the file
+// states and nothing performs -- the same failure checkJudgement guards.
+//
+// Enabled is `${inputs.retireOld}` in the file, and inputs: does not declare
+// retireOld at all, so it cannot resolve. That is refused rather than read as
+// false: treating an unresolvable enable flag as "off" would silently skip the
+// retirement, which is the outcome an operator who wrote the block was trying
+// to avoid. Declaring the input, or removing the block, both fix it.
+func applyRetireOld(spec RetireOld, resolved map[string]string, cfg *catalogpublish.Config) error {
+	enabled := strings.TrimSpace(spec.Enabled)
+	if enabled == "" {
+		return nil // no retireOld block, nothing to carry
+	}
+
+	value, ok := resolved[strings.TrimSuffix(strings.TrimPrefix(enabled, "${inputs."), "}")]
+	if !ok {
+		return fmt.Errorf(
+			"publish.retireOld.enabled is %q, but no such input is declared, so the retirement "+
+				"cannot be turned on or off; declare the input or remove the block", enabled)
+	}
+	if !strings.EqualFold(value, "true") {
+		return nil
+	}
+
+	if strings.TrimSpace(spec.CatalogID) == "" {
+		return fmt.Errorf("publish.retireOld is enabled but names no catalogId to retire")
+	}
+	cfg.RetireOld = true
+	cfg.OldCatalogID = spec.CatalogID
+	cfg.RetiredName = spec.DescriptorName
+	return nil
 }
 
 // checkJudgement verifies the spec's declared verdicts are the ones
