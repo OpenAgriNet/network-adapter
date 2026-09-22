@@ -359,9 +359,61 @@ func ResolveSubscriberID(reqContext map[string]interface{}, role Role) string {
 
 // Route represents a network route for message processing.
 type Route struct {
-	TargetType  string   // "url" or "publisher"
+	TargetType  string   // "url", "urls" (fan-out), or "publisher"
 	PublisherID string   // For message queues
-	URL         *url.URL // For API calls
+	URL         *url.URL // Set for targetType "url"; nil for "urls"
+	// URLs carries every target for targetType "urls" (fan-out). Nil for
+	// "url".
+	URLs []*url.URL
+	// MergeFieldPath is the full dot path, from the envelope root, to the
+	// array a fan-out merges across targets: "message.catalogs" for
+	// discover, "message.contract.commitments" for select -- whatever the
+	// served action's response nests it under. Set only for targetType
+	// "urls", which is the only type that reads it.
+	MergeFieldPath string
+}
+
+// Clone returns a shallow copy of r, safe for a caller to hold and mutate
+// independently of the Route a Router reuses across requests -- Route() in
+// the router plugin builds one Route per configured rule at load time and
+// returns the SAME pointer to every request matching it.
+//
+// Copying the whole struct value rather than naming fields is deliberate:
+// a field-by-field copy elsewhere once silently dropped MergeFieldPath when
+// a new field was added and that list wasn't. Clone cannot repeat that
+// mistake: it doesn't enumerate fields, so a field added later is copied
+// automatically.
+func (r *Route) Clone() *Route {
+	clone := *r
+	return &clone
+}
+
+// ValidMergeFieldPath reports whether path is a legal fan-out merge path: it
+// must be rooted at "message" (or be exactly "message"), because context is
+// fixed envelope shape across every Beckn v2 action -- only message varies.
+//
+// The rule lives here, not in the routing plugin that validates a
+// MergeFieldPath at load time: a router resolves destinations from an
+// action, and shouldn't also need to know that a reply has a "message"
+// member. This is the one place both that plugin and whatever merges
+// responses at this path can share the same answer to "is this legal"
+// without either depending on the other.
+func ValidMergeFieldPath(path string) bool {
+	if path != "message" && !strings.HasPrefix(path, "message.") {
+		return false
+	}
+	// A trailing or doubled dot ("message.", "message..catalogs") passes the
+	// check above but splits into an empty segment, and stray whitespace
+	// ("message. catalogs") splits into a segment no real JSON key ever
+	// matches -- neither resolves to anything, exactly the silent "every
+	// target carries nothing" failure this function exists to catch at load
+	// time instead of request time.
+	for _, seg := range strings.Split(path, ".") {
+		if seg == "" || seg != strings.TrimSpace(seg) {
+			return false
+		}
+	}
+	return true
 }
 
 // Keyset represents a collection of cryptographic keys used for signing and encryption.

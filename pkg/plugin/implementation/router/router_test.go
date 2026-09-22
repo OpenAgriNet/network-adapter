@@ -3,11 +3,13 @@ package router
 import (
 	"context"
 	"embed"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -350,7 +352,7 @@ func TestValidateRulesFailure(t *testing.T) {
 					Endpoints: []string{"search", "select"},
 				},
 			},
-			wantErr: "invalid rule: url is required for targetType 'url'",
+			wantErr: "invalid rule: target.url is required for targetType 'url'",
 		},
 		{
 			name: "Invalid URL format for targetType: url",
@@ -1166,5 +1168,365 @@ func TestRouteBodylessPublisherUnaffectedByQueryParams(t *testing.T) {
 	}
 	if route.URL != nil {
 		t.Errorf("expected route.URL to be nil for publisher route, got %v", route.URL)
+	}
+}
+
+// --- fan-out rules ----------------------------------------------------------
+
+func writeRoutingConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "routing.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("writing routing config: %v", err)
+	}
+	return path
+}
+
+func TestLoadRulesSeveralUrlsBuildsOneTargetPerEntry(t *testing.T) {
+	path := writeRoutingConfig(t, `
+routingRules:
+  - version: "2.0.0"
+    targetType: "urls"
+    target:
+      urls:
+        - "http://bharat:9201"
+        - "http://maha:9201"
+    mergeFieldPath: message.catalogs
+    endpoints:
+      - discover
+`)
+	r, _, err := New(context.Background(), &Config{RoutingConfig: path})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	route := r.rules["*"]["2.0.0"]["discover"]
+	if len(route.URLs) != 2 {
+		t.Fatalf("loadRules() built %d targets, want 2", len(route.URLs))
+	}
+	if got := route.URLs[0].String(); got != "http://bharat:9201/discover" {
+		t.Errorf("first target = %q, want the action appended", got)
+	}
+	if got := route.URLs[1].String(); got != "http://maha:9201/discover" {
+		t.Errorf("second target = %q, want the action appended", got)
+	}
+	if route.URL != nil {
+		t.Error("a targetType 'urls' route must leave URL unset -- proxy() must never read it")
+	}
+	if route.MergeFieldPath != "message.catalogs" {
+		t.Errorf("route.MergeFieldPath = %q, want the configured merge path carried through", route.MergeFieldPath)
+	}
+}
+
+func TestValidateRulesRequiresMergeWhenSeveralUrls(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:    "2.0.0",
+		TargetType: "urls",
+		Target:     target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+		Endpoints:  []string{"discover"},
+	}})
+	if err == nil {
+		t.Fatal("validateRules() accepted several urls with no mergeFieldPath")
+	}
+}
+
+func TestValidateRulesSingleUrlNeedsNoMerge(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:    "2.0.0",
+		TargetType: "url",
+		Target:     target{URL: "http://only:9201"},
+		Endpoints:  []string{"discover"},
+	}})
+	if err != nil {
+		t.Errorf("validateRules() = %v, want a single target to need no mergeFieldPath", err)
+	}
+}
+
+// TestValidateRulesRejectsMergeFieldPathNotUnderMessage catches a typo class
+// that would otherwise fail silently at request time: a path rooted anywhere
+// but message finds nothing on every target, and the caller gets a confusing
+// "no response carried X" NACK instead of a clear error at load.
+func TestValidateRulesRejectsMergeFieldPathNotUnderMessage(t *testing.T) {
+	for _, path := range []string{"catalogs", "context.messageId", "Message.catalogs"} {
+		err := validateRules([]routingRule{{
+			Version:        "2.0.0",
+			TargetType:     "urls",
+			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+			Endpoints:      []string{"discover"},
+			MergeFieldPath: path,
+		}})
+		if err == nil {
+			t.Errorf("validateRules() accepted mergeFieldPath %q, want it rejected for not starting with \"message.\"", path)
+		}
+	}
+}
+
+// TestValidateRulesRejectsMalformedMergeFieldPath covers paths that ARE
+// rooted at "message" but still resolve to nothing -- an empty segment
+// (trailing/doubled dot) or a whitespace-padded one. Round-tripped through
+// validateRules, not just model.ValidMergeFieldPath directly, so a future
+// change that bypasses or short-circuits this call would be caught here too.
+func TestValidateRulesRejectsMalformedMergeFieldPath(t *testing.T) {
+	for _, path := range []string{"message.", "message..catalogs", "message. catalogs"} {
+		err := validateRules([]routingRule{{
+			Version:        "2.0.0",
+			TargetType:     "urls",
+			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+			Endpoints:      []string{"discover"},
+			MergeFieldPath: path,
+		}})
+		if err == nil {
+			t.Errorf("validateRules() accepted mergeFieldPath %q, want it rejected: it resolves to nothing", path)
+		}
+	}
+}
+
+// TestValidateRulesAcceptsMergeFieldPathUnderMessage covers the accepted
+// shapes: a nested path, and the bare "message" itself (the whole message
+// object as the array -- unusual, but not the mistake the check above guards
+// against).
+func TestValidateRulesAcceptsMergeFieldPathUnderMessage(t *testing.T) {
+	for _, path := range []string{"message.catalogs", "message.contract.commitments", "message"} {
+		err := validateRules([]routingRule{{
+			Version:        "2.0.0",
+			TargetType:     "urls",
+			Target:         target{URLs: []string{"http://bharat:9201", "http://maha:9201"}},
+			Endpoints:      []string{"discover"},
+			MergeFieldPath: path,
+		}})
+		if err != nil {
+			t.Errorf("validateRules() with mergeFieldPath %q = %v, want accepted", path, err)
+		}
+	}
+}
+
+func TestLoadRulesSingleUrlLeavesUrlsEmpty(t *testing.T) {
+	path := writeRoutingConfig(t, `
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://only:9201"
+    endpoints:
+      - discover
+`)
+	r, _, err := New(context.Background(), &Config{RoutingConfig: path})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	route := r.rules["*"]["2.0.0"]["discover"]
+	if len(route.URLs) != 0 {
+		t.Errorf("a one-target rule set URLs = %v, want nil so it keeps the reverse-proxy path", route.URLs)
+	}
+	if route.URL == nil {
+		t.Error("a one-target rule must still set URL")
+	}
+}
+
+func TestLoadRulesRejectsURLAlongsideURLsUnderURLsType(t *testing.T) {
+	path := writeRoutingConfig(t, `
+routingRules:
+  - version: "2.0.0"
+    targetType: "urls"
+    target:
+      url: "http://legacy:9201"
+      urls:
+        - "http://bharat:9201"
+        - "http://maha:9201"
+    mergeFieldPath: message.catalogs
+    endpoints:
+      - discover
+`)
+	if _, _, err := New(context.Background(), &Config{RoutingConfig: path}); err == nil {
+		t.Fatal("New() accepted target.url alongside target.urls under targetType 'urls'")
+	}
+}
+
+func TestValidateRulesEmptyUrlsEntryIsRejected(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:    "2.0.0",
+		TargetType: "urls",
+		Target:     target{URLs: []string{"http://ok:9201", "  "}},
+		Endpoints:  []string{"discover"},
+	}})
+	if err == nil {
+		t.Fatal("validateRules() accepted an empty urls entry")
+	}
+}
+
+func TestValidateRulesRejectsMergeFieldPathOnASingleTarget(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:        "2.0.0",
+		TargetType:     "url",
+		Target:         target{URL: "http://ok:9201"},
+		Endpoints:      []string{"discover"},
+		MergeFieldPath: "message.catalogs",
+	}})
+	if err == nil {
+		t.Fatal("validateRules() accepted mergeFieldPath on a single-target rule")
+	}
+}
+
+// TestValidateRulesRejectsURLsUnderBPPTargetType locks in that target.urls
+// (fan-out) is refused for targetType 'bpp' -- loadRules' branch for that
+// type never reads target.urls, so without this check the config would
+// parse clean and silently route to nothing.
+func TestValidateRulesRejectsURLsUnderBPPTargetType(t *testing.T) {
+	err := validateRules([]routingRule{{
+		Version:    "2.0.0",
+		TargetType: "bpp",
+		Target:     target{URLs: []string{"http://a:9200", "http://b:9200"}},
+		Endpoints:  []string{"select"},
+	}})
+	if err == nil {
+		t.Fatal("validateRules() accepted target.urls under targetType 'bpp'")
+	}
+}
+
+func TestRouteQueryStringAppliedToEveryTargetWithoutMutatingTheRule(t *testing.T) {
+	path := writeRoutingConfig(t, `
+routingRules:
+  - version: "2.0.0"
+    targetType: "urls"
+    target:
+      urls:
+        - "http://bharat:9201"
+        - "http://maha:9201"
+    mergeFieldPath: message.catalogs
+    endpoints:
+      - discover
+`)
+	r, _, err := New(context.Background(), &Config{RoutingConfig: path})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	body := []byte(`{"context":{"version":"2.0.0"}}`)
+
+	first, err := r.Route(context.Background(), &url.URL{Path: "discover", RawQuery: "limit=10"}, body)
+	if err != nil {
+		t.Fatalf("Route() error = %v", err)
+	}
+	for i, u := range first.URLs {
+		if u.RawQuery != "limit=10" {
+			t.Errorf("target %d query = %q, want limit=10 on every target", i, u.RawQuery)
+		}
+	}
+	// withRawQuery rebuilds the route to carry the query string; regression
+	// coverage for a real bug where that rebuild silently dropped
+	// MergeFieldPath (a fan-out route with a query string on it merged
+	// nothing, ever, in production, until this was caught).
+	if first.MergeFieldPath != "message.catalogs" {
+		t.Errorf("MergeFieldPath = %q after withRawQuery, want %q preserved", first.MergeFieldPath, "message.catalogs")
+	}
+
+	// A second request through the same rule must not see the first one's query.
+	second, err := r.Route(context.Background(), &url.URL{Path: "discover", RawQuery: "limit=99"}, body)
+	if err != nil {
+		t.Fatalf("Route() error = %v", err)
+	}
+	for i, u := range second.URLs {
+		if u.RawQuery != "limit=99" {
+			t.Errorf("second request target %d query = %q, want limit=99: the stored rule leaked", i, u.RawQuery)
+		}
+	}
+	for i, u := range first.URLs {
+		if u.RawQuery != "limit=10" {
+			t.Errorf("first request target %d query changed to %q: the routes share backing URLs", i, u.RawQuery)
+		}
+	}
+}
+
+// TestRouteConcurrentRequestsThroughSameRuleDoNotShareState is the -race
+// regression guard for the exact hazard Route.Clone exists to prevent:
+// router.Route() hands the SAME *model.Route to every request matching a
+// rule, so a fresh copy per request (not a mutation of the shared one) is
+// what keeps one request's query string from leaking into a concurrent
+// request through the same rule.
+func TestRouteConcurrentRequestsThroughSameRuleDoNotShareState(t *testing.T) {
+	path := writeRoutingConfig(t, `
+routingRules:
+  - version: "2.0.0"
+    targetType: "urls"
+    target:
+      urls:
+        - "http://bharat:9201"
+        - "http://maha:9201"
+    mergeFieldPath: message.catalogs
+    endpoints:
+      - discover
+`)
+	r, _, err := New(context.Background(), &Config{RoutingConfig: path})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	body := []byte(`{"context":{"version":"2.0.0"}}`)
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			q := fmt.Sprintf("req=%d", i)
+			route, err := r.Route(context.Background(), &url.URL{Path: "discover", RawQuery: q}, body)
+			if err != nil {
+				t.Errorf("Route() error = %v", err)
+				return
+			}
+			if route.MergeFieldPath != "message.catalogs" {
+				t.Errorf("request %d: MergeFieldPath = %q, want message.catalogs", i, route.MergeFieldPath)
+			}
+			for _, u := range route.URLs {
+				if u.RawQuery != q {
+					t.Errorf("request %d: target query = %q, want %q -- a concurrent request's query leaked in", i, u.RawQuery, q)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestWithRawQuery_InvalidQueryAndExistingQuery(t *testing.T) {
+	u1, _ := url.Parse("http://maha:9201?network=maha")
+	u2, _ := url.Parse("http://bharat:9201")
+	rt := &model.Route{
+		TargetType: targetTypeURL,
+		URL:        u1,
+		URLs:       []*url.URL{u1, u2},
+	}
+
+	// An unparseable inbound query must not wipe a target's own working
+	// query -- it is appended after it, not substituted for it. u2 has
+	// nothing of its own, so it just gets the raw string directly.
+	outInvalid := withRawQuery(rt, "%zz")
+	if !strings.Contains(outInvalid.URL.RawQuery, "network=maha") || !strings.HasSuffix(outInvalid.URL.RawQuery, "%zz") {
+		t.Errorf("withRawQuery(%%zz).URL.RawQuery = %q, want network=maha preserved with %%zz appended", outInvalid.URL.RawQuery)
+	}
+	if len(outInvalid.URLs) != 2 {
+		t.Fatalf("withRawQuery(%%zz).URLs has %d entries, want 2", len(outInvalid.URLs))
+	}
+	if !strings.Contains(outInvalid.URLs[0].RawQuery, "network=maha") || !strings.HasSuffix(outInvalid.URLs[0].RawQuery, "%zz") {
+		t.Errorf("withRawQuery(%%zz).URLs[0] = %q, want network=maha preserved with %%zz appended", outInvalid.URLs[0].RawQuery)
+	}
+	if outInvalid.URLs[1].RawQuery != "%zz" {
+		t.Errorf("withRawQuery(%%zz).URLs[1] = %q, want %%zz (this target had no query of its own)", outInvalid.URLs[1].RawQuery)
+	}
+
+	// A parseable inbound query merges with each target's own -- checked on
+	// both .URL (the single-target reader) and every entry of .URLs (what
+	// fan-out actually reads), not just the first.
+	outMerged := withRawQuery(rt, "limit=5")
+	if !strings.Contains(outMerged.URL.RawQuery, "network=maha") || !strings.Contains(outMerged.URL.RawQuery, "limit=5") {
+		t.Errorf("withRawQuery(limit=5).URL.RawQuery = %q, want merged query containing network=maha and limit=5", outMerged.URL.RawQuery)
+	}
+	if len(outMerged.URLs) != 2 {
+		t.Fatalf("withRawQuery(limit=5).URLs has %d entries, want 2", len(outMerged.URLs))
+	}
+	if !strings.Contains(outMerged.URLs[0].RawQuery, "network=maha") || !strings.Contains(outMerged.URLs[0].RawQuery, "limit=5") {
+		t.Errorf("withRawQuery(limit=5).URLs[0] = %q, want merged query containing network=maha and limit=5", outMerged.URLs[0].RawQuery)
+	}
+	if outMerged.URLs[1].RawQuery != "limit=5" {
+		t.Errorf("withRawQuery(limit=5).URLs[1] = %q, want limit=5 (this target had no query of its own)", outMerged.URLs[1].RawQuery)
 	}
 }

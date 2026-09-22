@@ -880,3 +880,53 @@ func TestAddRouteStep_Run_NoBasePath_UsesRawAction(t *testing.T) {
 		t.Errorf("router received path %q, want %q", mr.gotURL.Path, "search")
 	}
 }
+
+// fixedRouteRouter always returns the same *model.Route, regardless of the
+// request -- for asserting that every field on it survives addRouteStep.
+type fixedRouteRouter struct {
+	route *model.Route
+}
+
+func (m *fixedRouteRouter) Route(context.Context, *url.URL, []byte) (*model.Route, error) {
+	return m.route, nil
+}
+
+// TestAddRouteStep_Run_CopiesEveryRouteField is the regression test for the
+// bug fixed in 78d8c0d: Run() used to copy ctx.Route field by field, and
+// silently dropped MergeFieldPath the day it was added to Route because the
+// field list wasn't updated alongside it. Now that Run() uses Route.Clone(),
+// this asserts every field -- not just the ones a handwritten list happened
+// to name -- survives the copy.
+func TestAddRouteStep_Run_CopiesEveryRouteField(t *testing.T) {
+	u1, _ := url.Parse("http://a.example/discover")
+	u2, _ := url.Parse("http://b.example/discover")
+	source := &model.Route{
+		TargetType:     "url",
+		PublisherID:    "some-topic",
+		URL:            u1,
+		URLs:           []*url.URL{u1, u2},
+		MergeFieldPath: "message.catalogs",
+	}
+	step, _ := newAddRouteStep(&fixedRouteRouter{route: source}, "")
+	ctx := makeStepCtxWithURL("http://localhost/discover")
+
+	if err := step.Run(ctx); err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	got := ctx.Route
+	switch {
+	case got.TargetType != source.TargetType:
+		t.Errorf("TargetType = %q, want %q", got.TargetType, source.TargetType)
+	case got.PublisherID != source.PublisherID:
+		t.Errorf("PublisherID = %q, want %q", got.PublisherID, source.PublisherID)
+	case got.URL != source.URL:
+		t.Errorf("URL = %v, want %v", got.URL, source.URL)
+	case len(got.URLs) != 2 || got.URLs[0] != u1 || got.URLs[1] != u2:
+		t.Errorf("URLs = %v, want %v", got.URLs, source.URLs)
+	case got.MergeFieldPath != source.MergeFieldPath:
+		t.Errorf("MergeFieldPath = %q, want %q: a field-by-field copy is exactly what dropped this before", got.MergeFieldPath, source.MergeFieldPath)
+	}
+	if got == source {
+		t.Error("ctx.Route aliases the router's own Route; it must be a copy, since the router returns the same pointer to every request matching this rule")
+	}
+}
