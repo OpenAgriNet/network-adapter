@@ -221,27 +221,6 @@ trivy-image: $(TRIVY)
 	$(TRIVY) image $(IMAGE) --severity $(SEVERITY) --exit-code 0 \
 		--format sarif --output trivy-image.sarif
 
-## trivy-release-gate: fail the release if the digest just pushed has a finding
-# The PR-time Security Scan is not this gate. It scans an image built from the
-# PR's tree on the day the PR ran; a tag cut weeks later rebuilds from a freshly
-# pulled `wolfi-base` and a freshly resolved module graph, so the artifact that
-# ships is not the artifact anything looked at. Without this, image-build
-# publishes a digest no scan has ever seen.
-#
-# Scans the digest, not a local tag: image-build pushes by digest, so the only
-# reference to the layers it just built is the one in digest-$(ARCH).txt. That
-# digest is unreachable by name until image-publish binds a tag to it, and this
-# runs first — so a finding here means the version tag is never created.
-#
-# --exit-code 1 and a table, not SARIF at --exit-code 0: there is no PR to
-# comment on, so the findings belong in the log the red check points at, and
-# the scan itself is the gate rather than a report something else grades.
-trivy-release-gate: $(TRIVY) require-image-repo
-	@test -s digest-$(ARCH).txt || \
-		{ echo "::error::digest-$(ARCH).txt is missing or empty — run image-build first"; exit 1; }
-	$(TRIVY) image $(IMAGE_REPO)@$$(cat digest-$(ARCH).txt) \
-		--severity $(SEVERITY) --exit-code 1 --format table
-
 ## trivy-report: render both SARIF reports as one PR comment, trivy-report.md
 # One comment covering both scans, not one comment each: the two scans run in
 # the same job now, and two bot comments per PR was the noise this is meant to
@@ -417,8 +396,13 @@ docker:
 # then compose indexes of indexes. A plain manifest per arch is what makes the
 # two-platform index image-publish builds a clean one.
 #
-# Same Dockerfile and same version build args as `docker` above, so what a tag
-# publishes is what CI scanned on the PR.
+# Same Dockerfile and build args as `docker` above, but not the same bytes: a
+# tag rebuilds from a freshly pulled base, so the image is newer than the one CI
+# scanned on the PR.
+#
+# No Trivy here. trivy-gate blocks the merge on the PR, and security.yml scans
+# this image again on the push to the release branch and weekly after that. By
+# tag time the code is merged, so a scan can only stop the release — #52.
 image-build: require-image-repo
 	. install/scripts/version-vars.sh && \
 	docker buildx build -f Dockerfile.adapter-with-plugins \
@@ -513,5 +497,5 @@ $(TRIVY):
 
 .PHONY: help build test cover test-ci merge-coverage cover-diff lint fmt \
 	lint-actions lint-staged hooks security \
-	trivy-deps trivy-image trivy-report trivy-gate trivy-release-gate \
+	trivy-deps trivy-image trivy-report trivy-gate \
 	docker image-build image-publish require-image-repo clean

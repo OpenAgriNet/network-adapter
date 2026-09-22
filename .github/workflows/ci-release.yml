@@ -72,8 +72,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/trivy-cache
-
       # The default builder uses the `docker` driver, which supports neither
       # push-by-digest nor --metadata-file. This switches to docker-container.
       - uses: docker/setup-buildx-action@v3
@@ -86,19 +84,10 @@ jobs:
 
       # Pushes untagged, by digest, and writes digest-<arch>.txt. Nothing is
       # visible under a version tag until Publish Artifact below has both.
-      - run: make image-build ARCH=${{ matrix.arch }}
-
-      # The release image gets its own scan; the PR check does not cover it.
-      # Security Scan graded an image built from the PR's tree on the day the
-      # PR ran, and this is a fresh build off a rolling base image weeks later.
-      # Scanned per arch on its own native runner, so the arm64 artifact is
-      # scanned as arm64 rather than assumed to match amd64.
       #
-      # Placed before upload-artifact and therefore before Publish Artifact,
-      # which needs both legs: a finding on either arch means no digest is
-      # handed on and no version tag is ever bound. fail-fast: true cancels
-      # the sibling leg rather than letting it finish a build nothing will use.
-      - run: make trivy-release-gate ARCH=${{ matrix.arch }}
+      # No Trivy here — ci.yml and security.yml already scan this image; see
+      # image-build in the Makefile.
+      - run: make image-build ARCH=${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
