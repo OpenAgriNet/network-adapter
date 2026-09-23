@@ -211,7 +211,7 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 		t.Errorf("Upstream.Auth.Token.ReexchangeOn[1] = %d, want %d", got, want)
 	}
 
-	wantStepIDs := []string{"states", "masterMarkets", "stateRows", "join", "quality", "dedupe"}
+	wantStepIDs := []string{"states", "masterMarkets", "stateRows", "join", "coordinates", "dedupe"}
 	if got, want := len(spec.Pipeline), len(wantStepIDs); got != want {
 		t.Fatalf("len(Pipeline) = %d, want %d", got, want)
 	}
@@ -265,12 +265,21 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 		t.Errorf("join.With.Carry[1] = %q, want %q", got, want)
 	}
 
-	quality := spec.Pipeline[4]
-	if got, want := quality.Uses, "derive"; got != want {
-		t.Errorf("quality.Uses = %q, want %q", got, want)
+	// The coordinate step is a correctness rule, not a classification: it
+	// marks whether a point can be believed and CLEARS the ones that cannot,
+	// so a market whose location is unknown is published without a location
+	// rather than with a wrong one.
+	coordinates := spec.Pipeline[4]
+	if got, want := coordinates.Uses, "derive"; got != want {
+		t.Errorf("coordinates.Uses = %q, want %q", got, want)
 	}
-	if got, want := quality.With.Field, "coordinateQuality"; got != want {
-		t.Errorf("quality.With.Field = %q, want %q", got, want)
+	if got, want := coordinates.With.Field, "hasUsableCoordinate"; got != want {
+		t.Errorf("coordinates.With.Field = %q, want %q", got, want)
+	}
+	// The `then: clear:` is the whole point -- without it a suspect
+	// coordinate survives and is published as though it were good.
+	if len(coordinates.With.Then) == 0 {
+		t.Error("the coordinate step clears nothing; an unusable point would still be published")
 	}
 
 	dedupe := spec.Pipeline[5]
