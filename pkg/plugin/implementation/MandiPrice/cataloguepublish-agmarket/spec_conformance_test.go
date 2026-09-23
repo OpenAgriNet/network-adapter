@@ -103,6 +103,15 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 			Enum:    []string{"publish", "skip"},
 			Default: "publish",
 		},
+		// A one-time migration switch. It must be DECLARED, because the
+		// publish step refuses an enable flag it cannot resolve rather than
+		// reading it as "off" -- which is how a retirement an operator asked
+		// for would be silently skipped.
+		"retireOld": {
+			Flag:    "retire-old",
+			Env:     "MANDI_RETIRE_OLD",
+			Default: false,
+		},
 		"publishUrl": {
 			Flag: "publish-url",
 			Env:  "MANDI_PUBLISH_URL",

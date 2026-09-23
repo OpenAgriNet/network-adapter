@@ -136,6 +136,12 @@ func knownCapabilities() string {
 	return strings.Join(names, ", ")
 }
 
+// publishActionName is the action a record must carry for anything to be
+// published. It is the registry's word, and it is duplicated from the
+// pipeline package deliberately: this file only READS it for logging, while
+// the gate that acts on it lives with the code that enforces it.
+const publishActionName = "publish"
+
 // publishRunner holds one pipeline's tick state.
 type publishRunner struct {
 	bindingKey string
@@ -172,6 +178,9 @@ func (p *publishRunner) tick(ctx context.Context) {
 	}
 	defer p.release()
 
+	p.log.InfoContext(ctx, "catalogcrawler: consulting the registry",
+		"bindingKey", p.bindingKey, "capability", p.capability)
+
 	record, err := p.lookup.ProviderRecord(ctx, p.bindingKey)
 	if errors.Is(err, definition.ErrProviderRecordNotFound) {
 		// The registry answering "no" is a normal state, not a fault: the
@@ -185,6 +194,18 @@ func (p *publishRunner) tick(ctx context.Context) {
 			"bindingKey", p.bindingKey, "error", err)
 		return
 	}
+
+	// What the registry actually said, before anything acts on it. Without
+	// this, "the gate refused" and "the registry never had a publish action"
+	// look identical from outside.
+	served := make([]string, 0, len(record.Actions))
+	for action := range record.Actions {
+		served = append(served, action)
+	}
+	sort.Strings(served)
+	p.log.InfoContext(ctx, "catalogcrawler: registry answered",
+		"bindingKey", p.bindingKey, "actions", strings.Join(served, ","),
+		"publishNames", record.Actions[publishActionName].Mappings)
 
 	if err := p.run(ctx, record); err != nil {
 		p.log.ErrorContext(ctx, "catalogcrawler: publish pipeline run failed",
