@@ -1,19 +1,31 @@
-# mandi-price-agmarket.yaml — the complete, filled-in pipeline for the
-# MandiPrice / Agmarknet catalogue publisher.
+# mandi-price-agmarket.yaml — the pipeline for the MandiPrice / Agmarknet
+# catalogue publisher.
 #
-# STATUS: this is a SPEC, not something that executes today. The engine that
-# reads `discover:`/`registry:`/`pipeline:` blocks like this one does not
-# exist yet in this repo (see dev_docs/crawler-config-as-used-here.md and
-# plan-2-low-level-design.md Part 2's feasibility check — zero hits for
-# CataloguePipeline anywhere in .go files). This file is the target: what the
-# polling layer described in plan-1.md should find, validate, and run once
-# that engine is built.
+# STATUS: PARTLY LIVE. Some blocks drive real behaviour; two do not.
 #
-# Everything under `pipeline:`, `catalog:`, and the four files in mappings/
-# is NOT invented for this doc — it is copied verbatim from
-# tools/publish/mandi_publish, a working Go tool with 70 passing tests that
-# has published successfully end-to-end against live Agmarknet. Only two
-# blocks are new and don't exist anywhere yet: `discover:` and `registry:`.
+#   LIVE   metadata.capability   checked against the collector
+#   LIVE   schedule              cron + timezone decide when a run is due
+#   LIVE   inputs                resolved flag > env > default
+#   LIVE   publish               accept / treatAsFailure / refuseWhen / retireOld
+#   LIVE   mappings/*.yaml       JSONata, really executed by jsonmapper
+#
+#   INERT  upstream              parsed, read by nothing
+#   INERT  pipeline              parsed, read by nothing
+#   INERT  discover, registry    parsed, read by nothing
+#
+# The call sequence, each call's upstream path, each call's mapping file and
+# the token endpoint are all hardcoded in Go -- see collect.go and the frame's
+# client.go. Editing an INERT block changes nothing at runtime.
+#
+# Keep the inert blocks accurate anyway: they are the specification a step
+# interpreter would implement, and the Go code is meant to agree with them.
+# But if you need behaviour to change TODAY, change the Go.
+#
+# Full breakdown: dev_docs/plan-crawler-mandi/mandi-crawler-change-set.md §5b.
+#
+# The `pipeline:`, `catalog:` and mappings/ content is not invented -- it is
+# the logic from the original working tool, which published end-to-end against
+# live Agmarknet.
 
 apiVersion: publish.oan/v1alpha1
 kind: CataloguePipeline
@@ -165,6 +177,10 @@ inputs:
 # ---------------------------------------------------------------------------
 # upstream — one service, its auth, and how its failures are classified.
 # ---------------------------------------------------------------------------
+# !!! INERT -- parsed into Spec.Upstream, read by NOTHING outside tests. !!!
+# The real upstream address, auth exchange and error classification are
+# hardcoded in Go: collect.go for the paths, the frame's client.go for the
+# token endpoint and the "No data available." classification.
 upstream:
   baseUrl: ${inputs.baseUrl}
 
@@ -203,15 +219,31 @@ upstream:
 # pipeline — ordered steps, each naming what it produces. Full six steps,
 # copied verbatim from tools/publish/mandi_publish's proven collect.go logic.
 # ---------------------------------------------------------------------------
+# !!! INERT -- parsed into Spec.Pipeline, read by NOTHING outside tests. !!!
+# The real call sequence is Collect() in collect.go: fetchStates ->
+# fetchMasterMarkets -> per state fetchStateRows -> join -> dedupe -> build.
+# The when/forEach/onError/concurrency keys below parse and drive nothing.
 pipeline:
   - id: states
-    when: ${inputs.states} = []
+    # `= ''`, NOT `= []`. inputs.states is a list input, but an input reaches
+    # an expression as TEXT -- empty when the operator named no states. The
+    # original `= []` compared "" against an empty array, which is false, so
+    # this step silently took the else branch and handed a bare string to the
+    # loop below. Measured, not assumed: "" = [] is false under the pinned
+    # jsonata build; "" = '' is true.
+    when: "${inputs.states} = ''"
     uses: http.get
     with:
       path: /v1/fetch-agmarknet-master-data
       mapping: mappings/master-states.yaml
       local: { token: "${auth.token}" }
     else:
+      # Only reached when an operator names states explicitly. That path is
+      # NOT finished: a comma-separated string is not the list of {code, name}
+      # objects the loop below needs, and this file has no primitive to split
+      # one. The runner refuses with a clear message rather than looping over
+      # characters. Nothing sets this today -- the input is flag-only and this
+      # pipeline runs in a server with no command line.
       const: ${inputs.states}
     out: states
     failWhenEmpty: "state list resolved to zero states"
@@ -283,7 +315,12 @@ catalog:
   groupBy: stateCode
 
   exclude:
-    - when: "$count(commodities) = 0"
+    # $number(...) is NOT decoration. Measured against the pinned jsonata
+    # build: `$count(commodities) = 0` is FALSE even when commodities is an
+    # empty array, so without the wrapper this rule never fires and a market
+    # trading nothing is published with zero commodities -- which then fails
+    # the catalogue's own minItems check at the far end.
+    - when: "$number($count(commodities)) = 0"
       reason: "upstream reported no commodities trading in this window"
     - when: "${inputs.withoutGeometry} = 'skip' and coordinateQuality != 'ok'"
       reason: "coordinate ${coordinateQuality}"

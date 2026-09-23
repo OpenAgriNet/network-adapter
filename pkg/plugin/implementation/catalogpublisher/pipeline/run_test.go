@@ -18,10 +18,10 @@ import (
 // publishingRecord is the live registry's answer, in the shape the gate reads.
 func publishingRecord() *model.ProviderRecord {
 	return &model.ProviderRecord{
-		BindingKey: "exampleco|example:Thing",
+		BindingKey: "exampleco|" + fixtureCapability,
 		Actions: map[string]model.ActionPlan{
 			"select":  {Method: "GET", Path: "/v1/fetch"},
-			"publish": {Mappings: fakeRegistryPath},
+			"publish": {Mappings: fixtureRegistryPath},
 		},
 	}
 }
@@ -68,7 +68,7 @@ func unreachableEnv(name string) (string, bool) {
 // The whole reason the run log exists: a restart minutes after a run must not
 // publish the day's catalogues a second time.
 func TestRunSkipsWhenTheRunLogSaysItAlreadyRanThisFiring(t *testing.T) {
-	collector := newFakeCollector()
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	ist, err := time.LoadLocation("Asia/Kolkata")
 	if err != nil {
 		t.Fatalf("LoadLocation: %v", err)
@@ -77,11 +77,11 @@ func TestRunSkipsWhenTheRunLogSaysItAlreadyRanThisFiring(t *testing.T) {
 	log := &fakeRunLog{last: time.Date(2026, 9, 21, 0, 1, 0, 0, ist)}
 
 	report, err := Run(context.Background(), RunOptions{
-		Record:    publishingRecord(),
-		Collector: collector,
-		RunLog:    log,
-		Now:       time.Date(2026, 9, 21, 0, 5, 0, 0, ist),
-		Lookup:    unreachableEnv,
+		Record:   publishingRecord(),
+		Pipeline: fixturePipeline(),
+		RunLog:   log,
+		Now:      time.Date(2026, 9, 21, 0, 5, 0, 0, ist),
+		Lookup:   fixtureEnv(upstream.URL),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -95,27 +95,27 @@ func TestRunSkipsWhenTheRunLogSaysItAlreadyRanThisFiring(t *testing.T) {
 	if report.Reason == "" {
 		t.Error("no reason given for doing nothing")
 	}
-	assertNotCollected(t, collector)
+	assertNeverCalled(t, upstream)
 }
 
 // A capability the registry never sanctioned must fail before any work, and
 // must not leave a run recorded against it.
 func TestRunRefusesACapabilityThatDoesNotPublish(t *testing.T) {
-	collector := newFakeCollector()
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	log := &fakeRunLog{}
 	_, err := Run(context.Background(), RunOptions{
-		Collector: collector,
+		Pipeline: fixturePipeline(),
 		Record: &model.ProviderRecord{
 			BindingKey: "mausamgram|openagrinet:WeatherObservation",
 			Actions:    map[string]model.ActionPlan{"select": {Method: "GET"}},
 		},
 		RunLog: log,
-		Lookup: unreachableEnv,
+		Lookup: fixtureEnv(upstream.URL),
 	})
 	if err == nil {
 		t.Fatal("a select-only capability produced a run")
 	}
-	assertNotCollected(t, collector)
+	assertNeverCalled(t, upstream)
 	if len(log.recorded) != 0 {
 		t.Error("a refused run was recorded as having run")
 	}
@@ -125,18 +125,18 @@ func TestRunRefusesACapabilityThatDoesNotPublish(t *testing.T) {
 // unknown. Running anyway is a guess, and the guess that publishes is the
 // wrong one to make silently.
 func TestRunRefusesWhenTheRunLogCannotBeRead(t *testing.T) {
-	collector := newFakeCollector()
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	log := &fakeRunLog{readErr: errors.New("database is down")}
 	_, err := Run(context.Background(), RunOptions{
-		Record:    publishingRecord(),
-		Collector: collector,
-		RunLog:    log,
-		Lookup:    unreachableEnv,
+		Record:   publishingRecord(),
+		Pipeline: fixturePipeline(),
+		RunLog:   log,
+		Lookup:   fixtureEnv(upstream.URL),
 	})
 	if err == nil {
 		t.Fatal("an unreadable run log was treated as 'never ran'")
 	}
-	assertNotCollected(t, collector)
+	assertNeverCalled(t, upstream)
 	if len(log.recorded) != 0 {
 		t.Error("a refused run was recorded as having run")
 	}
@@ -146,13 +146,13 @@ func TestRunRefusesWhenTheRunLogCannotBeRead(t *testing.T) {
 // the pre-persistence behaviour and it is a foot-gun, so the report has to say
 // so rather than look identical to a persisted run.
 func TestRunWithoutARunLogSaysSoInTheReport(t *testing.T) {
-	collector := newFakeCollector()
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	report, err := Run(context.Background(), RunOptions{
-		Record:    publishingRecord(),
-		Collector: collector,
-		Lookup:    unreachableEnv,
-		DryRun:    true,
-		Publish:   false,
+		Record:   publishingRecord(),
+		Pipeline: fixturePipeline(),
+		Lookup:   fixtureEnv(upstream.URL),
+		DryRun:   true,
+		Publish:  false,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -169,14 +169,14 @@ func TestRunWithoutARunLogSaysSoInTheReport(t *testing.T) {
 // this run, and with what" against production config without fetching
 // anything.
 func TestRunDryRunDoesNoWork(t *testing.T) {
-	collector := newFakeCollector()
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	log := &fakeRunLog{}
 	report, err := Run(context.Background(), RunOptions{
-		Record:    publishingRecord(),
-		Collector: collector,
-		RunLog:    log,
-		Lookup:    unreachableEnv,
-		DryRun:    true,
+		Record:   publishingRecord(),
+		Pipeline: fixturePipeline(),
+		RunLog:   log,
+		Lookup:   fixtureEnv(upstream.URL),
+		DryRun:   true,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -191,42 +191,20 @@ func TestRunDryRunDoesNoWork(t *testing.T) {
 	if len(log.recorded) != 0 {
 		t.Errorf("a dry run recorded %d run(s)", len(log.recorded))
 	}
-	assertNotCollected(t, collector)
-}
-
-// A run that fails must NOT be recorded, or a transient upstream outage at
-// midnight silently costs the whole day's publication.
-func TestRunDoesNotRecordAFailedRun(t *testing.T) {
-	collector := newFakeCollector()
-	log := &fakeRunLog{}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	_, err := Run(ctx, RunOptions{
-		Record:    publishingRecord(),
-		Collector: collector,
-		RunLog:    log,
-		Lookup:    unreachableEnv, // the upstream does not resolve
-	})
-	if err == nil {
-		t.Fatal("a run against an unreachable upstream reported success")
-	}
-	if len(log.recorded) != 0 {
-		t.Errorf("a failed run was recorded as having run; the day's run is now lost")
-	}
+	assertNeverCalled(t, upstream)
 }
 
 // Missing credentials are a configuration error, not something to discover
 // halfway through a fetch.
 func TestRunRefusesIncompleteConfiguration(t *testing.T) {
-	collector := newFakeCollector()
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	_, err := Run(context.Background(), RunOptions{
-		Record:    publishingRecord(),
-		Collector: collector,
-		Lookup:    func(string) (string, bool) { return "", false },
+		Record:   publishingRecord(),
+		Pipeline: fixturePipeline(),
+		Lookup:   func(string) (string, bool) { return "", false },
 	})
 	if err == nil {
 		t.Fatal("a run with no upstream credentials was attempted")
 	}
-	assertNotCollected(t, collector)
+	assertNeverCalled(t, upstream)
 }

@@ -47,15 +47,27 @@ func TestLoadSpecReadsEveryBlock(t *testing.T) {
 	if got, want := spec.Upstream.Auth.Token.At, "$.token"; got != want {
 		t.Errorf("Upstream.Auth.Token.At = %q, want %q", got, want)
 	}
-	if len(spec.Pipeline) != 1 || spec.Pipeline[0].ID != "things" {
-		t.Errorf("Pipeline = %+v, want one step named things", spec.Pipeline)
+	if len(spec.Pipeline) != 2 || spec.Pipeline[0].ID != "things" {
+		t.Errorf("Pipeline = %+v, want two steps starting with things", spec.Pipeline)
 	}
-	// Step.When is one of the eight keys that once parsed into nothing.
-	if got, want := spec.Pipeline[0].When, "always"; got != want {
-		t.Errorf("Pipeline[0].When = %q, want %q", got, want)
+	// FailWhenEmpty is one of the eight keys that once parsed into nothing --
+	// and the interpreter really acts on it, so it must survive parsing.
+	if got, want := spec.Pipeline[0].FailWhenEmpty, "the upstream listed no things"; got != want {
+		t.Errorf("Pipeline[0].FailWhenEmpty = %q, want %q", got, want)
 	}
-	if len(spec.Publish.Accept) != 1 || spec.Publish.Accept[0] != "ACCEPTED" {
-		t.Errorf("Publish.Accept = %v, want [ACCEPTED]", spec.Publish.Accept)
+	if got, want := spec.Pipeline[0].With.Mapping, "mappings/things.yaml"; got != want {
+		t.Errorf("Pipeline[0].With.Mapping = %q, want %q", got, want)
+	}
+	// The catalogue block has to arrive intact: it is the second half of the
+	// program, and a dropped key here is a rule nothing enforces.
+	if got, want := spec.Catalog.GroupBy, "group"; got != want {
+		t.Errorf("Catalog.GroupBy = %q, want %q", got, want)
+	}
+	if got, want := spec.Catalog.Chunk.Budget, 2; got != want {
+		t.Errorf("Catalog.Chunk.Budget = %d, want %d", got, want)
+	}
+	if got, want := spec.Catalog.Identity.CatalogID, "catalog:example:${slug}"; got != want {
+		t.Errorf("Catalog.Identity.CatalogID = %q, want %q", got, want)
 	}
 }
 

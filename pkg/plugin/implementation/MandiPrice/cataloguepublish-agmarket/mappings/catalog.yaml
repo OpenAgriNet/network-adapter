@@ -23,7 +23,7 @@ response: |
     $endDate := $toRFC3339End(_local.windowTo);
 
     $isPublishable := function($m) {
-      $count($m.commodities) > 0 and
+      $number($count($m.commodities)) > 0 and
       (_local.publishWithoutGeometry = "skip" ? $m.coordinateQuality = "ok" : true)
     };
 

@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 )
 
 // publishTestPrefix is the filename prefix the pipeline's build step writes

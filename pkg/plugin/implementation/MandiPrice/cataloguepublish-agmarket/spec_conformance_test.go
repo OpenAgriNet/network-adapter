@@ -14,7 +14,7 @@ package agmarket
 import (
 	"testing"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/pipeline"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
 // TestTheRealPipelineFileDropsNoKeys is the guard that has already caught a

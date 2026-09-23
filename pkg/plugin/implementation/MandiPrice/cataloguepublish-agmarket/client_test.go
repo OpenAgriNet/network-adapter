@@ -18,8 +18,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/catalogpublish"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/pipeline"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
 // testMapper serves this package's embedded mappings over a loopback
@@ -29,7 +29,7 @@ import (
 // catalogpublish used to live under tools/publish/internal/, which Go's
 // internal-import rule kept out of reach of anything outside that tree --
 // this package briefly reimplemented ServeMappings and NewMapper locally for
-// that reason. It now lives at implementation/internal/catalogpublish, reachable by every
+// that reason. It now lives at implementation/catalogpublisher/catalogpublish, reachable by every
 // package under implementation/, so this imports the real thing instead of a
 // parallel copy.
 func testMapper(t *testing.T) (pipeline.Mapper, string) {

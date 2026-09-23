@@ -3,12 +3,20 @@
 // through. It is the publishing half of the scheduled publish pipelines --
 // the crawl half is catalogcrawler/internal/sink.
 //
-// It sits under implementation/internal/ beside common and pipeline, which is
-// what makes it reachable from BOTH the crawler that ticks a pipeline and the
-// capability packages that define one. Placement here has been got wrong
-// twice: at tools/publish/internal/catalogpublish nothing under pkg/ could
-// import it, and under catalogcrawler/ the capability packages could not.
-// Moving it inside any narrower internal/ breaks one of its two consumers.
+// It sits beside pipeline under catalogpublisher/, which is what makes it
+// reachable from BOTH the crawler that ticks a pipeline and the capability
+// packages that define one.
+//
+// Note it is NOT under an internal/ directory, and must not be moved into one.
+// Placement here has been got wrong twice for exactly that reason: at
+// tools/publish/internal/catalogpublish nothing under pkg/ could import it,
+// and under catalogcrawler/internal/ the capability packages could not.
+//
+// It is also NOT part of the catalogpublisher plugin's own work. That plugin
+// serves the decentralized-catalog path (RFC NFH-014): signed blobs written
+// to a store that crawlers walk. This package posts to the provider adapter's
+// /publish module, which reaches the discovery service. Same parent directory,
+// opposite directions -- see the header below.
 package catalogpublish
 
 // Posting built catalogs to the provider adapter's own /publish module, which

@@ -1,0 +1,16 @@
+# The fixture's catalogue render.
+#
+# The chunk's records arrive under `response` and the file's `render.local`
+# values under `_local` -- the same shape a real capability's catalogue mapping
+# receives, which is the part worth being faithful to.
+#
+# Deliberately small: what the frame must get right is that the records, the
+# slug and the ids reach the mapping, not what a real Beckn document looks like.
+request: |
+  {}
+response: |
+  {
+    "slug": _local.slug,
+    "count": $count(response),
+    "ids": [response.id]
+  }

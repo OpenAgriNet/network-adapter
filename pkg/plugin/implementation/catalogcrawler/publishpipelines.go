@@ -31,11 +31,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	agmarket "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/pipeline"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
 // collectors is the one place that changes when a deployment gains a pipeline:
-// the capability code, and the Collector compiled in to serve it.
+// the capability code, and the embedded YAML that serves it.
 //
 // An explicit table rather than registration through init(): it makes visible
 // at compile time what loadRegistryPipeline already asserts at runtime -- this
@@ -45,8 +45,8 @@ import (
 // The cost is a compile-time dependency on every capability's publish package,
 // and an .so that carries each one's embedded mappings. At five pipelines that
 // is worth revisiting; at one or two it is cheaper than the indirection.
-var collectors = map[string]pipeline.Collector{
-	agmarket.Capability: agmarket.Collector{},
+var collectors = map[string]pipeline.Files{
+	agmarket.Capability: agmarket.Pipeline(),
 }
 
 // Config keys for the scheduled publish pipelines, in the same camelCase style
@@ -140,7 +140,7 @@ func knownCapabilities() string {
 type publishRunner struct {
 	bindingKey string
 	capability string
-	collector  pipeline.Collector
+	files      pipeline.Files
 	cfg        publishConfig
 
 	lookup definition.ProviderRecordLookup
@@ -212,12 +212,12 @@ func (p *publishRunner) release() {
 // runPipeline is the real run, calling the frame.
 func (p *publishRunner) runPipeline(ctx context.Context, record *model.ProviderRecord) error {
 	report, err := pipeline.Run(ctx, pipeline.RunOptions{
-		Collector: p.collector,
-		Record:    record,
-		RunLog:    p.runLog,
-		OutDir:    p.cfg.outDir,
-		Publish:   p.cfg.publish,
-		Log:       p.log,
+		Pipeline: p.files,
+		Record:   record,
+		RunLog:   p.runLog,
+		OutDir:   p.cfg.outDir,
+		Publish:  p.cfg.publish,
+		Log:      p.log,
 	})
 	if err != nil {
 		return err
@@ -265,7 +265,7 @@ func newPublishRunners(cfg publishConfig, registry definition.RegistryLookup,
 		runner := &publishRunner{
 			bindingKey: key,
 			capability: capability,
-			collector:  collectors[capability], // presence checked in publishConfigFrom
+			files:      collectors[capability], // presence checked in publishConfigFrom
 			cfg:        cfg,
 			lookup:     lookup,
 			runLog:     runLog,

@@ -1,3 +1,19 @@
+// Package pipeline is the shared frame for scheduled publish pipelines: the
+// registry gate, the cron schedule, the run log, input resolution, the
+// upstream client, and the publish step. Everything in it is the same for
+// every pipeline; what differs is a Collector, which a capability package
+// implements (see collector.go).
+//
+// It sits beside catalogpublish under catalogpublisher/ so BOTH the crawler
+// that ticks a pipeline and the capability packages that define one can import
+// it. It must NOT be moved under an internal/ directory: that would put one of
+// those two consumers out of reach, which has already happened twice.
+//
+// It is NOT part of the catalogpublisher plugin's own work, and that plugin
+// does not import it. catalogpublisher serves the decentralized-catalog path
+// (RFC NFH-014), writing signed blobs to a store that crawlers walk. This
+// frame builds catalogues and posts them to the provider adapter, which
+// reaches the discovery service. Shared parent directory, opposite directions.
 package pipeline
 
 // run.go is the frame: the one exported entry point that turns "the registry
@@ -13,12 +29,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 )
 
 // Inputs every pipeline must declare, because the frame itself uses them: the
@@ -44,8 +61,9 @@ type RunLog interface {
 
 // RunOptions is everything a run does not decide for itself.
 type RunOptions struct {
-	// Collector is the domain half. Required.
-	Collector Collector
+	// Pipeline is the capability's YAML and mappings. Required: it is the
+	// program this run executes.
+	Pipeline Files
 
 	// Record is the registry's answer for this capability. Required: it is
 	// the only thing that sanctions publishing at all.
@@ -120,8 +138,8 @@ type RunReport struct {
 // A failed run is deliberately NOT recorded, so a transient upstream outage at
 // midnight is retried on the next tick rather than costing the whole day.
 func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
-	if opts.Collector == nil {
-		return RunReport{}, fmt.Errorf("no collector: a pipeline with no domain half has nothing to collect")
+	if opts.Pipeline.Path == "" {
+		return RunReport{}, fmt.Errorf("no pipeline: RunOptions.Pipeline names no YAML to run")
 	}
 	log := opts.Log
 	if log == nil {
@@ -135,30 +153,26 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	capability := opts.Collector.Capability()
-
 	// 1. The registry gate, and the pipeline it names.
 	pipelinePath, err := PipelinePathFor(opts.Record)
 	if err != nil {
-		return RunReport{Capability: capability}, err
+		return RunReport{}, err
 	}
-	spec, err := loadRegistryPipeline(opts.Collector, pipelinePath)
+	spec, err := loadRegistryPipeline(opts.Pipeline, pipelinePath)
 	if err != nil {
-		return RunReport{Capability: capability}, err
+		return RunReport{}, err
+	}
+
+	// The capability comes from the file itself. Nothing in Go declares it,
+	// so nothing in Go can disagree with it.
+	capability := strings.TrimSpace(spec.Metadata.Capability)
+	if capability == "" {
+		return RunReport{}, fmt.Errorf("%s declares no metadata.capability", pipelinePath)
 	}
 	report := RunReport{
 		Capability:   capability,
 		PipelinePath: pipelinePath,
 		Unpersisted:  opts.RunLog == nil,
-	}
-
-	// The registry may sanction a pipeline whose file serves a different
-	// capability than the collector claims. That mismatch would key the run
-	// log and the output directory on one name while publishing under
-	// another.
-	if declared := strings.TrimSpace(spec.Metadata.Capability); declared != capability {
-		return report, fmt.Errorf("collector serves %q but %s declares capability %q",
-			capability, pipelinePath, declared)
 	}
 
 	// 2. When did it last run. An unreadable log is fatal: "has this firing
@@ -218,11 +232,15 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		}
 	}
 
-	files := opts.Collector.Pipeline()
-
 	// The mappings are served over loopback because jsonmapper resolves them
 	// by URL; they are embedded in the binary, not read from disk.
-	mappingBase, stopMappings, err := catalogpublish.ServeMappings(files.FS, "mappings")
+	//
+	// They are found NEXT TO the pipeline file rather than at the root of the
+	// embedded filesystem, because that is what a file's `mapping:` references
+	// are relative to -- and because a capability is free to put its pipeline
+	// wherever it likes inside its own package.
+	mappingsDir := path.Join(path.Dir(opts.Pipeline.Path), "mappings")
+	mappingBase, stopMappings, err := catalogpublish.ServeMappings(opts.Pipeline.FS, mappingsDir)
 	if err != nil {
 		return fmt.Errorf("serving the pipeline's mappings: %w", err)
 	}
@@ -234,13 +252,15 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	}
 	defer func() { _ = closeMapper() }()
 
+	rc := newRunContext(resolved, "")
 	client := NewClient(resolved[inputBaseURL])
-	token, err := client.Token(ctx, resolved[inputTokenUser], resolved[inputTokenSecret])
+	token, err := client.Token(ctx, spec.Upstream.Auth, rc)
 	if err != nil {
 		return fmt.Errorf("exchanging credentials: %w", err)
 	}
+	rc = newRunContext(resolved, token)
 
-	outDir, cleanup, err := pipelineDir(opts)
+	outDir, cleanup, err := pipelineDir(opts, report.Capability)
 	if err != nil {
 		return err
 	}
@@ -257,34 +277,48 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		return fmt.Errorf("clearing previous catalogues: %w", err)
 	}
 
-	collected, err := opts.Collector.Collect(ctx, RunEnv{
-		Spec:        spec,
-		Inputs:      resolved,
-		Mapper:      mapper,
-		MappingBase: mappingBase,
-		Client:      client,
-		Token:       token,
-		OutDir:      outDir,
-		Log:         log,
-	})
+	cache, err := newExprCache()
 	if err != nil {
-		return fmt.Errorf("collecting: %w", err)
+		return err
 	}
-	report.Catalogues = collected.Catalogues
-	report.Errors = collected.Errors
-	report.Counters = collected.Counters
 
-	if err := WriteCatalogues(collected.Catalogues, outDir, prefix); err != nil {
+	// The steps the file declares, in the order it declares them.
+	runner := &stepRunner{
+		spec: spec, rc: rc, cache: cache, client: client,
+		mapper: mapper, mappingBase: mappingBase, log: log,
+		counters: map[string]int{},
+	}
+	records, err := runner.runSteps(ctx)
+	if err != nil {
+		return fmt.Errorf("running the pipeline's steps: %w", err)
+	}
+
+	// The catalogues the file's `catalog:` block describes.
+	catalogues, buildCounters, err := buildCatalogues(ctx, spec.Catalog, records, rc, cache, mapper, mappingBase)
+	if err != nil {
+		return fmt.Errorf("building catalogues: %w", err)
+	}
+
+	// Both halves report into one set of counters, named by the file.
+	counters := runner.counters
+	for name, count := range buildCounters {
+		counters[name] += count
+	}
+	report.Catalogues = catalogues
+	report.Counters = counters
+	report.Errors = collectionErrors(spec.Publish, counters)
+
+	if err := WriteCatalogues(catalogues, outDir, prefix); err != nil {
 		return fmt.Errorf("writing catalogues: %w", err)
 	}
 	log.InfoContext(ctx, "publish pipeline: built catalogues",
-		"capability", report.Capability, "catalogs", len(collected.Catalogues),
-		"collectionErrors", collected.Errors, "counters", collected.Counters, "dir", outDir)
+		"capability", report.Capability, "catalogs", len(catalogues),
+		"collectionErrors", report.Errors, "counters", counters, "dir", outDir)
 
 	if !opts.Publish {
 		return nil
 	}
-	result, err := PublishCatalogues(ctx, spec.Publish, resolved, outDir, prefix, collected.Errors)
+	result, err := PublishCatalogues(ctx, spec.Publish, resolved, outDir, prefix, report.Errors)
 	report.Published = &result
 	if err != nil {
 		return fmt.Errorf("publishing catalogues: %w", err)
@@ -301,8 +335,8 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 // rather than the directory itself -- see RunOptions.OutDir for why sharing
 // would be silent corruption. When the caller named none, a temporary
 // directory is made and removed, and the returned cleanup is non-nil.
-func pipelineDir(opts RunOptions) (string, func(), error) {
-	slug := strings.NewReplacer("/", "-", ":", "-", " ", "-").Replace(opts.Collector.Capability())
+func pipelineDir(opts RunOptions, capability string) (string, func(), error) {
+	slug := strings.NewReplacer("/", "-", ":", "-", " ", "-").Replace(capability)
 
 	if opts.OutDir == "" {
 		dir, err := os.MkdirTemp("", "catalogs-"+slug+"-")
@@ -327,4 +361,20 @@ func filenamePrefix(spec Spec) string {
 		return name
 	}
 	return "catalog"
+}
+
+// collectionErrors reads the counter the file's publish.refuseWhen names.
+//
+// The rule is `collection.<counter> > 0`, and <counter> is whatever the
+// pipeline's own steps record into -- mandi calls it stateErrors, another
+// pipeline will call it something else. Resolving it by name rather than
+// hardcoding one keeps the refusal the file's decision.
+//
+// A file with no refuseWhen has no refusal, and reports zero.
+func collectionErrors(spec Publish, counters map[string]int) int {
+	counter, ok := refuseWhenCounter(spec.RefuseWhen)
+	if !ok {
+		return 0
+	}
+	return counters[counter]
 }

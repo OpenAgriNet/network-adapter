@@ -2,7 +2,7 @@ package pipeline
 
 // The pipeline's publish step. It is deliberately thin: the publishing itself,
 // including how an answer is judged, lives in
-// pkg/plugin/implementation/internal/catalogpublish and
+// pkg/plugin/implementation/catalogpublisher/catalogpublish and
 // is not reimplemented here. This file only turns the YAML's declared publish
 // block into that package's Config, and refuses the run outright in the one
 // case the YAML says it must.
@@ -10,25 +10,35 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/catalogpublish"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 )
 
 // publishAddressHint names the two ways an operator can supply the address, so
 // an empty one says what to set rather than that something is missing.
 const publishAddressHint = "set inputs.publishUrl (flag --publish-url or MANDI_PUBLISH_URL)"
 
-// stateErrorsRule is the only refuseWhen expression this step understands.
+// refuseWhenShape is the one form of refusal this step understands:
 //
-// It is honoured LITERALLY: the string is compared, not evaluated. The YAML
-// declares exactly this one rule, and a single literal comparison is honest
-// about what the code does, where a half-built expression parser would silently
-// mis-read anything more complicated. Any other refuseWhen value is therefore
-// rejected rather than ignored -- a safety rule that is quietly dropped is
-// worse than one that was never declared. A pipeline that needs a different
-// rule needs a real expression evaluator here first.
-const stateErrorsRule = "collection.stateErrors > 0"
+//	collection.<counter> > 0
+//
+// <counter> is a name the pipeline's own steps record into, so a second
+// pipeline refuses on its own terms without editing Go. Anything else is
+// REJECTED rather than ignored -- a safety rule that is quietly dropped is
+// worse than one never declared -- and a file needing a richer rule needs a
+// real expression evaluator here first.
+var refuseWhenShape = regexp.MustCompile(`^collection\.([A-Za-z][A-Za-z0-9_]*)\s*>\s*0$`)
+
+// refuseWhenCounter returns the counter a refuseWhen rule names.
+func refuseWhenCounter(rule string) (string, bool) {
+	match := refuseWhenShape.FindStringSubmatch(strings.TrimSpace(rule))
+	if match == nil {
+		return "", false
+	}
+	return match[1], true
+}
 
 // publishCatalogs posts every catalog file in catalogDir, unless the declared
 // safety rule forbids it.
@@ -44,17 +54,18 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 		return result, err
 	}
 
-	if strings.TrimSpace(spec.RefuseWhen) != "" {
-		if rule := strings.TrimSpace(spec.RefuseWhen); rule != stateErrorsRule {
+	if rule := strings.TrimSpace(spec.RefuseWhen); rule != "" {
+		counter, ok := refuseWhenCounter(rule)
+		if !ok {
 			return result, fmt.Errorf(
-				"publish.refuseWhen is %q; this step understands only %q and will not guess at another rule",
-				rule, stateErrorsRule)
+				"publish.refuseWhen is %q; this step understands only `collection.<counter> > 0` "+
+					"and will not guess at another rule", rule)
 		}
 		if stateErrors > 0 {
 			return result, fmt.Errorf(
-				"refusing to publish: %d states failed to collect, and a partial collection "+
+				"refusing to publish: %d of the collection failed (%s), and a partial collection "+
 					"will not be published as though it were whole (publish.refuseWhen: %s)",
-				stateErrors, stateErrorsRule)
+				stateErrors, counter, rule)
 		}
 	}
 
