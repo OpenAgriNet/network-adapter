@@ -24,7 +24,7 @@ response: |
 
     $isPublishable := function($m) {
       $number($count($m.commodities)) > 0 and
-      (_local.publishWithoutGeometry = "skip" ? $m.coordinateQuality = "ok" : true)
+      (_local.publishWithoutGeometry = "skip" ? $m.hasUsableCoordinate : true)
     };
 
     $validMarkets := response[$isPublishable($)];

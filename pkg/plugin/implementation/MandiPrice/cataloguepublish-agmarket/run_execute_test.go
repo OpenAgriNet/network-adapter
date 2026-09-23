@@ -265,9 +265,14 @@ func TestRunBuildsCataloguesFromAFakeUpstream(t *testing.T) {
 	// Nashik's null coordinates must survive the join as "no geometry" rather
 	// than as 0,0. If the master market list were never fetched, or joined on
 	// the wrong key, every market would land here instead of just this one.
-	if report.Counters["annotated:publishedWithoutLocation"] != 1 {
-		t.Errorf("geometryLessMarkets = %d, want 1 (Nashik has no upstream coordinate)",
-			report.Counters["annotated:publishedWithoutLocation"])
+	// Nashik has no upstream coordinate, so it must still be PUBLISHED and
+	// must cost nothing against the geometry budget. The annotation that used
+	// to record this is gone with the quality vocabulary; what matters is the
+	// behaviour, so assert the behaviour: three markets in, three published,
+	// and the one without a point carries no Point in the document.
+	if report.Counters["published"] != 3 {
+		t.Errorf("published = %d, want 3 (a market with no coordinate is still published)",
+			report.Counters["published"])
 	}
 	// Not outDir itself: each pipeline gets its OWN subdirectory beneath the
 	// configured one, because the stale sweep and the publish glob both work

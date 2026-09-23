@@ -299,22 +299,35 @@ pipeline:
       carry: [latitude, longitude]
     out: joined
 
-  - id: quality
+  # The coordinate QUALITY VOCABULARY is gone -- no missing/suspect/
+  # outOfBounds verdict field, no annotation, no verdict-based exclusion.
+  #
+  # What remains is the one thing that is not a classification but a
+  # correctness rule: a coordinate that cannot be real is removed, so it is
+  # never published as a location. Two cases, both measured in this upstream's
+  # own data: lat == lon is a copy-paste defect (and catches 0,0, which is a
+  # real place in the Gulf of Guinea), and a point outside India's bounding box
+  # did not come from an Indian market.
+  #
+  # A market whose coordinates are dropped is still PUBLISHED. It simply
+  # carries no point, so a proximity search cannot find it -- which is correct,
+  # because nobody knows where it is.
+  - id: coordinates
     uses: derive
     with:
-      field: coordinateQuality
+      field: hasUsableCoordinate
       rules:
         - when: "$not($exists(latitude)) or $not($exists(longitude))"
-          value: missing
+          value: false
         - when: "latitude = longitude"
-          value: suspect
+          value: false
         - when: "latitude < 6.0 or latitude > 38.0 or longitude < 68.0 or longitude > 98.0"
-          value: outOfBounds
-        - value: ok
+          value: false
+        - value: true
       then:
-        - when: "coordinateQuality != 'ok'"
+        - when: "$not(hasUsableCoordinate)"
           clear: [latitude, longitude]
-    out: marketsWithVerdict
+    out: marketsWithCoordinates
 
   - id: dedupe
     uses: dedupe
@@ -336,19 +349,19 @@ catalog:
     # the catalogue's own minItems check at the far end.
     - when: "$number($count(commodities)) = 0"
       reason: "upstream reported no commodities trading in this window"
-    - when: "${inputs.withoutGeometry} = 'skip' and coordinateQuality != 'ok'"
-      reason: "coordinate ${coordinateQuality}"
-
-  annotate:
-    - when: "coordinateQuality != 'ok'"
-      as: publishedWithoutLocation
+    - when: "${inputs.withoutGeometry} = 'skip' and $not(hasUsableCoordinate)"
+      reason: "no usable coordinate, and withoutGeometry is skip"
 
   order: { by: marketId, direction: asc }
 
   chunk:
     budget: 256
     of: geometries
-    cost: "coordinateQuality = 'ok' and $exists(latitude) and $exists(longitude) ? 1 : 0"
+    # Counts GEOMETRIES, not markets: a market with no point costs nothing,
+    # because the cap Discovery enforces is on geometries. This must agree
+    # with what the render actually emits as a Point, or a catalogue silently
+    # goes over the cap and indexes PARTIAL.
+    cost: "$exists(latitude) and $exists(longitude) ? 1 : 0"
     slug: "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
 
   identity:
