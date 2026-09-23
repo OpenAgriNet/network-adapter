@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Step primitives, as a file spells them in `uses:`.
@@ -58,11 +59,26 @@ func (r *stepRunner) runSteps(ctx context.Context) ([]map[string]any, error) {
 	}
 
 	var last any
-	for _, step := range r.spec.Pipeline {
+	for i, step := range r.spec.Pipeline {
+		// Logged per step, at INFO, because a run is minutes long and mostly
+		// silent: without this the only signals are "started" and "finished",
+		// and a pipeline stuck on state 19 of 36 looks exactly like one that
+		// is merely slow.
+		r.log.InfoContext(ctx, "pipeline step: start",
+			"step", fmt.Sprintf("%d/%d", i+1, len(r.spec.Pipeline)),
+			"id", step.ID, "uses", step.Uses)
+
+		began := time.Now()
 		output, err := r.runStep(ctx, step)
 		if err != nil {
 			return nil, fmt.Errorf("step %q: %w", step.ID, err)
 		}
+
+		produced, _ := asRecords(output)
+		r.log.InfoContext(ctx, "pipeline step: done",
+			"step", fmt.Sprintf("%d/%d", i+1, len(r.spec.Pipeline)),
+			"id", step.ID, "records", len(produced),
+			"took", time.Since(began).Round(time.Millisecond).String())
 		if step.Out != "" {
 			r.rc.outputs[step.Out] = output
 		}
@@ -142,8 +158,10 @@ func (r *stepRunner) dispatch(ctx context.Context, step Step) (any, error) {
 	}
 
 	var gathered []map[string]any
-	for _, item := range items {
+	for i, item := range items {
 		iteration := r.rc.with(step.As, item)
+		r.log.DebugContext(ctx, "pipeline step: iteration",
+			"id", step.ID, "item", fmt.Sprintf("%d/%d", i+1, len(items)), "as", step.As)
 
 		output, err := r.primitive(ctx, step, iteration)
 		if err != nil {

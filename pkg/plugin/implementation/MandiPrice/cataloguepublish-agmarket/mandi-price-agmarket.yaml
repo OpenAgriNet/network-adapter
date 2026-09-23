@@ -167,6 +167,20 @@ inputs:
   publishUrl:
     flag: publish-url
     env: MANDI_PUBLISH_URL
+  # A ONE-TIME migration switch, off by default.
+  #
+  # `publish.retireOld` deactivates cat-agmarknet-mandi-prices -- the single
+  # monolithic catalogue these per-state ones replaced. An operator turns it on
+  # for one run when migrating, then leaves it off; turning it on every day
+  # would post a tombstone for a catalogue that is already retired.
+  #
+  # It is declared rather than left implicit because the publish step REFUSES
+  # an enable flag it cannot resolve: reading an unresolvable flag as "off"
+  # would silently skip a retirement an operator asked for.
+  retireOld:
+    flag: retire-old
+    env: MANDI_RETIRE_OLD
+    default: false
   tokenUser:
     env: MANDI_TOKEN_USER
     secret: true

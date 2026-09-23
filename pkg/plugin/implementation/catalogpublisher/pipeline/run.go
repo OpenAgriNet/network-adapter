@@ -252,6 +252,8 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	}
 	defer func() { _ = closeMapper() }()
 
+	log.InfoContext(ctx, "publish pipeline: exchanging credentials",
+		"upstream", resolved[inputBaseURL], "path", spec.Upstream.Auth.Request.Path)
 	rc := newRunContext(resolved, "")
 	client := NewClient(resolved[inputBaseURL])
 	token, err := client.Token(ctx, spec.Upstream.Auth, rc)
@@ -259,6 +261,7 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		return fmt.Errorf("exchanging credentials: %w", err)
 	}
 	rc = newRunContext(resolved, token)
+	log.InfoContext(ctx, "publish pipeline: token exchanged", "characters", len(token))
 
 	outDir, cleanup, err := pipelineDir(opts, report.Capability)
 	if err != nil {
@@ -288,12 +291,16 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		mapper: mapper, mappingBase: mappingBase, log: log,
 		counters: map[string]int{},
 	}
+	log.InfoContext(ctx, "publish pipeline: running steps", "steps", len(spec.Pipeline))
 	records, err := runner.runSteps(ctx)
 	if err != nil {
 		return fmt.Errorf("running the pipeline's steps: %w", err)
 	}
+	log.InfoContext(ctx, "publish pipeline: steps done", "records", len(records))
 
 	// The catalogues the file's `catalog:` block describes.
+	log.InfoContext(ctx, "publish pipeline: building catalogues",
+		"groupBy", spec.Catalog.GroupBy, "budget", spec.Catalog.Chunk.Budget)
 	catalogues, buildCounters, err := buildCatalogues(ctx, spec.Catalog, records, rc, cache, mapper, mappingBase)
 	if err != nil {
 		return fmt.Errorf("building catalogues: %w", err)
@@ -318,10 +325,16 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	if !opts.Publish {
 		return nil
 	}
+	log.InfoContext(ctx, "publish pipeline: PUBLISHING to the network",
+		"catalogues", len(catalogues), "target", resolved["publishUrl"])
 	result, err := PublishCatalogues(ctx, spec.Publish, resolved, outDir, prefix, report.Errors)
 	report.Published = &result
 	if err != nil {
 		return fmt.Errorf("publishing catalogues: %w", err)
+	}
+	for _, outcome := range result.Outcomes {
+		log.InfoContext(ctx, "publish pipeline: outcome",
+			"catalogId", outcome.CatalogID, "status", outcome.Status, "reason", outcome.Reason)
 	}
 	if result.HasFailures() {
 		return fmt.Errorf("at least one catalogue did not reach the network intact")
