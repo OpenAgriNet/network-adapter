@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -54,28 +55,67 @@ func NewClient(baseURL string) *Client {
 	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 120 * time.Second}}
 }
 
-// tokenResponse is the whole of what this client reads from the token
-// endpoint.
-type tokenResponse struct {
-	Token string `json:"token"`
-}
-
 // token exchanges the credentials for a token.
 //
 // The credentials are marshalled rather than concatenated, so a secret
 // carrying a quote or a backslash cannot break out of the JSON it travels
 // in.
-func (c *Client) Token(ctx context.Context, user, secret string) (string, error) {
-	payload, err := json.Marshal(map[string]string{
-		"access_name": user,
-		"password":    secret,
-	})
+// Token performs the token exchange the pipeline file DECLARES, rather than
+// one this package knows about.
+//
+// Everything that varies -- the method, the path, which JSON keys carry the
+// credentials, and where the token sits in the response -- comes from
+// `upstream.auth`. Two upstreams spell all four differently, and a second
+// pipeline must not have to edit Go to authenticate.
+//
+// The credentials themselves are never in the file: the body's values are
+// ${inputs.…} references, and the inputs that hold them are declared
+// `secret: true`, so what the file carries is the NAME of a variable.
+func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, error) {
+	if auth.Kind != "" && auth.Kind != authTokenExchange {
+		return "", fmt.Errorf("upstream.auth.kind %q is not supported; this client performs %q",
+			auth.Kind, authTokenExchange)
+	}
+	if auth.Request.Path == "" {
+		return "", fmt.Errorf("upstream.auth.request.path is empty, so there is no token endpoint to call")
+	}
+	// The token reaches a request through the mapping's `local`, which puts it
+	// in the query. Honouring a different placement would mean the mapping and
+	// this field disagreeing about where it went.
+	if carried := strings.TrimSpace(auth.Token.CarriedAs); carried != "" && carried != "query" {
+		return "", fmt.Errorf("upstream.auth.token.carriedAs %q is not supported; the token is passed "+
+			"to each step's mapping, which decides placement, and only %q matches that today", carried, "query")
+	}
+
+	body := make(map[string]string, len(auth.Request.Body))
+	for field, template := range auth.Request.Body {
+		value, err := rc.interpolate(template)
+		if err != nil {
+			return "", fmt.Errorf("upstream.auth.request.body.%s: %w", field, err)
+		}
+		if value == "" {
+			// An empty credential is sent as a real value and rejected far
+			// from here, reading as bad credentials rather than absent ones.
+			return "", fmt.Errorf("upstream.auth.request.body.%s resolved to empty", field)
+		}
+		body[field] = value
+	}
+
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("token request could not be built: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/generate-dynamic-token-agmarknet", bytes.NewReader(payload))
+	method := auth.Request.Method
+	if method == "" {
+		method = http.MethodPost
+	}
+	path, err := rc.interpolate(auth.Request.Path)
+	if err != nil {
+		return "", fmt.Errorf("upstream.auth.request.path: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("token request could not be built: %w", err)
 	}
@@ -83,11 +123,13 @@ func (c *Client) Token(ctx context.Context, user, secret string) (string, error)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("token endpoint could not be reached: %w", err)
+		// Not %w: Go's transport errors quote the whole URL, and a token
+		// endpoint's URL is the one place a credential could appear in it.
+		return "", fmt.Errorf("token endpoint could not be reached")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("token response could not be read: %w", err)
 	}
@@ -98,14 +140,54 @@ func (c *Client) Token(ctx context.Context, user, secret string) (string, error)
 		return "", fmt.Errorf("token endpoint returned %s", resp.Status)
 	}
 
-	var parsed tokenResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("token response is not JSON: %w", err)
+	token, err := extractToken(raw, auth.Token.At)
+	if err != nil {
+		return "", err
 	}
-	if parsed.Token == "" {
-		return "", fmt.Errorf("token response carries no token")
+	return token, nil
+}
+
+// authTokenExchange is the one auth kind this client performs: POST
+// credentials, receive a token, carry it on each later request.
+const authTokenExchange = "tokenExchange"
+
+// extractToken reads the token from the response at the declared location.
+//
+// The form is "$.field" or "$.a.b" -- a path from the response root. It is
+// deliberately a path and not a full expression: this runs on a response that
+// contains a live credential, and a path cannot do anything but select.
+func extractToken(body []byte, at string) (string, error) {
+	path := strings.TrimSpace(at)
+	if path == "" {
+		return "", fmt.Errorf("upstream.auth.token.at is empty, so the token cannot be located in the response")
 	}
-	return parsed.Token, nil
+	if !strings.HasPrefix(path, "$.") {
+		return "", fmt.Errorf("upstream.auth.token.at %q must start with \"$.\"", at)
+	}
+
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		// Never the body.
+		return "", fmt.Errorf("token response is not JSON")
+	}
+
+	value := decoded
+	for _, field := range strings.Split(strings.TrimPrefix(path, "$."), ".") {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("token response has no %s (%q is not an object)", at, field)
+		}
+		value, ok = object[field]
+		if !ok {
+			return "", fmt.Errorf("token response has no %s", at)
+		}
+	}
+
+	token, ok := value.(string)
+	if !ok || token == "" {
+		return "", fmt.Errorf("token response carries no token at %s", at)
+	}
+	return token, nil
 }
 
 // asQuery renders a mapped request object as a query string.

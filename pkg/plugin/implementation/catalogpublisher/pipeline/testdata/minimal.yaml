@@ -1,5 +1,7 @@
-# A minimal but complete pipeline file, used to prove LoadSpec reads each block
-# without depending on any real capability's file.
+# A complete, RUNNABLE pipeline for the frame's own tests. It uses the same
+# constructs a real capability does -- an auth exchange, a step, a catalogue
+# block -- so the frame is tested through its actual interpreter rather than
+# through a stub that agrees with it by construction.
 metadata:
   name: example
   capability: example:Thing
@@ -27,15 +29,59 @@ upstream:
   baseUrl: ${inputs.baseUrl}
   auth:
     kind: tokenExchange
+    request:
+      method: POST
+      path: /token
+      body:
+        access_name: ${inputs.tokenUser}
+        password: ${inputs.tokenSecret}
     token:
       at: $.token
+      carriedAs: query
+      name: token
 
 pipeline:
   - id: things
-    uses: listThings
-    when: always
+    uses: http.get
+    with:
+      path: /things
+      mapping: mappings/things.yaml
+      local:
+        token: ${auth.token}
+        kind: widget
+    out: things
+    failWhenEmpty: "the upstream listed no things"
 
-publish:
-  url: ${inputs.publishUrl}/publish
-  accept: [ACCEPTED]
-  treatAsFailure: [PARTIAL, REJECTED]
+  - id: dedupe
+    uses: dedupe
+    with: { key: id }
+    out: collection
+
+catalog:
+  groupBy: group
+
+  exclude:
+    - when: "$number($count(size)) = 0"
+      reason: "no size reported"
+
+  order: { by: id, direction: asc }
+
+  chunk:
+    budget: 2
+    of: things
+    cost: "1"
+    slug: "${group}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
+
+  identity:
+    catalogId: catalog:example:${slug}
+    resourceId: resource:example:${id}
+
+  render:
+    mapping: mappings/catalog.yaml
+    local:
+      slug: ${slug}
+
+  output:
+    dir: ${inputs.catalogOut}
+    file: example-${slug}.json
+    filenamePrefix: example

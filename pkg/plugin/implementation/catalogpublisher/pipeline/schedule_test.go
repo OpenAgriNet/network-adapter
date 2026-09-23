@@ -19,7 +19,7 @@ func TestPipelinePathForFindsThePublishAction(t *testing.T) {
 		BindingKey: "exampleco|example:Thing",
 		Actions: map[string]model.ActionPlan{
 			"select":  {Method: "GET", Path: "/v1/fetch", Mappings: "https://example.test/select.yaml"},
-			"publish": {Mappings: fakeRegistryPath},
+			"publish": {Mappings: fixtureRegistryPath},
 		},
 	}
 
@@ -27,7 +27,7 @@ func TestPipelinePathForFindsThePublishAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipelinePathFor: %v", err)
 	}
-	if want := fakeRegistryPath; path != want {
+	if want := fixtureRegistryPath; path != want {
 		t.Errorf("path = %q, want %q", path, want)
 	}
 }
@@ -155,12 +155,12 @@ func TestDueNowRejectsAnUnusableSchedule(t *testing.T) {
 // path pointing at some other package's pipeline must not silently load ours.
 func TestLoadRegistryPipelineAcceptsThisPackagesOwnPath(t *testing.T) {
 	for _, path := range []string{
-		fakeRegistryPath,
-		"./" + fakeRegistryPath,
-		fakePipelinePath,
+		fixtureRegistryPath,
+		"./" + fixtureRegistryPath,
+		fixturePipelinePath,
 	} {
 		t.Run(path, func(t *testing.T) {
-			spec, err := loadRegistryPipeline(newFakeCollector(), path)
+			spec, err := loadRegistryPipeline(fixturePipeline(), path)
 			if err != nil {
 				t.Fatalf("loadRegistryPipeline(%q): %v", path, err)
 			}
@@ -179,7 +179,7 @@ func TestLoadRegistryPipelineRefusesAnotherPackagesPipeline(t *testing.T) {
 		"empty":              "  ",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := loadRegistryPipeline(newFakeCollector(), path); err == nil {
+			if _, err := loadRegistryPipeline(fixturePipeline(), path); err == nil {
 				t.Errorf("loadRegistryPipeline(%q) loaded the collector's own pipeline anyway", path)
 			}
 		})
@@ -193,7 +193,7 @@ func TestDecideTick(t *testing.T) {
 		BindingKey: "exampleco|example:Thing",
 		Actions: map[string]model.ActionPlan{
 			"select":  {Method: "GET", Path: "/v1/fetch"},
-			"publish": {Mappings: fakeRegistryPath},
+			"publish": {Mappings: fixtureRegistryPath},
 		},
 	}
 	ist, err := time.LoadLocation("Asia/Kolkata")
@@ -201,7 +201,7 @@ func TestDecideTick(t *testing.T) {
 		t.Fatalf("LoadLocation: %v", err)
 	}
 
-	decision, err := decideTick(newFakeCollector(), record, time.Date(2026, 9, 22, 6, 0, 0, 0, ist), time.Time{})
+	decision, err := decideTick(fixturePipeline(), record, time.Date(2026, 9, 22, 6, 0, 0, 0, ist), time.Time{})
 	if err != nil {
 		t.Fatalf("decideTick: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestDecideTick(t *testing.T) {
 	// Same record an hour later, having just run: not due, and no error --
 	// "already ran" is a normal outcome, not a failure.
 	ranAt := time.Date(2026, 9, 22, 6, 0, 0, 0, ist)
-	decision, err = decideTick(newFakeCollector(), record, ranAt.Add(time.Hour), ranAt)
+	decision, err = decideTick(fixturePipeline(), record, ranAt.Add(time.Hour), ranAt)
 	if err != nil {
 		t.Fatalf("decideTick after a run: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestDecideTickRefusesACapabilityThatDoesNotPublish(t *testing.T) {
 		BindingKey: "mausamgram|openagrinet:WeatherObservation",
 		Actions:    map[string]model.ActionPlan{"select": {Method: "GET"}},
 	}
-	if _, err := decideTick(newFakeCollector(), record, time.Now(), time.Time{}); err == nil {
+	if _, err := decideTick(fixturePipeline(), record, time.Now(), time.Time{}); err == nil {
 		t.Fatal("a select-only capability produced a tick decision")
 	}
 }

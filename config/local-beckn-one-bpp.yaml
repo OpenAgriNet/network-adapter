@@ -88,7 +88,7 @@ plugins:
   #    path -- docs/superpowers/plans/2026-09-18-crawler-publish-sink.md.
   #    That is not part of the mandi path and is not configured here.)
   #
-  # 3. The mandi publish pipeline is turned on with mandiBindingKey.
+  # 3. Publish pipelines are turned on with publishBindingKeys.
   #
   #    "Know the capability, then find its YAML" is answered by the
   #    REGISTRY, not by this file. The crawler looks the binding key up in
@@ -98,9 +98,13 @@ plugins:
   #    rather than a misconfiguration -- every other capability on this
   #    network is select-only.
   #
-  #    So adding capability #2 is a registry edit, not a config edit: give
-  #    its ProviderSchema record a publish action naming its own pipeline
-  #    YAML, and add one more mandiBindingKey-style entry here.
+  #    So adding capability #2 is a registry edit plus two small code
+  #    edits: give its ProviderSchema record a publish action naming its own
+  #    pipeline YAML, add one entry to the `collectors` table in
+  #    catalogcrawler/publishpipelines.go, and add its binding key to the
+  #    comma-separated list below. A binding key naming a capability this
+  #    binary carries no pipeline for is refused AT STARTUP, naming what it
+  #    does carry -- not left as a tick that quietly does nothing forever.
   #
   #    Deriving the path from the capability's name instead would mean
   #    guessing a filesystem layout and running a pipeline the registry
@@ -132,29 +136,32 @@ plugins:
   #     participantId: "agmarknet"
   #     bppUri: "https://bpp.example.org"
   #
-  #     # --- the scheduled mandi publish ---
+  #     # --- the scheduled publish pipelines ---
   #
-  #     # Supplying this key is what turns the pipeline on: a deployment
-  #     # that names no capability has nothing to publish. Format is
-  #     # "<participantId>|<capabilityCode>", the same binding key the
+  #     # Supplying this key is what turns publishing on: a deployment that
+  #     # names no capability has nothing to publish. Comma-separated, each
+  #     # "<participantId>|<capabilityCode>" -- the same binding key the
   #     # registry is indexed by.
-  #     mandiBindingKey: "agmarknet-live|openagrinet:MandiPrice"
+  #     publishBindingKeys: "agmarknet|openagrinet:MandiPrice"
   #
-  #     # How often to CHECK whether the pipeline is due -- not how often it
-  #     # runs. The cadence itself lives in the pipeline YAML as a standard
+  #     # How often to CHECK whether a pipeline is due -- not how often one
+  #     # runs. The cadence itself lives in each pipeline's YAML as a standard
   #     # cron expression ("0 0 * * *", Asia/Kolkata), because it belongs to
   #     # the pipeline rather than to this deployment. Default 300s.
-  #     mandiTickIntervalSeconds: "300"
+  #     publishTickIntervalSeconds: "300"
   #
   #     # Reaching the network is a SEPARATE decision from turning the
   #     # schedule on, and defaults to off. Left false, each run still
   #     # collects and builds catalogues -- observable and reversible --
   #     # and simply does not send them.
-  #     mandiPublish: "false"
+  #     publishEnabled: "false"
   #
   #     # Optional. Keeps each run's catalogues on disk for inspection;
-  #     # empty means a temporary directory the run cleans up.
-  #     mandiCatalogOutputDir: "/var/lib/oan/mandi-catalogs"
+  #     # empty means a temporary directory the run cleans up. Each pipeline
+  #     # gets its OWN subdirectory beneath it, named for the capability --
+  #     # two pipelines sharing one directory would delete and republish each
+  #     # other's catalogues.
+  #     publishCatalogOutputDir: "/var/lib/oan/catalogs"
   #
   #     # The registry plugin above must implement ProviderRecordLookup
   #     # (sunbirdRegistry does; dediregistry does not). Without it there is

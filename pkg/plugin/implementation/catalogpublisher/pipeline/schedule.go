@@ -75,17 +75,15 @@ func servedActions(record *model.ProviderRecord) string {
 //
 // Both spellings are accepted: the repo-relative path an operator pastes into
 // a record, and the bare filename, which is what the embedded filesystem knows.
-func loadRegistryPipeline(collector Collector, registryPath string) (Spec, error) {
-	files := collector.Pipeline()
+func loadRegistryPipeline(files Files, registryPath string) (Spec, error) {
 
 	cleaned := path.Clean(strings.TrimSpace(registryPath))
 	if cleaned == "." || cleaned == "" {
 		return Spec{}, fmt.Errorf("the registry names no pipeline path")
 	}
 	if cleaned != files.Path && cleaned != path.Clean(files.RegistryPath) {
-		return Spec{}, fmt.Errorf("the registry names pipeline %q, which is not %s's own %s; "+
-			"this binary can only run the pipelines it embeds",
-			cleaned, collector.Capability(), files.RegistryPath)
+		return Spec{}, fmt.Errorf("the registry names pipeline %q, which is not this pipeline's own %s; "+
+			"this binary can only run the pipelines it embeds", cleaned, files.RegistryPath)
 	}
 	return LoadSpec(files.FS, files.Path)
 }
@@ -106,12 +104,12 @@ type TickDecision struct {
 // or names a pipeline this binary does not have. A decision with Due false is
 // the normal quiet outcome and carries the reason, so an operator asking "why
 // did nothing run at 00:05" gets an answer instead of silence.
-func decideTick(collector Collector, record *model.ProviderRecord, now, lastRun time.Time) (TickDecision, error) {
+func decideTick(files Files, record *model.ProviderRecord, now, lastRun time.Time) (TickDecision, error) {
 	pipelinePath, err := PipelinePathFor(record)
 	if err != nil {
 		return TickDecision{}, err
 	}
-	spec, err := loadRegistryPipeline(collector, pipelinePath)
+	spec, err := loadRegistryPipeline(files, pipelinePath)
 	if err != nil {
 		return TickDecision{}, err
 	}

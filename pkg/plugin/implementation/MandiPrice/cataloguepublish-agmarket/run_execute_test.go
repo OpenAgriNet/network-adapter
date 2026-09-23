@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/pipeline"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
 // publishingRecord is the live registry's answer for this capability, in the
@@ -120,6 +120,12 @@ func twoGoodStates() []upstreamState {
 
 // fakeAgmarknet serves the four upstream interactions a run makes.
 //
+// The paths below are written out rather than taken from Go constants,
+// because there are no Go constants any more: they are declared in
+// mandi-price-agmarket.yaml. If the file's paths and these diverge, this
+// fixture stops matching and the test fails -- which is exactly the coupling
+// worth having.
+//
 // masterStatesBody is rendered from the fixture rather than written out, so a
 // case can add or remove a state in one place and the state list, the rows
 // router and the expected catalogue count all move together.
@@ -145,7 +151,7 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/generate-dynamic-token-agmarknet":
 			_, _ = w.Write([]byte(`{"token":"tok-fake"}`))
 
-		case r.URL.Path == masterDataPath:
+		case r.URL.Path == "/v1/fetch-agmarknet-master-data":
 			// The state list and the master market list are the SAME path and
 			// are told apart only by the option the mapping sends -- 4 for the
 			// states the run loops over, 6 for every market's coordinates.
@@ -161,7 +167,7 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 				http.Error(w, `{"error":"Option must be between 1 and 6"}`, http.StatusBadRequest)
 			}
 
-		case r.URL.Path == stateRowsPath:
+		case r.URL.Path == "/v1/fetch-agmarknet-market-commodity-mapping":
 			code := r.URL.Query().Get("statecode")
 			state, ok := byCode[code]
 			if !ok {
@@ -229,12 +235,12 @@ func TestRunBuildsCataloguesFromAFakeUpstream(t *testing.T) {
 	now := firingTime(t)
 
 	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-		Record:    publishingRecord(),
-		Collector: Collector{},
-		RunLog:    runLog,
-		Lookup:    fakeUpstreamEnv(upstream.URL),
-		Now:       now,
-		OutDir:    outDir,
+		Record:   publishingRecord(),
+		Pipeline: Pipeline(),
+		RunLog:   runLog,
+		Lookup:   fakeUpstreamEnv(upstream.URL),
+		Now:      now,
+		OutDir:   outDir,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -243,15 +249,15 @@ func TestRunBuildsCataloguesFromAFakeUpstream(t *testing.T) {
 		t.Fatalf("not due: %s", report.Reason)
 	}
 
-	if report.Counters[CounterStates] != 2 {
-		t.Errorf("States = %d, want 2", report.Counters[CounterStates])
+	if report.Counters["step:states"] != 2 {
+		t.Errorf("States = %d, want 2", report.Counters["step:states"])
 	}
-	if report.Counters[CounterEmptyStates] != 0 {
-		t.Errorf("EmptyStates = %d, want 0; every state answered with rows", report.Counters[CounterEmptyStates])
+	if report.Counters["emptyStates"] != 0 {
+		t.Errorf("EmptyStates = %d, want 0; every state answered with rows", report.Counters["emptyStates"])
 	}
 	// Three rows across two states, none deduplicated away.
-	if report.Counters[CounterMarkets] != 3 {
-		t.Errorf("Markets = %d, want 3", report.Counters[CounterMarkets])
+	if report.Counters["step:dedupe"] != 3 {
+		t.Errorf("Markets = %d, want 3", report.Counters["step:dedupe"])
 	}
 	if len(report.Catalogues) != 2 {
 		t.Fatalf("Catalogs = %d, want one per state", len(report.Catalogues))
@@ -259,9 +265,9 @@ func TestRunBuildsCataloguesFromAFakeUpstream(t *testing.T) {
 	// Nashik's null coordinates must survive the join as "no geometry" rather
 	// than as 0,0. If the master market list were never fetched, or joined on
 	// the wrong key, every market would land here instead of just this one.
-	if report.Counters["geometryLessMarkets"] != 1 {
+	if report.Counters["annotated:publishedWithoutLocation"] != 1 {
 		t.Errorf("geometryLessMarkets = %d, want 1 (Nashik has no upstream coordinate)",
-			report.Counters["geometryLessMarkets"])
+			report.Counters["annotated:publishedWithoutLocation"])
 	}
 	// Not outDir itself: each pipeline gets its OWN subdirectory beneath the
 	// configured one, because the stale sweep and the publish glob both work
@@ -324,36 +330,36 @@ func TestRunCountsANoDataStateAsEmptyRatherThanBroken(t *testing.T) {
 	runLog := &fakeRunLog{}
 
 	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-		Record:    publishingRecord(),
-		Collector: Collector{},
-		RunLog:    runLog,
-		Lookup:    fakeUpstreamEnv(upstream.URL),
-		Now:       firingTime(t),
-		OutDir:    outDir,
+		Record:   publishingRecord(),
+		Pipeline: Pipeline(),
+		RunLog:   runLog,
+		Lookup:   fakeUpstreamEnv(upstream.URL),
+		Now:      firingTime(t),
+		OutDir:   outDir,
 	})
 	if err != nil {
 		t.Fatalf("a quiet state failed the run: %v", err)
 	}
 
-	if report.Counters[CounterEmptyStates] != 1 {
-		t.Errorf("EmptyStates = %d, want 1", report.Counters[CounterEmptyStates])
+	if report.Counters["emptyStates"] != 1 {
+		t.Errorf("EmptyStates = %d, want 1", report.Counters["emptyStates"])
 	}
 	// Skipped.EmptyStates counts a DIFFERENT thing: a state that returned
 	// markets but had none worth publishing. KA returned nothing at all, so it
 	// never reached the build and must not be counted here too. Collapsing the
 	// two would report one number for "the upstream was quiet" and "we threw
 	// everything away", which call for opposite responses.
-	if report.Counters["statesWithNothingToSay"] != 0 {
+	if report.Counters["emptyGroups"] != 0 {
 		t.Errorf("Skipped.EmptyStates = %d, want 0; a state the upstream had no data for "+
-			"never reached the build", report.Counters["statesWithNothingToSay"])
+			"never reached the build", report.Counters["emptyGroups"])
 	}
-	if report.Counters[CounterStates] != 2 {
-		t.Errorf("States = %d, want 2; a quiet state is still a state", report.Counters[CounterStates])
+	if report.Counters["step:states"] != 2 {
+		t.Errorf("States = %d, want 2; a quiet state is still a state", report.Counters["step:states"])
 	}
 	// The trading state is unaffected: an empty neighbour must not cost
 	// Maharashtra its catalogue.
-	if report.Counters[CounterMarkets] != 2 {
-		t.Errorf("Markets = %d, want 2 (Maharashtra's rows only)", report.Counters[CounterMarkets])
+	if report.Counters["step:dedupe"] != 2 {
+		t.Errorf("Markets = %d, want 2 (Maharashtra's rows only)", report.Counters["step:dedupe"])
 	}
 	if len(report.Catalogues) != 1 || report.Catalogues[0].Slug != "MH" {
 		t.Fatalf("Catalogs = %+v, want one for MH", report.Catalogues)
@@ -385,13 +391,13 @@ func TestRunRefusesToPublishWhenAStateFailedForARealReason(t *testing.T) {
 	runLog := &fakeRunLog{}
 
 	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-		Record:    publishingRecord(),
-		Collector: Collector{},
-		RunLog:    runLog,
-		Lookup:    fakeUpstreamEnv(upstream.URL),
-		Now:       firingTime(t),
-		OutDir:    t.TempDir(),
-		Publish:   true,
+		Record:   publishingRecord(),
+		Pipeline: Pipeline(),
+		RunLog:   runLog,
+		Lookup:   fakeUpstreamEnv(upstream.URL),
+		Now:      firingTime(t),
+		OutDir:   t.TempDir(),
+		Publish:  true,
 	})
 	if err == nil {
 		t.Fatal("a collection missing a whole state was published as though it were whole")
@@ -401,8 +407,8 @@ func TestRunRefusesToPublishWhenAStateFailedForARealReason(t *testing.T) {
 	}
 	// A failure must never be filed as a quiet state; that is the miscount the
 	// no-data classification exists to prevent, in the opposite direction.
-	if report.Counters[CounterEmptyStates] != 0 {
-		t.Errorf("EmptyStates = %d, want 0; a 500 is a failure, not an empty state", report.Counters[CounterEmptyStates])
+	if report.Counters["emptyStates"] != 0 {
+		t.Errorf("EmptyStates = %d, want 0; a 500 is a failure, not an empty state", report.Counters["emptyStates"])
 	}
 	// The healthy state was still built -- the refusal is about sending, not
 	// about collecting -- so an operator can see what would have gone out.
@@ -430,11 +436,11 @@ func TestRunReportsAStateFailureEvenWhenNotPublishing(t *testing.T) {
 
 	upstream := fakeAgmarknet(t, states)
 	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-		Record:    publishingRecord(),
-		Collector: Collector{},
-		Lookup:    fakeUpstreamEnv(upstream.URL),
-		Now:       firingTime(t),
-		OutDir:    t.TempDir(),
+		Record:   publishingRecord(),
+		Pipeline: Pipeline(),
+		Lookup:   fakeUpstreamEnv(upstream.URL),
+		Now:      firingTime(t),
+		OutDir:   t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("a build-only run failed: %v", err)
@@ -442,8 +448,8 @@ func TestRunReportsAStateFailureEvenWhenNotPublishing(t *testing.T) {
 	if report.Errors != 1 {
 		t.Errorf("StateErrors = %d, want 1; a failed state is invisible in this report", report.Errors)
 	}
-	if report.Counters[CounterEmptyStates] != 0 {
-		t.Errorf("EmptyStates = %d, want 0; a 500 is not a quiet state", report.Counters[CounterEmptyStates])
+	if report.Counters["emptyStates"] != 0 {
+		t.Errorf("EmptyStates = %d, want 0; a 500 is not a quiet state", report.Counters["emptyStates"])
 	}
 }
 
@@ -467,7 +473,7 @@ func TestRunFailsWhenTheUpstreamNamesNoStates(t *testing.T) {
 					_, _ = w.Write([]byte(`{"token":"tok-fake"}`))
 					return
 				}
-				if r.URL.Path == stateRowsPath {
+				if r.URL.Path == "/v1/fetch-agmarknet-market-commodity-mapping" {
 					t.Error("rows were fetched although no state list was returned")
 				}
 				_, _ = w.Write([]byte(tc.body))
@@ -476,12 +482,12 @@ func TestRunFailsWhenTheUpstreamNamesNoStates(t *testing.T) {
 
 			runLog := &fakeRunLog{}
 			_, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-				Record:    publishingRecord(),
-				Collector: Collector{},
-				RunLog:    runLog,
-				Lookup:    fakeUpstreamEnv(upstream.URL),
-				Now:       firingTime(t),
-				OutDir:    t.TempDir(),
+				Record:   publishingRecord(),
+				Pipeline: Pipeline(),
+				RunLog:   runLog,
+				Lookup:   fakeUpstreamEnv(upstream.URL),
+				Now:      firingTime(t),
+				OutDir:   t.TempDir(),
 			})
 			if err == nil {
 				t.Fatal("a run that collected no states reported success")
@@ -491,4 +497,39 @@ func TestRunFailsWhenTheUpstreamNamesNoStates(t *testing.T) {
 			}
 		})
 	}
+}
+
+// renderedCatalog is the part of a rendered catalogue these tests assert on.
+// Carried over from the deleted catalog_test.go, because what it checks --
+// that the document really carries the ids and resources the file describes --
+// did not stop mattering when the building moved into the frame.
+type renderedCatalog struct {
+	Context struct {
+		TransactionID string `json:"transactionId"`
+		MessageID     string `json:"messageId"`
+		Timestamp     string `json:"timestamp"`
+	} `json:"context"`
+	Message struct {
+		Catalogs []struct {
+			ID         string `json:"id"`
+			Descriptor struct {
+				Name string `json:"name"`
+			} `json:"descriptor"`
+			Resources []struct {
+				ID         string `json:"id"`
+				Descriptor struct {
+					Name string `json:"name"`
+				} `json:"descriptor"`
+			} `json:"resources"`
+		} `json:"catalogs"`
+	} `json:"message"`
+}
+
+func decodeCatalog(t *testing.T, content []byte) renderedCatalog {
+	t.Helper()
+	var out renderedCatalog
+	if err := json.Unmarshal(content, &out); err != nil {
+		t.Fatalf("unmarshal rendered catalog: %v\nbody: %s", err, content)
+	}
+	return out
 }

@@ -15,15 +15,12 @@ package agmarket
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/pipeline"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/sunbirdRegistry"
 )
 
@@ -56,314 +53,6 @@ func liveOrSkip(t *testing.T) map[string]string {
 	// surprises on its own.
 	t.Logf("resolved inputs: %v", pipeline.RedactedInputs(spec.Inputs, resolved))
 	return resolved
-}
-
-// liveClient is a client pointed at the real upstream, already holding a token.
-func liveClient(t *testing.T, resolved map[string]string) (*pipeline.Client, string) {
-	t.Helper()
-	client := pipeline.NewClient(resolved["baseUrl"])
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	token, err := client.Token(ctx, resolved["tokenUser"], resolved["tokenSecret"])
-	if err != nil {
-		t.Fatalf("token exchange failed: %v", err)
-	}
-	return client, token
-}
-
-// TestLive_1_Token proves the credentials work and nothing else.
-func TestLive_1_Token(t *testing.T) {
-	resolved := liveOrSkip(t)
-	_, token := liveClient(t, resolved)
-
-	// Length only. The token is a credential and this output ends up in
-	// terminals and tickets.
-	t.Logf("token exchange OK (%d characters)", len(token))
-}
-
-// TestLive_2_States fetches the state list -- the loop driver for everything
-// after it.
-func TestLive_2_States(t *testing.T) {
-	resolved := liveOrSkip(t)
-	client, token := liveClient(t, resolved)
-	mapper, mappingBase := testMapper(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	out, err := client.Get(ctx, mapper, mappingBase+"/master-states.yaml",
-		"/v1/fetch-agmarknet-master-data", map[string]any{"token": token})
-	if err != nil {
-		t.Fatalf("states: %v", err)
-	}
-
-	var states []struct {
-		Code string `json:"code"`
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(out, &states); err != nil {
-		t.Fatalf("states did not decode: %v", err)
-	}
-	if len(states) == 0 {
-		t.Fatal("upstream returned zero states; walking nothing would read as 'India has no markets'")
-	}
-
-	t.Logf("%d states", len(states))
-	for i, state := range states {
-		if i == 5 {
-			t.Logf("  ... and %d more", len(states)-5)
-			break
-		}
-		t.Logf("  %s = %s", state.Code, state.Name)
-	}
-}
-
-// TestLive_3_MasterMarkets fetches every market in India with its coordinates.
-// This is the dataset the coordinate verdicts are computed from, so the
-// counts it prints are the ones that explain later exclusions.
-func TestLive_3_MasterMarkets(t *testing.T) {
-	resolved := liveOrSkip(t)
-	client, token := liveClient(t, resolved)
-	mapper, mappingBase := testMapper(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	out, err := client.Get(ctx, mapper, mappingBase+"/master-markets.yaml",
-		"/v1/fetch-agmarknet-master-data", map[string]any{"token": token})
-	if err != nil {
-		t.Fatalf("masterMarkets: %v", err)
-	}
-
-	var markets []Market
-	if err := json.Unmarshal(out, &markets); err != nil {
-		t.Fatalf("markets did not decode: %v", err)
-	}
-
-	var verdicts = map[string]int{}
-	for _, market := range markets {
-		verdicts[coordinateQuality(market.Latitude, market.Longitude)]++
-	}
-	t.Logf("%d markets; coordinate verdicts: %v", len(markets), verdicts)
-	t.Log("  'missing' is the upstream leaving lat/lon null; 'suspect' is the same number in both fields")
-}
-
-// TestLive_4_StateRows fetches one state's market/commodity rows. Set
-// MANDI_LIVE_STATE to choose the state (default MH), because a full run is 36
-// sequential calls and this step is the one worth inspecting closely.
-func TestLive_4_StateRows(t *testing.T) {
-	resolved := liveOrSkip(t)
-	client, token := liveClient(t, resolved)
-	mapper, mappingBase := testMapper(t)
-
-	state := os.Getenv("MANDI_LIVE_STATE")
-	if state == "" {
-		state = "MH"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	out, err := client.Get(ctx, mapper, mappingBase+"/market-commodity.yaml",
-		"/v1/fetch-agmarknet-market-commodity-mapping", map[string]any{
-			"token":     token,
-			"stateCode": state,
-			"fromDate":  resolved["fromDate"],
-			"toDate":    resolved["toDate"],
-		})
-	if errors.Is(err, pipeline.ErrNoUpstreamData) {
-		// Not a failure. The upstream is saying this state traded nothing in
-		// this window -- a Sunday or a holiday does this for every state at
-		// once. Treating it as an error is the exact mistake that once turned
-		// 27 of 36 states into reported outages.
-		t.Skipf("%s traded nothing over %s..%s (upstream: no data). "+
-			"Set MANDI_FROM_DATE/MANDI_TO_DATE to a trading day to see rows.",
-			state, resolved["fromDate"], resolved["toDate"])
-	}
-	if err != nil {
-		t.Fatalf("stateRows(%s) over %s..%s: %v", state, resolved["fromDate"], resolved["toDate"], err)
-	}
-
-	var rows []StateMarket
-	if err := json.Unmarshal(out, &rows); err != nil {
-		t.Fatalf("rows did not decode: %v", err)
-	}
-
-	t.Logf("%s: %d market rows over %s..%s", state, len(rows), resolved["fromDate"], resolved["toDate"])
-	for i, row := range rows {
-		if i == 3 {
-			t.Logf("  ... and %d more", len(rows)-3)
-			break
-		}
-		t.Logf("  market %d %q, district %d, %d commodities",
-			row.MarketID, row.MarketName, row.DistrictID, len(row.Commodities))
-	}
-}
-
-// TestLive_5_CollectOneState runs the whole collection half for one state:
-// fetch, join to the master coordinates, judge them, dedupe. This is the last
-// step before anything is built, and its output is what a catalogue is made
-// of.
-func TestLive_5_CollectOneState(t *testing.T) {
-	resolved := liveOrSkip(t)
-	client, token := liveClient(t, resolved)
-	mapper, mappingBase := testMapper(t)
-
-	state := os.Getenv("MANDI_LIVE_STATE")
-	if state == "" {
-		state = "MH"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	markets := liveMasterMarkets(ctx, t, client, mapper, mappingBase, token)
-	rows := liveStateRows(ctx, t, client, mapper, mappingBase, token, state, resolved)
-
-	collected := dedupeByMarketID(deriveQuality(joinMarkets(rows, markets)))
-
-	verdicts := map[string]int{}
-	for _, market := range collected {
-		verdicts[market.CoordinateQuality]++
-	}
-	t.Logf("%s: %d rows in, %d markets out, verdicts %v", state, len(rows), len(collected), verdicts)
-	t.Log("  a row with no master match is KEPT -- it trades today, only its location is unknown")
-}
-
-// TestLive_6_BuildCatalogues builds real catalogue documents for one state and
-// writes them where a person can read them. Nothing is published.
-func TestLive_6_BuildCatalogues(t *testing.T) {
-	resolved := liveOrSkip(t)
-	client, token := liveClient(t, resolved)
-	mapper, mappingBase := testMapper(t)
-
-	state := os.Getenv("MANDI_LIVE_STATE")
-	if state == "" {
-		state = "MH"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	markets := liveMasterMarkets(ctx, t, client, mapper, mappingBase, token)
-	rows := liveStateRows(ctx, t, client, mapper, mappingBase, token, state, resolved)
-	collected := dedupeByMarketID(deriveQuality(joinMarkets(rows, markets)))
-
-	built, summary, err := buildCatalogs(ctx, mapper, mappingBase+"/catalog.yaml", collected, catalogBuildConfig{
-		ParticipantID:   resolved["participantId"],
-		NetworkID:       resolved["networkId"],
-		WindowFrom:      resolved["fromDate"],
-		WindowTo:        resolved["toDate"],
-		GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
-		TransactionID:   "live-test-transaction",
-		MessageID:       "live-test-message",
-		WithoutGeometry: resolved["withoutGeometry"],
-	})
-	if err != nil {
-		t.Fatalf("buildCatalogs: %v", err)
-	}
-
-	outDir := os.Getenv("MANDI_LIVE_OUT")
-	if outDir == "" {
-		outDir = t.TempDir()
-	}
-	if err := pipeline.WriteCatalogues(asCatalogues(built), outDir, "mandi-price"); err != nil {
-		t.Fatalf("writeCatalogs: %v", err)
-	}
-
-	t.Logf("built %d catalogue(s) into %s", len(built), outDir)
-	for _, catalog := range built {
-		path := filepath.Join(outDir, "mandi-"+catalog.Slug+".json")
-		info, _ := os.Stat(path)
-		var size int64
-		if info != nil {
-			size = info.Size()
-		}
-		t.Logf("  %s -> %s (%d bytes)", catalog.CatalogID, path, size)
-	}
-	t.Logf("skipped: %d zero-commodity, %d geometry-less, %d states with nothing publishable",
-		summary.ZeroCommodities, summary.GeometryLess, summary.EmptyStates)
-	for _, excluded := range summary.Excluded {
-		t.Logf("  excluded %d %q: %s", excluded.MarketID, excluded.MarketName, excluded.Reason)
-	}
-}
-
-// TestLive_7_Publish PUTS CATALOGUES ONTO THE NETWORK. It needs its own
-// opt-in for that reason: every other live test only reads.
-func TestLive_7_Publish(t *testing.T) {
-	resolved := liveOrSkip(t)
-	if os.Getenv("MANDI_LIVE_PUBLISH") != "1" {
-		t.Skip("this test publishes to the real network: set MANDI_LIVE_PUBLISH=1 to allow it")
-	}
-
-	dir := os.Getenv("MANDI_LIVE_OUT")
-	if dir == "" {
-		t.Fatal("set MANDI_LIVE_OUT to a directory built by TestLive_6_BuildCatalogues, " +
-			"so this publishes catalogues you have already looked at")
-	}
-
-	spec, err := pipeline.LoadSpec(Files, PipelinePath)
-	if err != nil {
-		t.Fatalf("LoadSpec: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	result, err := pipeline.PublishCatalogues(ctx, spec.Publish, resolved, dir, "mandi-price", 0)
-	if err != nil {
-		t.Fatalf("publishCatalogs: %v", err)
-	}
-
-	for _, outcome := range result.Outcomes {
-		t.Logf("%s: %s -> %s %s", outcome.StateCode, outcome.CatalogID, outcome.Status, outcome.Reason)
-	}
-	if result.HasFailures() {
-		t.Fatal("at least one catalogue did not reach the network intact " +
-			"(PARTIAL counts: it means the catalogue indexed with resources missing)")
-	}
-}
-
-func liveMasterMarkets(ctx context.Context, t *testing.T, client *pipeline.Client,
-	mapper pipeline.Mapper, mappingBase, token string) []Market {
-	t.Helper()
-	out, err := client.Get(ctx, mapper, mappingBase+"/master-markets.yaml",
-		"/v1/fetch-agmarknet-master-data", map[string]any{"token": token})
-	if err != nil {
-		t.Fatalf("masterMarkets: %v", err)
-	}
-	var markets []Market
-	if err := json.Unmarshal(out, &markets); err != nil {
-		t.Fatalf("markets did not decode: %v", err)
-	}
-	return markets
-}
-
-func liveStateRows(ctx context.Context, t *testing.T, client *pipeline.Client,
-	mapper pipeline.Mapper, mappingBase, token, state string, resolved map[string]string) []StateMarket {
-	t.Helper()
-	out, err := client.Get(ctx, mapper, mappingBase+"/market-commodity.yaml",
-		"/v1/fetch-agmarknet-market-commodity-mapping", map[string]any{
-			"token":     token,
-			"stateCode": state,
-			"fromDate":  resolved["fromDate"],
-			"toDate":    resolved["toDate"],
-		})
-	if errors.Is(err, pipeline.ErrNoUpstreamData) {
-		t.Skipf("%s traded nothing over %s..%s (upstream: no data). "+
-			"Set MANDI_FROM_DATE/MANDI_TO_DATE to a trading day.",
-			state, resolved["fromDate"], resolved["toDate"])
-	}
-	if err != nil {
-		t.Fatalf("stateRows(%s): %v", state, err)
-	}
-	var rows []StateMarket
-	if err := json.Unmarshal(out, &rows); err != nil {
-		t.Fatalf("rows did not decode: %v", err)
-	}
-	return rows
 }
 
 // TestLive_0_RegistryLookup exercises the lookup the design's registry gate
@@ -472,10 +161,10 @@ func TestLive_8_Tick(t *testing.T) {
 	// gate, the run log and the schedule exactly as a scheduled tick would.
 	now := time.Now()
 	decision, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-		Collector: Collector{},
-		Record:    record,
-		Now:       now,
-		DryRun:    true,
+		Pipeline: Pipeline(),
+		Record:   record,
+		Now:      now,
+		DryRun:   true,
 	})
 	if err != nil {
 		t.Fatalf("tick against the live record: %v", err)
@@ -492,11 +181,11 @@ func TestLive_8_Tick(t *testing.T) {
 	// Same record, with a run log saying it just ran: the tick must go quiet
 	// rather than publishing a second time the same day.
 	repeat, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-		Collector: Collector{},
-		Record:    record,
-		RunLog:    &fakeRunLog{last: now},
-		Now:       now,
-		DryRun:    true,
+		Pipeline: Pipeline(),
+		Record:   record,
+		RunLog:   &fakeRunLog{last: now},
+		Now:      now,
+		DryRun:   true,
 	})
 	if err != nil {
 		t.Fatalf("tick after a run: %v", err)
@@ -507,16 +196,55 @@ func TestLive_8_Tick(t *testing.T) {
 	}
 }
 
-// asCatalogues is the same conversion Collect does, so a live test writes the
-// files a real run would.
-func asCatalogues(built []BuiltCatalog) []pipeline.Catalogue {
-	out := make([]pipeline.Catalogue, 0, len(built))
-	for _, catalog := range built {
-		out = append(out, pipeline.Catalogue{
-			Slug:      catalog.Slug,
-			CatalogID: catalog.CatalogID,
-			Content:   catalog.Content,
-		})
+// TestLive_9_BuildAgainstLiveUpstream runs the WHOLE pipeline against the real
+// Agmarknet, exactly as a scheduled tick would, and stops before publishing.
+//
+// This is the test that proves the YAML is the program: nothing in Go names an
+// Agmarknet path, a mapping file or a market any more. If the file's steps,
+// its coordinate rules or its chunking were wrong, this is where it shows.
+func TestLive_9_BuildAgainstLiveUpstream(t *testing.T) {
+	resolved := liveOrSkip(t)
+	record := liveProviderRecord(t, resolved)
+
+	outDir := os.Getenv("MANDI_LIVE_OUT")
+	if outDir == "" {
+		outDir = t.TempDir()
 	}
-	return out
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	report, err := pipeline.Run(ctx, pipeline.RunOptions{
+		Pipeline: Pipeline(),
+		Record:   record,
+		Now:      time.Now(),
+		OutDir:   outDir,
+		// Publish deliberately left false: this reads from the upstream and
+		// writes to disk, and nothing else.
+	})
+	if err != nil {
+		t.Fatalf("the pipeline failed against the live upstream: %v", err)
+	}
+	if !report.Due {
+		t.Skipf("not due, so nothing ran: %s", report.Reason)
+	}
+
+	t.Logf("catalogues: %d in %s", len(report.Catalogues), report.OutDir)
+	for name, count := range report.Counters {
+		t.Logf("  %-34s %d", name, count)
+	}
+	for i, catalogue := range report.Catalogues {
+		if i == 5 {
+			t.Logf("  ... and %d more", len(report.Catalogues)-5)
+			break
+		}
+		t.Logf("  %-10s %s (%d bytes)", catalogue.Slug, catalogue.CatalogID, len(catalogue.Content))
+	}
+
+	if len(report.Catalogues) == 0 {
+		t.Error("the live upstream produced no catalogues at all")
+	}
+	if report.Errors > 0 {
+		t.Errorf("%d parts of the collection failed; publishing would be refused", report.Errors)
+	}
 }
