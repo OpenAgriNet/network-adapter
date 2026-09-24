@@ -38,11 +38,10 @@ import (
 // fetchTimeout/artifactCacheTTL).
 const (
 	cfgDBDSN                = "dbDsn"
-	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
-	cfgStaticIndexURLs      = "staticIndexUrls" // comma-separated, optional fixed index URLs
-	cfgDiscoveryURL         = "discoveryPushUrl"
-	cfgParticipantID        = "participantId" // this deployment's own bppId
-	cfgBppURI               = "bppUri"        // this deployment's own bppUri
+	cfgNetworks             = "networks"         // comma-separated networkIds for registry-backed discovery
+	cfgStaticIndexURLs      = "staticIndexUrls"  // comma-separated, optional fixed index URLs
+	cfgPublishURL           = "publishUrl"       // the provider adapter's base address; everything publishes to its /publish
+	cfgDiscoveryURL         = "discoveryPushUrl" // RETIRED: crawled catalogues now go to publishUrl too; refused if set
 	cfgFetchTimeoutSec      = "fetchTimeoutSeconds"
 	cfgMaxFetchBytes        = "maxFetchBytes"
 	cfgMaxDecompressed      = "maxDecompressedBytes"
@@ -91,9 +90,20 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	if dsn == "" {
 		return nil, nil, fmt.Errorf("catalogcrawler: config %q is required", cfgDBDSN)
 	}
-	discoveryURL := strings.TrimSpace(config[cfgDiscoveryURL])
-	if discoveryURL == "" {
-		return nil, nil, fmt.Errorf("catalogcrawler: config %q is required", cfgDiscoveryURL)
+	// ONE address for everything this crawler puts on the network: crawled
+	// catalogues (the sink) and the scheduled publish pipelines both post to
+	// its /publish. The old discovery /push address is refused rather than
+	// ignored, so a deployment still setting it learns that its crawled
+	// catalogues now go somewhere else.
+	if strings.TrimSpace(config[cfgDiscoveryURL]) != "" {
+		return nil, nil, fmt.Errorf("catalogcrawler: config %q is retired; crawled catalogues are now published "+
+			"through the provider adapter like everything else. Remove it and set %q to the provider adapter's "+
+			"base address (e.g. http://provider-adapter:9200)", cfgDiscoveryURL, cfgPublishURL)
+	}
+	publishURL := strings.TrimSpace(config[cfgPublishURL])
+	if publishURL == "" {
+		return nil, nil, fmt.Errorf("catalogcrawler: config %q is required: the provider adapter's base address, "+
+			"whose /publish every catalogue is posted to", cfgPublishURL)
 	}
 
 	log := slog.New(log.NewSlogHandler())
@@ -118,7 +128,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	fetcher := catalog.NewFetcher(client, keys, maxDecompressed)
 
 	src := buildSource(config, metadataLookup, log)
-	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgBppURI], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
+	snk := sink.NewPublishSink(publishURL, int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
 
 	// The same configured networks drive both registry-backed discovery
 	// (buildSource) and scope filtering (Params.Networks) -- one deployment

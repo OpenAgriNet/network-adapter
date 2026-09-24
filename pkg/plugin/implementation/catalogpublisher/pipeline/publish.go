@@ -1,20 +1,68 @@
 package pipeline
 
-// The pipeline's publish step. It is deliberately thin: the publishing itself,
-// including how an answer is judged, lives in
-// pkg/plugin/implementation/catalogpublisher/catalogpublish and
-// is not reimplemented here. This file only turns the YAML's declared publish
-// block into that package's Config, and refuses the run outright in the one
-// case the YAML says it must.
+// The pipeline's publish step: which built files go out, in what order, under
+// what safety rule, and what counts as success. It does NOT make the HTTP
+// call. That is a Publisher's -- in production the crawler's sink
+// (catalogcrawler/internal/sink), the one piece of code that posts to the
+// provider adapter's /publish, for crawled catalogues and pipelines alike.
+// Keeping the call out of here is what lets this package stay free of the
+// crawler while the crawler owns the network.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
+	"github.com/google/uuid"
 )
+
+// Per-catalogue outcomes.
+const (
+	StatusPublished      = "published"
+	StatusRejected       = "rejected"
+	StatusTransportError = "transport-error"
+)
+
+// Outcome is what happened to one catalogue.
+type Outcome struct {
+	StateCode string
+	CatalogID string
+	Status    string
+	Reason    string
+}
+
+// Result is one publish step.
+type Result struct {
+	Outcomes   []Outcome
+	RetiredOld *Outcome
+}
+
+// HasFailures reports whether anything did not reach the index intact, so a
+// caller can exit non-zero. A PARTIAL counts: a Publisher reports it as
+// StatusRejected.
+func (r Result) HasFailures() bool {
+	for _, outcome := range r.Outcomes {
+		if outcome.Status != StatusPublished {
+			return true
+		}
+	}
+	return r.RetiredOld != nil && r.RetiredOld.Status != StatusPublished
+}
+
+// Publisher posts one catalog/publish body to the provider adapter whose
+// base address is baseURL, and judges the answer: ACCEPTED is
+// StatusPublished, anything else -- PARTIAL included -- is StatusRejected,
+// and a failure to reach it is StatusTransportError. A transport failure is
+// an Outcome, not an error, so one bad catalogue never hides the others.
+type Publisher interface {
+	Publish(ctx context.Context, baseURL string, body []byte) Outcome
+}
 
 // publishAddressHint is the fallback when a caller has not said how THIS
 // pipeline's address is supplied. Generic on purpose: naming one pipeline's
@@ -58,16 +106,22 @@ func refuseWhenCounter(rule string) (string, bool) {
 	return match[1], true
 }
 
-// publishCatalogs posts every catalog file in catalogDir, unless the declared
-// safety rule forbids it.
+// PublishCatalogues posts every catalogue file in catalogDir through
+// publisher, unless the declared safety rule forbids it.
 //
-// stateErrors is how many states failed to collect. A state that failed to
-// collect is not a state with no markets, so publishing then would replace a
-// whole state's catalog with a partial one, or with nothing.
+// stateErrors is how many parts of the collection failed. A part that failed
+// to collect is not a part with nothing in it, so publishing then would
+// replace a whole group's catalogue with a partial one, or with nothing.
+//
+// Sequential and per-catalogue on purpose: one failed catalogue is one
+// retryable catalogue, and must not discard the outcomes of the others.
 func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]string,
-	catalogDir, filenamePrefix string, stateErrors int) (catalogpublish.Result, error) {
-	var result catalogpublish.Result
+	catalogDir, filenamePrefix string, stateErrors int, publisher Publisher) (Result, error) {
+	var result Result
 
+	if publisher == nil {
+		return result, fmt.Errorf("no publisher: this run was asked to publish but given nothing to publish with")
+	}
 	if err := checkJudgement(spec); err != nil {
 		return result, err
 	}
@@ -87,12 +141,8 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 		}
 	}
 
-	// The YAML's publish.url is ${inputs.publishUrl}/publish, but
-	// catalogpublish.Publish appends "/publish" to Config.PublishURL itself:
-	//
-	//     base := strings.TrimRight(cfg.PublishURL, "/") + "/publish"
-	//
-	// So the BASE address goes in, not the YAML's rendered url. Passing the
+	// The YAML's publish.url is ${inputs.publishUrl}/publish, but a Publisher
+	// is given the BASE address and appends /publish itself. Passing the
 	// rendered url would post to /publish/publish, which fails as a 404 far
 	// from here and reads like an unreachable adapter rather than a bug.
 	if err := checkPublishURL(spec); err != nil {
@@ -108,22 +158,139 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 		return result, fmt.Errorf("no publish address: %s", hint)
 	}
 
-	cfg := catalogpublish.Config{
-		PublishURL:     publishURL,
-		CatalogIn:      catalogDir,
-		FilenamePrefix: filenamePrefix,
-		AddressHint:    hint,
-	}
-	if err := applyRetireOld(spec.RetireOld, resolved, &cfg); err != nil {
+	retire, err := retirement(spec.RetireOld, resolved)
+	if err != nil {
 		return result, err
 	}
 
-	return catalogpublish.Publish(ctx, cfg)
+	files, err := catalogueFiles(catalogDir, filenamePrefix)
+	if err != nil {
+		return result, err
+	}
+	// An empty directory must not look like a successful run: silently
+	// publishing nothing is indistinguishable from publishing everything.
+	if len(files) == 0 && retire == nil {
+		return result, fmt.Errorf("no catalogue files in %s", catalogDir)
+	}
+
+	for _, file := range files {
+		result.Outcomes = append(result.Outcomes, publishFile(ctx, publisher, publishURL, file))
+	}
+	if retire != nil {
+		outcome := publisher.Publish(ctx, publishURL, tombstone(retire.CatalogID, retire.DescriptorName))
+		if outcome.CatalogID == "" {
+			outcome.CatalogID = retire.CatalogID
+		}
+		result.RetiredOld = &outcome
+	}
+	return result, nil
+}
+
+// catalogueFile pairs a built catalogue with the group it belongs to.
+//
+// slug and stateCode differ for a split group: <prefix>-TN-2.json has slug
+// TN-2 and group TN.
+type catalogueFile struct {
+	slug      string
+	stateCode string
+	path      string
+}
+
+// chunkSuffix matches the -N a split group's catalogue carries.
+var chunkSuffix = regexp.MustCompile(`-[0-9]+$`)
+
+// catalogueFiles lists <prefix>-<slug>.json in dir, sorted, so a run reads the
+// same way twice. The match is the one WriteCatalogues and
+// RemoveStaleCatalogues make -- three places, one naming contract.
+func catalogueFiles(dir, prefix string) ([]catalogueFile, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read catalogue directory: %w", err)
+	}
+	namePrefix := prefix + "-"
+	var files []catalogueFile
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, namePrefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		slug := strings.TrimSuffix(strings.TrimPrefix(name, namePrefix), ".json")
+		files = append(files, catalogueFile{
+			slug: slug, stateCode: chunkSuffix.ReplaceAllString(slug, ""), path: filepath.Join(dir, name),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].slug < files[j].slug })
+	return files, nil
+}
+
+// publishFile reads one built catalogue and posts it VERBATIM: the file is
+// what a human reviewed, so re-encoding it would publish something nobody
+// read.
+func publishFile(ctx context.Context, publisher Publisher, publishURL string, file catalogueFile) Outcome {
+	body, err := os.ReadFile(file.path)
+	if err != nil {
+		return Outcome{StateCode: file.stateCode, Status: StatusTransportError,
+			Reason: fmt.Sprintf("read %s: %v", file.path, err)}
+	}
+	outcome := publisher.Publish(ctx, publishURL, body)
+	outcome.StateCode = file.stateCode
+	if outcome.CatalogID == "" {
+		outcome.CatalogID = catalogueIDOf(body)
+	}
+	return outcome
+}
+
+// catalogueIDOf reads the catalogue's own id out of a publish body, so a
+// reported id is the one actually sent rather than one rebuilt from a name.
+func catalogueIDOf(body []byte) string {
+	var envelope struct {
+		Message struct {
+			Catalogs []struct {
+				ID string `json:"id"`
+			} `json:"catalogs"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil && len(envelope.Message.Catalogs) > 0 {
+		return envelope.Message.Catalogs[0].ID
+	}
+	return ""
+}
+
+// tombstone is a publish body that deactivates a whole catalogue.
+//
+// Deactivating the catalogue is how its resources go away. updateMode FULL is
+// rejected as unsupported, and MERGE's removal semantics are documented
+// nowhere, so republishing the catalogue WITHOUT the unwanted resource cannot
+// be relied on to remove it.
+func tombstone(catalogID, retiredName string) []byte {
+	body, _ := json.Marshal(map[string]any{
+		"context": map[string]any{
+			"action":        "catalog/publish",
+			"version":       "2.0.0",
+			"transactionId": uuid.NewString(),
+			"messageId":     uuid.NewString(),
+			"timestamp":     time.Now().UTC().Format(time.RFC3339),
+		},
+		"message": map[string]any{
+			"catalogs": []any{map[string]any{
+				"id":         catalogID,
+				"isActive":   false,
+				"descriptor": map[string]any{"code": catalogID, "name": retiredName},
+				"resources":  []any{},
+			}},
+			"publishDirectives": []any{map[string]any{
+				"catalogId":   catalogID,
+				"catalogType": "REGULAR",
+				"updateMode":  "MERGE",
+			}},
+		},
+	})
+	return body
 }
 
 // expectedPublishURL is the only publish.url this step can honour, for the
 // reason given where the address is resolved: the base goes to
-// catalogpublish, which appends the path itself.
+// the Publisher, which appends the path itself.
 const expectedPublishURL = "${inputs.publishUrl}/publish"
 
 // checkPublishURL refuses a publish.url this step would ignore.
@@ -142,44 +309,40 @@ func checkPublishURL(spec Publish) error {
 	return nil
 }
 
-// applyRetireOld carries the declared retireOld block into the publish config.
+// retirement resolves the declared retireOld block: nil when there is none
+// or it is switched off, the block itself when it is on.
 //
-// catalogpublish can deactivate a superseded catalog (it posts a tombstone),
-// so a declared retireOld that never reached it would be a rule the file
-// states and nothing performs -- the same failure checkJudgement guards.
+// A declared retireOld that never reached the publish step would be a rule
+// the file states and nothing performs -- the same failure checkJudgement
+// guards.
 //
-// Enabled is `${inputs.retireOld}` in the file, and inputs: does not declare
-// retireOld at all, so it cannot resolve. That is refused rather than read as
-// false: treating an unresolvable enable flag as "off" would silently skip the
-// retirement, which is the outcome an operator who wrote the block was trying
-// to avoid. Declaring the input, or removing the block, both fix it.
-func applyRetireOld(spec RetireOld, resolved map[string]string, cfg *catalogpublish.Config) error {
+// Enabled is an `${inputs.*}` reference. One naming an input the file does not
+// declare is refused rather than read as false: treating an unresolvable
+// enable flag as "off" would silently skip the retirement, which is the
+// outcome an operator who wrote the block was trying to avoid.
+func retirement(spec RetireOld, resolved map[string]string) (*RetireOld, error) {
 	enabled := strings.TrimSpace(spec.Enabled)
 	if enabled == "" {
-		return nil // no retireOld block, nothing to carry
+		return nil, nil // no retireOld block
 	}
 
 	value, ok := resolved[strings.TrimSuffix(strings.TrimPrefix(enabled, "${inputs."), "}")]
 	if !ok {
-		return fmt.Errorf(
+		return nil, fmt.Errorf(
 			"publish.retireOld.enabled is %q, but no such input is declared, so the retirement "+
 				"cannot be turned on or off; declare the input or remove the block", enabled)
 	}
 	if !strings.EqualFold(value, "true") {
-		return nil
+		return nil, nil
 	}
-
 	if strings.TrimSpace(spec.CatalogID) == "" {
-		return fmt.Errorf("publish.retireOld is enabled but names no catalogId to retire")
+		return nil, fmt.Errorf("publish.retireOld is enabled but names no catalogId to retire")
 	}
-	cfg.RetireOld = true
-	cfg.OldCatalogID = spec.CatalogID
-	cfg.RetiredName = spec.DescriptorName
-	return nil
+	return &spec, nil
 }
 
-// checkJudgement verifies the spec's declared verdicts are the ones
-// catalogpublish actually applies: ACCEPTED is the only success, and anything
+// checkJudgement verifies the spec's declared verdicts are the ones a
+// Publisher actually applies: ACCEPTED is the only success, and anything
 // else -- PARTIAL included -- is a failure.
 //
 // The judgement is not re-implemented here, so a pipeline declaring something

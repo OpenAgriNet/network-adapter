@@ -403,6 +403,8 @@ func TestRunRefusesToPublishWhenAStateFailedForARealReason(t *testing.T) {
 		Now:      firingTime(t),
 		OutDir:   t.TempDir(),
 		Publish:  true,
+		// Must never be reached: the refusal comes before any send.
+		Publisher: refusingPublisher{t},
 	})
 	if err == nil {
 		t.Fatal("a collection missing a whole state was published as though it were whole")
@@ -537,4 +539,12 @@ func decodeCatalog(t *testing.T, content []byte) renderedCatalog {
 		t.Fatalf("unmarshal rendered catalog: %v\nbody: %s", err, content)
 	}
 	return out
+}
+
+// refusingPublisher fails the test if anything is published through it.
+type refusingPublisher struct{ t *testing.T }
+
+func (p refusingPublisher) Publish(context.Context, string, []byte) pipeline.Outcome {
+	p.t.Error("a catalogue was published although the run should have refused")
+	return pipeline.Outcome{Status: pipeline.StatusPublished}
 }

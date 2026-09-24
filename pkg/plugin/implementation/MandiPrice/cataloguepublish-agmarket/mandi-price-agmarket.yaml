@@ -50,21 +50,6 @@ metadata:
     market, carrying the Agmarknet codes a select must send.
 
 # ---------------------------------------------------------------------------
-# discover — NEW. Tells the polling layer where THIS package lives, so it
-# can find, validate, and run it without hardcoding a path anywhere else.
-# Matches the folder structure in plan-1.md:
-#   MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml
-#   MandiPrice/cataloguepublish-agmarket/mappings/*.yaml
-# ---------------------------------------------------------------------------
-discover:
-  path: MandiPrice/cataloguepublish-agmarket/
-  mappingsDir: mappings/
-  # What the Integrity Check in plan-1.md's Polling Layer section verifies
-  # against this path: the folder exists, this file parses, every
-  # `mapping:` reference below resolves under mappingsDir, and every `uses:`
-  # primitive is one the engine actually implements.
-
-# ---------------------------------------------------------------------------
 # schedule — how often the crawler's polling layer should run this pipeline.
 # Lives here, not in a global crawler setting, so each pipeline owns its own
 # cadence (see plan-2-low-level-design.md Part 2, "How daily triggering
@@ -77,42 +62,6 @@ schedule:
   # clock would fire on the wrong calendar day and ask for yesterday's prices.
   cron: "0 0 * * *"
   timezone: Asia/Kolkata
-
-# ---------------------------------------------------------------------------
-# registry — NEW. Where this pipeline's provider/capability/binding-key
-# metadata comes from: Sunbird RC, per plan-1.md's Registry section.
-#
-# Shaped to match sunbirdRegistry's real, already-implemented API (see
-# dev_docs/sunbird-registry-explained.md and
-# pkg/plugin/implementation/sunbirdRegistry/providerrecord.go):
-#   - Participant lookup:  POST {url}/{entity}/search        {filters: {participantId: {eq: ...}}}
-#   - Provider routing:    POST {url}/{providerEntity}/search, keyed by
-#                          bindingKey = "<participantId>|<capabilityCode>"
-# This block does not invent a new registry protocol — it names the same
-# entity/search shape sunbirdRegistry already speaks, so the same running
-# SunbirdRC deployment answers both the adapter's provider-step routing AND
-# this pipeline's discovery.
-# ---------------------------------------------------------------------------
-registry:
-  kind: sunbirdRC
-  url: ${inputs.registryUrl}
-  entity: Participant
-  providerEntity: ProviderSchema
-  lookup:
-    participantId: ${inputs.participantId}
-    capabilityCode: ${metadata.capability}
-  # bindingKey is derived, not typed twice: "<participantId>|<capabilityCode>",
-  # exactly as sunbirdRegistry's own ProviderRecordLookup keys it.
-  fields:
-    - providerId       # Participant.participantId
-    - capabilityId     # ProviderSchema record's capability code
-    - bindingKey       # "<participantId>|<capabilityCode>"
-    - baseUrl          # Participant.baseUrl — where this provider is reachable
-    - schema           # the @context / schema URL this capability publishes against
-  # Failure here is the polling layer's "Required Registry Metadata
-  # Available?" gate (plan-1.md, Integrity Validation Flow) — missing or
-  # unreachable registry metadata stops the pipeline before it fetches
-  # anything from Agmarknet.
 
 # ---------------------------------------------------------------------------
 # inputs — the CLI and environment surface. Unchanged from
@@ -373,7 +322,6 @@ catalog:
 
   chunk:
     budget: 256
-    of: geometries
     # Counts GEOMETRIES, not markets: a market with no point costs nothing,
     # because the cap Discovery enforces is on geometries. This must agree
     # with what the render actually emits as a Point, or a catalogue silently
@@ -399,11 +347,6 @@ catalog:
       messageId: ${uuid}
       publishWithoutGeometry: ${inputs.withoutGeometry}
 
-  output:
-    dir: ${inputs.catalogOut}
-    file: mandi-${slug}.json
-    filenamePrefix: mandi
-
 # ---------------------------------------------------------------------------
 # publish — catalog files to the provider adapter's /publish endpoint.
 # ---------------------------------------------------------------------------
@@ -426,19 +369,3 @@ publish:
     isActive: false
     updateMode: MERGE
     catalogType: REGULAR
-
-# ---------------------------------------------------------------------------
-# report — what a run says on stderr.
-# ---------------------------------------------------------------------------
-report:
-  collection:
-    - "collected ${count} markets"
-    - "${count} markets have ${quality} coordinates"
-    - "${count} states returned no data: ${emptyStates}"
-    - "${stateCode} FAILED: ${reason}"
-  build:
-    - "built ${count} catalogs into ${dir}"
-    - "${stateCode}: ${markets} markets -> ${catalogId}"
-  publish:
-    - "${stateCode}: ${catalogId} -> ${outcome}"
-  exitNonZeroWhen: [collection.stateErrors, publish.failures]

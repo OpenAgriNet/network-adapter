@@ -4,16 +4,17 @@
 // every pipeline; what differs is a Collector, which a capability package
 // implements (see collector.go).
 //
-// It sits beside catalogpublish under catalogpublisher/ so BOTH the crawler
-// that ticks a pipeline and the capability packages that define one can import
-// it. It must NOT be moved under an internal/ directory: that would put one of
-// those two consumers out of reach, which has already happened twice.
+// It must NOT be moved under an internal/ directory: the crawler that ticks a
+// pipeline and pkg/plugin/implementation, which embeds every pipeline, both
+// import it.
+//
+// It builds catalogues and decides what may be published; it does not make
+// the HTTP call. A run that publishes is given a Publisher -- the crawler's
+// sink -- so exactly one piece of code posts to the provider adapter.
 //
 // It is NOT part of the catalogpublisher plugin's own work, and that plugin
 // does not import it. catalogpublisher serves the decentralized-catalog path
-// (RFC NFH-014), writing signed blobs to a store that crawlers walk. This
-// frame builds catalogues and posts them to the provider adapter, which
-// reaches the discovery service. Shared parent directory, opposite directions.
+// (RFC NFH-014), writing signed blobs to a store that crawlers walk.
 package pipeline
 
 // run.go is the frame: the one exported entry point that turns "the registry
@@ -35,7 +36,6 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 )
 
 // Inputs every pipeline WITH AN UPSTREAM must declare, because the frame
@@ -96,6 +96,18 @@ type RunOptions struct {
 	// so it is opted into rather than out of.
 	Publish bool
 
+	// PublishURL, when set, is where catalogues are published, whatever the
+	// pipeline's own publishUrl input resolves to. The crawler sets it from
+	// its one publishUrl config, so every pipeline it runs -- and every
+	// catalogue it crawls -- goes to the same provider adapter. Empty leaves
+	// the pipeline's input in charge (a standalone run, a test).
+	PublishURL string
+
+	// Publisher makes the HTTP call when Publish is set: the crawler passes
+	// its sink. Required then -- a run asked to publish with nothing to
+	// publish through is refused, not silently built-only.
+	Publisher Publisher
+
 	// DryRun stops after the decision, before any fetching.
 	DryRun bool
 
@@ -125,7 +137,7 @@ type RunReport struct {
 	OutDir string
 
 	// Published is nil when the run built catalogues without sending them.
-	Published *catalogpublish.Result
+	Published *Result
 }
 
 // Run executes one tick of a publish pipeline.
@@ -227,6 +239,9 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	if err != nil {
 		return fmt.Errorf("resolving pipeline inputs: %w", err)
 	}
+	if url := strings.TrimSpace(opts.PublishURL); url != "" {
+		resolved["publishUrl"] = url
+	}
 	if hasUpstream(spec) {
 		for _, required := range []string{inputBaseURL, inputTokenUser, inputTokenSecret} {
 			if resolved[required] == "" {
@@ -243,13 +258,13 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	// are relative to -- and because a capability is free to put its pipeline
 	// wherever it likes inside its own package.
 	mappingsDir := path.Join(path.Dir(opts.Pipeline.Path), "mappings")
-	mappingBase, stopMappings, err := catalogpublish.ServeMappings(opts.Pipeline.FS, mappingsDir)
+	mappingBase, stopMappings, err := ServeMappings(opts.Pipeline.FS, mappingsDir)
 	if err != nil {
 		return fmt.Errorf("serving the pipeline's mappings: %w", err)
 	}
 	defer stopMappings()
 
-	mapper, closeMapper, err := catalogpublish.NewMapper(ctx)
+	mapper, closeMapper, err := NewMapper(ctx)
 	if err != nil {
 		return fmt.Errorf("building the mapper: %w", err)
 	}
@@ -264,7 +279,10 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	if hasUpstream(spec) {
 		log.InfoContext(ctx, "publish pipeline: exchanging credentials",
 			"upstream", resolved[inputBaseURL], "path", spec.Upstream.Auth.Request.Path)
-		client = NewClient(resolved[inputBaseURL])
+		// The provider's own error classification rides with the client, so
+		// what counts as 'nothing here' versus an outage comes from the file
+		// rather than from a string this engine happens to know.
+		client = NewClient(resolved[inputBaseURL]).WithErrorRules(spec.Upstream.Errors)
 		token, err := client.Token(ctx, spec.Upstream.Auth, rc)
 		if err != nil {
 			return fmt.Errorf("exchanging credentials: %w", err)
@@ -341,7 +359,7 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		"catalogues", len(catalogues), "target", resolved["publishUrl"])
 	publishSpec := spec.Publish
 	publishSpec.AddressHint = publishAddressHintFor(spec.Inputs["publishUrl"])
-	result, err := PublishCatalogues(ctx, publishSpec, resolved, outDir, prefix, report.Errors)
+	result, err := PublishCatalogues(ctx, publishSpec, resolved, outDir, prefix, report.Errors, opts.Publisher)
 	report.Published = &result
 	if err != nil {
 		return fmt.Errorf("publishing catalogues: %w", err)

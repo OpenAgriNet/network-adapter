@@ -49,7 +49,7 @@ func testRunner(t *testing.T, spec Spec, body string) (*stepRunner, *httptest.Se
 	if err != nil {
 		t.Fatalf("newExprCache: %v", err)
 	}
-	client := NewClient(upstream.URL)
+	client := NewClient(upstream.URL).WithErrorRules(testErrorRules())
 	client.http = upstream.Client()
 
 	return &stepRunner{
@@ -96,7 +96,7 @@ func TestStepWhenFalseTakesElseAndDoesNotCall(t *testing.T) {
 	defer upstream.Close()
 
 	cache, _ := newExprCache()
-	client := NewClient(upstream.URL)
+	client := NewClient(upstream.URL).WithErrorRules(testErrorRules())
 	client.http = upstream.Client()
 
 	spec := Spec{Pipeline: []Step{{
@@ -162,7 +162,7 @@ func TestForEachClassifiesEmptyResultSeparatelyFromTransportError(t *testing.T) 
 	defer upstream.Close()
 
 	cache, _ := newExprCache()
-	client := NewClient(upstream.URL)
+	client := NewClient(upstream.URL).WithErrorRules(testErrorRules())
 	client.http = upstream.Client()
 
 	spec := Spec{Pipeline: []Step{{
@@ -211,7 +211,7 @@ func TestForEachWithoutAMatchingOnErrorAborts(t *testing.T) {
 	defer upstream.Close()
 
 	cache, _ := newExprCache()
-	client := NewClient(upstream.URL)
+	client := NewClient(upstream.URL).WithErrorRules(testErrorRules())
 	client.http = upstream.Client()
 
 	spec := Spec{Pipeline: []Step{{
@@ -384,7 +384,7 @@ func TestForEachPassesTheLoopVariableIntoTheRequest(t *testing.T) {
 	defer upstream.Close()
 
 	cache, _ := newExprCache()
-	client := NewClient(upstream.URL)
+	client := NewClient(upstream.URL).WithErrorRules(testErrorRules())
 	client.http = upstream.Client()
 
 	spec := Spec{Pipeline: []Step{{
@@ -578,5 +578,19 @@ func TestHTTPStepWithoutAnUpstreamIsRefused(t *testing.T) {
 				t.Fatalf("err = %v, want a refusal naming the missing upstream", err)
 			}
 		})
+	}
+}
+
+// testErrorRules are the classifications a pipeline file declares, in the
+// shape mandi's own upstream.errors block uses.
+//
+// Passed explicitly by every test that builds a client, because the engine no
+// longer knows any upstream's wording: without declared rules nothing is a
+// quiet result, which is the correct default and the thing these tests would
+// otherwise silently stop covering.
+func testErrorRules() []ErrorRule {
+	return []ErrorRule{
+		{When: &ErrorMatch{Status: 400, BodyContains: "No data available."}, Classify: classifyEmpty},
+		{Default: classifyTransport},
 	}
 }

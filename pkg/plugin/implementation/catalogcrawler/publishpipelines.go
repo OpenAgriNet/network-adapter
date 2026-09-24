@@ -34,6 +34,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
@@ -75,12 +76,22 @@ const (
 // from on time.
 const defaultPublishTickInterval = 5 * time.Minute
 
+// pipelinePublishTimeout bounds each pipeline catalogue's post. Generous, and
+// longer than a crawled catalogue's: a state catalogue runs to hundreds of KB
+// and the adapter signs, forwards and indexes it before answering.
+const pipelinePublishTimeout = 180 * time.Second
+
 // publishConfig is the parsed form of the keys above.
 type publishConfig struct {
 	enabled bool
 	publish bool
 	tick    time.Duration
 	outDir  string
+
+	// publishURL is the crawler's one publishUrl -- the same address its
+	// sink posts crawled catalogues to -- handed to every pipeline so they
+	// all publish to the same provider adapter.
+	publishURL string
 }
 
 // publishConfigFrom reads the publish keys.
@@ -99,6 +110,8 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 		publish: config[cfgPublishEnabled] == "true",
 		tick:    durationSecondsOr(config[cfgPublishTickIntervalSec], defaultPublishTickInterval),
 		outDir:  strings.TrimSpace(config[cfgPublishCatalogOutputDir]),
+
+		publishURL: strings.TrimSpace(config[cfgPublishURL]),
 	}, nil
 }
 
@@ -121,6 +134,10 @@ type publishSweep struct {
 	registry registry
 	runLog   pipeline.RunLog
 	log      *slog.Logger
+
+	// publisher is the sink every pipeline publishes through -- the same code
+	// the crawl path posts crawled catalogues with.
+	publisher pipeline.Publisher
 
 	// resolve turns the registry's pipeline path into the embedded files.
 	// Injectable so tick logic is testable without the real embed.
@@ -232,6 +249,9 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 		OutDir:   p.cfg.outDir,
 		Publish:  p.cfg.publish,
 		Log:      p.log,
+
+		PublishURL: p.cfg.publishURL,
+		Publisher:  p.publisher,
 	})
 	if err != nil {
 		return err
@@ -279,6 +299,8 @@ func newPublishSweep(cfg publishConfig, lookup definition.RegistryLookup,
 		runLog:   runLog,
 		log:      log,
 		resolve:  implementation.PublishPipeline,
+
+		publisher: sink.NewPublishSink(cfg.publishURL, 0, pipelinePublishTimeout),
 	}
 	sweep.run = sweep.runPipeline
 	return sweep, nil

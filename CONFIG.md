@@ -333,7 +333,7 @@ plugins:
 #### `plugins.crawler`
 **Type**: `object`  
 **Required**: No  
-**Description**: The catalog crawler's own configuration. Unlike `registry`/`signer`/etc. under a module's `handler.plugins`, this is an **application-level, singleton background job** — it is constructed and started once at process startup (independent of any module/HTTP path), not loaded lazily per request. It discovers Beckn catalog indexes on a schedule, fetches and self-signature-verifies changed catalogs, and pushes them to a Discovery service. See [`pkg/plugin/implementation/catalogcrawler/README.md`](pkg/plugin/implementation/catalogcrawler/README.md) for the full set of config keys (`dbDsn`, `networks`, `discoveryPushUrl`, etc.) and how signature verification works.
+**Description**: The catalog crawler's own configuration. Unlike `registry`/`signer`/etc. under a module's `handler.plugins`, this is an **application-level, singleton background job** — it is constructed and started once at process startup (independent of any module/HTTP path), not loaded lazily per request. It discovers Beckn catalog indexes on a schedule, fetches and self-signature-verifies changed catalogs, and publishes them through the provider adapter's `/publish`. See [`pkg/plugin/implementation/catalogcrawler/README.md`](pkg/plugin/implementation/catalogcrawler/README.md) for the full set of config keys (`dbDsn`, `networks`, `publishUrl`, etc.) and how signature verification works.
 
 Deliberately kept at this level rather than under a module: it lets a deployment run scheduled background crawling with **no** on-demand HTTP trigger exposed at all (omit the `catalogCrawl` module below), or both together (configure this plus the module). Omit `plugins.crawler` entirely to disable the crawler altogether — the `catalogCrawl` module, if present, will then fail to trigger anything since there is no running crawler.
 
@@ -363,9 +363,7 @@ plugins:
     config:
       dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
       networks: "example.network.production"
-      discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
-      participantId: "bpp.example.org"
-      bppUri: "https://bpp.example.org"
+      publishUrl: "http://provider-adapter:9200"
 ```
 
 To also expose the on-demand HTTP trigger and status query for this crawler, add a module with handler type `catalogCrawl` — see [`catalogCrawl` handler type](#handler-type-catalogcrawl) below. That module takes no `plugins` of its own: both its `/trigger` and `/status` sub-endpoints call directly into this same running crawler instance.

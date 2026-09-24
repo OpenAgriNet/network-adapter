@@ -307,12 +307,13 @@ func TestLive_CrawlerBuildsCatalogues(t *testing.T) {
 	rec := &sweepRecorder{}
 	runner.run = watched(t, func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 		report, err := pipeline.Run(ctx, pipeline.RunOptions{
-			Pipeline: files,
-			Record:   record,
-			OutDir:   cfg.outDir,
-			Publish:  cfg.publish, // false
-			Now:      time.Now(),
-			Log:      log,
+			Pipeline:  files,
+			Record:    record,
+			OutDir:    cfg.outDir,
+			Publish:   cfg.publish, // false
+			Publisher: runner.publisher,
+			Now:       time.Now(),
+			Log:       log,
 		})
 		rec.add(liveRun{record.BindingKey, report, err})
 		return err
@@ -430,13 +431,14 @@ func TestLive_CrawlerPublishesThenDeclines(t *testing.T) {
 	rec := &sweepRecorder{}
 	runner.run = watched(t, func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 		report, err := pipeline.Run(ctx, pipeline.RunOptions{
-			Pipeline: files,
-			Record:   record,
-			RunLog:   runLog,
-			OutDir:   cfg.outDir,
-			Publish:  cfg.publish,
-			Now:      time.Now(),
-			Log:      log,
+			Pipeline:  files,
+			Record:    record,
+			RunLog:    runLog,
+			OutDir:    cfg.outDir,
+			Publish:   cfg.publish,
+			Publisher: runner.publisher,
+			Now:       time.Now(),
+			Log:       log,
 		})
 		rec.add(liveRun{record.BindingKey, report, err})
 		return err
@@ -588,13 +590,14 @@ func TestLive_CrawlerTicksOnItsOwnClock(t *testing.T) {
 	rec := &sweepRecorder{}
 	runner.run = watched(t, func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 		report, err := pipeline.Run(ctx, pipeline.RunOptions{
-			Pipeline: files,
-			Record:   record,
-			RunLog:   st,
-			OutDir:   cfg.outDir,
-			Publish:  cfg.publish,
-			Now:      time.Now(),
-			Log:      log,
+			Pipeline:  files,
+			Record:    record,
+			RunLog:    st,
+			OutDir:    cfg.outDir,
+			Publish:   cfg.publish,
+			Publisher: runner.publisher,
+			Now:       time.Now(),
+			Log:       log,
 		})
 		rec.add(liveRun{record.BindingKey, report, err})
 		return err

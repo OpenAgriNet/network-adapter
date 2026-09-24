@@ -86,10 +86,11 @@ plugins:
       # tables are migrated on startup.
       dbDsn: "postgres://crawler:crawler@crawler-db:5432/catalogcrawler?sslmode=disable"
 
-      # REQUIRED by the plugin, used only by the crawl path (catalogue
-      # indexes -> discovery), not by the publish sweep. No index source is
-      # configured below, so the crawl loops find no work.
-      discoveryPushUrl: "http://discovery:8080/beckn/catalog/push"
+      # REQUIRED. The provider adapter's BASE address: every catalogue this
+      # crawler puts on the network is posted to its /publish -- crawled ones
+      # (the sink) and the scheduled publish pipelines alike. One address;
+      # it overrides any pipeline's own publishUrl input.
+      publishUrl: "http://provider-adapter:9200"
 
       # --- the scheduled publish sweep ---
 
@@ -111,8 +112,6 @@ plugins:
 
       # Each pipeline reads its inputs from the ENVIRONMENT of this
       # container, not from this file:
-      #   all      CATALOG_PUBLISH_URL -- ONE address, shared: every pipeline
-      #            posts to the same provider adapter's /publish
       #   mandi    SUNBIRD_REGISTRY_URL, MANDI_API_URI, MANDI_TOKEN_USER,
       #            MANDI_TOKEN_SECRET, MANDI_PARTICIPANT_ID
       #   weather  nothing else (no upstream, no credentials); optional

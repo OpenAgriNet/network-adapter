@@ -44,6 +44,21 @@ type Client struct {
 	baseURL    string
 	http       *http.Client
 	tokenPlace string // "query" or "header" — how the token rides on requests
+
+	// errorRules are the provider's own `upstream.errors`, deciding what one
+	// failed call MEANS. Empty means the engine falls back to status alone:
+	// a 2xx is success and anything else is an outage, never a quiet result.
+	errorRules []ErrorRule
+}
+
+// WithErrorRules gives the client the classification its pipeline declares.
+//
+// Without it the engine would have to recognise "this region has no rows" by
+// some upstream's literal wording, which is what it used to do -- and why a
+// second provider could not say the same thing in its own words.
+func (c *Client) WithErrorRules(rules []ErrorRule) *Client {
+	c.errorRules = rules
+	return c
 }
 
 // newPipelineClient builds a pipelineClient with a timeout that suits the
@@ -254,11 +269,9 @@ func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: response could not be read: %w", urlPath, err)
 	}
-	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(body, []byte("No data available")) {
-		return nil, ErrNoUpstreamData
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET %s returned %s", urlPath, resp.Status)
+	if err := classifiedError(classify(c.errorRules, resp.StatusCode, body),
+		resp.StatusCode, "GET "+urlPath); err != nil {
+		return nil, err
 	}
 	return body, nil
 }
@@ -288,11 +301,9 @@ func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []by
 	if err != nil {
 		return nil, fmt.Errorf("POST %s: response could not be read: %w", urlPath, err)
 	}
-	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(body, []byte("No data available")) {
-		return nil, ErrNoUpstreamData
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("POST %s returned %s", urlPath, resp.Status)
+	if err := classifiedError(classify(c.errorRules, resp.StatusCode, body),
+		resp.StatusCode, "POST "+urlPath); err != nil {
+		return nil, err
 	}
 	return body, nil
 }

@@ -79,7 +79,6 @@ catalog:
 
   chunk:
     budget: 2
-    of: things
     cost: "1"
     slug: "${group}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
 
@@ -91,11 +90,6 @@ catalog:
     mapping: mappings/catalog.yaml
     local:
       slug: ${slug}
-
-  output:
-    dir: ${inputs.catalogOut}
-    file: example-${slug}.json
-    filenamePrefix: example
 
 publish:
   url: ${inputs.publishUrl}/publish
