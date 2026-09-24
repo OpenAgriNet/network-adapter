@@ -122,14 +122,8 @@
     "metadata": {
       "$ref": "#/$defs/metadata"
     },
-    "discover": {
-      "$ref": "#/$defs/discover"
-    },
     "schedule": {
       "$ref": "#/$defs/schedule"
-    },
-    "registry": {
-      "$ref": "#/$defs/registry"
     },
     "inputs": {
       "$ref": "#/$defs/inputs"
@@ -150,9 +144,6 @@
     },
     "publish": {
       "$ref": "#/$defs/publish"
-    },
-    "report": {
-      "$ref": "#/$defs/report"
     }
   },
   "$defs": {
@@ -200,19 +191,6 @@
         }
       }
     },
-    "discover": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "Where this package sits. Parsed but not yet read by the engine -- the crawler locates a pipeline through the registry's publish action instead.",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "mappingsDir": {
-          "type": "string"
-        }
-      }
-    },
     "schedule": {
       "type": "object",
       "additionalProperties": false,
@@ -230,43 +208,6 @@
           "type": "string",
           "minLength": 1,
           "description": "An IANA zone, e.g. Asia/Kolkata. The cron is resolved HERE, not on the host's clock: a UTC host reading a midnight-IST schedule off its own clock fires on the wrong calendar day and asks the upstream for yesterday."
-        }
-      }
-    },
-    "registry": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "The metadata lookup that gates a run. Parsed but not yet read by the engine; the crawler performs this lookup its own way.",
-      "properties": {
-        "kind": {
-          "type": "string"
-        },
-        "url": {
-          "type": "string"
-        },
-        "entity": {
-          "type": "string"
-        },
-        "providerEntity": {
-          "type": "string"
-        },
-        "lookup": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "participantId": {
-              "type": "string"
-            },
-            "capabilityCode": {
-              "type": "string"
-            }
-          }
-        },
-        "fields": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         }
       }
     },
@@ -940,9 +881,6 @@
               "as": {
                 "type": "string",
                 "description": "The boolean field set on matching records. They stay in the catalogue."
-              },
-              "note": {
-                "type": "string"
               }
             }
           }
@@ -1006,21 +944,6 @@
               }
             }
           }
-        },
-        "output": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "dir": {
-              "type": "string"
-            },
-            "file": {
-              "type": "string"
-            },
-            "filenamePrefix": {
-              "type": "string"
-            }
-          }
         }
       }
     },
@@ -1038,10 +961,6 @@
           "type": "integer",
           "minimum": 1,
           "description": "The cap per catalogue. For Discovery this is 256 geometries, counted CUMULATIVELY per catalogId -- a catalogue over it indexes PARTIAL, meaning it goes in with resources missing and nothing downstream says so."
-        },
-        "of": {
-          "type": "string",
-          "description": "What is being counted. A label; the cost expression is what actually counts."
         },
         "cost": {
           "type": "string",
@@ -1129,37 +1048,6 @@
         },
         "catalogType": {
           "type": "string"
-        }
-      }
-    },
-    "report": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "What a run prints per stage. Parsed but not yet read by the engine, which logs its own per-step lines.",
-      "properties": {
-        "collection": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "build": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "publish": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "exitNonZeroWhen": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         }
       }
     }

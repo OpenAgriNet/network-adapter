@@ -20,9 +20,7 @@ catalogCrawler:
   config:
     dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
     networks: "example.network.production"
-    discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
-    participantId: "bpp.example.org"
-    bppUri: "https://bpp.example.org"
+    publishUrl: "http://provider-adapter:9200"
     indexIntervalSeconds: "300"
     catalogIntervalSeconds: "30"
     fetchTimeoutSeconds: "30"
@@ -38,10 +36,9 @@ catalogCrawler:
 Supported config keys:
 
 - `dbDsn`: required. Postgres connection string for the crawl queue/cursor store.
-- `discoveryPushUrl`: required. Where crawled catalogs are pushed.
+- `publishUrl`: required. The provider adapter's base address. Every catalog the crawler puts on the network is posted to its `/publish` as `catalog/publish` (updateMode MERGE) -- crawled catalogs and the scheduled publish pipelines alike, judged the same way (only `ACCEPTED` counts). `discoveryPushUrl` is retired and refused at startup.
 - `networks`: comma-separated networkIds to discover indexes for via the configured `RegistryMetadataLookup` plugin (e.g. `dediregistry`'s `QueryByNetwork`). Drives both discovery and scope filtering — a catalog entry naming a network not in this list is skipped.
 - `staticIndexUrls`: comma-separated, optional fixed index URLs, unioned with any registry-discovered ones.
-- `participantId`, `bppUri`: this deployment's own bppId/bppUri, stamped onto pushed catalogs.
 - `fetchTimeoutSeconds`: optional, default `30`. Whole-attempt HTTP timeout for index/catalog fetches.
 - `maxFetchBytes`: optional, default `10485760` (10 MiB). Cap on a fetched artifact's at-rest size.
 - `maxDecompressedBytes`: optional, default `20971520` (20 MiB). Cap on a decompressed catalog file's size.
@@ -98,7 +95,7 @@ plugins:
     id: catalogcrawler
     config:
       dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
-      discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
+      publishUrl: "http://provider-adapter:9200"
       # ... see Config above
 
 modules:

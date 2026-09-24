@@ -307,7 +307,6 @@ func TestBuildCataloguesRefusesAnUnknownOrderDirection(t *testing.T) {
 func TestChunkAtTheBudgetBoundary(t *testing.T) {
 	chunk := Chunk{
 		Budget: 4,
-		Of:     "geometries",
 		Cost:   "coordinateQuality = 'ok' ? 1 : 0",
 		Slug:   "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}",
 	}

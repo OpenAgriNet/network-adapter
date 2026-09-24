@@ -206,3 +206,35 @@ func TestRunRefusesAPipelineTheRegistryDidNotName(t *testing.T) {
 	}
 	assertNeverCalled(t, upstream)
 }
+
+// RunOptions.PublishURL is the crawler's one publish address, and it wins over
+// whatever the pipeline's own publishUrl input resolves to: every pipeline a
+// crawler runs publishes where the crawler does.
+func TestRunPublishesToTheCallersPublishURL(t *testing.T) {
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
+	pub := publisherAnswering(StatusPublished)
+
+	// The fixture env points publishUrl at http://publish.invalid; the
+	// caller's address must be the one used.
+	report, err := Run(context.Background(), RunOptions{
+		Pipeline:   fixturePipeline(),
+		Record:     publishingRecord(),
+		Lookup:     fixtureEnv(upstream.URL),
+		Now:        firedAt(t),
+		OutDir:     t.TempDir(),
+		Publish:    true,
+		PublishURL: "http://caller.test",
+		Publisher:  pub,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if pub.calls() != len(report.Catalogues) || pub.calls() == 0 {
+		t.Errorf("the publisher got %d bodies, want one per catalogue (%d)", pub.calls(), len(report.Catalogues))
+	}
+	for _, url := range pub.urls {
+		if url != "http://caller.test" {
+			t.Errorf("published to %q, want the caller's address", url)
+		}
+	}
+}

@@ -541,7 +541,7 @@ func WriteCatalogues(built []Catalogue, dir, filenamePrefix string) error {
 // RemoveStaleCatalogues deletes the catalogs already in dir, so only this run's
 // output is left for the publish step to find.
 //
-// The match is deliberately the SAME one catalogpublish.catalogFiles makes --
+// The match is deliberately the SAME one catalogueFiles (publish.go) makes --
 // a non-directory entry whose name starts with "<filenamePrefix>-" and ends
 // in ".json" -- because the set this removes has to be exactly the set that
 // would otherwise be published. Matching more broadly would delete a file

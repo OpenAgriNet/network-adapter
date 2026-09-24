@@ -18,7 +18,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
@@ -26,22 +25,18 @@ import (
 // listener and builds a real JSONata mapper against them, so a test
 // exercises the actual mapping file rather than a stand-in for it.
 //
-// catalogpublish used to live under tools/publish/internal/, which Go's
-// internal-import rule kept out of reach of anything outside that tree --
-// this package briefly reimplemented ServeMappings and NewMapper locally for
-// that reason. It now lives at implementation/catalogpublisher/catalogpublish, reachable by every
-// package under implementation/, so this imports the real thing instead of a
-// parallel copy.
+// ServeMappings and NewMapper are the pipeline frame's own, so this runs the
+// mapping the way a real run does rather than through a parallel copy.
 func testMapper(t *testing.T) (pipeline.Mapper, string) {
 	t.Helper()
 
-	base, stop, err := catalogpublish.ServeMappings(Files, mappingsDir)
+	base, stop, err := pipeline.ServeMappings(Files, mappingsDir)
 	if err != nil {
 		t.Fatalf("ServeMappings: %v", err)
 	}
 	t.Cleanup(stop)
 
-	mapper, closer, err := catalogpublish.NewMapper(context.Background())
+	mapper, closer, err := pipeline.NewMapper(context.Background())
 	if err != nil {
 		t.Fatalf("NewMapper: %v", err)
 	}
@@ -64,7 +59,7 @@ func TestPipelineClient_HTTPGet_MasterStates_TransformsRealMapping(t *testing.T)
 	}))
 	defer upstream.Close()
 
-	client := pipeline.NewClient(upstream.URL)
+	client := pipeline.NewClient(upstream.URL).WithErrorRules(mandiErrorRules())
 
 	out, err := client.Get(context.Background(), mapper, mappingBase+"/master-states.yaml",
 		"/v1/fetch-agmarknet-master-data", map[string]any{"token": "tok-abc"})
@@ -91,7 +86,7 @@ func TestPipelineClient_HTTPGet_ClassifiesNoDataAsEmptyResult(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	client := pipeline.NewClient(upstream.URL)
+	client := pipeline.NewClient(upstream.URL).WithErrorRules(mandiErrorRules())
 
 	_, err := client.Get(context.Background(), mapper, mappingBase+"/master-states.yaml",
 		"/v1/fetch-agmarknet-master-data", map[string]any{"token": "tok-abc"})
@@ -146,7 +141,7 @@ func TestPipelineClient_HTTPGet_NeverLeaksTheTokenInAnError(t *testing.T) {
 			upstream := httptest.NewServer(handler)
 			defer upstream.Close()
 
-			client := pipeline.NewClient(upstream.URL)
+			client := pipeline.NewClient(upstream.URL).WithErrorRules(mandiErrorRules())
 
 			_, err := client.Get(context.Background(), mapper,
 				mappingBase+"/master-states.yaml", "/v1/fetch-agmarknet-master-data",
@@ -201,7 +196,7 @@ func TestPipelineClient_HTTPGet_RefusesANonArrayResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	client := pipeline.NewClient(upstream.URL)
+	client := pipeline.NewClient(upstream.URL).WithErrorRules(mandiErrorRules())
 
 	_, err := client.Get(context.Background(), mapper, mappingBase+"/master-states.yaml",
 		"/v1/fetch-agmarknet-master-data", map[string]any{"token": secretToken})
@@ -213,5 +208,17 @@ func TestPipelineClient_HTTPGet_RefusesANonArrayResponse(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "no data found") {
 		t.Errorf("error %q quotes the response body", err)
+	}
+}
+
+// mandiErrorRules are this pipeline's own upstream.errors, in Go.
+//
+// The engine no longer knows any upstream's wording: a client with no declared
+// rules treats every non-2xx as an outage. That is the correct default, and it
+// is why this has to be stated here -- the same block the YAML declares.
+func mandiErrorRules() []pipeline.ErrorRule {
+	return []pipeline.ErrorRule{
+		{When: &pipeline.ErrorMatch{Status: 400, BodyContains: "No data available."}, Classify: "emptyResult"},
+		{Default: "transportError"},
 	}
 }

@@ -58,7 +58,6 @@ catalog:
   order: { by: id, direction: asc }
   chunk:
     budget: 100
-    of: things
     cost: "1"
     slug: "${group}"
   identity:
@@ -68,10 +67,6 @@ catalog:
     mapping: mappings/catalog.yaml
     local:
       slug: ${slug}
-  output:
-    dir: out
-    file: other-${slug}.json
-    filenamePrefix: other
 
 publish:
   url: ${inputs.publishUrl}/publish

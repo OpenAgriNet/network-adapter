@@ -7,11 +7,8 @@ package implementation
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -237,41 +234,55 @@ func TestWeatherPipelineRendersTheMausamgramCatalogue(t *testing.T) {
 	}
 }
 
-// Publishing sends the one catalogue to the adapter's /publish and reads
-// ACCEPTED as success.
+// recordingPublisher stands in for the crawler's sink -- which posts to the
+// provider adapter and is tested there -- and keeps what it was handed.
+type recordingPublisher struct {
+	urls   []string
+	bodies [][]byte
+}
+
+func (p *recordingPublisher) Publish(_ context.Context, baseURL string, body []byte) pipeline.Outcome {
+	p.urls = append(p.urls, baseURL)
+	p.bodies = append(p.bodies, body)
+	return pipeline.Outcome{Status: pipeline.StatusPublished}
+}
+
+// Publishing hands the one rendered catalogue to the publisher, verbatim, with
+// the pipeline's publish address.
 func TestWeatherPipelinePublishes(t *testing.T) {
-	var calls atomic.Int32
-	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		if r.URL.Path != "/publish" {
-			t.Errorf("posted to %q, want /publish", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"context": map[string]any{"action": "catalog/on_publish"},
-			"message": map[string]any{"results": []any{
-				map[string]any{"catalogId": "cat-mausamgram-point-forecast-v2", "status": "ACCEPTED"},
-			}},
-		})
-	}))
-	defer adapter.Close()
+	publisher := &recordingPublisher{}
+	const adapter = "http://provider-adapter.test"
 
 	files, err := PublishPipeline(weatherRegistryPath)
 	if err != nil {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
 	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
-		Pipeline: files,
-		Record:   weatherRecord(),
-		Lookup:   weatherEnv(adapter.URL),
-		Now:      weatherDue(t),
-		OutDir:   t.TempDir(),
-		Publish:  true,
+		Pipeline:  files,
+		Record:    weatherRecord(),
+		Lookup:    weatherEnv(adapter),
+		Now:       weatherDue(t),
+		OutDir:    t.TempDir(),
+		Publish:   true,
+		Publisher: publisher,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if calls.Load() != 1 {
-		t.Errorf("adapter called %d times, want 1", calls.Load())
+	if len(publisher.bodies) != 1 || publisher.urls[0] != adapter {
+		t.Fatalf("publisher got %d bodies at %v, want 1 at %s", len(publisher.bodies), publisher.urls, adapter)
+	}
+	// The written file is indented for review, so compare as JSON: what was
+	// posted is the rendered catalogue, not something rebuilt from it.
+	var sent, rendered any
+	if err := json.Unmarshal(publisher.bodies[0], &sent); err != nil {
+		t.Fatalf("decode sent body: %v", err)
+	}
+	if err := json.Unmarshal(report.Catalogues[0].Content, &rendered); err != nil {
+		t.Fatalf("decode rendered catalogue: %v", err)
+	}
+	if !reflect.DeepEqual(sent, rendered) {
+		t.Error("the published body is not the rendered catalogue")
 	}
 	if report.Published == nil || report.Published.HasFailures() {
 		t.Errorf("Published = %+v, want one ACCEPTED outcome", report.Published)

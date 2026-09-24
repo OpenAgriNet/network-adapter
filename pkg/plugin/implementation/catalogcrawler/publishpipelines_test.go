@@ -36,6 +36,7 @@ func TestPublishConfigReadsItsSettings(t *testing.T) {
 		cfgPublishEnabled:          "true",
 		cfgPublishTickIntervalSec:  "60",
 		cfgPublishCatalogOutputDir: "/tmp/catalogs",
+		cfgPublishURL:              "http://provider-adapter:9200",
 	})
 	if err != nil {
 		t.Fatalf("publishConfigFrom: %v", err)
@@ -51,6 +52,10 @@ func TestPublishConfigReadsItsSettings(t *testing.T) {
 	}
 	if cfg.outDir != "/tmp/catalogs" {
 		t.Errorf("outDir = %q", cfg.outDir)
+	}
+	// The crawler's one publish address reaches every pipeline.
+	if cfg.publishURL != "http://provider-adapter:9200" {
+		t.Errorf("publishURL = %q, want the crawler's publishUrl", cfg.publishURL)
 	}
 }
 

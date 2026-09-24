@@ -2,16 +2,11 @@ package pipeline
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
-
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 )
 
 // publishTestPrefix is the filename prefix the pipeline's build step writes
@@ -20,7 +15,7 @@ import (
 const publishTestPrefix = "mandi"
 
 // writeCatalog writes one catalog file named <prefix>-<STATE>.json, shaped
-// like a real publish body so catalogpublish can read its catalog id back.
+// like a real publish body so the publish step can read its catalog id back.
 func writeCatalog(t *testing.T, dir, state string) {
 	t.Helper()
 	id := "cat-mandi-" + state
@@ -33,27 +28,37 @@ func writeCatalog(t *testing.T, dir, state string) {
 	}
 }
 
-// answerServer answers every POST with a single result carrying status, and
-// counts the calls so a test can assert the server was never reached.
-func answerServer(t *testing.T, status string) (*httptest.Server, *int32) {
-	t.Helper()
-	var calls int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		// The pipeline's declared url already carries /publish; passing it
-		// through untrimmed would land on /publish/publish.
-		if r.URL.Path != "/publish" {
-			t.Errorf("posted to %q, want /publish", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"context": map[string]any{"action": "catalog/on_publish"},
-			"message": map[string]any{"results": []any{
-				map[string]any{"catalogId": "cat-mandi-MH", "status": status},
-			}},
-		})
-	}))
-	return server, &calls
+// fakePublisher stands in for the crawler's sink: it answers every body with
+// one status and keeps what it was sent, so a test can assert what reached it
+// -- or that nothing did. The HTTP call and the judgement of a real answer are
+// the sink's, and tested there; what is tested here is the publish step's own
+// rules.
+type fakePublisher struct {
+	status string
+
+	mu     sync.Mutex
+	urls   []string
+	bodies [][]byte
 }
+
+func publisherAnswering(status string) *fakePublisher { return &fakePublisher{status: status} }
+
+func (f *fakePublisher) Publish(_ context.Context, baseURL string, body []byte) Outcome {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.urls = append(f.urls, baseURL)
+	f.bodies = append(f.bodies, body)
+	return Outcome{Status: f.status, Reason: "fake"}
+}
+
+func (f *fakePublisher) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.bodies)
+}
+
+// testAdapter is the base address the tests hand the publish step.
+const testAdapter = "http://adapter.test"
 
 // goodSpec is the publish block the pipeline actually declares.
 func goodSpec() Publish {
@@ -68,26 +73,25 @@ func goodSpec() Publish {
 }
 
 func TestPublishCatalogsReportsAnAcceptedCatalogAsPublished(t *testing.T) {
-	server, calls := answerServer(t, "ACCEPTED")
-	defer server.Close()
+	pub := publisherAnswering(StatusPublished)
 
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
 	result, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
 
-	if *calls != 1 {
-		t.Errorf("posted %d times, want 1", *calls)
+	if pub.calls() != 1 {
+		t.Errorf("posted %d times, want 1", pub.calls())
 	}
 	if len(result.Outcomes) != 1 {
 		t.Fatalf("outcomes = %+v, want 1", result.Outcomes)
 	}
-	if result.Outcomes[0].Status != catalogpublish.StatusPublished {
-		t.Errorf("status = %q, want %q", result.Outcomes[0].Status, catalogpublish.StatusPublished)
+	if result.Outcomes[0].Status != StatusPublished {
+		t.Errorf("status = %q, want %q", result.Outcomes[0].Status, StatusPublished)
 	}
 	if result.HasFailures() {
 		t.Error("HasFailures is true after an ACCEPTED result")
@@ -97,39 +101,37 @@ func TestPublishCatalogsReportsAnAcceptedCatalogAsPublished(t *testing.T) {
 func TestPublishCatalogsTreatsPartialAsAFailure(t *testing.T) {
 	// A PARTIAL is a catalog indexed with resources missing -- 273 markets
 	// published as 128 findable ones -- so it must never read as success.
-	server, _ := answerServer(t, "PARTIAL")
-	defer server.Close()
+	pub := publisherAnswering(StatusRejected)
 
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
 	result, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
 	if !result.HasFailures() {
 		t.Fatalf("HasFailures is false after a PARTIAL: %+v", result.Outcomes)
 	}
-	if result.Outcomes[0].Status != catalogpublish.StatusRejected {
-		t.Errorf("status = %q, want %q", result.Outcomes[0].Status, catalogpublish.StatusRejected)
+	if result.Outcomes[0].Status != StatusRejected {
+		t.Errorf("status = %q, want %q", result.Outcomes[0].Status, StatusRejected)
 	}
 }
 
 func TestPublishCatalogsRefusesAPartialCollection(t *testing.T) {
-	server, calls := answerServer(t, "ACCEPTED")
-	defer server.Close()
+	pub := publisherAnswering(StatusPublished)
 
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
 	_, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 3)
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 3, pub)
 	if err == nil {
 		t.Fatal("publishCatalogs published a collection with 3 failed states")
 	}
-	if *calls != 0 {
-		t.Errorf("posted %d times after refusing, want 0", *calls)
+	if pub.calls() != 0 {
+		t.Errorf("posted %d times after refusing, want 0", pub.calls())
 	}
 	if !strings.Contains(err.Error(), "3") {
 		t.Errorf("error %q does not say how many states failed", err)
@@ -137,8 +139,7 @@ func TestPublishCatalogsRefusesAPartialCollection(t *testing.T) {
 }
 
 func TestPublishCatalogsPublishesWhenRefuseWhenIsNotDeclared(t *testing.T) {
-	server, calls := answerServer(t, "ACCEPTED")
-	defer server.Close()
+	pub := publisherAnswering(StatusPublished)
 
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
@@ -147,11 +148,11 @@ func TestPublishCatalogsPublishesWhenRefuseWhenIsNotDeclared(t *testing.T) {
 	spec.RefuseWhen = ""
 
 	if _, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 3); err != nil {
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 3, pub); err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
-	if *calls != 1 {
-		t.Errorf("posted %d times, want 1", *calls)
+	if pub.calls() != 1 {
+		t.Errorf("posted %d times, want 1", pub.calls())
 	}
 }
 
@@ -160,7 +161,7 @@ func TestPublishCatalogsNeedsAPublishURL(t *testing.T) {
 	spec := goodSpec()
 	spec.AddressHint = publishAddressHintFor(Input{Flag: "publish-url", Env: "CATALOG_PUBLISH_URL"})
 	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{}, t.TempDir(), publishTestPrefix, 0)
+		map[string]string{}, t.TempDir(), publishTestPrefix, 0, publisherAnswering(StatusPublished))
 	if err == nil {
 		t.Fatal("publishCatalogs accepted an empty publish address")
 	}
@@ -170,8 +171,7 @@ func TestPublishCatalogsNeedsAPublishURL(t *testing.T) {
 }
 
 func TestPublishCatalogsRejectsASpecThatAcceptsPartial(t *testing.T) {
-	server, calls := answerServer(t, "ACCEPTED")
-	defer server.Close()
+	pub := publisherAnswering(StatusPublished)
 
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
@@ -180,15 +180,15 @@ func TestPublishCatalogsRejectsASpecThatAcceptsPartial(t *testing.T) {
 	spec.Accept = []string{"PARTIAL"}
 
 	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
 	if err == nil {
 		t.Fatal("publishCatalogs honoured a spec accepting PARTIAL it cannot honour")
 	}
 	if !strings.Contains(err.Error(), "PARTIAL") {
 		t.Errorf("error %q does not name the status it cannot accept", err)
 	}
-	if *calls != 0 {
-		t.Errorf("posted %d times despite an unhonourable spec, want 0", *calls)
+	if pub.calls() != 0 {
+		t.Errorf("posted %d times despite an unhonourable spec, want 0", pub.calls())
 	}
 }
 
@@ -198,14 +198,14 @@ func TestPublishCatalogsRejectsASpecThatDoesNotFailOnPartial(t *testing.T) {
 
 	// A real catalogue file and a live server, so the call would otherwise
 	// SUCCEED. With an empty directory this test passed even with the
-	// judgement check removed -- catalogpublish would have returned "no
-	// catalog files in ..." and the assertion could not tell the two apart.
+	// judgement check removed -- the publish step would have returned "no
+	// catalogue files in ..." and the assertion could not tell the two apart.
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
-	server, _ := answerServer(t, "ACCEPTED")
+	pub := publisherAnswering(StatusPublished)
 
 	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": server.URL}, dir, publishTestPrefix, 0)
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
 	if err == nil {
 		t.Fatal("publishCatalogs honoured a spec that does not treat PARTIAL as a failure")
 	}
@@ -226,7 +226,7 @@ func TestPublishCatalogsRejectsAPublishURLItWouldIgnore(t *testing.T) {
 	writeCatalog(t, dir, "MH")
 
 	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0)
+		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0, publisherAnswering(StatusPublished))
 	if err == nil {
 		t.Fatal("publishCatalogs accepted a publish.url it does not honour")
 	}
@@ -251,7 +251,7 @@ func TestPublishCatalogsRefusesAnUnresolvableRetireOld(t *testing.T) {
 	writeCatalog(t, dir, "MH")
 
 	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0)
+		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0, publisherAnswering(StatusPublished))
 	if err == nil {
 		t.Fatal("publishCatalogs accepted a retireOld gated on an undeclared input")
 	}
@@ -261,7 +261,7 @@ func TestPublishCatalogsRefusesAnUnresolvableRetireOld(t *testing.T) {
 }
 
 // TestPublishCatalogsCarriesAnEnabledRetireOld proves the block reaches
-// catalogpublish rather than being parsed and dropped: an enabled retirement
+// the publisher rather than being parsed and dropped: an enabled retirement
 // posts a tombstone for the named catalog alongside the current ones.
 func TestPublishCatalogsCarriesAnEnabledRetireOld(t *testing.T) {
 	spec := goodSpec()
@@ -273,17 +273,54 @@ func TestPublishCatalogsCarriesAnEnabledRetireOld(t *testing.T) {
 
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
-	server, _ := answerServer(t, "ACCEPTED")
+	pub := publisherAnswering(StatusPublished)
 
 	result, err := PublishCatalogues(context.Background(), spec, map[string]string{
-		"publishUrl": server.URL,
+		"publishUrl": testAdapter,
 		"retireOld":  "true",
-	}, dir, publishTestPrefix, 0)
+	}, dir, publishTestPrefix, 0, pub)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
 	if result.RetiredOld == nil {
 		t.Fatal("retireOld was declared and enabled, but no retirement was attempted")
+	}
+	// The catalogue AND the tombstone went through the publisher.
+	if pub.calls() != 2 || !strings.Contains(string(pub.bodies[1]), `"isActive":false`) {
+		t.Errorf("publisher got %d bodies, want the catalogue then a tombstone", pub.calls())
+	}
+}
+
+// The file goes to the publisher VERBATIM, with the base address -- the
+// publisher appends /publish, so a rendered .../publish would double it.
+func TestPublishCatalogsHandsTheFileVerbatimWithTheBaseAddress(t *testing.T) {
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+	want, _ := os.ReadFile(filepath.Join(dir, publishTestPrefix+"-MH.json"))
+	pub := publisherAnswering(StatusPublished)
+
+	result, err := PublishCatalogues(context.Background(), goodSpec(),
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
+	if err != nil {
+		t.Fatalf("PublishCatalogues: %v", err)
+	}
+	if pub.urls[0] != testAdapter || string(pub.bodies[0]) != string(want) {
+		t.Errorf("publisher got url %q body %s; want %q and the file verbatim", pub.urls[0], pub.bodies[0], testAdapter)
+	}
+	if got := result.Outcomes[0]; got.CatalogID != "cat-mandi-MH" || got.StateCode != "MH" {
+		t.Errorf("outcome = %+v, want the id from the body and the group from the filename", got)
+	}
+}
+
+// Asked to publish with nothing to publish through is refused, not quietly
+// turned into a build-only run.
+func TestPublishCatalogsRefusesWithoutAPublisher(t *testing.T) {
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+	_, err := PublishCatalogues(context.Background(), goodSpec(),
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "publisher") {
+		t.Fatalf("err = %v, want a refusal naming the missing publisher", err)
 	}
 }
 
@@ -298,7 +335,7 @@ func TestPublishAddressHintNamesThePipelinesOwnInput(t *testing.T) {
 
 	spec := goodSpec()
 	spec.AddressHint = hint
-	_, err := PublishCatalogues(context.Background(), spec, map[string]string{}, t.TempDir(), "x", 0)
+	_, err := PublishCatalogues(context.Background(), spec, map[string]string{}, t.TempDir(), "x", 0, publisherAnswering(StatusPublished))
 	if err == nil || !strings.Contains(err.Error(), "EXAMPLE_PUBLISH_URL") {
 		t.Errorf("err = %v, want it to name EXAMPLE_PUBLISH_URL", err)
 	}
