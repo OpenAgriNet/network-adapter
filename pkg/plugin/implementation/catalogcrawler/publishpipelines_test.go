@@ -36,7 +36,7 @@ func TestPublishConfigReadsItsSettings(t *testing.T) {
 		cfgPublishEnabled:          "true",
 		cfgPublishTickIntervalSec:  "60",
 		cfgPublishCatalogOutputDir: "/tmp/catalogs",
-		cfgPublishURL:              "http://provider-adapter:9200",
+		cfgDiscoveryURL:            "http://provider-adapter:9200/publish",
 	})
 	if err != nil {
 		t.Fatalf("publishConfigFrom: %v", err)
@@ -54,8 +54,10 @@ func TestPublishConfigReadsItsSettings(t *testing.T) {
 		t.Errorf("outDir = %q", cfg.outDir)
 	}
 	// The crawler's one publish address reaches every pipeline.
+	// The pipelines' base is discoveryPushUrl without its /publish, so they
+	// reach the same endpoint the sink publishes crawled catalogues to.
 	if cfg.publishURL != "http://provider-adapter:9200" {
-		t.Errorf("publishURL = %q, want the crawler's publishUrl", cfg.publishURL)
+		t.Errorf("publishURL = %q, want discoveryPushUrl's base", cfg.publishURL)
 	}
 }
 
@@ -132,20 +134,26 @@ func publishingRecord(key, path string) *model.ProviderRecord {
 	}
 }
 
-// ranSweep is a sweep whose resolve and run only record what they were given.
+// ranSweep is a sweep over the REAL publishDiscoverer -- only the registry,
+// the embed lookup and the run are stubs -- whose run records what it was
+// given. Discovery and the sweep are tested together, as a tick runs them.
 func ranSweep(reg *stubRegistry, resolveErr map[string]error) (*publishSweep, *[]string) {
 	var ran []string
 	var mu sync.Mutex
+	log := slog.New(slog.DiscardHandler)
 	sweep := &publishSweep{
-		cfg:      publishConfig{enabled: true},
-		registry: reg,
-		log:      slog.New(slog.DiscardHandler),
-		resolve: func(path string) (pipeline.Files, error) {
-			if err := resolveErr[path]; err != nil {
-				return pipeline.Files{}, err
-			}
-			return pipeline.Files{Path: path, RegistryPath: path}, nil
+		cfg: publishConfig{enabled: true},
+		source: &publishDiscoverer{
+			lookup: reg,
+			log:    log,
+			resolve: func(path string) (pipeline.Files, error) {
+				if err := resolveErr[path]; err != nil {
+					return pipeline.Files{}, err
+				}
+				return pipeline.Files{Path: path, RegistryPath: path}, nil
+			},
 		},
+		log: log,
 		run: func(_ context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -206,10 +214,19 @@ func TestPublishSweepSurvivesARegistryFailure(t *testing.T) {
 }
 
 // A registry plugin that cannot list is a startup error once the sweep is on.
-func TestNewPublishSweepRefusesARegistryThatCannotList(t *testing.T) {
-	_, err := newPublishSweep(publishConfig{enabled: true}, lookupOnly{}, nil, slog.New(slog.DiscardHandler))
+func TestBuildPublishSourceRefusesARegistryThatCannotList(t *testing.T) {
+	_, err := buildPublishSource(lookupOnly{}, slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("a registry that cannot list bindings was accepted")
+	}
+}
+
+// Discovery is the one place a listing failure surfaces as an error; the
+// sweep turns it into a quiet tick (TestPublishSweepSurvivesARegistryFailure).
+func TestPublishDiscovererReportsAFailedListing(t *testing.T) {
+	d := &publishDiscoverer{lookup: &stubRegistry{listErr: errors.New("down")}, log: slog.New(slog.DiscardHandler)}
+	if _, err := d.Discover(context.Background()); err == nil {
+		t.Fatal("a failed listing was reported as an empty registry")
 	}
 }
 
@@ -277,5 +294,35 @@ func TestPublishSweepRunsAgainAfterAFailedRun(t *testing.T) {
 
 	if runs != 2 {
 		t.Errorf("runs = %d, want 2; the guard did not release after a failure", runs)
+	}
+}
+
+// publishBase strips only a trailing /publish (and slashes), so a pipeline
+// appending /publish lands on the same endpoint the sink uses.
+func TestPublishBaseStripsOnlyTheTrailingPublish(t *testing.T) {
+	for in, want := range map[string]string{
+		"http://pa:9200/publish":   "http://pa:9200",
+		"http://pa:9200/publish/":  "http://pa:9200",
+		" http://pa:9200/publish ": "http://pa:9200",
+		"http://pa:9200":           "http://pa:9200",
+		"http://pa:9200/publisher": "http://pa:9200/publisher",
+	} {
+		if got := publishBase(in); got != want {
+			t.Errorf("publishBase(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A publish action that names no pipeline is skipped, not run.
+func TestPublishDiscovererSkipsAPublishActionWithNoPipeline(t *testing.T) {
+	const key = "p|example:NoPath"
+	reg := &stubRegistry{
+		keys:    []string{key},
+		records: map[string]*model.ProviderRecord{key: publishingRecord(key, "")},
+	}
+	sweep, ran := ranSweep(reg, nil)
+	sweep.tick(context.Background())
+	if len(*ran) != 0 {
+		t.Errorf("ran %v, want nothing for a publish action with no mappings", *ran)
 	}
 }

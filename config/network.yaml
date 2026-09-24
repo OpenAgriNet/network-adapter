@@ -86,11 +86,12 @@ plugins:
       # tables are migrated on startup.
       dbDsn: "postgres://crawler:crawler@crawler-db:5432/catalogcrawler?sslmode=disable"
 
-      # REQUIRED. The provider adapter's BASE address: every catalogue this
-      # crawler puts on the network is posted to its /publish -- crawled ones
-      # (the sink) and the scheduled publish pipelines alike. One address;
-      # it overrides any pipeline's own publishUrl input.
-      publishUrl: "http://provider-adapter:9200"
+      # REQUIRED. The provider adapter's /publish endpoint: every catalogue
+      # this crawler sends goes here -- crawled ones (the sink) and the
+      # scheduled publish pipelines alike, which are handed its base (this URL
+      # without /publish). One address; it overrides any pipeline's own
+      # publishUrl input.
+      discoveryPushUrl: "http://provider-adapter:9200/publish"
 
       # --- the scheduled publish sweep ---
 

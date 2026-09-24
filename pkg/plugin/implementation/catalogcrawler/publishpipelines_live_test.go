@@ -215,10 +215,11 @@ func TestLive_CrawlerTick(t *testing.T) {
 	expected := sanctioned(ctx, t, registry)
 
 	t.Log("STEP 3 — build the crawler's publish sweep")
-	runner, err := newPublishSweep(cfg, registry, nil, log)
+	src, err := buildPublishSource(registry, log)
 	if err != nil {
-		t.Fatalf("newPublishSweep: %v", err)
+		t.Fatalf("buildPublishSource: %v", err)
 	}
+	runner := newPublishSweep(cfg, src, nil, log)
 
 	// The sweep's real work is swapped for a DRY RUN: everything up to and
 	// including "is it due" happens for real -- the listing, each lookup, the
@@ -300,10 +301,11 @@ func TestLive_CrawlerBuildsCatalogues(t *testing.T) {
 	registry := liveRegistry(ctx, t, registryURL)
 	expected := sanctioned(ctx, t, registry)
 
-	runner, err := newPublishSweep(cfg, registry, nil, log)
+	src, err := buildPublishSource(registry, log)
 	if err != nil {
-		t.Fatalf("newPublishSweep: %v", err)
+		t.Fatalf("buildPublishSource: %v", err)
 	}
+	runner := newPublishSweep(cfg, src, nil, log)
 	rec := &sweepRecorder{}
 	runner.run = watched(t, func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 		report, err := pipeline.Run(ctx, pipeline.RunOptions{
@@ -424,10 +426,11 @@ func TestLive_CrawlerPublishesThenDeclines(t *testing.T) {
 	registry := liveRegistry(ctx, t, registryURL)
 	expected := sanctioned(ctx, t, registry)
 
-	runner, err := newPublishSweep(cfg, registry, runLog, log)
+	src, err := buildPublishSource(registry, log)
 	if err != nil {
-		t.Fatalf("newPublishSweep: %v", err)
+		t.Fatalf("buildPublishSource: %v", err)
 	}
+	runner := newPublishSweep(cfg, src, runLog, log)
 	rec := &sweepRecorder{}
 	runner.run = watched(t, func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 		report, err := pipeline.Run(ctx, pipeline.RunOptions{
@@ -583,10 +586,11 @@ func TestLive_CrawlerTicksOnItsOwnClock(t *testing.T) {
 	registry := liveRegistry(ctx, t, registryURL)
 	expected := sanctioned(ctx, t, registry)
 
-	runner, err := newPublishSweep(cfg, registry, st, log)
+	src, err := buildPublishSource(registry, log)
 	if err != nil {
-		t.Fatalf("newPublishSweep: %v", err)
+		t.Fatalf("buildPublishSource: %v", err)
 	}
+	runner := newPublishSweep(cfg, src, st, log)
 	rec := &sweepRecorder{}
 	runner.run = watched(t, func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 		report, err := pipeline.Run(ctx, pipeline.RunOptions{
