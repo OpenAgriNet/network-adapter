@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "publish.oan/CataloguePipeline/v1",
   "title": "CataloguePipeline v1",
-  "description": "The contract every publish pipeline file is held to. A provider adding a capability copies reference/reference-pipeline.yaml and is checked against this at load time: a file that does not match is REFUSED at startup, naming the path that is wrong, rather than failing at 00:00 against a live upstream or silently declaring a rule nothing enforces. additionalProperties is false everywhere on purpose -- a misspelled key is the failure this exists to catch.",
+  "description": "The contract every publish pipeline file is held to. A provider adding a capability writes a file declaring `schemaRef: {uses: publish.oan/CataloguePipeline/v1}` and is checked against this at load time: a file that does not match is REFUSED at startup, naming the path that is wrong, rather than failing at 00:00 against a live upstream or silently declaring a rule nothing enforces. additionalProperties is false everywhere on purpose -- a misspelled key is the failure this exists to catch. Every `description` below states the failure its rule prevents, so this file is also the documentation; MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml is a complete working example.",
   "type": "object",
   "additionalProperties": false,
   "required": [

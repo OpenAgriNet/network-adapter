@@ -17,11 +17,14 @@ package pipeline
 // THREE ARTIFACTS MUST AGREE and this is worth stating plainly, because it is
 // the cost of validating at all: the YAML, the Go structs in spec.go, and the
 // JSON Schema. A key can exist in the schema but not the struct (parsed, then
-// dropped) or in the struct but not the schema (rejected though the engine
-// would read it). Neither is caught by validation alone. What catches them is
-// reference/reference-pipeline.yaml: it exercises every key, and a test
-// asserts it both validates against the schema AND survives UnmappedKeys
-// against the struct. A key missing from either side fails that test.
+// silently dropped) or in the struct but not the schema (rejected though the
+// engine would happily read it). Validation catches NEITHER.
+//
+// What catches them is TestContractAndStructAgree in schema_test.go: the
+// fixture must both validate against the contract and survive UnmappedKeys.
+// That guard is only as good as the fixture's coverage -- a key neither the
+// fixture nor any real pipeline uses can still drift unnoticed, and the first
+// provider to reach for it finds out.
 
 import (
 	"embed"

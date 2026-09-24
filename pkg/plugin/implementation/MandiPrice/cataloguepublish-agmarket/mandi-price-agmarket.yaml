@@ -305,7 +305,11 @@ pipeline:
     with:
       left: ${rows}
       right: ${masterMarkets}
-      on: marketId
+      # Quoted because YAML 1.1 readers (PyYAML, and most linters) treat a
+      # bare `on` as the boolean true. Go's yaml.v3 is 1.2 and reads it as the
+      # string either way, so this costs nothing and stops the file breaking
+      # in any tool that is not this engine.
+      "on": marketId
       type: left
       carry: [latitude, longitude]
     out: joined

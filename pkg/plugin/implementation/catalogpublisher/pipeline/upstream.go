@@ -297,7 +297,6 @@ func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []by
 	return body, nil
 }
 
-
 // httpGet verifies a mapping's preconditions, runs its request half to build
 // a query, makes the GET, and runs the response half over what came back.
 //
@@ -340,9 +339,12 @@ func (c *Client) Get(ctx context.Context, m Mapper, mappingRef, path string, loc
 // and runs the response half over the answer.
 //
 // Situation: the upstream requires a POST to fetch or submit data
-//            (e.g. search endpoints, filtering APIs, data submission).
+//
+//	(e.g. search endpoints, filtering APIs, data submission).
+//
 // Scenario:  The mapping's request half shapes the body; the token is
-//            applied as a header or query param per carriedAs.
+//
+//	applied as a header or query param per carriedAs.
 func (c *Client) Post(ctx context.Context, m Mapper, mappingRef, path string, local map[string]any) ([]byte, error) {
 	input := map[string]any{"_local": local}
 	if err := m.Verify(ctx, mappingRef, input); err != nil {

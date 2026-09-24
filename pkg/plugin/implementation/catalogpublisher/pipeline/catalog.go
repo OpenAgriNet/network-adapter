@@ -569,4 +569,3 @@ func RemoveStaleCatalogues(dir, filenamePrefix string) error {
 	}
 	return nil
 }
-
