@@ -339,7 +339,9 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	}
 	log.InfoContext(ctx, "publish pipeline: PUBLISHING to the network",
 		"catalogues", len(catalogues), "target", resolved["publishUrl"])
-	result, err := PublishCatalogues(ctx, spec.Publish, resolved, outDir, prefix, report.Errors)
+	publishSpec := spec.Publish
+	publishSpec.AddressHint = publishAddressHintFor(spec.Inputs["publishUrl"])
+	result, err := PublishCatalogues(ctx, publishSpec, resolved, outDir, prefix, report.Errors)
 	report.Published = &result
 	if err != nil {
 		return fmt.Errorf("publishing catalogues: %w", err)

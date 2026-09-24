@@ -56,7 +56,7 @@ var dateFormats = map[string]string{
 // An input with neither an env value nor a default resolves to "" and is NOT
 // an error. Requiredness lives with the caller, which knows what the run it is
 // about to make actually needs -- it can refuse with "publishUrl is not set
-// (MANDI_PUBLISH_URL)", naming the missing thing, where this function could
+// (CATALOG_PUBLISH_URL)", naming the missing thing, where this function could
 // only report that "an input" was unresolved. publishUrl, tokenUser and
 // tokenSecret all reach here unresolved on a machine that has not been
 // configured, and all three are the caller's to demand.

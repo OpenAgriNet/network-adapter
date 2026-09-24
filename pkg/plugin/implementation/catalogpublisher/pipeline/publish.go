@@ -16,9 +16,27 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 )
 
-// publishAddressHint names the two ways an operator can supply the address, so
-// an empty one says what to set rather than that something is missing.
-const publishAddressHint = "set inputs.publishUrl (flag --publish-url or MANDI_PUBLISH_URL)"
+// publishAddressHint is the fallback when a caller has not said how THIS
+// pipeline's address is supplied. Generic on purpose: naming one pipeline's
+// variable here once told every other pipeline to set it.
+const publishAddressHint = "set inputs.publishUrl"
+
+// publishAddressHintFor names the ways an operator can supply a pipeline's
+// publish address -- its own flag and env, as the file declares them -- so an
+// empty one says what to set rather than only that something is missing.
+func publishAddressHintFor(input Input) string {
+	var ways []string
+	if input.Flag != "" {
+		ways = append(ways, "flag --"+input.Flag)
+	}
+	if input.Env != "" {
+		ways = append(ways, input.Env)
+	}
+	if len(ways) == 0 {
+		return publishAddressHint
+	}
+	return publishAddressHint + " (" + strings.Join(ways, " or ") + ")"
+}
 
 // refuseWhenShape is the one form of refusal this step understands:
 //
@@ -81,16 +99,20 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 		return result, err
 	}
 
+	hint := spec.AddressHint
+	if hint == "" {
+		hint = publishAddressHint
+	}
 	publishURL := strings.TrimSpace(resolved["publishUrl"])
 	if publishURL == "" {
-		return result, fmt.Errorf("no publish address: %s", publishAddressHint)
+		return result, fmt.Errorf("no publish address: %s", hint)
 	}
 
 	cfg := catalogpublish.Config{
 		PublishURL:     publishURL,
 		CatalogIn:      catalogDir,
 		FilenamePrefix: filenamePrefix,
-		AddressHint:    publishAddressHint,
+		AddressHint:    hint,
 	}
 	if err := applyRetireOld(spec.RetireOld, resolved, &cfg); err != nil {
 		return result, err
@@ -109,7 +131,7 @@ const expectedPublishURL = "${inputs.publishUrl}/publish"
 // The address actually used comes from inputs.publishUrl, not from this
 // field. Without this check an operator could repoint publish.url at another
 // host, watch the edit take no effect, and have the catalog posted to
-// MANDI_PUBLISH_URL anyway -- the same silent-divergence failure checkJudgement
+// CATALOG_PUBLISH_URL anyway -- the same silent-divergence failure checkJudgement
 // exists to prevent, and the reason refuseWhen is compared literally above.
 func checkPublishURL(spec Publish) error {
 	if url := strings.TrimSpace(spec.URL); url != expectedPublishURL {

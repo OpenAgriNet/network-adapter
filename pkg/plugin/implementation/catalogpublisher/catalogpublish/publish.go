@@ -75,7 +75,7 @@ type Config struct {
 	FilenamePrefix string
 
 	// AddressHint is shown in the error when PublishURL is empty, e.g.
-	// "pass --publish-url or set MANDI_PUBLISH_URL".
+	// "pass --publish-url or set CATALOG_PUBLISH_URL".
 	AddressHint string
 
 	// OldCatalogID is the catalog to retire when RetireOld is set. Ignored

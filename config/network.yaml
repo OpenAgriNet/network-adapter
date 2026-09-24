@@ -56,6 +56,68 @@ plugins:
       enableTracing: "true"
       enableLogs: "true"
 
+  # -------------------------------------------------------------------------
+  # Catalog crawler: a background job started once at process startup, not a
+  # per-request plugin. Here it runs the scheduled PUBLISH SWEEP.
+  #
+  # Each tick it lists every ProviderSchema binding in the registry, and runs
+  # every one whose actions include `publish`, using that action's `mappings`
+  # as the pipeline path -- today agmarknet-live|MandiPrice and
+  # mausamgram|WeatherObservation. There is no list here and no filter: a
+  # capability publishes by having a pipeline folder under
+  # pkg/plugin/implementation/<Capability>/cataloguepublish-<source>/ (built
+  # into the image) and a publish action naming it in the registry.
+  #
+  # This registry is the crawler's OWN, separate from the module's below. It
+  # must be sunbirdRegistry: the sweep needs it to list bindings and resolve
+  # each, and the crawler refuses to start otherwise.
+  registry:
+    id: sunbirdRegistry
+    config:
+      url: http://sunbird-registry-service:8081/api/v1
+      entity: Participant
+      providerEntity: ProviderSchema
+
+  crawler:
+    id: catalogcrawler
+    config:
+      # REQUIRED. The crawler's own Postgres: the run log lives here, and it
+      # is what stops a restart republishing a day already published. Its
+      # tables are migrated on startup.
+      dbDsn: "postgres://crawler:crawler@crawler-db:5432/catalogcrawler?sslmode=disable"
+
+      # REQUIRED by the plugin, used only by the crawl path (catalogue
+      # indexes -> discovery), not by the publish sweep. No index source is
+      # configured below, so the crawl loops find no work.
+      discoveryPushUrl: "http://discovery:8080/beckn/catalog/push"
+
+      # --- the scheduled publish sweep ---
+
+      # "true" turns the registry sweep on.
+      publishPipelines: "true"
+
+      # How often to CHECK whether each pipeline is due -- not how often one
+      # runs. The cadence lives in each pipeline's YAML as a cron expression
+      # (mandi 00:00 IST, weather 01:00 IST). Default 300s.
+      publishTickIntervalSeconds: "300"
+
+      # Reaching the network is a SEPARATE decision, off by default. Left
+      # false, each run still builds catalogues and does not send them.
+      publishEnabled: "false"
+
+      # Optional. Keeps each run's catalogues on disk for inspection, one
+      # subdirectory per capability; empty means a temporary directory.
+      # publishCatalogOutputDir: "/var/lib/oan/catalogs"
+
+      # Each pipeline reads its inputs from the ENVIRONMENT of this
+      # container, not from this file:
+      #   all      CATALOG_PUBLISH_URL -- ONE address, shared: every pipeline
+      #            posts to the same provider adapter's /publish
+      #   mandi    SUNBIRD_REGISTRY_URL, MANDI_API_URI, MANDI_TOKEN_USER,
+      #            MANDI_TOKEN_SECRET, MANDI_PARTICIPANT_ID
+      #   weather  nothing else (no upstream, no credentials); optional
+      #            WEATHER_PARTICIPANT_ID, APP_NETWORK_ID
+
 modules:
   - name: network-adapter
     # A subtree: every action lands here and the payload says which one it is.

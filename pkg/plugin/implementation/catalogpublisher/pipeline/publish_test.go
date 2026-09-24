@@ -156,12 +156,15 @@ func TestPublishCatalogsPublishesWhenRefuseWhenIsNotDeclared(t *testing.T) {
 }
 
 func TestPublishCatalogsNeedsAPublishURL(t *testing.T) {
-	_, err := PublishCatalogues(context.Background(), goodSpec(),
+	// The hint the run fills in from the pipeline's own publishUrl input.
+	spec := goodSpec()
+	spec.AddressHint = publishAddressHintFor(Input{Flag: "publish-url", Env: "CATALOG_PUBLISH_URL"})
+	_, err := PublishCatalogues(context.Background(), spec,
 		map[string]string{}, t.TempDir(), publishTestPrefix, 0)
 	if err == nil {
 		t.Fatal("publishCatalogs accepted an empty publish address")
 	}
-	if !strings.Contains(err.Error(), "publishUrl") || !strings.Contains(err.Error(), "MANDI_PUBLISH_URL") {
+	if !strings.Contains(err.Error(), "publishUrl") || !strings.Contains(err.Error(), "CATALOG_PUBLISH_URL") {
 		t.Errorf("error %q names neither the input nor its environment variable", err)
 	}
 }
@@ -281,5 +284,22 @@ func TestPublishCatalogsCarriesAnEnabledRetireOld(t *testing.T) {
 	}
 	if result.RetiredOld == nil {
 		t.Fatal("retireOld was declared and enabled, but no retirement was attempted")
+	}
+}
+
+// The "no publish address" error names the flag and env the pipeline FILE
+// declares, not a name fixed in Go: a hardcoded hint once told a pipeline to
+// set a variable it never read.
+func TestPublishAddressHintNamesThePipelinesOwnInput(t *testing.T) {
+	hint := publishAddressHintFor(Input{Flag: "send-to", Env: "EXAMPLE_PUBLISH_URL"})
+	if !strings.Contains(hint, "EXAMPLE_PUBLISH_URL") || !strings.Contains(hint, "--send-to") {
+		t.Errorf("hint %q does not name the declared flag and env", hint)
+	}
+
+	spec := goodSpec()
+	spec.AddressHint = hint
+	_, err := PublishCatalogues(context.Background(), spec, map[string]string{}, t.TempDir(), "x", 0)
+	if err == nil || !strings.Contains(err.Error(), "EXAMPLE_PUBLISH_URL") {
+		t.Errorf("err = %v, want it to name EXAMPLE_PUBLISH_URL", err)
 	}
 }

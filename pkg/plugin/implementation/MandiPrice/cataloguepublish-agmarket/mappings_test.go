@@ -1,35 +1,71 @@
 package agmarket
 
-// mappings_test.go proves Files actually carries what a deployment needs: the
-// pipeline definition PipelinePath names, and the four mapping files the
-// pipeline's catalog block references by path. Nothing here checks their
-// content -- these are copied verbatim from tools/publish/mandi_publish and
-// already proven there; this only guards the embed directive itself against
-// a typo or a file moved out from under it.
+// mappings_test.go gives this package's tests the pipeline they exercise, and
+// proves the embed actually carries what a deployment needs: the pipeline
+// definition and the four mapping files its steps and catalog block reference.
+//
+// There is no Go in this package any more. The pipeline is embedded centrally,
+// by folder convention (pkg/plugin/implementation/publishpipelines.go), and
+// the crawler finds it through the registry's publish action. The names below
+// are what these tests used to import from pipeline_files.go, resolved the
+// same way the crawler resolves them -- so the tests run the file production
+// runs, reached the way production reaches it.
 
 import (
+	"path"
 	"testing"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
-// wantFiles is every file Files must serve, PipelinePath among them so the
-// constant and the embed can never drift apart unnoticed.
+// RegistryPipelinePath is the repo-relative path the registry's publish action
+// names for this pipeline.
+const RegistryPipelinePath = "pkg/plugin/implementation/MandiPrice/" +
+	"cataloguepublish-agmarket/mandi-price-agmarket.yaml"
+
+// Capability is the code the registry knows this pipeline by, as declared in
+// the YAML's metadata.capability (spec_conformance_test checks they agree).
+const Capability = "openagrinet:MandiPrice"
+
+// pipelineFiles is the pipeline as the crawler resolves it.
+var pipelineFiles = func() pipeline.Files {
+	files, err := implementation.PublishPipeline(RegistryPipelinePath)
+	if err != nil {
+		panic(err)
+	}
+	return files
+}()
+
+// Files, PipelinePath and mappingsDir address the pipeline inside the central
+// embed, where it sits under its own folder rather than at the root.
+var (
+	Files        = pipelineFiles.FS
+	PipelinePath = pipelineFiles.Path
+	mappingsDir  = path.Join(path.Dir(PipelinePath), "mappings")
+)
+
+// Pipeline is what a runner needs to execute this capability.
+func Pipeline() pipeline.Files { return pipelineFiles }
+
+// wantFiles is every file the embed must serve for this pipeline.
 var wantFiles = []string{
 	PipelinePath,
-	"mappings/master-states.yaml",
-	"mappings/master-markets.yaml",
-	"mappings/market-commodity.yaml",
-	"mappings/catalog.yaml",
+	path.Join(mappingsDir, "master-states.yaml"),
+	path.Join(mappingsDir, "master-markets.yaml"),
+	path.Join(mappingsDir, "market-commodity.yaml"),
+	path.Join(mappingsDir, "catalog.yaml"),
 }
 
 func TestFilesEmbedsThePipelineAndItsMappings(t *testing.T) {
-	for _, path := range wantFiles {
-		t.Run(path, func(t *testing.T) {
-			data, err := Files.ReadFile(path)
+	for _, file := range wantFiles {
+		t.Run(file, func(t *testing.T) {
+			data, err := Files.ReadFile(file)
 			if err != nil {
-				t.Fatalf("Files.ReadFile(%q): %v", path, err)
+				t.Fatalf("Files.ReadFile(%q): %v", file, err)
 			}
 			if len(data) == 0 {
-				t.Errorf("Files.ReadFile(%q) returned no content", path)
+				t.Errorf("Files.ReadFile(%q) returned no content", file)
 			}
 		})
 	}

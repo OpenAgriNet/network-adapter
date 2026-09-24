@@ -114,7 +114,7 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 		},
 		"publishUrl": {
 			Flag: "publish-url",
-			Env:  "MANDI_PUBLISH_URL",
+			Env:  "CATALOG_PUBLISH_URL",
 		},
 		"tokenUser": {
 			Env:    "MANDI_TOKEN_USER",
@@ -329,7 +329,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 	}
 
 	got, err := pipeline.ResolveInputs(spec, lookupFrom(map[string]string{
-		"MANDI_PUBLISH_URL":    "http://publish.test/catalog",
+		"CATALOG_PUBLISH_URL":  "http://publish.test/catalog",
 		"MANDI_TOKEN_USER":     "user",
 		"MANDI_TOKEN_SECRET":   "secret",
 		"MANDI_API_URI":        "http://upstream.test:8080",

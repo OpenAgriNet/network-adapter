@@ -130,11 +130,11 @@ func TestResolveInputsRendersListDefaults(t *testing.T) {
 
 // An input with neither an env value nor a default is NOT an error here. The
 // caller knows which inputs its run actually needs, so it can fail with
-// "publishUrl is not set (MANDI_PUBLISH_URL)" -- a message naming the thing
+// "publishUrl is not set (CATALOG_PUBLISH_URL)" -- a message naming the thing
 // that is missing -- where this function could only say "an input".
 func TestResolveInputsUnsetIsEmptyNotAnError(t *testing.T) {
 	inputs := map[string]Input{
-		"publishUrl":  {Env: "MANDI_PUBLISH_URL"},
+		"publishUrl":  {Env: "CATALOG_PUBLISH_URL"},
 		"tokenSecret": {Env: "MANDI_TOKEN_SECRET", Secret: true},
 	}
 
