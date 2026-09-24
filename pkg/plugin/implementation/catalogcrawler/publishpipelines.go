@@ -1,8 +1,14 @@
 package catalogcrawler
 
 // publishpipelines.go is the crawler's side of the scheduled publish
-// pipelines: once per tick it asks the registry which capabilities publish,
-// and hands each one's record to the pipeline the registry names.
+// pipelines: once per tick it asks discovery which capabilities publish, and
+// hands each one's record to the pipeline the registry names.
+//
+// WHAT publishes is discovered in catalogcrawler.go (buildPublishSource /
+// publishDiscoverer), beside buildSource and registryDiscoverer. WHERE it
+// goes is the sink: every pipeline publishes through the same
+// DiscoverySink.Client the crawl path uses, to the provider adapter's
+// /publish named by discoveryPushUrl. This file owns only WHEN.
 //
 // NOTHING HERE LISTS CAPABILITIES. The registry's publish action names a
 // pipeline YAML by its repo-relative path; the binary embeds every
@@ -23,7 +29,6 @@ package catalogcrawler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -32,8 +37,6 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
@@ -88,9 +91,9 @@ type publishConfig struct {
 	tick    time.Duration
 	outDir  string
 
-	// publishURL is the crawler's one publishUrl -- the same address its
-	// sink posts crawled catalogues to -- handed to every pipeline so they
-	// all publish to the same provider adapter.
+	// publishURL is the provider adapter's base address, derived from
+	// discoveryPushUrl (its /publish endpoint) and handed to every pipeline,
+	// so crawled catalogues and pipelines all reach the same /publish.
 	publishURL string
 }
 
@@ -111,7 +114,7 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 		tick:    durationSecondsOr(config[cfgPublishTickIntervalSec], defaultPublishTickInterval),
 		outDir:  strings.TrimSpace(config[cfgPublishCatalogOutputDir]),
 
-		publishURL: strings.TrimSpace(config[cfgPublishURL]),
+		publishURL: publishBase(config[cfgDiscoveryURL]),
 	}, nil
 }
 
@@ -121,27 +124,29 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 // while the gate that acts on it lives with the code that enforces it.
 const publishActionName = "publish"
 
-// registry is what a sweep needs from the registry plugin: the list of
-// bindings, and each one's record.
-type registry interface {
-	definition.ProviderBindingLister
-	definition.ProviderRecordLookup
+// publishBase is discoveryPushUrl without its /publish: the base a
+// pipeline.Publisher appends /publish to.
+func publishBase(discoveryURL string) string {
+	return strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(discoveryURL), "/"), "/publish")
+}
+
+// publishSource is what a sweep needs from discovery -- publishDiscoverer in
+// catalogcrawler.go, beside buildSource -- as an interface so tick logic is
+// testable without a registry.
+type publishSource interface {
+	Discover(ctx context.Context) ([]publishTarget, error)
 }
 
 // publishSweep holds the tick state for every publish pipeline.
 type publishSweep struct {
-	cfg      publishConfig
-	registry registry
-	runLog   pipeline.RunLog
-	log      *slog.Logger
+	cfg    publishConfig
+	source publishSource
+	runLog pipeline.RunLog
+	log    *slog.Logger
 
-	// publisher is the sink every pipeline publishes through -- the same code
-	// the crawl path posts crawled catalogues with.
+	// publisher is the sink every pipeline publishes through -- the same
+	// Client.Push the crawl path publishes crawled catalogues with.
 	publisher pipeline.Publisher
-
-	// resolve turns the registry's pipeline path into the embedded files.
-	// Injectable so tick logic is testable without the real embed.
-	resolve func(registryPath string) (pipeline.Files, error)
 
 	// run is the pipeline call, injectable so this file's tick logic can be
 	// tested without a database or an upstream.
@@ -155,7 +160,7 @@ type publishSweep struct {
 	running  bool
 }
 
-// tick sweeps the registry and runs every pipeline it sanctions.
+// tick asks discovery what the registry sanctions and runs each pipeline.
 //
 // Every failure here is logged and swallowed, and one capability's failure
 // never stops the next. This loop shares a Scheduler with the index-poll and
@@ -168,58 +173,16 @@ func (p *publishSweep) tick(ctx context.Context) {
 	}
 	defer p.release()
 
-	keys, err := p.registry.ProviderBindingKeys(ctx)
+	targets, err := p.source.Discover(ctx)
 	if err != nil {
-		p.log.ErrorContext(ctx, "catalogcrawler: could not list the registry's capabilities", "error", err)
+		p.log.ErrorContext(ctx, "catalogcrawler: publish discovery failed", "error", err)
 		return
 	}
-	p.log.InfoContext(ctx, "catalogcrawler: publish sweep", "capabilities", len(keys))
-
-	for _, key := range keys {
-		p.runOne(ctx, key)
-	}
-}
-
-// runOne resolves one binding and runs its pipeline if it publishes.
-func (p *publishSweep) runOne(ctx context.Context, key string) {
-	record, err := p.registry.ProviderRecord(ctx, key)
-	if errors.Is(err, definition.ErrProviderRecordNotFound) {
-		// Listed but not usable: inactive, unowned, or no active actions.
-		// The registry plugin has already logged which.
-		p.log.DebugContext(ctx, "catalogcrawler: binding is not usable; skipping", "bindingKey", key)
-		return
-	}
-	if err != nil {
-		p.log.ErrorContext(ctx, "catalogcrawler: could not consult the registry for a publish pipeline",
-			"bindingKey", key, "error", err)
-		return
-	}
-
-	// Most capabilities are consumed, not published. Quiet, not an error.
-	if _, publishes := record.Actions[publishActionName]; !publishes {
-		p.log.DebugContext(ctx, "catalogcrawler: binding serves no publish action", "bindingKey", key)
-		return
-	}
-
-	pipelinePath, err := pipeline.PipelinePathFor(record)
-	if err != nil {
-		p.log.ErrorContext(ctx, "catalogcrawler: publish action names no pipeline", "bindingKey", key, "error", err)
-		return
-	}
-	files, err := p.resolve(pipelinePath)
-	if err != nil {
-		// The registry sanctions a pipeline this binary was not built with.
-		// A deployment problem, said loudly with what IS available.
-		p.log.ErrorContext(ctx, "catalogcrawler: the registry names a pipeline this binary does not carry",
-			"bindingKey", key, "pipeline", pipelinePath, "carried", implementation.PublishPipelines(), "error", err)
-		return
-	}
-
-	p.log.InfoContext(ctx, "catalogcrawler: registry sanctions publishing",
-		"bindingKey", key, "actions", servedActions(record), "pipeline", pipelinePath)
-	if err := p.run(ctx, record, files); err != nil {
-		p.log.ErrorContext(ctx, "catalogcrawler: publish pipeline run failed",
-			"bindingKey", key, "error", err)
+	for _, target := range targets {
+		if err := p.run(ctx, target.record, target.files); err != nil {
+			p.log.ErrorContext(ctx, "catalogcrawler: publish pipeline run failed",
+				"bindingKey", target.record.BindingKey, "error", err)
+		}
 	}
 }
 
@@ -273,37 +236,21 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 	return nil
 }
 
-// newPublishSweep wires the sweep, or returns nil when publishing is not
-// configured.
-//
-// The registry plugin must both list bindings and resolve them: without the
-// list there is nothing to sweep, and without the lookup there is no way to
-// learn whether a capability is sanctioned to publish. So a configured sweep
-// with an incapable registry is a startup error, not a silently disabled
-// feature.
-func newPublishSweep(cfg publishConfig, lookup definition.RegistryLookup,
-	runLog pipeline.RunLog, log *slog.Logger) (*publishSweep, error) {
-	if !cfg.enabled {
-		return nil, nil
-	}
-	reg, ok := lookup.(registry)
-	if !ok {
-		return nil, fmt.Errorf(
-			"catalogcrawler: config %q needs a registry plugin that can list and resolve provider bindings (e.g. sunbirdRegistry)",
-			cfgPublishPipelines)
-	}
-
+// newPublishSweep wires the sweep over a discovery source.
+func newPublishSweep(cfg publishConfig, source publishSource, runLog pipeline.RunLog, log *slog.Logger) *publishSweep {
 	sweep := &publishSweep{
-		cfg:      cfg,
-		registry: reg,
-		runLog:   runLog,
-		log:      log,
-		resolve:  implementation.PublishPipeline,
+		cfg:    cfg,
+		source: source,
+		runLog: runLog,
+		log:    log,
 
-		publisher: sink.NewPublishSink(cfg.publishURL, 0, pipelinePublishTimeout),
+		// Publish posts to the base it is given (cfg.publishURL, via
+		// RunOptions.PublishURL), so the sink's own endpoint and identity are
+		// unused on this path: pipeline bodies are complete envelopes.
+		publisher: sink.NewDiscoverySink("", "", "", 0, pipelinePublishTimeout),
 	}
 	sweep.run = sweep.runPipeline
-	return sweep, nil
+	return sweep
 }
 
 // servedActions lists a record's actions, sorted, for a log line.

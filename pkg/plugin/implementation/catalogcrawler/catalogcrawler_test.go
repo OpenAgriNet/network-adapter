@@ -30,34 +30,23 @@ func (fakeRegistry) QueryByNetwork(context.Context, string) ([]model.SubscriberR
 }
 
 func TestProvider_New_RequiresRegistry(t *testing.T) {
-	_, _, err := Provider{}.New(context.Background(), nil, fakeRegistry{}, map[string]string{cfgDBDSN: "x", cfgPublishURL: "https://x"})
+	_, _, err := Provider{}.New(context.Background(), nil, fakeRegistry{}, map[string]string{cfgDBDSN: "x", cfgDiscoveryURL: "https://x"})
 	if err == nil {
 		t.Fatal("expected an error with no registry configured")
 	}
 }
 
 func TestProvider_New_RequiresDBDSN(t *testing.T) {
-	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{cfgPublishURL: "https://x"})
+	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{cfgDiscoveryURL: "https://x"})
 	if err == nil {
 		t.Fatal("expected an error with no dbDsn configured")
 	}
 }
 
-func TestProvider_New_RequiresPublishURL(t *testing.T) {
+func TestProvider_New_RequiresDiscoveryURL(t *testing.T) {
 	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{cfgDBDSN: "postgres://x"})
-	if err == nil || !strings.Contains(err.Error(), cfgPublishURL) {
-		t.Fatalf("err = %v, want a refusal naming %s", err, cfgPublishURL)
-	}
-}
-
-// The retired discovery /push address is refused, not ignored: a deployment
-// still setting it would otherwise not notice its crawled catalogues moved.
-func TestProvider_New_RefusesTheRetiredDiscoveryPushURL(t *testing.T) {
-	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{
-		cfgDBDSN: "postgres://x", cfgPublishURL: "https://x", cfgDiscoveryURL: "https://discovery/push",
-	})
-	if err == nil || !strings.Contains(err.Error(), cfgPublishURL) {
-		t.Fatalf("err = %v, want a refusal pointing at %s", err, cfgPublishURL)
+	if err == nil {
+		t.Fatal("expected an error with no discoveryPushUrl configured")
 	}
 }
 
@@ -67,7 +56,7 @@ func TestProvider_New_BadDSNFailsFast(t *testing.T) {
 	// returning, so a bad DSN should fail construction, not surface later at
 	// Start.
 	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{
-		cfgDBDSN: "postgres://user:pass@nonexistent-host-xyz.invalid:5432/db?connect_timeout=1", cfgPublishURL: "https://x",
+		cfgDBDSN: "postgres://user:pass@nonexistent-host-xyz.invalid:5432/db?connect_timeout=1", cfgDiscoveryURL: "https://x",
 	})
 	if err == nil {
 		t.Fatal("expected migration against an unreachable host to fail construction")
@@ -76,7 +65,7 @@ func TestProvider_New_BadDSNFailsFast(t *testing.T) {
 
 func TestProvider_New_RequiresMetadataLookupWhenNetworksConfigured(t *testing.T) {
 	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, nil, map[string]string{
-		cfgDBDSN: "postgres://x", cfgPublishURL: "https://x", cfgNetworks: "beckn.one/testnet",
+		cfgDBDSN: "postgres://x", cfgDiscoveryURL: "https://x", cfgNetworks: "beckn.one/testnet",
 	})
 	if err == nil {
 		t.Fatal("expected an error when networks is configured without a RegistryMetadataLookup")
@@ -186,5 +175,19 @@ func TestDurationSecondsOr_FallsBackOnInvalid(t *testing.T) {
 	}
 	if got := durationSecondsOr("60", DefaultIndexInterval); got.Seconds() != 60 {
 		t.Fatalf("got %v, want 60s", got)
+	}
+}
+
+// discoveryPushUrl used to be discovery's /push; it is now the provider
+// adapter's /publish. A config still carrying an old /push value is refused
+// at startup -- otherwise crawled catalogues would go to /push as publish
+// bodies and every pipeline would post to .../push/publish, both failing far
+// from the cause.
+func TestProvider_New_RefusesAnOldDiscoveryPushURL(t *testing.T) {
+	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{
+		cfgDBDSN: "postgres://x", cfgDiscoveryURL: "https://discovery.example.org/beckn/catalog/push",
+	})
+	if err == nil || !strings.Contains(err.Error(), "/publish") {
+		t.Fatalf("err = %v, want a refusal naming the provider adapter's /publish", err)
 	}
 }
