@@ -520,3 +520,63 @@ func TestMappingRefIsResolvedTheSameWayEverywhere(t *testing.T) {
 		t.Errorf("mappingRef produced %q -- the URL scheme was mangled", ref)
 	}
 }
+
+// A const step is how a pipeline with no upstream produces its collection:
+// the records are written in the file, and the step hands them on unchanged.
+func TestConstEmitsTheRecordsTheFileDeclares(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "resources", Uses: usesConst, Out: "collection", With: With{Records: []map[string]any{
+			{"id": "point-forecast"},
+			{"id": "district-forecast"},
+		}}},
+	}}
+	runner, upstream := testRunner(t, spec, `[]`)
+	upstream.Close() // a const step must not need the upstream at all
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	if len(records) != 2 || records[0]["id"] != "point-forecast" || records[1]["id"] != "district-forecast" {
+		t.Fatalf("records = %v, want the two declared, in order", records)
+	}
+
+	// Copies, not the spec's own maps: catalog rendering writes resourceId
+	// into each record, and that must not leak back into the parsed file.
+	records[0]["resourceId"] = "mutated"
+	if _, leaked := spec.Pipeline[0].With.Records[0]["resourceId"]; leaked {
+		t.Error("a const step handed out the spec's own record maps; a later edit wrote back into the file")
+	}
+}
+
+// A const step with nothing in it is refused: it would walk cleanly into an
+// empty catalogue build and read as "this provider has nothing".
+func TestConstWithNoRecordsIsRefused(t *testing.T) {
+	spec := Spec{Pipeline: []Step{{ID: "resources", Uses: usesConst, Out: "collection"}}}
+	runner, _ := testRunner(t, spec, `[]`)
+
+	_, err := runner.runSteps(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "records") {
+		t.Fatalf("err = %v, want a refusal naming `with.records`", err)
+	}
+}
+
+// With no upstream there is no client. An HTTP step reaching the runner
+// anyway (the schema should have refused it) must fail by name, not panic.
+func TestHTTPStepWithoutAnUpstreamIsRefused(t *testing.T) {
+	for _, uses := range []string{usesHTTPGet, usesHTTPPost} {
+		t.Run(uses, func(t *testing.T) {
+			spec := Spec{Pipeline: []Step{
+				{ID: "fetch", Uses: uses, Out: "rows",
+					With: With{Path: "/things", Mapping: "mappings/things.yaml"}},
+			}}
+			runner, _ := testRunner(t, spec, `[]`)
+			runner.client = nil
+
+			_, err := runner.runSteps(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "upstream") {
+				t.Fatalf("err = %v, want a refusal naming the missing upstream", err)
+			}
+		})
+	}
+}

@@ -38,10 +38,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/catalogpublish"
 )
 
-// Inputs every pipeline must declare, because the frame itself uses them: the
-// upstream's address and the credentials it exchanges for a token. A pipeline
-// naming them differently would resolve them into a map the frame cannot read,
-// so the convention is enforced rather than assumed.
+// Inputs every pipeline WITH AN UPSTREAM must declare, because the frame
+// itself uses them: the upstream's address and the credentials it exchanges
+// for a token. A pipeline naming them differently would resolve them into a
+// map the frame cannot read, so the convention is enforced rather than
+// assumed. A pipeline with no `upstream:` block needs none of them.
 const (
 	inputBaseURL     = "baseUrl"
 	inputTokenUser   = "tokenUser"
@@ -226,9 +227,11 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	if err != nil {
 		return fmt.Errorf("resolving pipeline inputs: %w", err)
 	}
-	for _, required := range []string{inputBaseURL, inputTokenUser, inputTokenSecret} {
-		if resolved[required] == "" {
-			return fmt.Errorf("input %q is empty; the pipeline cannot reach the upstream without it", required)
+	if hasUpstream(spec) {
+		for _, required := range []string{inputBaseURL, inputTokenUser, inputTokenSecret} {
+			if resolved[required] == "" {
+				return fmt.Errorf("input %q is empty; the pipeline cannot reach the upstream without it", required)
+			}
 		}
 	}
 
@@ -252,16 +255,25 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	}
 	defer func() { _ = closeMapper() }()
 
-	log.InfoContext(ctx, "publish pipeline: exchanging credentials",
-		"upstream", resolved[inputBaseURL], "path", spec.Upstream.Auth.Request.Path)
+	// A pipeline with no upstream has nothing to authenticate to and nothing
+	// to call: no token, no client. Its steps are const/derive/filter and the
+	// like; an HTTP step among them is refused by the schema at load, and by
+	// the runner as a backstop.
 	rc := newRunContext(resolved, "")
-	client := NewClient(resolved[inputBaseURL])
-	token, err := client.Token(ctx, spec.Upstream.Auth, rc)
-	if err != nil {
-		return fmt.Errorf("exchanging credentials: %w", err)
+	var client *Client
+	if hasUpstream(spec) {
+		log.InfoContext(ctx, "publish pipeline: exchanging credentials",
+			"upstream", resolved[inputBaseURL], "path", spec.Upstream.Auth.Request.Path)
+		client = NewClient(resolved[inputBaseURL])
+		token, err := client.Token(ctx, spec.Upstream.Auth, rc)
+		if err != nil {
+			return fmt.Errorf("exchanging credentials: %w", err)
+		}
+		rc = newRunContext(resolved, token)
+		log.InfoContext(ctx, "publish pipeline: token exchanged", "characters", len(token))
+	} else {
+		log.InfoContext(ctx, "publish pipeline: no upstream declared; skipping credentials")
 	}
-	rc = newRunContext(resolved, token)
-	log.InfoContext(ctx, "publish pipeline: token exchanged", "characters", len(token))
 
 	outDir, cleanup, err := pipelineDir(opts, report.Capability)
 	if err != nil {
@@ -390,4 +402,13 @@ func collectionErrors(spec Publish, counters map[string]int) int {
 		return 0
 	}
 	return counters[counter]
+}
+
+// hasUpstream reports whether the file declares an upstream at all.
+//
+// The absence of the block is the signal, not an auth kind: a pipeline whose
+// catalogue is fixed has no service to name, and asking it to invent a
+// baseUrl and credentials it never uses would make every such file lie.
+func hasUpstream(spec Spec) bool {
+	return strings.TrimSpace(spec.Upstream.BaseURL) != ""
 }

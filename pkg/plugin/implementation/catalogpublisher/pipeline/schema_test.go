@@ -215,3 +215,95 @@ func deepCopy(value any) any {
 		return value
 	}
 }
+
+// upstreamless turns the fixture into a pipeline with no upstream: no
+// upstream block, no credential inputs, one const step. Built in memory from
+// minimal.yaml so the shape needs no fixture file of its own.
+func upstreamless(t *testing.T) map[string]any {
+	t.Helper()
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	delete(doc, "upstream")
+	inputs := doc["inputs"].(map[string]any)
+	for _, name := range []string{"baseUrl", "tokenUser", "tokenSecret"} {
+		delete(inputs, name)
+	}
+	doc["pipeline"] = []any{map[string]any{
+		"id": "resources", "uses": "const", "out": "collection",
+		"with": map[string]any{"records": []any{map[string]any{"id": "only", "group": "AA"}}},
+	}}
+	return doc
+}
+
+// A pipeline with no upstream is a real shape -- a catalogue whose content is
+// fixed -- and must validate without inventing credentials it never uses.
+func TestAnUpstreamlessPipelineMatchesTheContract(t *testing.T) {
+	if err := validateDocument(t, upstreamless(t)); err != nil {
+		t.Fatalf("an upstream-less pipeline was refused: %v", err)
+	}
+}
+
+// Making `upstream` optional must not let an HTTP step, a token exchange or a
+// const step through without what each needs.
+func TestOptionalUpstreamRulesStillBindWhenTheyApply(t *testing.T) {
+	tests := map[string]struct {
+		doc    func(t *testing.T) map[string]any
+		expect string
+	}{
+		"an http step with no upstream": {
+			doc: func(t *testing.T) map[string]any {
+				doc := upstreamless(t)
+				doc["pipeline"] = []any{map[string]any{
+					"id": "fetch", "uses": "http.get",
+					"with": map[string]any{"path": "/x", "mapping": "mappings/x.yaml"},
+				}}
+				return doc
+			},
+			expect: "upstream",
+		},
+		"a token exchange with no tokenSecret input": {
+			doc: func(t *testing.T) map[string]any {
+				doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+				delete(doc["inputs"].(map[string]any), "tokenSecret")
+				return doc
+			},
+			expect: "tokenSecret",
+		},
+		"an upstream with no baseUrl input": {
+			doc: func(t *testing.T) map[string]any {
+				doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+				delete(doc["inputs"].(map[string]any), "baseUrl")
+				return doc
+			},
+			expect: "baseUrl",
+		},
+		"a const step with no records": {
+			doc: func(t *testing.T) map[string]any {
+				doc := upstreamless(t)
+				doc["pipeline"] = []any{map[string]any{"id": "resources", "uses": "const"}}
+				return doc
+			},
+			expect: "with",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateDocument(t, tc.doc(t))
+			if err == nil {
+				t.Fatal("the broken file was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.expect) {
+				t.Errorf("error %q does not name %q", err, tc.expect)
+			}
+		})
+	}
+}
+
+// hasUpstream is decided by the block's presence, not by an auth kind.
+func TestHasUpstreamIsTheBlocksPresence(t *testing.T) {
+	if hasUpstream(Spec{}) {
+		t.Error("a spec with no upstream block reported one")
+	}
+	if !hasUpstream(Spec{Upstream: Upstream{BaseURL: "${inputs.baseUrl}"}}) {
+		t.Error("a spec with an upstream block reported none")
+	}
+}
