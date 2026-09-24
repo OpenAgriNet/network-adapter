@@ -10,10 +10,101 @@
     "metadata",
     "schedule",
     "inputs",
-    "upstream",
     "pipeline",
     "catalog",
     "publish"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "upstream"
+        ]
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "required": [
+              "baseUrl"
+            ]
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "description": "An upstream's address comes from inputs.baseUrl."
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "upstream"
+        ],
+        "properties": {
+          "upstream": {
+            "properties": {
+              "auth": {
+                "properties": {
+                  "kind": {
+                    "const": "tokenExchange"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "auth"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "required": [
+              "tokenUser",
+              "tokenSecret"
+            ]
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "description": "A token exchange posts inputs.tokenUser and inputs.tokenSecret."
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "pipeline": {
+            "contains": {
+              "properties": {
+                "uses": {
+                  "enum": [
+                    "http.get",
+                    "http.post"
+                  ]
+                }
+              },
+              "required": [
+                "uses"
+              ]
+            }
+          }
+        },
+        "required": [
+          "pipeline"
+        ]
+      },
+      "then": {
+        "required": [
+          "upstream"
+        ],
+        "description": "An HTTP step calls the upstream; a file with one and no upstream block has nowhere to call."
+      }
+    }
   ],
   "properties": {
     "schemaRef": {
@@ -181,12 +272,7 @@
     },
     "inputs": {
       "type": "object",
-      "description": "The flag/env surface, resolved flag > env > default. The three named below are REQUIRED because the engine itself reads them by name: a file spelling them differently resolves them into a map the engine cannot read, and fails at the token exchange instead of at load.",
-      "required": [
-        "baseUrl",
-        "tokenUser",
-        "tokenSecret"
-      ],
+      "description": "The flag/env surface, resolved flag > env > default. A pipeline with an upstream must declare baseUrl, and one whose upstream exchanges a token must also declare tokenUser and tokenSecret (see the root allOf): the engine reads them by name, so a file spelling them differently fails at load instead of at the token exchange. A pipeline with no upstream needs none of them.",
       "additionalProperties": {
         "$ref": "#/$defs/input"
       }
@@ -469,7 +555,8 @@
             "derive",
             "dedupe",
             "filter",
-            "transform"
+            "transform",
+            "const"
           ],
           "description": "The primitive. A name the engine does not implement is REFUSED rather than skipped -- a step that silently does nothing is a rule the file states and nothing performs."
         },
@@ -646,6 +733,31 @@
               "with"
             ]
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "uses": {
+                "const": "const"
+              }
+            },
+            "required": [
+              "uses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "with": {
+                "required": [
+                  "records"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ],
+            "description": "A const step with no records would produce an empty collection and a run that reads as 'nothing to publish'."
+          }
         }
       ]
     },
@@ -766,6 +878,14 @@
         "key": {
           "type": "string",
           "description": "The key a dedupe collapses on; the first occurrence is kept."
+        },
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object"
+          },
+          "description": "A const step's output, written in the file. How a pipeline with no upstream -- a catalogue whose content is fixed -- still hands the catalog block a collection."
         }
       }
     },

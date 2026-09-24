@@ -221,7 +221,8 @@ type StepOutcome struct {
 
 // With is a step's parameters. It is the union of every field any step in
 // this file uses -- http.get steps set Path/Mapping/Local, join sets
-// Left/Right/On/Type/Carry, derive sets Field/Rules/Then, dedupe sets Key --
+// Left/Right/On/Type/Carry, derive sets Field/Rules/Then, dedupe sets Key,
+// const sets Records --
 // because YAML steps are heterogeneous and Go structs are not.
 type With struct {
 	Path    string            `yaml:"path,omitempty"`
@@ -239,6 +240,11 @@ type With struct {
 	Then  []map[string]interface{} `yaml:"then,omitempty"`
 
 	Key string `yaml:"key,omitempty"`
+
+	// Records is a const step's output, written in the file. It is how a
+	// pipeline with no upstream -- a catalogue whose content is fixed --
+	// still hands the catalog block a collection to group.
+	Records []map[string]any `yaml:"records,omitempty"`
 
 	Method      string `yaml:"method,omitempty"`
 	ContentType string `yaml:"contentType,omitempty"`

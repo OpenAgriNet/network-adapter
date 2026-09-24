@@ -3,7 +3,7 @@ package pipeline
 // steps.go runs the `pipeline:` block: the ordered list of steps a file
 // declares, each producing a named output the next ones can read.
 //
-// Seven primitives:
+// Eight primitives:
 //
 //	http.get    call the upstream via GET, shaping request and response
 //	            through a JSONata mapping
@@ -14,6 +14,7 @@ package pipeline
 //	dedupe      collapse repeats by key
 //	filter      keep only records matching a JSONata predicate
 //	transform   apply a JSONata mapping in-pipeline (no HTTP call)
+//	const       emit the records the file itself declares (no upstream)
 //
 // Everything a step can vary -- the path, the mapping, the loop, what counts
 // as a tolerable failure -- comes from the file. Nothing here knows what a
@@ -41,6 +42,7 @@ const (
 	usesDedupe    = "dedupe"
 	usesFilter    = "filter"
 	usesTransform = "transform"
+	usesConst     = "const"
 )
 
 // stepRunner carries what every step needs.
@@ -218,14 +220,19 @@ func (r *stepRunner) primitive(ctx context.Context, step Step, rc *runContext) (
 		return r.filter(step, rc)
 	case usesTransform:
 		return r.transform(ctx, step, rc)
+	case usesConst:
+		return r.constRecords(step)
 	default:
 		return nil, fmt.Errorf("uses: %q is not a primitive this runner implements (%s)",
-			step.Uses, strings.Join([]string{usesHTTPGet, usesHTTPPost, usesJoin, usesDerive, usesDedupe, usesFilter, usesTransform}, ", "))
+			step.Uses, strings.Join([]string{usesHTTPGet, usesHTTPPost, usesJoin, usesDerive, usesDedupe, usesFilter, usesTransform, usesConst}, ", "))
 	}
 }
 
 // httpGet calls the upstream through the step's mapping.
 func (r *stepRunner) httpGet(ctx context.Context, step Step, rc *runContext) (any, error) {
+	if r.client == nil {
+		return nil, errNoUpstream(step)
+	}
 	if step.With.Path == "" || step.With.Mapping == "" {
 		return nil, fmt.Errorf("http.get needs both `path:` and `mapping:`")
 	}
@@ -637,6 +644,9 @@ func numeric(value any) (float64, bool) {
 //     local: { token: "${auth.token}", query: "${inputs.searchQuery}" }
 //     out: results
 func (r *stepRunner) httpPost(ctx context.Context, step Step, rc *runContext) (any, error) {
+	if r.client == nil {
+		return nil, errNoUpstream(step)
+	}
 	if step.With.Path == "" || step.With.Mapping == "" {
 		return nil, fmt.Errorf("http.post needs both `path:` and `mapping:`")
 	}
@@ -762,4 +772,32 @@ func asRecords2(v any) []map[string]any {
 		return out
 	}
 	return nil
+}
+
+// constRecords is the const primitive: the records the file declares, handed
+// on as the step's output.
+//
+// Each is a copy. Catalogue rendering writes resourceId into every record,
+// and handing out the spec's own maps would write that back into the parsed
+// file -- harmless for one run, wrong the moment a Spec is reused.
+//
+// An empty list is refused rather than passed on: an empty collection walks
+// cleanly through every later step and produces a run that reads as "this
+// provider has nothing to publish" and exits zero.
+func (r *stepRunner) constRecords(step Step) (any, error) {
+	if len(step.With.Records) == 0 {
+		return nil, fmt.Errorf("const needs at least one entry in `with.records:`")
+	}
+	out := make([]map[string]any, 0, len(step.With.Records))
+	for _, record := range step.With.Records {
+		out = append(out, cloneRecord(record))
+	}
+	return out, nil
+}
+
+// errNoUpstream is what an HTTP step reports in a pipeline that declares no
+// upstream. The schema refuses that file at load; this is the backstop that
+// keeps a nil client from becoming a panic if one gets through anyway.
+func errNoUpstream(step Step) error {
+	return fmt.Errorf("%s needs an upstream, and this pipeline declares no `upstream:` block", step.Uses)
 }
