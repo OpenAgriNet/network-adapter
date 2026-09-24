@@ -27,9 +27,20 @@
 # the logic from the original working tool, which published end-to-end against
 # live Agmarknet.
 
-apiVersion: publish.oan/v1alpha1
-kind: CataloguePipeline
+# Which contract this file is held to. LoadSpec validates against it and
+# REFUSES a file that does not match, naming the path that is wrong -- so a
+# misspelled key is a startup error rather than a rule that silently never
+# fires. The contract, and an annotated reference to copy from, are at
+# catalogpublisher/pipeline/{schema,reference}/.
+schemaRef:
+  uses: publish.oan/CataloguePipeline/v1
 
+# Says the same thing as schemaRef, in the Kubernetes style. The engine
+# refuses a file where the two disagree rather than preferring one silently.
+# NOTE it is publish.oan, not publish.agmarket: the contract belongs to the
+# network, not to whichever provider happens to implement it.
+apiVersion: publish.oan/v1
+kind: CataloguePipeline
 metadata:
   name: mandi-price
   capability: openagrinet:MandiPrice

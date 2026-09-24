@@ -87,11 +87,18 @@ func TestUnmappedKeysIsSilentOnACompleteFile(t *testing.T) {
 // carrying keys the schema cannot hold, at the top level and nested inside a
 // step, and only UnmappedKeys can tell you.
 func TestUnmappedKeysFindsWhatTheSchemaCannotHold(t *testing.T) {
-	if _, err := LoadSpec(testFiles, "testdata/unknown-key.yaml"); err != nil {
-		t.Fatalf("LoadSpec refused the file; the silent-drop failure it guards "+
-			"depends on parsing succeeding: %v", err)
+	// LoadSpec now REFUSES this file, because the contract rejects keys it
+	// does not declare. That is strictly better than what UnmappedKeys can
+	// do -- it happens at load, with the path named -- and this test asserts
+	// it rather than working around it.
+	if _, err := LoadSpec(testFiles, "testdata/unknown-key.yaml"); err == nil {
+		t.Error("a file carrying keys the contract does not allow was loaded")
 	}
 
+	// UnmappedKeys still has a job the contract cannot do: catching the
+	// SCHEMA and the STRUCT drifting apart. A key the contract allows but
+	// Spec has no field for parses into nothing, and no amount of validation
+	// sees it. So this keeps working on the raw file, without LoadSpec.
 	unmapped, err := UnmappedKeys(testFiles, "testdata/unknown-key.yaml")
 	if err != nil {
 		t.Fatalf("UnmappedKeys: %v", err)

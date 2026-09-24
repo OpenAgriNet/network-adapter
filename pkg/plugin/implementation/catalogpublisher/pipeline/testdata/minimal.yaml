@@ -1,7 +1,18 @@
-# A complete, RUNNABLE pipeline for the frame's own tests. It uses the same
-# constructs a real capability does -- an auth exchange, a step, a catalogue
-# block -- so the frame is tested through its actual interpreter rather than
+# A complete, RUNNABLE pipeline for the engine's own tests. It uses the same
+# constructs a real capability does -- an auth exchange, steps, a catalogue
+# block -- so the engine is tested through its actual interpreter rather than
 # through a stub that agrees with it by construction.
+#
+# It is ALSO the drift guard between the three artifacts that describe a
+# pipeline file: this YAML, the Go structs in spec.go, and the JSON Schema in
+# schema/. A test asserts it both validates against the contract and survives
+# UnmappedKeys, so a key allowed by one and unknown to the other fails here.
+schemaRef:
+  uses: publish.oan/CataloguePipeline/v1
+
+apiVersion: publish.oan/v1
+kind: CataloguePipeline
+
 metadata:
   name: example
   capability: example:Thing
@@ -85,3 +96,10 @@ catalog:
     dir: ${inputs.catalogOut}
     file: example-${slug}.json
     filenamePrefix: example
+
+publish:
+  url: ${inputs.publishUrl}/publish
+  accept: [ACCEPTED]
+  # PARTIAL means the catalogue indexed with resources MISSING, which reads as
+  # success everywhere else. Listing it here is what makes it a failure.
+  treatAsFailure: [PARTIAL, REJECTED]
