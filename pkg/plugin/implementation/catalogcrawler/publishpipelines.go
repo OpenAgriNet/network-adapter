@@ -1,16 +1,20 @@
 package catalogcrawler
 
 // publishpipelines.go is the crawler's side of the scheduled publish
-// pipelines: it reads the configuration, asks the registry once per tick which
-// capabilities this deployment is bound to, and hands each record to the
-// pipeline that serves it.
+// pipelines: once per tick it asks the registry which capabilities publish,
+// and hands each one's record to the pipeline the registry names.
+//
+// NOTHING HERE LISTS CAPABILITIES. The registry's publish action names a
+// pipeline YAML by its repo-relative path; the binary embeds every
+// */cataloguepublish-*/ folder under pkg/plugin/implementation (see that
+// package's publishpipelines.go); a capability publishes by having both. No
+// config list, no import per capability, no Go per capability.
 //
 // The crawler deliberately owns as little of this as possible. It owns WHEN to
 // look (a ticker on its own lifecycle), the registry handle, and the database
 // the run log lives in. Whether the registry actually sanctions publishing,
 // what a pipeline's cron expression says, and every upstream call belong to
-// internal/pipeline and to the capability packages that implement its
-// Collector.
+// catalogpublisher/pipeline and to the pipeline file itself.
 //
 // The tick is a CHECK, not the schedule itself. It fires every few minutes and
 // almost always concludes "not due"; each pipeline's own cron expression is
@@ -23,44 +27,34 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	agmarket "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
-
-// collectors is the one place that changes when a deployment gains a pipeline:
-// the capability code, and the embedded YAML that serves it.
-//
-// An explicit table rather than registration through init(): it makes visible
-// at compile time what loadRegistryPipeline already asserts at runtime -- this
-// binary can only run the pipelines it embeds -- and a reader can answer "what
-// can this build publish" by reading four lines.
-//
-// The cost is a compile-time dependency on every capability's publish package,
-// and an .so that carries each one's embedded mappings. At five pipelines that
-// is worth revisiting; at one or two it is cheaper than the indirection.
-var collectors = map[string]pipeline.Files{
-	agmarket.Capability: agmarket.Pipeline(),
-}
 
 // Config keys for the scheduled publish pipelines, in the same camelCase style
 // as the rest of this plugin's config.
 const (
-	// cfgPublishBindingKeys is a comma-separated list of
-	// "<participantId>|<capabilityCode>". Supplying it is what turns
-	// publishing on: a deployment that names no capability has nothing to
-	// publish.
+	// cfgPublishPipelines must be "true" for the crawler to sweep the registry
+	// for publish pipelines at all. Off by default: a crawler deployment that
+	// never asked to publish must not start doing so because a registry it
+	// reads gained a publish action.
+	cfgPublishPipelines = "publishPipelines"
+
+	// cfgPublishBindingKeys is RETIRED. It used to name the capabilities to
+	// publish; the registry is now the only list. A config still setting it is
+	// refused rather than ignored, so a deployment relying on it to LIMIT what
+	// publishes finds out at startup instead of by publishing more.
 	cfgPublishBindingKeys = "publishBindingKeys"
 
 	// cfgPublishEnabled must be "true" for a run to reach the network.
-	// Default false: runs still collect and build, which is observable and
-	// reversible, but publishing is neither.
+	// Default false: runs still build, which is observable and reversible, but
+	// publishing is neither.
 	cfgPublishEnabled = "publishEnabled"
 
 	// cfgPublishTickIntervalSec is how often to CHECK whether a pipeline is
@@ -75,146 +69,145 @@ const (
 
 // defaultPublishTickInterval is how often the due-ness check runs.
 //
-// Five minutes, not one: the check is cheap but it does consult the registry,
-// and the cost of a late start is bounded by this interval -- a pipeline due
-// at midnight starts by 00:05 at the latest, which for a daily catalogue is
-// indistinguishable from on time.
+// Five minutes, not one: the check consults the registry, and the cost of a
+// late start is bounded by this interval -- a pipeline due at midnight starts
+// by 00:05 at the latest, which for a daily catalogue is indistinguishable
+// from on time.
 const defaultPublishTickInterval = 5 * time.Minute
 
 // publishConfig is the parsed form of the keys above.
 type publishConfig struct {
-	enabled     bool
-	bindingKeys []string
-	publish     bool
-	tick        time.Duration
-	outDir      string
+	enabled bool
+	publish bool
+	tick    time.Duration
+	outDir  string
 }
 
-// publishConfigFrom reads the publish keys, refusing a binding key that could
-// never resolve rather than letting every tick fail against the registry.
+// publishConfigFrom reads the publish keys.
 func publishConfigFrom(config map[string]string) (publishConfig, error) {
-	keys := splitNonEmpty(config[cfgPublishBindingKeys])
-	if len(keys) == 0 {
+	if strings.TrimSpace(config[cfgPublishBindingKeys]) != "" {
+		return publishConfig{}, fmt.Errorf(
+			"catalogcrawler: config %q is retired; the registry now decides which capabilities publish. "+
+				"Remove it and set %q: \"true\" to sweep the registry",
+			cfgPublishBindingKeys, cfgPublishPipelines)
+	}
+	if config[cfgPublishPipelines] != "true" {
 		return publishConfig{}, nil
 	}
-
-	for _, key := range keys {
-		parts := strings.Split(key, "|")
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-			return publishConfig{}, fmt.Errorf(
-				"catalogcrawler: config %q entry %q must be \"<participantId>|<capabilityCode>\"",
-				cfgPublishBindingKeys, key)
-		}
-		capability := strings.TrimSpace(parts[1])
-		if _, ok := collectors[capability]; !ok {
-			return publishConfig{}, fmt.Errorf(
-				"catalogcrawler: config %q names capability %q, which this binary carries no pipeline for; it has %s",
-				cfgPublishBindingKeys, capability, knownCapabilities())
-		}
-	}
-
 	return publishConfig{
-		enabled:     true,
-		bindingKeys: keys,
-		publish:     config[cfgPublishEnabled] == "true",
-		tick:        durationSecondsOr(config[cfgPublishTickIntervalSec], defaultPublishTickInterval),
-		outDir:      strings.TrimSpace(config[cfgPublishCatalogOutputDir]),
+		enabled: true,
+		publish: config[cfgPublishEnabled] == "true",
+		tick:    durationSecondsOr(config[cfgPublishTickIntervalSec], defaultPublishTickInterval),
+		outDir:  strings.TrimSpace(config[cfgPublishCatalogOutputDir]),
 	}, nil
-}
-
-// knownCapabilities lists what this binary can publish, for an error that says
-// what is available rather than only what is missing.
-func knownCapabilities() string {
-	if len(collectors) == 0 {
-		return "no publish pipelines at all"
-	}
-	names := make([]string, 0, len(collectors))
-	for capability := range collectors {
-		names = append(names, strconv.Quote(capability))
-	}
-	sort.Strings(names)
-	return strings.Join(names, ", ")
 }
 
 // publishActionName is the action a record must carry for anything to be
 // published. It is the registry's word, and it is duplicated from the
-// pipeline package deliberately: this file only READS it for logging, while
-// the gate that acts on it lives with the code that enforces it.
+// pipeline package deliberately: this file reads it to skip records quietly,
+// while the gate that acts on it lives with the code that enforces it.
 const publishActionName = "publish"
 
-// publishRunner holds one pipeline's tick state.
-type publishRunner struct {
-	bindingKey string
-	capability string
-	files      pipeline.Files
-	cfg        publishConfig
+// registry is what a sweep needs from the registry plugin: the list of
+// bindings, and each one's record.
+type registry interface {
+	definition.ProviderBindingLister
+	definition.ProviderRecordLookup
+}
 
-	lookup definition.ProviderRecordLookup
-	runLog pipeline.RunLog
-	log    *slog.Logger
+// publishSweep holds the tick state for every publish pipeline.
+type publishSweep struct {
+	cfg      publishConfig
+	registry registry
+	runLog   pipeline.RunLog
+	log      *slog.Logger
+
+	// resolve turns the registry's pipeline path into the embedded files.
+	// Injectable so tick logic is testable without the real embed.
+	resolve func(registryPath string) (pipeline.Files, error)
 
 	// run is the pipeline call, injectable so this file's tick logic can be
-	// tested without a registry, a database, or an upstream.
-	run func(ctx context.Context, record *model.ProviderRecord) error
+	// tested without a database or an upstream.
+	run func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error
 
 	// inFlight guards against a second tick starting while the first is still
-	// collecting. A full run can take minutes; the tick is shorter than that,
-	// so without this guard a slow run would be joined by another one
-	// doubling every upstream call and racing to write the same files.
+	// running. A full run can take minutes; the tick is shorter than that, so
+	// without this guard a slow run would be joined by another one doubling
+	// every upstream call and racing to write the same files.
 	inFlight sync.Mutex
 	running  bool
 }
 
-// tick checks whether this pipeline should run, and runs it if so.
+// tick sweeps the registry and runs every pipeline it sanctions.
 //
-// Every failure here is logged and swallowed. This loop shares a Scheduler
-// with the index-poll and catalog-sync loops, which are unrelated work: a
-// registry outage must not take them down with it.
-func (p *publishRunner) tick(ctx context.Context) {
+// Every failure here is logged and swallowed, and one capability's failure
+// never stops the next. This loop shares a Scheduler with the index-poll and
+// catalog-sync loops, which are unrelated work: a registry outage must not
+// take them down with it.
+func (p *publishSweep) tick(ctx context.Context) {
 	if !p.claim() {
-		p.log.InfoContext(ctx, "catalogcrawler: publish pipeline still running, skipping this tick",
-			"bindingKey", p.bindingKey)
+		p.log.InfoContext(ctx, "catalogcrawler: publish sweep still running, skipping this tick")
 		return
 	}
 	defer p.release()
 
-	p.log.InfoContext(ctx, "catalogcrawler: consulting the registry",
-		"bindingKey", p.bindingKey, "capability", p.capability)
+	keys, err := p.registry.ProviderBindingKeys(ctx)
+	if err != nil {
+		p.log.ErrorContext(ctx, "catalogcrawler: could not list the registry's capabilities", "error", err)
+		return
+	}
+	p.log.InfoContext(ctx, "catalogcrawler: publish sweep", "capabilities", len(keys))
 
-	record, err := p.lookup.ProviderRecord(ctx, p.bindingKey)
+	for _, key := range keys {
+		p.runOne(ctx, key)
+	}
+}
+
+// runOne resolves one binding and runs its pipeline if it publishes.
+func (p *publishSweep) runOne(ctx context.Context, key string) {
+	record, err := p.registry.ProviderRecord(ctx, key)
 	if errors.Is(err, definition.ErrProviderRecordNotFound) {
-		// The registry answering "no" is a normal state, not a fault: the
-		// capability may simply not be registered in this environment.
-		p.log.InfoContext(ctx, "catalogcrawler: capability is not registered; nothing to publish",
-			"bindingKey", p.bindingKey)
+		// Listed but not usable: inactive, unowned, or no active actions.
+		// The registry plugin has already logged which.
+		p.log.DebugContext(ctx, "catalogcrawler: binding is not usable; skipping", "bindingKey", key)
 		return
 	}
 	if err != nil {
 		p.log.ErrorContext(ctx, "catalogcrawler: could not consult the registry for a publish pipeline",
-			"bindingKey", p.bindingKey, "error", err)
+			"bindingKey", key, "error", err)
 		return
 	}
 
-	// What the registry actually said, before anything acts on it. Without
-	// this, "the gate refused" and "the registry never had a publish action"
-	// look identical from outside.
-	served := make([]string, 0, len(record.Actions))
-	for action := range record.Actions {
-		served = append(served, action)
+	// Most capabilities are consumed, not published. Quiet, not an error.
+	if _, publishes := record.Actions[publishActionName]; !publishes {
+		p.log.DebugContext(ctx, "catalogcrawler: binding serves no publish action", "bindingKey", key)
+		return
 	}
-	sort.Strings(served)
-	p.log.InfoContext(ctx, "catalogcrawler: registry answered",
-		"bindingKey", p.bindingKey, "actions", strings.Join(served, ","),
-		"publishNames", record.Actions[publishActionName].Mappings)
 
-	if err := p.run(ctx, record); err != nil {
+	pipelinePath, err := pipeline.PipelinePathFor(record)
+	if err != nil {
+		p.log.ErrorContext(ctx, "catalogcrawler: publish action names no pipeline", "bindingKey", key, "error", err)
+		return
+	}
+	files, err := p.resolve(pipelinePath)
+	if err != nil {
+		// The registry sanctions a pipeline this binary was not built with.
+		// A deployment problem, said loudly with what IS available.
+		p.log.ErrorContext(ctx, "catalogcrawler: the registry names a pipeline this binary does not carry",
+			"bindingKey", key, "pipeline", pipelinePath, "carried", implementation.PublishPipelines(), "error", err)
+		return
+	}
+
+	p.log.InfoContext(ctx, "catalogcrawler: registry sanctions publishing",
+		"bindingKey", key, "actions", servedActions(record), "pipeline", pipelinePath)
+	if err := p.run(ctx, record, files); err != nil {
 		p.log.ErrorContext(ctx, "catalogcrawler: publish pipeline run failed",
-			"bindingKey", p.bindingKey, "error", err)
+			"bindingKey", key, "error", err)
 	}
 }
 
 // claim reports whether this tick may run; release must follow a true claim.
-func (p *publishRunner) claim() bool {
+func (p *publishSweep) claim() bool {
 	p.inFlight.Lock()
 	defer p.inFlight.Unlock()
 	if p.running {
@@ -224,16 +217,16 @@ func (p *publishRunner) claim() bool {
 	return true
 }
 
-func (p *publishRunner) release() {
+func (p *publishSweep) release() {
 	p.inFlight.Lock()
 	p.running = false
 	p.inFlight.Unlock()
 }
 
 // runPipeline is the real run, calling the frame.
-func (p *publishRunner) runPipeline(ctx context.Context, record *model.ProviderRecord) error {
+func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 	report, err := pipeline.Run(ctx, pipeline.RunOptions{
-		Pipeline: p.files,
+		Pipeline: files,
 		Record:   record,
 		RunLog:   p.runLog,
 		OutDir:   p.cfg.outDir,
@@ -245,7 +238,7 @@ func (p *publishRunner) runPipeline(ctx context.Context, record *model.ProviderR
 	}
 	if !report.Due {
 		p.log.DebugContext(ctx, "catalogcrawler: publish pipeline not due",
-			"capability", p.capability, "reason", report.Reason)
+			"capability", report.Capability, "reason", report.Reason)
 		return nil
 	}
 
@@ -254,46 +247,49 @@ func (p *publishRunner) runPipeline(ctx context.Context, record *model.ProviderR
 		published = len(report.Published.Outcomes)
 	}
 	p.log.InfoContext(ctx, "catalogcrawler: publish pipeline ran",
-		"capability", p.capability, "pipeline", report.PipelinePath,
+		"capability", report.Capability, "pipeline", report.PipelinePath,
 		"catalogs", len(report.Catalogues), "collectionErrors", report.Errors,
 		"counters", report.Counters, "published", published, "publishEnabled", p.cfg.publish)
 	return nil
 }
 
-// newPublishRunners wires one runner per configured binding key, or nil when
-// publishing is not configured.
+// newPublishSweep wires the sweep, or returns nil when publishing is not
+// configured.
 //
-// The registry plugin must implement ProviderRecordLookup: without it there is
-// no way to learn whether a capability is sanctioned to publish, and the only
-// alternative -- publishing anyway -- is exactly what the gate exists to
-// prevent. So a configured pipeline with an incapable registry is a startup
-// error, not a silently disabled feature.
-func newPublishRunners(cfg publishConfig, registry definition.RegistryLookup,
-	runLog pipeline.RunLog, log *slog.Logger) ([]*publishRunner, error) {
+// The registry plugin must both list bindings and resolve them: without the
+// list there is nothing to sweep, and without the lookup there is no way to
+// learn whether a capability is sanctioned to publish. So a configured sweep
+// with an incapable registry is a startup error, not a silently disabled
+// feature.
+func newPublishSweep(cfg publishConfig, lookup definition.RegistryLookup,
+	runLog pipeline.RunLog, log *slog.Logger) (*publishSweep, error) {
 	if !cfg.enabled {
 		return nil, nil
 	}
-	lookup, ok := registry.(definition.ProviderRecordLookup)
+	reg, ok := lookup.(registry)
 	if !ok {
 		return nil, fmt.Errorf(
-			"catalogcrawler: config %q needs a registry plugin that supports ProviderRecordLookup (e.g. sunbirdRegistry)",
-			cfgPublishBindingKeys)
+			"catalogcrawler: config %q needs a registry plugin that can list and resolve provider bindings (e.g. sunbirdRegistry)",
+			cfgPublishPipelines)
 	}
 
-	runners := make([]*publishRunner, 0, len(cfg.bindingKeys))
-	for _, key := range cfg.bindingKeys {
-		capability := strings.TrimSpace(strings.SplitN(key, "|", 2)[1])
-		runner := &publishRunner{
-			bindingKey: key,
-			capability: capability,
-			files:      collectors[capability], // presence checked in publishConfigFrom
-			cfg:        cfg,
-			lookup:     lookup,
-			runLog:     runLog,
-			log:        log,
-		}
-		runner.run = runner.runPipeline
-		runners = append(runners, runner)
+	sweep := &publishSweep{
+		cfg:      cfg,
+		registry: reg,
+		runLog:   runLog,
+		log:      log,
+		resolve:  implementation.PublishPipeline,
 	}
-	return runners, nil
+	sweep.run = sweep.runPipeline
+	return sweep, nil
+}
+
+// servedActions lists a record's actions, sorted, for a log line.
+func servedActions(record *model.ProviderRecord) string {
+	served := make([]string, 0, len(record.Actions))
+	for action := range record.Actions {
+		served = append(served, action)
+	}
+	sort.Strings(served)
+	return strings.Join(served, ",")
 }

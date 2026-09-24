@@ -175,9 +175,11 @@ inputs:
     flag: without-geometry
     enum: [publish, skip]
     default: publish
+  # SHARED by every publish pipeline: all of them post to the same provider
+  # adapter's /publish, so one address is set once for the whole crawler.
   publishUrl:
     flag: publish-url
-    env: MANDI_PUBLISH_URL
+    env: CATALOG_PUBLISH_URL
   # A ONE-TIME migration switch, off by default.
   #
   # `publish.retireOld` deactivates cat-agmarknet-mandi-prices -- the single

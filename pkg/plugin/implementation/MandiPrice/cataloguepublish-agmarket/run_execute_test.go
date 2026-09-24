@@ -191,7 +191,7 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 }
 
 // fakeUpstreamEnv points the run at the fake and supplies the credentials the
-// run refuses to start without. MANDI_PUBLISH_URL is present so that a refusal
+// run refuses to start without. CATALOG_PUBLISH_URL is present so that a refusal
 // to publish is unambiguously about the collection and not about a missing
 // address.
 func fakeUpstreamEnv(baseURL string) func(string) (string, bool) {
@@ -203,7 +203,7 @@ func fakeUpstreamEnv(baseURL string) func(string) (string, bool) {
 			return "test-user", true
 		case "MANDI_TOKEN_SECRET":
 			return "test-secret", true
-		case "MANDI_PUBLISH_URL":
+		case "CATALOG_PUBLISH_URL":
 			return "http://publish.invalid", true
 		case "MANDI_PARTICIPANT_ID":
 			return "test-participant", true

@@ -35,7 +35,7 @@ import (
 func testMapper(t *testing.T) (pipeline.Mapper, string) {
 	t.Helper()
 
-	base, stop, err := catalogpublish.ServeMappings(Files, "mappings")
+	base, stop, err := catalogpublish.ServeMappings(Files, mappingsDir)
 	if err != nil {
 		t.Fatalf("ServeMappings: %v", err)
 	}

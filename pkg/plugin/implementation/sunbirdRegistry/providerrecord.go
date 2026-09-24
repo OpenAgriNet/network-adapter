@@ -75,8 +75,9 @@ type actionPlan struct {
 }
 
 var (
-	_ definition.RegistryLookup       = (*Client)(nil)
-	_ definition.ProviderRecordLookup = (*Client)(nil)
+	_ definition.RegistryLookup        = (*Client)(nil)
+	_ definition.ProviderRecordLookup  = (*Client)(nil)
+	_ definition.ProviderBindingLister = (*Client)(nil)
 )
 
 // searchURLFor builds the search endpoint for one registry entity.
@@ -136,6 +137,34 @@ func (c *Client) ProviderRecord(ctx context.Context, bindingKey string) (*model.
 	span.SetAttributes(telemetry.AttrErrorType.String(outcomeFound))
 	c.emitMetrics(ctx, start, operationProviderRecord, outcomeFound)
 	return plan, nil
+}
+
+// ProviderBindingKeys lists every capability binding the registry holds.
+//
+// The filter is an EMPTY OBJECT, not null: the search endpoint reads a null
+// filter as "match nothing" on some backends, which would read here as a
+// registry with no capabilities. Rows without a key are skipped -- they can
+// never be resolved, and an empty key would reach ProviderRecord as a caller
+// bug. Status is NOT judged here; ProviderRecord judges each key, so there is
+// one place that decides whether a binding is usable.
+func (c *Client) ProviderBindingKeys(ctx context.Context) ([]string, error) {
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry provider binding keys")
+	defer span.End()
+
+	bindings, err := searchRecords[providerBinding](ctx, c, tracer, c.providerSearchURL, map[string]eqFilter{})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, classify(err))
+		return nil, err
+	}
+	keys := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		if key := strings.TrimSpace(binding.BindingKey); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
 }
 
 // refuse records a deliberate denial and returns the caller's sentinel. The

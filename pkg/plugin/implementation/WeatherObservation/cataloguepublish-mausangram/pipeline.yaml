@@ -23,7 +23,7 @@ metadata:
   # Also the filename prefix for built catalogues: weather-mausamgram-*.json.
   name: weather-mausamgram
   capability: openagrinet:WeatherObservation
-  provider: imd-mausamgram
+  provider: mausamgram
   summary: >
     Publishes one Beckn catalog carrying IMD Mausamgram's five-day point
     weather forecast as a single on-demand resource covering India.
@@ -44,7 +44,7 @@ inputs:
   participantId:
     flag: participant-id
     env: WEATHER_PARTICIPANT_ID
-    default: imd-mausamgram
+    default: mausamgram
   # {{networkId}} in the target payload: who may see the catalogue.
   networkId:
     flag: network-id
@@ -53,11 +53,13 @@ inputs:
   catalogOut:
     flag: catalog-out
     default: catalog
-  # Deliberately no default, as for mandi: a baked-in address that resolves
-  # nowhere fails far from here rather than as "you did not configure it".
+  # SHARED with every publish pipeline (mandi reads the same variable): all of
+  # them post to the same provider adapter's /publish. Deliberately no
+  # default, as for mandi: a baked-in address that resolves nowhere fails far
+  # from here rather than as "you did not configure it".
   publishUrl:
     flag: publish-url
-    env: WEATHER_PUBLISH_URL
+    env: CATALOG_PUBLISH_URL
 
 # One record: the one resource this catalogue carries. Its id feeds the
 # catalogId and resourceId templates below; everything else about the

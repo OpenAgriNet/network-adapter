@@ -332,6 +332,11 @@ type Publish struct {
 	TreatAsFailure []string  `yaml:"treatAsFailure,omitempty"`
 	RefuseWhen     string    `yaml:"refuseWhen,omitempty"`
 	RetireOld      RetireOld `yaml:"retireOld,omitempty"`
+
+	// AddressHint is not read from the file: the run fills it from the
+	// pipeline's own publishUrl input, so an unset address names the flag and
+	// env THIS pipeline reads rather than another's.
+	AddressHint string `yaml:"-"`
 }
 
 // RetireOld deactivates a superseded catalog. Deactivating it is how its
@@ -349,8 +354,8 @@ type RetireOld struct {
 
 // LoadSpec reads and parses the pipeline definition at path inside files.
 // It takes an embed.FS rather than a bare path so callers always read the
-// copy a binary was built with (see Files in pipeline_files.go), never one
-// edited on disk after the fact.
+// copy a binary was built with (see pkg/plugin/implementation/publishpipelines.go),
+// never one edited on disk after the fact.
 func LoadSpec(files embed.FS, path string) (Spec, error) {
 	data, err := files.ReadFile(path)
 	if err != nil {

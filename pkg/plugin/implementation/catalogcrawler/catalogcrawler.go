@@ -161,7 +161,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 
 	sched := NewScheduler(params, schedCfg, log)
 
-	// The scheduled publish pipelines, if this deployment carries any. They
+	// The scheduled publish sweep, if this deployment asked for one. They
 	// ride the same Scheduler as the crawl loops so they share its context and
 	// shutdown; see publishpipelines.go for why the crawler owns so little of
 	// them. Registered before Start, which AddPeriodic requires.
@@ -170,18 +170,17 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		db.Close()
 		return nil, nil, err
 	}
-	runners, err := newPublishRunners(publishCfg, registry, st, log)
+	sweep, err := newPublishSweep(publishCfg, registry, st, log)
 	if err != nil {
 		db.Close()
 		return nil, nil, err
 	}
-	for _, runner := range runners {
-		if err := sched.AddPeriodic(publishCfg.tick, runner.tick); err != nil {
+	if sweep != nil {
+		if err := sched.AddPeriodic(publishCfg.tick, sweep.tick); err != nil {
 			db.Close()
 			return nil, nil, err
 		}
-		log.Info("catalogcrawler: publish pipeline enabled",
-			"bindingKey", runner.bindingKey, "capability", runner.capability,
+		log.Info("catalogcrawler: publish sweep enabled",
 			"tickInterval", publishCfg.tick, "publish", publishCfg.publish)
 	}
 
