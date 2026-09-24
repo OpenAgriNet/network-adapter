@@ -3,15 +3,17 @@ package pipeline
 // steps.go runs the `pipeline:` block: the ordered list of steps a file
 // declares, each producing a named output the next ones can read.
 //
-// Four primitives, because four is what the files need. A fifth is added when
-// a file needs it and not before -- an interpreter that implements operations
-// nobody has asked for is a second, untested language.
+// Seven primitives:
 //
-//	http.get   call the upstream, shaping the request and reading the
-//	           response through a JSONata mapping
-//	join       match one collection against another on a key
-//	derive     add a computed field, by rules, with optional follow-up edits
-//	dedupe     collapse repeats by key
+//	http.get    call the upstream via GET, shaping request and response
+//	            through a JSONata mapping
+//	http.post   call the upstream via POST, building a JSON request body
+//	            from the mapping's request half
+//	join        match one collection against another on a key
+//	derive      add a computed field, by rules, with optional follow-up edits
+//	dedupe      collapse repeats by key
+//	filter      keep only records matching a JSONata predicate
+//	transform   apply a JSONata mapping in-pipeline (no HTTP call)
 //
 // Everything a step can vary -- the path, the mapping, the loop, what counts
 // as a tolerable failure -- comes from the file. Nothing here knows what a
@@ -23,17 +25,24 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
+
 
 // Step primitives, as a file spells them in `uses:`.
 const (
-	usesHTTPGet = "http.get"
-	usesJoin    = "join"
-	usesDerive  = "derive"
-	usesDedupe  = "dedupe"
+	usesHTTPGet   = "http.get"
+	usesHTTPPost  = "http.post"
+	usesJoin      = "join"
+	usesDerive    = "derive"
+	usesDedupe    = "dedupe"
+	usesFilter    = "filter"
+	usesTransform = "transform"
 )
 
 // stepRunner carries what every step needs.
@@ -199,17 +208,24 @@ func (r *stepRunner) primitive(ctx context.Context, step Step, rc *runContext) (
 	switch step.Uses {
 	case usesHTTPGet:
 		return r.httpGet(ctx, step, rc)
+	case usesHTTPPost:
+		return r.httpPost(ctx, step, rc)
 	case usesJoin:
 		return r.join(step, rc)
 	case usesDerive:
 		return r.derive(step, rc)
 	case usesDedupe:
 		return r.dedupe(step, rc)
+	case usesFilter:
+		return r.filter(step, rc)
+	case usesTransform:
+		return r.transform(ctx, step, rc)
 	default:
 		return nil, fmt.Errorf("uses: %q is not a primitive this runner implements (%s)",
-			step.Uses, strings.Join([]string{usesHTTPGet, usesJoin, usesDerive, usesDedupe}, ", "))
+			step.Uses, strings.Join([]string{usesHTTPGet, usesHTTPPost, usesJoin, usesDerive, usesDedupe, usesFilter, usesTransform}, ", "))
 	}
 }
+
 
 // httpGet calls the upstream through the step's mapping.
 func (r *stepRunner) httpGet(ctx context.Context, step Step, rc *runContext) (any, error) {
@@ -594,3 +610,143 @@ func numeric(value any) (float64, bool) {
 		return 0, false
 	}
 }
+
+// httpPost calls the upstream via POST through the step's mapping.
+//
+// Situation: the upstream endpoint requires POST (search APIs, submission
+//            endpoints, or APIs that put filters in the request body).
+// Scenario:  The mapping's request half builds a JSON body; the response
+//            half shapes the returned data into pipeline records.
+//
+// YAML usage:
+//
+//	- id: results
+//	  uses: http.post
+//	  with:
+//	    path: /v1/search
+//	    mapping: mappings/search.yaml
+//	    local: { token: "${auth.token}", query: "${inputs.searchQuery}" }
+//	  out: results
+func (r *stepRunner) httpPost(ctx context.Context, step Step, rc *runContext) (any, error) {
+	if step.With.Path == "" || step.With.Mapping == "" {
+		return nil, fmt.Errorf("http.post needs both `path:` and `mapping:`")
+	}
+	path, err := rc.interpolate(step.With.Path)
+	if err != nil {
+		return nil, err
+	}
+	ref := filepath.Join(r.mappingBase, step.With.Mapping)
+
+	local := map[string]any{}
+	for k, v := range step.With.Local {
+		resolved, err := rc.interpolate(v)
+		if err != nil {
+			return nil, fmt.Errorf("http.post local %q: %w", k, err)
+		}
+		local[k] = resolved
+	}
+
+	out, err := r.client.Post(ctx, r.mapper, ref, path, local)
+	if err != nil {
+		return nil, err
+	}
+	return asRecords(out)
+}
+
+// filter keeps records in the current collection that match a JSONata predicate.
+//
+// Situation: mid-pipeline cleanup before a join or dedupe — e.g. remove rows
+//            with a blank key, or rows the upstream marks as inactive.
+// Scenario:  Evaluate with.when per record; keep only the truthy ones.
+//
+// YAML usage:
+//
+//	- id: active
+//	  uses: filter
+//	  with:
+//	    when: "$exists(itemId) and itemId != ''"
+//	  out: active
+func (r *stepRunner) filter(step Step, rc *runContext) (any, error) {
+	if step.With.When == "" {
+		return nil, fmt.Errorf("filter needs `with.when:` — a JSONata predicate to keep records by")
+	}
+	records, err := r.currentCollection(step, rc)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]map[string]any, 0, len(records))
+	for _, rec := range records {
+		ok, err := r.cache.truthy(step.With.When, rec)
+		if err != nil {
+			return nil, fmt.Errorf("filter when %q: %w", step.With.When, err)
+		}
+		if ok {
+			kept = append(kept, rec)
+		}
+	}
+	return kept, nil
+}
+
+// transform applies a JSONata mapping to records in the current collection
+// without making an HTTP call.
+//
+// Situation: enrich or reshape pipeline records inline — add a computed field,
+//            reformat keys, or project a subset — before a join or catalog step.
+// Scenario:  Run the mapping's response half over all records; the request
+//            half is skipped (no upstream call needed).
+//
+// YAML usage:
+//
+//	- id: enriched
+//	  uses: transform
+//	  with:
+//	    mapping: mappings/enrich.yaml
+//	    local: { networkId: "${inputs.networkId}" }
+//	  out: enriched
+func (r *stepRunner) transform(ctx context.Context, step Step, rc *runContext) (any, error) {
+	if step.With.Mapping == "" {
+		return nil, fmt.Errorf("transform needs `with.mapping:`")
+	}
+	records, err := r.currentCollection(step, rc)
+	if err != nil {
+		return nil, err
+	}
+	ref := filepath.Join(r.mappingBase, step.With.Mapping)
+
+	local := map[string]any{}
+	for k, v := range step.With.Local {
+		resolved, err := rc.interpolate(v)
+		if err != nil {
+			return nil, fmt.Errorf("transform local %q: %w", k, err)
+		}
+		local[k] = resolved
+	}
+
+	out, err := r.mapper.Transform(ctx, ref, definition.DirectionResponse, map[string]any{
+		"response": records,
+		"_local":   local,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("transform %s: %w", step.With.Mapping, err)
+	}
+	return asRecords(out)
+}
+
+// asRecords2 coerces a value to []map[string]any for use inside filter.
+// It is the typed sibling of asRecords (which parses JSON bytes).
+func asRecords2(v any) []map[string]any {
+	switch typed := v.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	return nil
+}
+

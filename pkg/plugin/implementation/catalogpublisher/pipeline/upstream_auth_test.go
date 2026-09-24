@@ -119,11 +119,9 @@ func TestTokenRefusesAnUnusableAuthBlock(t *testing.T) {
 		"no path":                {Kind: "tokenExchange", Token: AuthTokenSpec{At: "$.token"}},
 		"no token location":      {Kind: "tokenExchange", Request: AuthRequest{Path: "/t"}},
 		"token location no root": {Kind: "tokenExchange", Request: AuthRequest{Path: "/t"}, Token: AuthTokenSpec{At: "token"}},
-		// A header-carried token would be placed by this code, but the token
-		// actually travels through each step's mapping. Accepting the field
-		// would let the file and the mappings disagree silently.
+		// "body" is not a valid token placement; only "query" and "header" are.
 		"unsupported placement": {Kind: "tokenExchange", Request: AuthRequest{Path: "/t"},
-			Token: AuthTokenSpec{At: "$.token", CarriedAs: "header"}},
+			Token: AuthTokenSpec{At: "$.token", CarriedAs: "body"}},
 	}
 
 	for name, auth := range tests {

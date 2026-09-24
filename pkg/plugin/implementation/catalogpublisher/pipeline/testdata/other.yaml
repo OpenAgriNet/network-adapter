@@ -1,6 +1,12 @@
 # A SECOND runnable pipeline, so a test can prove two pipelines do not tread on
 # each other. Its capability, metadata.name and slugs all differ from
 # minimal.yaml, which is what makes its directory and filenames differ.
+schemaRef:
+  uses: publish.oan/CataloguePipeline/v1
+
+apiVersion: publish.oan/v1
+kind: CataloguePipeline
+
 metadata:
   name: other
   capability: example:Other
@@ -66,3 +72,8 @@ catalog:
     dir: out
     file: other-${slug}.json
     filenamePrefix: other
+
+publish:
+  url: ${inputs.publishUrl}/publish
+  accept: [ACCEPTED]
+  treatAsFailure: [PARTIAL, REJECTED]

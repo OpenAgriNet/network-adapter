@@ -9,6 +9,7 @@ package pipeline
 import (
 	"embed"
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,6 +22,11 @@ import (
 // in the file (an exclusion, a refusal, a catalogId template) can be believed
 // to be in force while no code ever sees it.
 type Spec struct {
+	// SchemaRef names the contract this file is held to. LoadSpec validates
+	// against it before returning, so a file that does not match is refused
+	// at startup rather than failing mid-run.
+	SchemaRef SchemaRef `yaml:"schemaRef"`
+
 	APIVersion string           `yaml:"apiVersion"`
 	Kind       string           `yaml:"kind"`
 	Metadata   Metadata         `yaml:"metadata"`
@@ -233,6 +239,11 @@ type With struct {
 	Then  []map[string]interface{} `yaml:"then,omitempty"`
 
 	Key string `yaml:"key,omitempty"`
+
+	Method      string `yaml:"method,omitempty"`
+	ContentType string `yaml:"contentType,omitempty"`
+	Body        string `yaml:"body,omitempty"`
+	When        string `yaml:"when,omitempty"`
 }
 
 // Catalog is how a collection becomes catalog files, one per group.
@@ -340,9 +351,130 @@ func LoadSpec(files embed.FS, path string) (Spec, error) {
 		return Spec{}, fmt.Errorf("read %s: %w", path, err)
 	}
 
+	// Validated BEFORE parsing into Spec, and against the raw document rather
+	// than the struct. Validating the struct would validate what survived
+	// parsing -- and a key that did not survive is precisely the mistake this
+	// is here to catch.
+	if err := Validate(files, path); err != nil {
+		return Spec{}, err
+	}
+
 	var spec Spec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return Spec{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return spec, nil
+}
+
+// Files is a capability's pipeline definition: the YAML, and the mappings it
+// references, embedded in the binary.
+type Files struct {
+	// FS and Path locate the pipeline YAML inside the binary. The mappings
+	// are expected in a `mappings/` directory alongside it, because that is
+	// what a file's `mapping:` references are relative to.
+	FS   embed.FS
+	Path string
+
+	// RegistryPath is the repo-relative path the registry's publish action is
+	// expected to name, e.g.
+	// "pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml".
+	//
+	// The gate compares the registry's answer against this rather than
+	// deriving it from the capability's name. Deriving it would mean guessing
+	// a filesystem layout and running a pipeline the registry never
+	// sanctioned; comparing means a registry pointing somewhere else is
+	// refused rather than silently served by whatever this binary embeds.
+	RegistryPath string
+}
+
+// Catalogue is one rendered catalogue document and the identity it carries.
+type Catalogue struct {
+	// Slug names the file on disk and distinguishes catalogues within a run.
+	Slug string
+
+	// CatalogID is the network-facing identity the document publishes under.
+	CatalogID string
+
+	Content []byte
+}
+
+// UnmappedKeys returns the dotted paths the file declares that Spec has no
+// field for, deepest included -- an empty result means every key in the file
+// reaches code.
+//
+// It works by round-tripping: Spec marshalled back to YAML yields exactly the
+// keys Spec knows how to hold, which the file's keys must be a subset of.
+//
+// A key is reported only when its PARENT survived the round trip. A value the
+// file leaves empty, or a field carrying omitempty, legitimately does not come
+// back, and flagging those would drown the real finding in noise.
+func UnmappedKeys(files embed.FS, path string) ([]string, error) {
+	raw, err := files.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	var fromFile map[string]any
+	if err := yaml.Unmarshal(raw, &fromFile); err != nil {
+		return nil, fmt.Errorf("parsing %s as a bare map: %w", path, err)
+	}
+
+	// Parsed directly rather than through LoadSpec, which VALIDATES. This
+	// check has to work on a file the contract rejects -- catching what the
+	// contract cannot is the whole reason it still exists -- so running it
+	// through validation first would make it useless exactly when it is
+	// needed.
+	var spec Spec
+	if err := yaml.Unmarshal(raw, &spec); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	encoded, err := yaml.Marshal(spec)
+	if err != nil {
+		return nil, fmt.Errorf("re-marshalling the parsed spec: %w", err)
+	}
+	var fromSpec map[string]any
+	if err := yaml.Unmarshal(encoded, &fromSpec); err != nil {
+		return nil, fmt.Errorf("parsing the re-marshalled spec: %w", err)
+	}
+
+	return missingKeys(nil, fromFile, fromSpec), nil
+}
+
+// missingKeys walks the file's structure against the round-tripped Spec's and
+// returns the dotted paths the Spec cannot hold.
+func missingKeys(path []string, file, spec any) []string {
+	var missing []string
+
+	switch fileNode := file.(type) {
+	case map[string]any:
+		specNode, ok := spec.(map[string]any)
+		if !ok {
+			return nil // parent did not survive; its children are not the finding
+		}
+		for key, fileChild := range fileNode {
+			here := append(append([]string{}, path...), key)
+			specChild, ok := specNode[key]
+			if !ok {
+				missing = append(missing, strings.Join(here, "."))
+				continue
+			}
+			missing = append(missing, missingKeys(here, fileChild, specChild)...)
+		}
+
+	case []any:
+		specNode, ok := spec.([]any)
+		if !ok {
+			return nil
+		}
+		// Sequence entries are heterogeneous -- one step declares `when`,
+		// another declares `onError` -- so each entry is compared against the
+		// Spec entry in the same position rather than against the first.
+		for i, fileChild := range fileNode {
+			here := append(append([]string{}, path...), fmt.Sprintf("[%d]", i))
+			if i < len(specNode) {
+				missing = append(missing, missingKeys(here, fileChild, specNode[i])...)
+			}
+		}
+	}
+
+	return missing
 }

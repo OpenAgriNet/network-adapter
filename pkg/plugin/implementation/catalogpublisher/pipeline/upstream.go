@@ -1,9 +1,6 @@
-// Package agmarket ports the collection and catalog-building logic proven out
-// in tools/publish/mandi_publish (collect.go and build.go) into an importable
-// package. The original tool lives in package main and cannot be imported
-// directly; this file is a faithful port, not a redesign, and keeps the same
-// reasoning in its comments because that reasoning comes from measured
-// real-world defects in the upstream Agmarknet data, not from taste.
+// upstream.go is the HTTP client for the `upstream:` YAML block: token
+// exchange, GET and POST data calls, error classification, and guards.
+// All communication with the upstream service happens here.
 package pipeline
 
 import (
@@ -37,15 +34,16 @@ type Mapper interface {
 	Verify(ctx context.Context, ref string, in any) error
 }
 
-// pipelineClient talks to Agmarknet Vistaar.
+// pipelineClient talks to the upstream service.
 //
 // One struct for every call because they share a host, a token and a
 // response-size ceiling, and nothing else about them differs enough to earn a
 // type each. This is the package-private counterpart of the reference tool's
 // Client.
 type Client struct {
-	baseURL string
-	http    *http.Client
+	baseURL    string
+	http       *http.Client
+	tokenPlace string // "query" or "header" — how the token rides on requests
 }
 
 // newPipelineClient builds a pipelineClient with a timeout that suits the
@@ -79,13 +77,18 @@ func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, 
 	if auth.Request.Path == "" {
 		return "", fmt.Errorf("upstream.auth.request.path is empty, so there is no token endpoint to call")
 	}
-	// The token reaches a request through the mapping's `local`, which puts it
-	// in the query. Honouring a different placement would mean the mapping and
-	// this field disagreeing about where it went.
-	if carried := strings.TrimSpace(auth.Token.CarriedAs); carried != "" && carried != "query" {
-		return "", fmt.Errorf("upstream.auth.token.carriedAs %q is not supported; the token is passed "+
-			"to each step's mapping, which decides placement, and only %q matches that today", carried, "query")
+
+	// Validate and store the token placement so Get/Post can apply it.
+	// Defaults to "query" when unset, matching the existing behaviour.
+	carried := strings.TrimSpace(auth.Token.CarriedAs)
+	if carried == "" {
+		carried = "query"
 	}
+	if carried != "query" && carried != "header" {
+		return "", fmt.Errorf("upstream.auth.token.carriedAs %q is not supported; use %q or %q",
+			auth.Token.CarriedAs, "query", "header")
+	}
+	c.tokenPlace = carried
 
 	body := make(map[string]string, len(auth.Request.Body))
 	for field, template := range auth.Request.Body {
@@ -219,40 +222,81 @@ func asQuery(mapped []byte) (string, error) {
 	return values.Encode(), nil
 }
 
-// get makes one GET and returns the body of a 2xx.
-func (c *Client) fetch(ctx context.Context, path, query string) ([]byte, error) {
-	endpoint := c.baseURL + path
-	if query != "" {
-		endpoint += "?" + query
+// fetchGet makes one GET, applying the token as a query param or header
+// depending on c.tokenPlace, and returns the body of a 2xx.
+func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]byte, error) {
+	endpoint := c.baseURL + urlPath
+	if c.tokenPlace == "header" {
+		if query != "" {
+			endpoint += "?" + query
+		}
+	} else {
+		// Default: token rides in the query string, built by the mapping.
+		if query != "" {
+			endpoint += "?" + query
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("request could not be built: %w", err)
 	}
+	if c.tokenPlace == "header" && token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		// The URL carries the token, and Go's transport errors quote the whole
-		// URL, so the message is rebuilt from the path rather than wrapped.
-		return nil, fmt.Errorf("GET %s could not be reached", path)
+		return nil, fmt.Errorf("GET %s could not be reached", urlPath)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: response could not be read: %w", path, err)
+		return nil, fmt.Errorf("GET %s: response could not be read: %w", urlPath, err)
 	}
-	// A 400 carrying "No data available." is the upstream saying the result is
-	// empty. The BODY IS INSPECTED BUT NEVER QUOTED: this upstream echoes the
-	// request, and the request carries the token in its query string.
 	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(body, []byte("No data available")) {
 		return nil, ErrNoUpstreamData
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET %s returned %s", path, resp.Status)
+		return nil, fmt.Errorf("GET %s returned %s", urlPath, resp.Status)
 	}
 	return body, nil
 }
+
+// fetchPost makes one POST with a JSON body and returns the body of a 2xx.
+func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []byte, token string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+urlPath, bytes.NewReader(bodyPayload))
+	if err != nil {
+		return nil, fmt.Errorf("POST %s request could not be built: %w", urlPath, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.tokenPlace == "header" && token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if c.tokenPlace == "query" && token != "" {
+		q := req.URL.Query()
+		q.Set("token", token)
+		req.URL.RawQuery = q.Encode()
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("POST %s could not be reached", urlPath)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("POST %s: response could not be read: %w", urlPath, err)
+	}
+	if resp.StatusCode == http.StatusBadRequest && bytes.Contains(body, []byte("No data available")) {
+		return nil, ErrNoUpstreamData
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("POST %s returned %s", urlPath, resp.Status)
+	}
+	return body, nil
+}
+
 
 // httpGet verifies a mapping's preconditions, runs its request half to build
 // a query, makes the GET, and runs the response half over what came back.
@@ -280,11 +324,51 @@ func (c *Client) Get(ctx context.Context, m Mapper, mappingRef, path string, loc
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	body, err := c.fetch(ctx, path, query)
+	token := ""
+	if t, ok := local["token"].(string); ok {
+		token = t
+	}
+	body, err := c.fetchGet(ctx, path, query, token)
 	if err != nil {
 		return nil, err
 	}
 
+	return c.runResponseMapping(ctx, m, mappingRef, path, body)
+}
+
+// Post builds a JSON body from the mapping's request half, POSTs it to path,
+// and runs the response half over the answer.
+//
+// Situation: the upstream requires a POST to fetch or submit data
+//            (e.g. search endpoints, filtering APIs, data submission).
+// Scenario:  The mapping's request half shapes the body; the token is
+//            applied as a header or query param per carriedAs.
+func (c *Client) Post(ctx context.Context, m Mapper, mappingRef, path string, local map[string]any) ([]byte, error) {
+	input := map[string]any{"_local": local}
+	if err := m.Verify(ctx, mappingRef, input); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	bodyPayload, err := m.Transform(ctx, mappingRef, definition.DirectionRequest, input)
+	if err != nil {
+		return nil, fmt.Errorf("%s: request half: %w", path, err)
+	}
+
+	token := ""
+	if t, ok := local["token"].(string); ok {
+		token = t
+	}
+	rawBody, err := c.fetchPost(ctx, path, bodyPayload, token)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.runResponseMapping(ctx, m, mappingRef, path, rawBody)
+}
+
+// runResponseMapping decodes a raw response body and runs the mapping's
+// response half over it. Shared between Get and Post.
+func (c *Client) runResponseMapping(ctx context.Context, m Mapper, mappingRef, path string, body []byte) ([]byte, error) {
 	var answer any
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return nil, fmt.Errorf("%s: upstream answered with something that is not JSON: %w", path, err)
