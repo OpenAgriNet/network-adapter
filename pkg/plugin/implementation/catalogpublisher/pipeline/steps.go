@@ -25,14 +25,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
-
 
 // Step primitives, as a file spells them in `uses:`.
 const (
@@ -226,7 +224,6 @@ func (r *stepRunner) primitive(ctx context.Context, step Step, rc *runContext) (
 	}
 }
 
-
 // httpGet calls the upstream through the step's mapping.
 func (r *stepRunner) httpGet(ctx context.Context, step Step, rc *runContext) (any, error) {
 	if step.With.Path == "" || step.With.Mapping == "" {
@@ -262,7 +259,16 @@ func (r *stepRunner) httpGet(ctx context.Context, step Step, rc *runContext) (an
 // resolves. A file writes `mappings/master-states.yaml`; the mappings are
 // served from the root of that directory.
 func (r *stepRunner) mappingRef(mapping string) string {
-	return r.mappingBase + "/" + strings.TrimPrefix(mapping, "mappings/")
+	// The base is a URL, so this is deliberately string concatenation and not
+	// filepath.Join: Join collapses the "//" in "http://host" to "http:/",
+	// producing an address nothing can fetch. Two call sites used Join and
+	// were broken for every mapping, not merely prefixed ones.
+	//
+	// The "mappings/" prefix is stripped because a file writes its mappings
+	// relative to itself, while they are SERVED from the root of that
+	// directory. Both spellings therefore resolve to the same ref, so a
+	// provider cannot be wrong about which one to use.
+	return strings.TrimRight(r.mappingBase, "/") + "/" + strings.TrimPrefix(mapping, "mappings/")
 }
 
 // join matches left against right on a shared key, carrying named fields
@@ -614,19 +620,22 @@ func numeric(value any) (float64, bool) {
 // httpPost calls the upstream via POST through the step's mapping.
 //
 // Situation: the upstream endpoint requires POST (search APIs, submission
-//            endpoints, or APIs that put filters in the request body).
+//
+//	endpoints, or APIs that put filters in the request body).
+//
 // Scenario:  The mapping's request half builds a JSON body; the response
-//            half shapes the returned data into pipeline records.
+//
+//	half shapes the returned data into pipeline records.
 //
 // YAML usage:
 //
-//	- id: results
-//	  uses: http.post
-//	  with:
-//	    path: /v1/search
-//	    mapping: mappings/search.yaml
-//	    local: { token: "${auth.token}", query: "${inputs.searchQuery}" }
-//	  out: results
+//   - id: results
+//     uses: http.post
+//     with:
+//     path: /v1/search
+//     mapping: mappings/search.yaml
+//     local: { token: "${auth.token}", query: "${inputs.searchQuery}" }
+//     out: results
 func (r *stepRunner) httpPost(ctx context.Context, step Step, rc *runContext) (any, error) {
 	if step.With.Path == "" || step.With.Mapping == "" {
 		return nil, fmt.Errorf("http.post needs both `path:` and `mapping:`")
@@ -635,7 +644,7 @@ func (r *stepRunner) httpPost(ctx context.Context, step Step, rc *runContext) (a
 	if err != nil {
 		return nil, err
 	}
-	ref := filepath.Join(r.mappingBase, step.With.Mapping)
+	ref := r.mappingRef(step.With.Mapping)
 
 	local := map[string]any{}
 	for k, v := range step.With.Local {
@@ -656,16 +665,18 @@ func (r *stepRunner) httpPost(ctx context.Context, step Step, rc *runContext) (a
 // filter keeps records in the current collection that match a JSONata predicate.
 //
 // Situation: mid-pipeline cleanup before a join or dedupe — e.g. remove rows
-//            with a blank key, or rows the upstream marks as inactive.
+//
+//	with a blank key, or rows the upstream marks as inactive.
+//
 // Scenario:  Evaluate with.when per record; keep only the truthy ones.
 //
 // YAML usage:
 //
-//	- id: active
-//	  uses: filter
-//	  with:
-//	    when: "$exists(itemId) and itemId != ''"
-//	  out: active
+//   - id: active
+//     uses: filter
+//     with:
+//     when: "$exists(itemId) and itemId != ”"
+//     out: active
 func (r *stepRunner) filter(step Step, rc *runContext) (any, error) {
 	if step.With.When == "" {
 		return nil, fmt.Errorf("filter needs `with.when:` — a JSONata predicate to keep records by")
@@ -691,18 +702,21 @@ func (r *stepRunner) filter(step Step, rc *runContext) (any, error) {
 // without making an HTTP call.
 //
 // Situation: enrich or reshape pipeline records inline — add a computed field,
-//            reformat keys, or project a subset — before a join or catalog step.
+//
+//	reformat keys, or project a subset — before a join or catalog step.
+//
 // Scenario:  Run the mapping's response half over all records; the request
-//            half is skipped (no upstream call needed).
+//
+//	half is skipped (no upstream call needed).
 //
 // YAML usage:
 //
-//	- id: enriched
-//	  uses: transform
-//	  with:
-//	    mapping: mappings/enrich.yaml
-//	    local: { networkId: "${inputs.networkId}" }
-//	  out: enriched
+//   - id: enriched
+//     uses: transform
+//     with:
+//     mapping: mappings/enrich.yaml
+//     local: { networkId: "${inputs.networkId}" }
+//     out: enriched
 func (r *stepRunner) transform(ctx context.Context, step Step, rc *runContext) (any, error) {
 	if step.With.Mapping == "" {
 		return nil, fmt.Errorf("transform needs `with.mapping:`")
@@ -711,7 +725,7 @@ func (r *stepRunner) transform(ctx context.Context, step Step, rc *runContext) (
 	if err != nil {
 		return nil, err
 	}
-	ref := filepath.Join(r.mappingBase, step.With.Mapping)
+	ref := r.mappingRef(step.With.Mapping)
 
 	local := map[string]any{}
 	for k, v := range step.With.Local {
@@ -749,4 +763,3 @@ func asRecords2(v any) []map[string]any {
 	}
 	return nil
 }
-

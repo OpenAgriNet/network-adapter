@@ -494,3 +494,29 @@ func TestPredicateSubstitutesInterpolationAsALiteral(t *testing.T) {
 			"compared as a record path instead of a string, so the rule never fired", got)
 	}
 }
+
+// Every primitive that names a mapping must resolve it the SAME way.
+//
+// Three call sites once resolved `mapping:` two different ways, and two of
+// them used filepath.Join on a URL -- which collapses "http://host" to
+// "http:/host", an address nothing can fetch. http.post and transform were
+// therefore broken for every mapping, not merely for a prefixed one, and
+// nothing said so because no test named a mapping from those steps.
+func TestMappingRefIsResolvedTheSameWayEverywhere(t *testing.T) {
+	runner := &stepRunner{mappingBase: "http://127.0.0.1:53211"}
+
+	// Both spellings a file might use must land on the same served ref: a
+	// mapping is written relative to the pipeline file, and served from the
+	// root of that directory.
+	for _, spelling := range []string{"mappings/things.yaml", "things.yaml"} {
+		got := runner.mappingRef(spelling)
+		if want := "http://127.0.0.1:53211/things.yaml"; got != want {
+			t.Errorf("mappingRef(%q) = %q, want %q", spelling, got, want)
+		}
+	}
+
+	// And the scheme must survive. "http:/" is the failure this guards.
+	if ref := runner.mappingRef("mappings/x.yaml"); !strings.HasPrefix(ref, "http://") {
+		t.Errorf("mappingRef produced %q -- the URL scheme was mangled", ref)
+	}
+}

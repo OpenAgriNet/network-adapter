@@ -1,0 +1,118 @@
+# pipeline.yaml -- the IMD Mausamgram point-forecast catalogue publisher for
+# openagrinet:WeatherObservation.
+#
+# Same frame, same contract as MandiPrice/cataloguepublish-agmarket, with one
+# structural difference: there is NO upstream. The catalogue describes a fixed
+# on-demand service (a five-day point forecast for anywhere in India), so
+# nothing is fetched to build it. With no `upstream:` block the frame skips the
+# credential check and the token exchange, and a const step supplies the one
+# record the catalog block renders.
+#
+# What varies per run is only context.transactionId / messageId / timestamp.
+# The run is daily and the directive is MERGE, so republishing is idempotent.
+
+# Which contract this file is held to. LoadSpec validates against it and
+# REFUSES a file that does not match, naming the path that is wrong.
+schemaRef:
+  uses: publish.oan/CataloguePipeline/v1
+
+# Must agree with schemaRef.uses; the engine refuses a file where they differ.
+apiVersion: publish.oan/v1
+kind: CataloguePipeline
+metadata:
+  # Also the filename prefix for built catalogues: weather-mausamgram-*.json.
+  name: weather-mausamgram
+  capability: openagrinet:WeatherObservation
+  provider: imd-mausamgram
+  summary: >
+    Publishes one Beckn catalog carrying IMD Mausamgram's five-day point
+    weather forecast as a single on-demand resource covering India.
+
+discover:
+  path: WeatherObservation/cataloguepublish-mausangram/
+  mappingsDir: mappings/
+
+schedule:
+  # 01:00 IST daily: an hour after mandi, so the two never contend for the
+  # adapter. Resolved in `timezone`, not the host clock.
+  cron: "0 1 * * *"
+  timezone: Asia/Kolkata
+
+inputs:
+  # The provider id the catalogue is published under ({{providerId}} in the
+  # target payload). Must match the participantId in the registry binding key.
+  participantId:
+    flag: participant-id
+    env: WEATHER_PARTICIPANT_ID
+    default: imd-mausamgram
+  # {{networkId}} in the target payload: who may see the catalogue.
+  networkId:
+    flag: network-id
+    env: APP_NETWORK_ID
+    default: oan-dev
+  catalogOut:
+    flag: catalog-out
+    default: catalog
+  # Deliberately no default, as for mandi: a baked-in address that resolves
+  # nowhere fails far from here rather than as "you did not configure it".
+  publishUrl:
+    flag: publish-url
+    env: WEATHER_PUBLISH_URL
+
+# One record: the one resource this catalogue carries. Its id feeds the
+# catalogId and resourceId templates below; everything else about the
+# resource lives in the mapping.
+pipeline:
+  - id: resources
+    uses: const
+    with:
+      records:
+        - id: point-forecast
+    out: collection
+
+catalog:
+  groupBy: id
+
+  # One resource, one Polygon geometry: nowhere near Discovery's 256 cap, but
+  # the cost is stated so a second resource added later is counted honestly.
+  chunk:
+    budget: 256
+    of: geometries
+    cost: "1"
+    slug: "${id}"
+
+  identity:
+    catalogId: cat-mausamgram-${slug}-v2
+    resourceId: res:mausamgram:${id}
+
+  render:
+    mapping: mappings/cataogue.yaml
+    local:
+      catalogId: cat-mausamgram-${slug}-v2
+      participantId: ${inputs.participantId}
+      networkId: ${inputs.networkId}
+      generatedAt: ${now.rfc3339}
+      transactionId: ${uuid}
+      messageId: ${uuid}
+
+  output:
+    dir: ${inputs.catalogOut}
+    file: weather-mausamgram-${slug}.json
+    filenamePrefix: weather-mausamgram
+
+publish:
+  url: ${inputs.publishUrl}/publish
+  concurrency: 1
+  timeout: 60s
+  accept: [ACCEPTED]
+  # PARTIAL means indexed with pieces missing; it is a failure, not a success.
+  treatAsFailure:
+    - PARTIAL
+    - REJECTED
+
+report:
+  build:
+    - "built ${count} catalogs into ${dir}"
+  publish:
+    - "${catalogId} -> ${outcome}"
+  exitNonZeroWhen: [publish.failures]

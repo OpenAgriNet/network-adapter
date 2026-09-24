@@ -1,0 +1,93 @@
+# IMD Mausamgram point-forecast catalogue render.
+#
+# Input (from the frame): `response` is the chunk's records -- one, carrying
+# the resourceId the pipeline's identity template wrote -- and `_local` is the
+# pipeline's render.local.
+#
+# Everything the resource says is fixed here, verbatim from the agreed target
+# payload. Only ids, the timestamp, the provider id and the network id vary.
+#
+# `resources` and every single-element list are written as literal arrays so
+# JSONata's single-item collapse cannot turn one into a bare object.
+
+response: |
+  (
+    $resourceId := response[0].resourceId;
+    {
+      "context": {
+        "action": "catalog/publish",
+        "version": "2.0.0",
+        "transactionId": _local.transactionId,
+        "messageId": _local.messageId,
+        "timestamp": _local.generatedAt
+      },
+      "message": {
+        "catalogs": [
+          {
+            "id": _local.catalogId,
+            "isActive": true,
+            "descriptor": {
+              "code": "IMD-NWP-01",
+              "name": "IMD Mausamgram point weather forecast",
+              "shortDesc": "Five-day point weather forecast from IMD Mausamgram NWP",
+              "longDesc": "Rainfall, temperature, humidity and wind forecast for a single point, five days ahead, from the India Meteorological Department's Mausamgram numerical weather prediction service."
+            },
+            "provider": {
+              "id": _local.participantId,
+              "descriptor": {
+                "code": "IMD-NWP-01",
+                "name": "IMD Mausamgram NWP"
+              }
+            },
+            "validity": {
+              "startDate": "2026-01-01T00:00:00Z",
+              "endDate": "2027-12-31T23:59:59Z"
+            },
+            "resources": [
+              {
+                "id": $resourceId,
+                "descriptor": {
+                  "code": "WX-POINT-FORECAST",
+                  "name": "Point weather forecast",
+                  "shortDesc": "Five-day weather forecast for a single point",
+                  "longDesc": "Daily rainfall, minimum and maximum temperature, minimum and maximum humidity and wind speed for a requested latitude and longitude."
+                },
+                "resourceAttributes": {
+                  "@context": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/schema-packs-v0.1/schema/WeatherObservation/v0.1/context.jsonld",
+                  "@type": "openagrinet:WeatherObservation",
+                  "informationMode": "OnDemand",
+                  "subjectCategories": ["Weather"],
+                  "supportedObservationTypes": ["Forecast"],
+                  "supportedParameters": ["Rainfall", "Temperature", "Humidity", "WindSpeed", "WindDirection", "Alert"],
+                  "forecastHorizon": "P5D",
+                  "updateFrequency": "PT24H",
+                  "geographicGranularities": ["Point"],
+                  "languages": ["en"],
+                  "coverageAreas": [
+                    {
+                      "codeScheme": "ISO-3166-1",
+                      "areaCode": "IN",
+                      "areaLevel": "Country",
+                      "areaName": "India"
+                    },
+                    {
+                      "type": "Polygon",
+                      "coordinates": [[[68.0, 6.0], [98.0, 6.0], [98.0, 38.0], [68.0, 38.0], [68.0, 6.0]]]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "publishDirectives": [
+          {
+            "catalogId": _local.catalogId,
+            "catalogType": "REGULAR",
+            "updateMode": "MERGE",
+            "visibleTo": [_local.networkId]
+          }
+        ]
+      }
+    }
+  )

@@ -769,4 +769,3 @@ func TestWriteCataloguesRemovesStaleCataloguesFromAnEarlierRun(t *testing.T) {
 		t.Errorf("today's catalogue was not written: %v", err)
 	}
 }
-
