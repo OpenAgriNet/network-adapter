@@ -897,3 +897,60 @@ func TestFilterSubstitutesInterpolationAsALiteral(t *testing.T) {
 			"so the predicate never matched properly", records)
 	}
 }
+
+// Presence is not identity. An explicit null is PRESENT and renders to the
+// same empty string an absent key does, so records carrying "id": null would
+// still all collapse into one survivor.
+func TestDedupeRefusesNullAndBlankKeys(t *testing.T) {
+	for name, records := range map[string][]any{
+		"an explicit null": {
+			map[string]any{"id": 1},
+			map[string]any{"id": nil},
+			map[string]any{"id": nil},
+		},
+		"a blank string": {
+			map[string]any{"id": 1},
+			map[string]any{"id": ""},
+			map[string]any{"id": "   "},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := Spec{Pipeline: []Step{
+				{ID: "dedupe", Uses: usesDedupe, Out: "collection", With: With{Key: "id"}},
+			}}
+			runner, _ := testRunner(t, spec, `[]`)
+			runner.lastOutput = records
+
+			if _, err := runner.runSteps(context.Background()); err == nil {
+				t.Error("records with no usable key collapsed into one and the run carried on")
+			}
+		})
+	}
+}
+
+// A step skipped by `when:` with no `else:` is a NO-OP: the collection flows
+// past it. Yielding nil instead made the next implicit consumer fail with
+// "no step before it produced one" -- an error about the runner's bookkeeping
+// rather than anything the file got wrong.
+func TestASkippedStepPassesTheCollectionThrough(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "seed", Uses: usesFilter, Out: "seeded", With: With{Left: "${rows}", When: "true"}},
+		// Skipped, and names no else.
+		{ID: "maybe", Uses: usesFilter, When: "${inputs.enabled} = 'yes'", With: With{When: "true"}},
+		{ID: "final", Uses: usesDedupe, Out: "collection", With: With{Key: "id"}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+	runner.rc = newRunContext(map[string]string{"enabled": "no"}, "tok")
+	runner.rc.outputs["rows"] = []any{
+		map[string]any{"id": 1},
+		map[string]any{"id": 2},
+	}
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("a skipped step broke the chain: %v", err)
+	}
+	if len(records) != 2 {
+		t.Errorf("got %d records, want 2 -- the skipped step swallowed the collection", len(records))
+	}
+}

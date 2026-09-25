@@ -378,3 +378,115 @@ func TestRunPipelineReportsTheFramesRefusal(t *testing.T) {
 type fixedTargets struct{ targets []publishTarget }
 
 func (s *fixedTargets) Discover(context.Context) ([]publishTarget, error) { return s.targets, nil }
+
+// A failure that will not clear must stop retrying.
+//
+// A failed run is deliberately not recorded, so the next tick tries again --
+// which is right for a transient outage at midnight. But a permanent failure
+// (a rejected catalogue, a credential that will not work) then re-fetches and
+// re-publishes EVERYTHING every five minutes: about 288 full runs a day, each
+// re-sending catalogues the network already accepted.
+//
+// After a few attempts the firing is marked served, so the pipeline waits for
+// its next scheduled firing instead.
+func TestAPermanentFailureStopsRetryingWithinOneFiring(t *testing.T) {
+	runLog := &countingRunLog{}
+	attempts := 0
+
+	sweep := &publishSweep{
+		cfg:    publishConfig{},
+		runLog: runLog,
+		log:    slog.New(slog.DiscardHandler),
+		source: staticSource{targets: []publishTarget{{
+			record: &model.ProviderRecord{BindingKey: "who|example:Thing"},
+			files:  pipeline.Files{Path: "x.yaml"},
+		}}},
+	}
+	// The fake stands in for pipeline.Run, including its schedule gate: once
+	// the firing has been marked served the real pipeline reports NOT DUE and
+	// does no work, which is what the budget buys. Without modelling that, the
+	// test would measure a situation production never reaches.
+	sweep.run = func(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
+		attempts++
+		if runLog.recorded > 0 {
+			return nil // not due: this firing has been served
+		}
+		return sweep.afterRun(ctx, "example:Thing", errAlwaysFails)
+	}
+
+	// Many more ticks than the cap.
+	for i := 0; i < 20; i++ {
+		sweep.tick(context.Background())
+	}
+
+	if attempts != 20 {
+		t.Fatalf("the sweep called the pipeline %d times, want 20 (the guard is not about skipping ticks)", attempts)
+	}
+	if runLog.recorded == 0 {
+		t.Error("a permanently failing pipeline never marked its firing served, so it retries every tick forever")
+	}
+	if runLog.recorded > 1 {
+		t.Errorf("the firing was marked served %d times; once per exhausted firing is enough", runLog.recorded)
+	}
+	if attempts-maxAttemptsPerFiring < 10 {
+		t.Errorf("only %d ticks stood down after the give-up; the budget bought nothing", attempts-maxAttemptsPerFiring)
+	}
+}
+
+// The budget is per FIRING, not for the life of the process: a pipeline that
+// exhausts Monday's attempts must get a full set on Tuesday.
+func TestTheNextFiringGetsAFreshBudget(t *testing.T) {
+	runLog := &countingRunLog{}
+	sweep := &publishSweep{log: slog.New(slog.DiscardHandler), runLog: runLog}
+
+	for i := 0; i < maxAttemptsPerFiring; i++ {
+		_ = sweep.afterRun(context.Background(), "example:Thing", errAlwaysFails)
+	}
+	if runLog.recorded != 1 {
+		t.Fatalf("the first firing was marked served %d times, want 1", runLog.recorded)
+	}
+
+	// The schedule comes round; the run is due again, and fails again. Only a
+	// failure reaches here, because a not-due run never gets this far.
+	for i := 0; i < maxAttemptsPerFiring; i++ {
+		_ = sweep.afterRun(context.Background(), "example:Thing", errAlwaysFails)
+	}
+	if runLog.recorded != 2 {
+		t.Errorf("the second firing was marked served %d times in total, want 2 -- "+
+			"the budget did not reset, so the next day retries every tick", runLog.recorded)
+	}
+}
+
+// A run that succeeds must clear the count, or a pipeline that fails twice on
+// Monday has fewer attempts left on Tuesday.
+func TestASuccessfulRunClearsTheFailureCount(t *testing.T) {
+	sweep := &publishSweep{log: slog.New(slog.DiscardHandler), runLog: &countingRunLog{}}
+
+	_ = sweep.afterRun(context.Background(), "example:Thing", errAlwaysFails)
+	_ = sweep.afterRun(context.Background(), "example:Thing", nil)
+
+	if budget, held := sweep.failures["example:Thing"]; held {
+		t.Errorf("a success left %d failed attempts on the books", budget.count)
+	}
+}
+
+var errAlwaysFails = errors.New("this failure will not clear")
+
+type countingRunLog struct {
+	recorded int
+	last     time.Time
+}
+
+func (c *countingRunLog) LastPipelineRun(context.Context, string) (time.Time, error) {
+	return c.last, nil
+}
+
+func (c *countingRunLog) RecordPipelineRun(_ context.Context, _ string, at time.Time) error {
+	c.recorded++
+	c.last = at
+	return nil
+}
+
+type staticSource struct{ targets []publishTarget }
+
+func (s staticSource) Discover(context.Context) ([]publishTarget, error) { return s.targets, nil }

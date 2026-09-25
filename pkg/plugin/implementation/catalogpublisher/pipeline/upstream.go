@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -44,6 +46,15 @@ type Client struct {
 	baseURL    string
 	http       *http.Client
 	tokenPlace string // "query" or "header" — how the token rides on requests
+	tokenName  string // the query parameter the file names for it
+
+	// allowCleartext carries the file's deliberate acceptance of an http
+	// upstream. See checkUpstreamScheme.
+	allowCleartext bool
+
+	// policyOnce applies the redirect policy to whatever http.Client this
+	// one ends up holding, including one a caller substituted.
+	policyOnce sync.Once
 
 	// errorRules are the provider's own `upstream.errors`, deciding what one
 	// failed call MEANS. Empty means the engine falls back to status alone:
@@ -61,11 +72,60 @@ func (c *Client) WithErrorRules(rules []ErrorRule) *Client {
 	return c
 }
 
+// WithCleartextAllowed carries the file's deliberate acceptance of an http
+// upstream into the client.
+func (c *Client) WithCleartextAllowed(allowed bool) *Client {
+	c.allowCleartext = allowed
+	return c
+}
+
 // newPipelineClient builds a pipelineClient with a timeout that suits the
 // largest call: master data option 6 is roughly 600 KB and takes seconds,
 // not milliseconds.
 func NewClient(baseURL string) *Client {
 	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 120 * time.Second}}
+}
+
+// do is the one place a request leaves this package, so the redirect policy
+// cannot be forgotten at a call site.
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	c.policyOnce.Do(func() {
+		if c.http.CheckRedirect == nil {
+			c.http.CheckRedirect = refuseOffHostRedirect
+		}
+	})
+	return c.http.Do(req)
+}
+
+// refuseOffHostRedirect stops a redirect from carrying a credential to a host
+// the pipeline file never named.
+//
+// EVERY request this client makes carries one. The token exchange POSTs the
+// username and password in its body, and a 307 or 308 preserves method and
+// body, so Go would re-send both to the redirect target. Every later call
+// carries the token, and for this class of upstream it rides in the QUERY
+// STRING -- which Go does not strip on a cross-host redirect the way it strips
+// sensitive headers.
+//
+// A redirect that stays on the same host is ordinary (a trailing slash, a
+// moved path) and is followed, bounded by the stdlib's own chain limit.
+func refuseOffHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	from := via[len(via)-1].URL
+	if strings.EqualFold(req.URL.Host, from.Host) && !isSchemeDowngrade(from.Scheme, req.URL.Scheme) {
+		return nil
+	}
+	// The host is named, the URL is not: a redirect target on the data path
+	// would carry the token in its query string.
+	return fmt.Errorf("the upstream redirected to another host (%s); "+
+		"the request carries a credential and was not followed", req.URL.Host)
+}
+
+// isSchemeDowngrade reports an https request being redirected to cleartext.
+func isSchemeDowngrade(from, to string) bool {
+	return strings.EqualFold(from, "https") && !strings.EqualFold(to, "https")
 }
 
 // token exchanges the credentials for a token.
@@ -85,6 +145,12 @@ func NewClient(baseURL string) *Client {
 // ${inputs.…} references, and the inputs that hold them are declared
 // `secret: true`, so what the file carries is the NAME of a variable.
 func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, error) {
+	// Checked HERE rather than at the first data call, because this is the
+	// request that carries the credentials themselves.
+	if err := checkUpstreamScheme(c.baseURL, c.allowCleartext); err != nil {
+		return "", err
+	}
+
 	if auth.Kind != "" && auth.Kind != authTokenExchange {
 		return "", fmt.Errorf("upstream.auth.kind %q is not supported; this client performs %q",
 			auth.Kind, authTokenExchange)
@@ -104,6 +170,13 @@ func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, 
 			auth.Token.CarriedAs, "query", "header")
 	}
 	c.tokenPlace = carried
+
+	// The file's own spelling. A second upstream calls it "api_key"; keeping
+	// the engine's spelling here would authenticate as nobody.
+	c.tokenName = strings.TrimSpace(auth.Token.Name)
+	if c.tokenName == "" {
+		c.tokenName = "token"
+	}
 
 	body := make(map[string]string, len(auth.Request.Body))
 	for field, template := range auth.Request.Body {
@@ -139,7 +212,7 @@ func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		// Not %w: Go's transport errors quote the whole URL, and a token
 		// endpoint's URL is the one place a credential could appear in it.
@@ -240,16 +313,11 @@ func asQuery(mapped []byte) (string, error) {
 // fetchGet makes one GET, applying the token as a query param or header
 // depending on c.tokenPlace, and returns the body of a 2xx.
 func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]byte, error) {
+	// The query is the mapping's, whole: on the query-carried path the
+	// mapping is what puts the token in it, under the file's own name.
 	endpoint := c.baseURL + urlPath
-	if c.tokenPlace == "header" {
-		if query != "" {
-			endpoint += "?" + query
-		}
-	} else {
-		// Default: token rides in the query string, built by the mapping.
-		if query != "" {
-			endpoint += "?" + query
-		}
+	if query != "" {
+		endpoint += "?" + query
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -259,7 +327,7 @@ func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s could not be reached", urlPath)
 	}
@@ -287,11 +355,11 @@ func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []by
 		req.Header.Set("Authorization", "Bearer "+token)
 	} else if c.tokenPlace == "query" && token != "" {
 		q := req.URL.Query()
-		q.Set("token", token)
+		q.Set(c.tokenQueryName(), token)
 		req.URL.RawQuery = q.Encode()
 	}
 
-	resp, err := c.http.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("POST %s could not be reached", urlPath)
 	}
@@ -441,3 +509,54 @@ func jsonShape(v any) string {
 // outages, which is why callers must be able to tell "no data" apart from
 // "broken" instead of collapsing both into one generic error.
 var ErrNoUpstreamData = errors.New("upstream reports no data for this request")
+
+// checkUpstreamScheme refuses to send credentials in cleartext.
+//
+// A pipeline once defaulted its upstream to a plain-HTTP address at a bare IP,
+// so a deployment that did not set the env var POSTed its credentials
+// unencrypted and then carried the token in every query string after that.
+// Removing that default fixes one file; this fixes any file.
+//
+// Loopback is exempt: a developer's fake upstream and this package's own tests
+// run on http://127.0.0.1, and refusing those would make the rule something
+// people work around rather than something that protects them.
+func checkUpstreamScheme(baseURL string, allowCleartext bool) error {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return fmt.Errorf("upstream address could not be parsed")
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme == "http" && (isLoopback(parsed.Hostname()) || allowCleartext) {
+		return nil
+	}
+	if parsed.Scheme == "" {
+		return fmt.Errorf("the upstream address names no scheme; it must be https " +
+			"(the credential exchange and every token afterwards travel over it)")
+	}
+	return fmt.Errorf("the upstream address uses %s; credentials and the token it returns would "+
+		"travel in cleartext. Use https, or -- if this upstream offers no TLS -- say so "+
+		"deliberately with `upstream.allowCleartext: true`, which is recorded in the pipeline "+
+		"file and warned about on every run", parsed.Scheme)
+}
+
+// isLoopback reports whether a host is this machine.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// tokenQueryName is the query parameter the token rides in, defaulting to
+// "token" for a client whose Token() was never called (no auth declared).
+func (c *Client) tokenQueryName() string {
+	if c.tokenName == "" {
+		return "token"
+	}
+	return c.tokenName
+}

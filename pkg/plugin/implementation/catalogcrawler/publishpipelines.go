@@ -158,7 +158,39 @@ type publishSweep struct {
 	// every upstream call and racing to write the same files.
 	inFlight sync.Mutex
 	running  bool
+
+	// failures is the attempt budget per capability, so a failure that will
+	// not clear stops re-running the whole pipeline every tick.
+	//
+	// Only one sweep runs at a time (claim/release), and those two take
+	// inFlight, so one sweep's writes are visible to the next. Nothing
+	// outside a sweep touches this map.
+	failures map[string]*attemptBudget
 }
+
+// attemptBudget is what one capability has spent on the firing it is in.
+type attemptBudget struct {
+	count int
+	// gaveUp is set once the firing has been marked served. The next FAILURE
+	// to arrive must then belong to a later firing -- while a firing is
+	// served the pipeline reports not due, and a not-due run never gets
+	// here -- so it starts a fresh budget rather than being refused one.
+	gaveUp bool
+}
+
+// maxAttemptsPerFiring is how many times one scheduled firing is attempted
+// before it is given up on until the next one.
+//
+// A failed run is deliberately not recorded, so the next tick retries -- right
+// for a transient outage at midnight, wrong for a failure that will not clear.
+// Without a cap the whole pipeline re-fetches and re-publishes every five
+// minutes: about 288 full runs a day, each re-sending catalogues the network
+// has already accepted.
+//
+// Three, because the failures worth retrying (a restarting upstream, a
+// momentary network fault) clear within minutes, and everything else is
+// waiting for a person.
+const maxAttemptsPerFiring = 3
 
 // tick asks discovery what the registry sanctions and runs each pipeline.
 //
@@ -203,6 +235,62 @@ func (p *publishSweep) release() {
 	p.inFlight.Unlock()
 }
 
+// afterRun records the outcome of one run and decides whether this firing has
+// been tried enough.
+//
+// On the attempt that exhausts the budget the firing is marked SERVED in the
+// run log, which is what makes the next tick stand down: dueNow then sees the
+// firing as already handled and waits for the next scheduled one. The mark
+// goes to the database, so a restart does not resume the storm.
+//
+// The counter itself is in memory, so a restart does grant a fresh budget.
+// That is the deliberate trade: it needs no migration, and a crash-looping
+// process has a louder problem than three extra attempts.
+func (p *publishSweep) afterRun(ctx context.Context, capability string, runErr error) error {
+	if capability == "" {
+		return runErr // nothing to key the budget on; report and move on
+	}
+	if p.failures == nil {
+		p.failures = map[string]*attemptBudget{}
+	}
+
+	if runErr == nil {
+		delete(p.failures, capability)
+		return nil
+	}
+
+	budget := p.failures[capability]
+	switch {
+	case budget == nil:
+		budget = &attemptBudget{}
+		p.failures[capability] = budget
+	case budget.gaveUp:
+		// A failure after a give-up means the schedule has come round again.
+		*budget = attemptBudget{}
+	}
+
+	budget.count++
+	if budget.count < maxAttemptsPerFiring {
+		return runErr
+	}
+
+	if p.runLog != nil {
+		if err := p.runLog.RecordPipelineRun(ctx, capability, time.Now()); err != nil {
+			// Not fatal: the cost is that the retrying continues, which is
+			// the situation we were already in. Leaving gaveUp unset means
+			// the next failure tries to mark it served again.
+			p.log.ErrorContext(ctx, "catalogcrawler: could not mark the firing as served; "+
+				"this pipeline will keep retrying", "capability", capability, "error", err)
+			return runErr
+		}
+	}
+	budget.gaveUp = true
+	p.log.WarnContext(ctx, "catalogcrawler: giving up on this firing after repeated failures; "+
+		"waiting for the next scheduled one",
+		"capability", capability, "attempts", budget.count)
+	return runErr
+}
+
 // runPipeline is the real run, calling the frame.
 func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 	report, err := pipeline.Run(ctx, pipeline.RunOptions{
@@ -217,13 +305,16 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 		Publisher:  p.publisher,
 	})
 	if err != nil {
-		return err
+		return p.afterRun(ctx, capabilityOf(report, record), err)
 	}
 	if !report.Due {
+		// Not a success and not a failure: nothing ran, so the attempt
+		// budget is left exactly as it was.
 		p.log.DebugContext(ctx, "catalogcrawler: publish pipeline not due",
 			"capability", report.Capability, "reason", report.Reason)
 		return nil
 	}
+	_ = p.afterRun(ctx, capabilityOf(report, record), nil)
 
 	published := 0
 	if report.Published != nil {
@@ -261,4 +352,19 @@ func servedActions(record *model.ProviderRecord) string {
 	}
 	sort.Strings(served)
 	return strings.Join(served, ",")
+}
+
+// capabilityOf names the pipeline a run belongs to, falling back to the
+// binding key when a run failed before it could read the file.
+func capabilityOf(report pipeline.RunReport, record *model.ProviderRecord) string {
+	if report.Capability != "" {
+		return report.Capability
+	}
+	if record == nil {
+		return ""
+	}
+	if _, capability, found := strings.Cut(record.BindingKey, "|"); found {
+		return capability
+	}
+	return record.BindingKey
 }

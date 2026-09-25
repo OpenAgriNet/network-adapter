@@ -278,6 +278,10 @@
         },
         "guards": {
           "$ref": "#/$defs/guards"
+        },
+        "allowCleartext": {
+          "type": "boolean",
+          "description": "Permits an http:// upstream that is not loopback. Off by default, because the credential exchange and every token after it travel over this address. It exists because some upstreams offer no TLS at all, and a rule that makes a real integration impossible gets worked around rather than obeyed. Setting it is a deliberate decision recorded in this file and warned about on every run -- not an accident of an unset variable."
         }
       }
     },

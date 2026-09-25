@@ -95,7 +95,7 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 	counters[catalogCounterGroups] = len(keys)
 
 	var built []Catalogue
-	named := map[string]bool{}
+	named := map[string]string{}
 
 	for _, key := range keys {
 		members := groups[key]
@@ -137,11 +137,17 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 			// catalogId: the second MERGE would replace the first one's
 			// resources instead of adding to them, and the second file would
 			// overwrite the first on disk.
-			if named[catalogue.Slug] {
-				return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q a second time; the chunk slug template does not tell chunks apart",
-					key, index+1, catalogue.Slug)
+			// Compared case-FOLDED, because the filesystem may be: on macOS
+			// and Windows "mh" and "MH" are one file, so two groups whose
+			// names differ only in case would silently overwrite each other
+			// and publish one catalogue under two ids.
+			folded := strings.ToLower(catalogue.Slug)
+			if previous, taken := named[folded]; taken {
+				return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q, which collides with %q; "+
+					"they differ only in case and are one file on a case-insensitive filesystem",
+					key, index+1, catalogue.Slug, previous)
 			}
-			named[catalogue.Slug] = true
+			named[folded] = catalogue.Slug
 
 			built = append(built, catalogue)
 			counters[catalogCounterCatalogues]++
@@ -584,8 +590,10 @@ func RemoveStaleCatalogues(dir, filenamePrefix string) error {
 // filename, and three separate things go wrong when it is not:
 //
 //   - "../../x" escapes the output directory. filepath.Join does not save us:
-//     "<prefix>-.." is an ordinary path element, so enough ".." segments walk
-//     out of the directory the operator chose.
+//     "<prefix>-.." is an ordinary path element, so enough "../" segments walk
+//     out of the directory the operator chose. Banning the SLASH is what stops
+//     this; a bare ".." is harmless, since it only ever lands inside the single
+//     filename "<prefix>-...json".
 //   - "J/K" writes into a subdirectory, where the publisher's
 //     "<prefix>-*.json" glob never finds it. The catalogue is built, reported
 //     as built, and silently never published.
@@ -603,7 +611,8 @@ func safeSlug(slug, source string) error {
 		return nil
 	}
 	return fmt.Errorf("%s produced %q, which cannot be used as a catalogue name: "+
-		"a name becomes a filename and must match %s. A value with a slash is never "+
-		"published (the publisher globs one directory), and one with .. can escape it",
-		source, slug, slugShape)
+		"a name becomes a filename and must match %s. A slash is the danger -- it both "+
+		"writes outside the directory the publisher globs (so the catalogue is built and "+
+		"never published) and, with enough ../ segments, outside the output directory "+
+		"entirely", source, slug, slugShape)
 }

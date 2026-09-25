@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -210,4 +211,157 @@ func TestTokenDoesNotQuoteTheURLWhenUnreachable(t *testing.T) {
 func readAll(r *http.Request) string {
 	body, _ := io.ReadAll(r.Body)
 	return string(body)
+}
+
+// The token exchange must refuse to send credentials in cleartext.
+//
+// The pipeline used to default baseUrl to a plain-HTTP address at a bare IP,
+// so a deployment that forgot to set the env var POSTed its credentials, and
+// then carried its token in every query string, unencrypted. Removing the
+// default stops that one file; this stops any file.
+func TestTokenRefusesCleartextUpstream(t *testing.T) {
+	client := NewClient("http://an-upstream.test")
+	_, err := client.Token(context.Background(), authSpec(), authInputs())
+	if err == nil {
+		t.Fatal("credentials were sent to a plain-HTTP upstream")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error %q does not say what is required", err)
+	}
+}
+
+// Loopback is the exception: a developer's fake upstream and every test in
+// this package run on http://127.0.0.1, and refusing those would make the
+// rule unusable rather than safe.
+func TestTokenAllowsCleartextOnLoopback(t *testing.T) {
+	for _, host := range []string{"http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080"} {
+		if err := checkUpstreamScheme(host, false); err != nil {
+			t.Errorf("loopback %s was refused: %v", host, err)
+		}
+	}
+	if err := checkUpstreamScheme("https://real.test", false); err != nil {
+		t.Errorf("https was refused: %v", err)
+	}
+}
+
+// An upstream with no TLS at all is a real case -- Agmarknet answers on
+// neither 443 nor its own port over https -- so the rule has an escape hatch.
+// It must be an explicit, declared one, never an accident.
+func TestCleartextIsAllowedOnlyWhenDeclared(t *testing.T) {
+	const plain = "http://an-upstream.test"
+
+	if err := checkUpstreamScheme(plain, false); err == nil {
+		t.Error("cleartext was allowed without the file asking for it")
+	} else if !strings.Contains(err.Error(), "allowCleartext") {
+		t.Errorf("error %q does not say how to declare the exception", err)
+	}
+
+	if err := checkUpstreamScheme(plain, true); err != nil {
+		t.Errorf("a declared cleartext upstream was still refused: %v", err)
+	}
+
+	// The escape hatch must not become a way to skip the check entirely: a
+	// missing scheme is a broken address, not a cleartext one.
+	if err := checkUpstreamScheme("an-upstream.test", true); err == nil {
+		t.Error("an address with no scheme was accepted because cleartext was allowed")
+	}
+}
+
+// A redirect must not carry the credentials to a host the file never named.
+//
+// The token exchange POSTs the credentials themselves, and a 307 preserves
+// both method and body -- so an upstream (or anything that can answer as one)
+// replying "307 Location: https://elsewhere/" would have Go re-send the
+// username and password there. The data calls are the same shape with the
+// token in the query.
+func TestARedirectDoesNotCarryCredentialsToAnotherHost(t *testing.T) {
+	var reachedElsewhere bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reachedElsewhere = true
+		_, _ = w.Write([]byte(`{"token":"tok-from-the-wrong-host"}`))
+	}))
+	defer elsewhere.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer upstream.Close()
+
+	client := NewClient(upstream.URL)
+	client.http = upstream.Client()
+
+	_, err := client.Token(context.Background(), authSpec(), authInputs())
+	if err == nil {
+		t.Fatal("a cross-host redirect was followed with the credentials attached")
+	}
+	if reachedElsewhere {
+		t.Error("the credentials were re-sent to the redirect target")
+	}
+	for _, secret := range []string{"user1", "secret1"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("the error quotes a credential: %v", err)
+		}
+	}
+}
+
+// A redirect that stays on the declared host is ordinary and must still work.
+func TestARedirectOnTheSameHostIsFollowed(t *testing.T) {
+	var upstream *httptest.Server
+	upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/moved" {
+			http.Redirect(w, r, upstream.URL+"/moved", http.StatusTemporaryRedirect)
+			return
+		}
+		_, _ = w.Write([]byte(`{"token":"tok-abc"}`))
+	}))
+	defer upstream.Close()
+
+	client := NewClient(upstream.URL)
+	client.http = upstream.Client()
+
+	token, err := client.Token(context.Background(), authSpec(), authInputs())
+	if err != nil {
+		t.Fatalf("a same-host redirect was refused: %v", err)
+	}
+	if token != "tok-abc" {
+		t.Errorf("token = %q, want tok-abc", token)
+	}
+}
+
+// A POST must carry the token under the name the FILE declares.
+//
+// `upstream.auth.token.name` is the whole reason that key exists: a second
+// upstream spelling it "api_key" or "apikey" would silently authenticate as
+// nobody if the engine kept its own spelling.
+func TestPostCarriesTheTokenUnderTheDeclaredName(t *testing.T) {
+	var gotQuery url.Values
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v9/mint-a-token" {
+			_, _ = w.Write([]byte(`{"token":"tok-abc"}`))
+			return
+		}
+		gotQuery = r.URL.Query()
+		_, _ = w.Write([]byte(`{"records":[]}`))
+	}))
+	defer upstream.Close()
+
+	auth := authSpec()
+	auth.Token.Name = "api_key"
+
+	client := NewClient(upstream.URL)
+	client.http = upstream.Client()
+	token, err := client.Token(context.Background(), auth, authInputs())
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+
+	if _, err := client.fetchPost(context.Background(), "/data", []byte(`{}`), token); err != nil {
+		t.Fatalf("fetchPost: %v", err)
+	}
+	if got := gotQuery.Get("api_key"); got != "tok-abc" {
+		t.Errorf("the token was not sent as api_key; query was %v", gotQuery)
+	}
+	if gotQuery.Has("token") {
+		t.Error("the token was also sent under the engine's own spelling")
+	}
 }

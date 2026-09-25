@@ -75,10 +75,23 @@ type Input struct {
 // Upstream is the one service this pipeline calls, how it authenticates, how
 // its failures are classified, and the limits every call is held to.
 type Upstream struct {
-	BaseURL string      `yaml:"baseUrl"`
-	Auth    Auth        `yaml:"auth"`
-	Errors  []ErrorRule `yaml:"errors"`
-	Guards  Guards      `yaml:"guards"`
+	BaseURL string `yaml:"baseUrl"`
+
+	// AllowCleartext permits an http:// upstream that is not loopback.
+	//
+	// Off by default, because the credential exchange and every token after
+	// it travel over this address. It exists because some upstreams offer no
+	// TLS at all -- Agmarknet answers on neither 443 nor its own port over
+	// https, measured -- and a rule that makes a real integration impossible
+	// gets worked around rather than obeyed.
+	//
+	// Setting it is a DELIBERATE, reviewable decision recorded in the
+	// pipeline file, not an accident of an unset variable, and every run logs
+	// a warning while it is on.
+	AllowCleartext bool        `yaml:"allowCleartext,omitempty"`
+	Auth           Auth        `yaml:"auth"`
+	Errors         []ErrorRule `yaml:"errors"`
+	Guards         Guards      `yaml:"guards"`
 }
 
 // ErrorRule classifies one upstream failure. Classification, not cosmetics:

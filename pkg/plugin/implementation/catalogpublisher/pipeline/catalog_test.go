@@ -806,3 +806,33 @@ func TestCatalogueNamesThatCannotBecomeFilesAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// Two groups whose names differ only in case are ONE file on macOS and
+// Windows. Left uncaught, the second overwrites the first on disk and the
+// network gets one catalogue published under two ids.
+func TestGroupsDifferingOnlyInCaseAreRefused(t *testing.T) {
+	records := []map[string]any{
+		{"region": "mh", "id": 1},
+		{"region": "MH", "id": 2},
+	}
+	catalog := Catalog{
+		GroupBy:  "region",
+		Order:    Order{By: "id"},
+		Chunk:    Chunk{Budget: 10, Cost: "1", Slug: "${region}"},
+		Identity: Identity{CatalogID: "catalog:example:${slug}"},
+		Render:   Render{Mapping: "mappings/catalog.yaml"},
+	}
+
+	cache, err := newExprCache()
+	if err != nil {
+		t.Fatalf("newExprCache: %v", err)
+	}
+	_, _, err = buildCatalogues(context.Background(), catalog, records,
+		newRunContext(map[string]string{}, "tok"), cache, &echoMapper{}, "http://mappings.test")
+	if err == nil {
+		t.Fatal("two groups differing only in case were both built; one overwrites the other on disk")
+	}
+	if !strings.Contains(err.Error(), "case") {
+		t.Errorf("error %q does not explain that the collision is a case one", err)
+	}
+}

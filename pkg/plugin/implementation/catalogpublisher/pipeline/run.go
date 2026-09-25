@@ -282,7 +282,16 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		// The provider's own error classification rides with the client, so
 		// what counts as 'nothing here' versus an outage comes from the file
 		// rather than from a string this engine happens to know.
-		client = NewClient(resolved[inputBaseURL]).WithErrorRules(spec.Upstream.Errors)
+		if spec.Upstream.AllowCleartext {
+			// Every run, not once at startup: this is a standing exposure,
+			// and a warning nobody sees again after deployment is no warning.
+			log.WarnContext(ctx, "publish pipeline: upstream.allowCleartext is set — "+
+				"credentials and the token travel unencrypted to this upstream",
+				"upstream", resolved[inputBaseURL])
+		}
+		client = NewClient(resolved[inputBaseURL]).
+			WithErrorRules(spec.Upstream.Errors).
+			WithCleartextAllowed(spec.Upstream.AllowCleartext)
 		token, err := client.Token(ctx, spec.Upstream.Auth, rc)
 		if err != nil {
 			return fmt.Errorf("exchanging credentials: %w", err)
