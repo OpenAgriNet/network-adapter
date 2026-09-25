@@ -11,6 +11,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -296,6 +297,14 @@ func TestARedirectDoesNotCarryCredentialsToAnotherHost(t *testing.T) {
 	}
 	if reachedElsewhere {
 		t.Error("the credentials were re-sent to the redirect target")
+	}
+	// The reason has to survive: reported as "could not be reached", an
+	// operator chases a network fault that is not there.
+	if !errors.Is(err, ErrRedirectRefused) {
+		t.Errorf("the refusal reason was lost; error was %v", err)
+	}
+	if strings.Contains(err.Error(), "could not be reached") {
+		t.Errorf("a refused redirect was reported as unreachable: %v", err)
 	}
 	for _, secret := range []string{"user1", "secret1"} {
 		if strings.Contains(err.Error(), secret) {

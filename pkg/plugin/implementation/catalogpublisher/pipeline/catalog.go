@@ -143,6 +143,16 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 			// and publish one catalogue under two ids.
 			folded := strings.ToLower(catalogue.Slug)
 			if previous, taken := named[folded]; taken {
+				// The two mistakes look identical from here and are fixed in
+				// different places, so the message has to say which one it is:
+				// an exact repeat is a chunk template that ignores the chunk
+				// index, while a folded one is two group names.
+				if previous == catalogue.Slug {
+					return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q again; "+
+						"catalog.chunk.slug must include the chunk index, or every chunk of a split "+
+						"group is one catalogId and one file",
+						key, index+1, catalogue.Slug)
+				}
 				return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q, which collides with %q; "+
 					"they differ only in case and are one file on a case-insensitive filesystem",
 					key, index+1, catalogue.Slug, previous)

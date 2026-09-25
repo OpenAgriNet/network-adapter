@@ -88,9 +88,24 @@ func (r *stepRunner) runSteps(ctx context.Context) ([]map[string]any, error) {
 			"id", step.ID, "uses", step.Uses)
 
 		began := time.Now()
-		output, err := r.runStep(ctx, step)
+		result, err := r.runStep(ctx, step)
 		if err != nil {
 			return nil, fmt.Errorf("step %q: %w", step.ID, err)
+		}
+		output := result.value
+
+		// A passed-through value belongs to an EARLIER step. It flows on, so
+		// the next implicit consumer still has a collection, but nothing here
+		// may attribute it to this one: binding it to this step's `out:` makes
+		// ${enriched} resolve to un-enriched data, and counting it makes a
+		// step that never ran look like one that produced records.
+		if result.passedThrough {
+			r.log.InfoContext(ctx, "pipeline step: skipped",
+				"step", fmt.Sprintf("%d/%d", i+1, len(r.spec.Pipeline)),
+				"id", step.ID, "when", step.When)
+			r.lastOutput = output
+			last = output
+			continue
 		}
 
 		produced, _ := asRecords(output)
@@ -121,20 +136,29 @@ func (r *stepRunner) runSteps(ctx context.Context) ([]map[string]any, error) {
 	return records, nil
 }
 
+// stepResult is what one step produced, and whether the step produced it.
+type stepResult struct {
+	value any
+
+	// passedThrough marks a value the step did not produce: it was skipped
+	// with no `else:`, so this is the previous step's collection flowing past.
+	passedThrough bool
+}
+
 // runStep applies one step's control flow -- the conditional, the loop -- and
 // dispatches the primitive underneath.
-func (r *stepRunner) runStep(ctx context.Context, step Step) (any, error) {
+func (r *stepRunner) runStep(ctx context.Context, step Step) (stepResult, error) {
 	// A step's `when:` decides whether it runs at all; `else: const:` supplies
 	// what its output is when it does not.
 	if step.When != "" {
 		run, err := r.condition(step.When)
 		if err != nil {
-			return nil, err
+			return stepResult{}, err
 		}
 		if !run {
 			value, err := r.elseValue(step)
 			if err != nil {
-				return nil, err
+				return stepResult{}, err
 			}
 			// A step skipped with no `else:` is a NO-OP, not a step that
 			// produced nothing: the collection flows past it untouched. The
@@ -142,24 +166,26 @@ func (r *stepRunner) runStep(ctx context.Context, step Step) (any, error) {
 			// with "no step before it produced one", which describes the
 			// runner's bookkeeping rather than anything the file did.
 			if value == nil && strings.TrimSpace(step.Else.Const) == "" {
-				return r.lastOutput, nil
+				return stepResult{value: r.lastOutput, passedThrough: true}, nil
 			}
-			return value, nil
+			// An `else:` IS this step's output: the file declared what the
+			// step produces when it does not run.
+			return stepResult{value: value}, nil
 		}
 	}
 
 	output, err := r.dispatch(ctx, step)
 	if err != nil {
-		return nil, err
+		return stepResult{}, err
 	}
 
 	if step.FailWhenEmpty != "" && isEmpty(output) {
 		// Not a warning. An empty collection walks cleanly through every
 		// later step and produces a well-formed, zero-error, empty result --
 		// a run that reads as "there is nothing to publish" and exits zero.
-		return nil, fmt.Errorf("%s", step.FailWhenEmpty)
+		return stepResult{}, fmt.Errorf("%s", step.FailWhenEmpty)
 	}
-	return output, nil
+	return stepResult{value: output}, nil
 }
 
 // dispatch runs the primitive, looping it when the step declares forEach.

@@ -117,10 +117,37 @@ func refuseOffHostRedirect(req *http.Request, via []*http.Request) error {
 	if strings.EqualFold(req.URL.Host, from.Host) && !isSchemeDowngrade(from.Scheme, req.URL.Scheme) {
 		return nil
 	}
-	// The host is named, the URL is not: a redirect target on the data path
-	// would carry the token in its query string.
-	return fmt.Errorf("the upstream redirected to another host (%s); "+
-		"the request carries a credential and was not followed", req.URL.Host)
+	// The host and scheme are named, the URL is not: a redirect target on the
+	// data path would carry the token in its query string.
+	return fmt.Errorf("%w to %s://%s", ErrRedirectRefused, req.URL.Scheme, req.URL.Host)
+}
+
+// ErrRedirectRefused is the reason a call failed when the upstream redirected
+// somewhere this client will not carry a credential.
+//
+// It is a sentinel so the reason survives the deliberately opaque wrapping
+// below: without it a refused redirect reads as "could not be reached", and an
+// operator chases a network fault that is not there.
+var ErrRedirectRefused = errors.New("the upstream redirected off-host and was not followed, " +
+	"because every request here carries a credential")
+
+// unreachable is the error a failed round trip becomes.
+//
+// Go's transport errors quote the whole URL, and for this class of upstream
+// the URL is where the token rides -- so a transport failure is reported
+// WITHOUT its cause. A refused redirect is our own error and names only a
+// scheme and a host, so it is passed through.
+func unreachable(call string, err error) error {
+	// Taken out of the *url.Error rather than wrapped through it: that
+	// wrapper's Error() prints the URL, token and all.
+	var wrapped *url.Error
+	if errors.As(err, &wrapped) && errors.Is(wrapped.Err, ErrRedirectRefused) {
+		return fmt.Errorf("%s: %w", call, wrapped.Err)
+	}
+	if errors.Is(err, ErrRedirectRefused) {
+		return fmt.Errorf("%s: %w", call, ErrRedirectRefused)
+	}
+	return fmt.Errorf("%s could not be reached", call)
 }
 
 // isSchemeDowngrade reports an https request being redirected to cleartext.
@@ -216,7 +243,7 @@ func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, 
 	if err != nil {
 		// Not %w: Go's transport errors quote the whole URL, and a token
 		// endpoint's URL is the one place a credential could appear in it.
-		return "", fmt.Errorf("token endpoint could not be reached")
+		return "", unreachable("token endpoint", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -329,7 +356,7 @@ func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]
 
 	resp, err := c.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s could not be reached", urlPath)
+		return nil, unreachable("GET "+urlPath, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -361,7 +388,7 @@ func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []by
 
 	resp, err := c.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("POST %s could not be reached", urlPath)
+		return nil, unreachable("POST "+urlPath, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

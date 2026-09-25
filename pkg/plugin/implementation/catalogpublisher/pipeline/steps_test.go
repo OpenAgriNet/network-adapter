@@ -954,3 +954,36 @@ func TestASkippedStepPassesTheCollectionThrough(t *testing.T) {
 		t.Errorf("got %d records, want 2 -- the skipped step swallowed the collection", len(records))
 	}
 }
+
+// A step skipped with no `else:` must not bind the PREVIOUS step's collection
+// to its own `out:` name.
+//
+// The pass-through itself is deliberate: the collection flows past a skipped
+// step so the next implicit consumer still has one. But binding it to the
+// skipped step's name makes ${enriched} resolve to un-enriched data, and every
+// later step reads as if the skipped one had run.
+func TestASkippedStepDoesNotClaimThePreviousStepsOutput(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "fetch", Uses: usesHTTPGet, Out: "rows",
+			With: With{Path: "/things", Mapping: "mappings/things.yaml"}},
+		// Never runs, and declares no else.
+		{ID: "enrich", Uses: usesDedupe, Out: "enriched",
+			When: "1 = 2", With: With{Key: "id"}},
+	}}
+	runner, _ := testRunner(t, spec, `[{"id":1},{"id":2}]`)
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	// The pass-through still happened: the run has a collection.
+	if len(records) != 2 {
+		t.Fatalf("the collection did not flow past the skipped step: got %d records", len(records))
+	}
+	if _, bound := runner.rc.outputs["enriched"]; bound {
+		t.Error("a skipped step bound the previous step's collection to its own out: name")
+	}
+	if count, recorded := runner.counters["step:enrich"]; recorded {
+		t.Errorf("a skipped step recorded %d records as its own", count)
+	}
+}

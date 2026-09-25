@@ -246,6 +246,14 @@ func (p *publishSweep) release() {
 // The counter itself is in memory, so a restart does grant a fresh budget.
 // That is the deliberate trade: it needs no migration, and a crash-looping
 // process has a louder problem than three extra attempts.
+//
+// KNOWN LIMITATION: the run log has one column, the timestamp, so a firing
+// marked served here is indistinguishable from one that published. Anyone
+// reading the table to answer "did today's catalogue go out?" gets yes for a
+// day that failed three times. The WARN below is the only record of the
+// difference. Giving the log a status column is the fix, and it needs a
+// migration -- which is exactly what this design was chosen to avoid, so it
+// belongs to whoever next changes that schema for another reason.
 func (p *publishSweep) afterRun(ctx context.Context, capability string, runErr error) error {
 	if capability == "" {
 		return runErr // nothing to key the budget on; report and move on
