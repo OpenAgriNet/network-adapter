@@ -1,0 +1,1059 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "publish.oan/CataloguePipeline/v1",
+  "title": "CataloguePipeline v1",
+  "description": "The contract every publish pipeline file is held to. A provider adding a capability writes a file declaring `schemaRef: {uses: publish.oan/CataloguePipeline/v1}` and is checked against this at load time: a file that does not match is REFUSED at startup, naming the path that is wrong, rather than failing at 00:00 against a live upstream or silently declaring a rule nothing enforces. additionalProperties is false everywhere on purpose -- a misspelled key is the failure this exists to catch. Every `description` below states the failure its rule prevents, so this file is also the documentation; MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml is a complete working example.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaRef",
+    "metadata",
+    "schedule",
+    "inputs",
+    "pipeline",
+    "catalog",
+    "publish"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "upstream"
+        ]
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "required": [
+              "baseUrl"
+            ]
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "description": "An upstream's address comes from inputs.baseUrl."
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "upstream"
+        ],
+        "properties": {
+          "upstream": {
+            "properties": {
+              "auth": {
+                "properties": {
+                  "kind": {
+                    "const": "tokenExchange"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "auth"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "inputs": {
+            "required": [
+              "tokenUser",
+              "tokenSecret"
+            ]
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "description": "A token exchange posts inputs.tokenUser and inputs.tokenSecret."
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "pipeline": {
+            "contains": {
+              "properties": {
+                "uses": {
+                  "enum": [
+                    "http.get",
+                    "http.post"
+                  ]
+                }
+              },
+              "required": [
+                "uses"
+              ]
+            }
+          }
+        },
+        "required": [
+          "pipeline"
+        ]
+      },
+      "then": {
+        "required": [
+          "upstream"
+        ],
+        "description": "An HTTP step calls the upstream; a file with one and no upstream block has nowhere to call."
+      }
+    }
+  ],
+  "properties": {
+    "schemaRef": {
+      "$ref": "#/$defs/schemaRef"
+    },
+    "apiVersion": {
+      "type": "string",
+      "description": "Kubernetes-style identity, kept for familiarity. It must AGREE with schemaRef.uses; the engine refuses a file where the two disagree rather than picking one silently.",
+      "const": "publish.oan/v1"
+    },
+    "kind": {
+      "type": "string",
+      "const": "CataloguePipeline"
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "schedule": {
+      "$ref": "#/$defs/schedule"
+    },
+    "inputs": {
+      "$ref": "#/$defs/inputs"
+    },
+    "upstream": {
+      "$ref": "#/$defs/upstream"
+    },
+    "pipeline": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The steps, in order. An empty pipeline produces an empty collection and a run that reads as 'this provider has nothing', so at least one step is required.",
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    },
+    "catalog": {
+      "$ref": "#/$defs/catalog"
+    },
+    "publish": {
+      "$ref": "#/$defs/publish"
+    }
+  },
+  "$defs": {
+    "schemaRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uses"
+      ],
+      "description": "Which contract this file was written against. A map rather than a bare string so it can gain keys later without every provider's file having to change shape.",
+      "properties": {
+        "uses": {
+          "type": "string",
+          "enum": [
+            "publish.oan/CataloguePipeline/v1"
+          ],
+          "description": "The contract id. The engine resolves it to a schema it embeds; an id it does not carry is refused, naming the ones it does."
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "capability"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Names the catalogue files on disk. Three things must agree on it: what writes them, what sweeps the previous run's, and the glob the publish step sends from."
+        },
+        "capability": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$",
+          "description": "The registry's capability code, e.g. openagrinet:MandiPrice. This is the run's identity: the run log and the output directory are keyed on it, and the engine refuses if the collector claims a different one."
+        },
+        "provider": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cron",
+        "timezone"
+      ],
+      "properties": {
+        "cron": {
+          "type": "string",
+          "pattern": "^\\s*\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s*$",
+          "description": "Standard FIVE-field cron: minute hour day-of-month month day-of-week. The six-field seconds variant is refused, because the two are indistinguishable by shape and a pasted six-field expression would run hourly while looking daily."
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "description": "An IANA zone, e.g. Asia/Kolkata. The cron is resolved HERE, not on the host's clock: a UTC host reading a midnight-IST schedule off its own clock fires on the wrong calendar day and asks the upstream for yesterday."
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "description": "The flag/env surface, resolved flag > env > default. A pipeline with an upstream must declare baseUrl, and one whose upstream exchanges a token must also declare tokenUser and tokenSecret (see the root allOf): the engine reads them by name, so a file spelling them differently fails at load instead of at the token exchange. A pipeline with no upstream needs none of them.",
+      "additionalProperties": {
+        "$ref": "#/$defs/input"
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "flag": {
+          "type": "string"
+        },
+        "env": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "string",
+            "list",
+            "date"
+          ],
+          "description": "Anything else is refused rather than passed through: passing an unrecognised type through verbatim is how the literal word 'today' once reached an upstream as a date."
+        },
+        "format": {
+          "type": "string",
+          "description": "For type: date -- the layout the UPSTREAM reads, e.g. dd-MM-yyyy. Not ISO unless the upstream says so."
+        },
+        "default": {},
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "secret": {
+          "type": "boolean",
+          "description": "Marks a credential. A secret input is redacted wherever inputs are printed; it never appears in a log line or an error."
+        }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseUrl",
+        "auth"
+      ],
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auth": {
+          "$ref": "#/$defs/auth"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/errorRule"
+          },
+          "description": "How this upstream's failures are classified. Classification, not cosmetics: recording 'no rows' as a failure once turned 27 of 36 quiet regions into 27 reported outages."
+        },
+        "guards": {
+          "$ref": "#/$defs/guards"
+        },
+        "allowCleartext": {
+          "type": "boolean",
+          "description": "Permits an http:// upstream that is not loopback. Off by default, because the credential exchange and every token after it travel over this address. It exists because some upstreams offer no TLS at all, and a rule that makes a real integration impossible gets worked around rather than obeyed. Setting it is a deliberate decision recorded in this file and warned about on every run -- not an accident of an unset variable."
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "tokenExchange",
+            "none"
+          ],
+          "description": "tokenExchange posts credentials and receives a token. none is for an upstream that needs no credential."
+        },
+        "request": {
+          "$ref": "#/$defs/authRequest"
+        },
+        "token": {
+          "$ref": "#/$defs/authToken"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tokenExchange"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "request",
+              "token"
+            ],
+            "description": "A tokenExchange with no request has no endpoint to call, and with no token has nowhere to read the token from."
+          }
+        }
+      ]
+    },
+    "authRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "POST",
+            "GET"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The token endpoint, relative to upstream.baseUrl. Declared here rather than in Go so a second provider authenticates without an engine change."
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The JSON the token endpoint expects. Values are ${inputs.*} references -- the credentials themselves are never in this file, only the NAME of the input that holds them."
+        }
+      }
+    },
+    "authToken": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at"
+      ],
+      "properties": {
+        "at": {
+          "type": "string",
+          "pattern": "^\\$\\.",
+          "description": "Where the token sits in the response, as a path from the root: $.token, $.data.access_token. A path rather than an expression on purpose -- this runs on a response carrying a live credential, and a path cannot do anything but select."
+        },
+        "carriedAs": {
+          "type": "string",
+          "enum": [
+            "query"
+          ],
+          "description": "How the token rides on later requests. Only query is honoured today: the token is handed to each step's mapping, and the MAPPING decides placement. Accepting header here would let this field and the mappings disagree silently."
+        },
+        "name": {
+          "type": "string"
+        },
+        "reexchangeOn": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "description": "Statuses that mean the token died, e.g. [401, 403]. Re-exchanged on these rather than refreshed on a timer, because this class of upstream returns no expiry."
+        }
+      }
+    },
+    "errorRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A rule either MATCHES on when, or is the default catch-all. Never both -- a rule that is both is ambiguous about which branch applies.",
+      "properties": {
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status": {
+              "description": "One status or several.",
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "integer"
+                  }
+                }
+              ]
+            },
+            "bodyContains": {
+              "type": "string"
+            }
+          }
+        },
+        "classify": {
+          "type": "string",
+          "enum": [
+            "emptyResult",
+            "reauth",
+            "transportError"
+          ],
+          "description": "emptyResult means the upstream answered 'nothing here' -- a coverage fact to count and continue past. transportError is an outage. reauth means the token died and is re-exchanged (see auth.token.reexchangeOn). Collapsing emptyResult into transportError is the mistake that once turned 27 of 36 quiet regions into 27 reported outages. NOTE: a step's onError today dispatches on emptyResult and transportError only; reauth is handled by the client, not by a step."
+        },
+        "default": {
+          "type": "string",
+          "enum": [
+            "emptyResult",
+            "reauth",
+            "transportError"
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "when",
+            "classify"
+          ],
+          "not": {
+            "required": [
+              "default"
+            ]
+          }
+        },
+        {
+          "required": [
+            "default"
+          ],
+          "not": {
+            "required": [
+              "when"
+            ]
+          }
+        }
+      ]
+    },
+    "guards": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "responseMustBe": {
+          "type": "string",
+          "enum": [
+            "array",
+            "object"
+          ]
+        },
+        "neverQuoteBodyInErrors": {
+          "type": "boolean",
+          "description": "Not decoration. An upstream that echoes the request back in its error bodies will echo the token with it, and that error is printed to terminals and pasted into tickets."
+        },
+        "maxResponseBytes": {
+          "type": "string"
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "uses"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Names this step in logs and errors. A run is minutes long and mostly silent; this is what tells 'stuck on step 3' from 'merely slow'."
+        },
+        "uses": {
+          "type": "string",
+          "enum": [
+            "http.get",
+            "http.post",
+            "join",
+            "derive",
+            "dedupe",
+            "filter",
+            "transform",
+            "const"
+          ],
+          "description": "The primitive. A name the engine does not implement is REFUSED rather than skipped -- a step that silently does nothing is a rule the file states and nothing performs."
+        },
+        "with": {
+          "$ref": "#/$defs/with"
+        },
+        "out": {
+          "type": "string",
+          "description": "Names this step's output so later steps and the catalog block can reference it as ${name}."
+        },
+        "when": {
+          "type": "string",
+          "description": "A JSONata predicate. ${...} inside it is substituted as a LITERAL, not raw text: raw substitution turns ${inputs.mode} = 'skip' into a comparison against a record field that does not exist, so the rule silently never fires."
+        },
+        "else": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "const": {
+              "type": "string"
+            }
+          },
+          "description": "What this step yields when `when` is false."
+        },
+        "failWhenEmpty": {
+          "type": "string",
+          "description": "A refusal, not a warning, carrying the message an operator reads. An empty collection walks cleanly through every later step and produces a well-formed, zero-error, empty run."
+        },
+        "forEach": {
+          "type": "string",
+          "description": "A ${...} reference to the collection to loop over."
+        },
+        "as": {
+          "type": "string",
+          "description": "Names the loop variable, reachable as ${name.field}."
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1,
+          "description": "Only 1 is honoured, and anything higher is REFUSED rather than silently ignored. The JSONata evaluator this shares is not safe to run in parallel, and a file stating a parallelism that never happens is a lie the reader cannot see."
+        },
+        "onError": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/stepOutcome"
+          },
+          "description": "Keyed by classification (emptyResult, transportError). A failure with no matching entry ABORTS -- a swallowed error is worse than a loud one.",
+          "propertyNames": {
+            "enum": [
+              "emptyResult",
+              "transportError"
+            ]
+          }
+        },
+        "onEmptyOutput": {
+          "$ref": "#/$defs/stepOutcome"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "forEach"
+            ]
+          },
+          "then": {
+            "required": [
+              "as"
+            ],
+            "description": "A loop with no `as` has no name for its variable, so nothing inside it can reference the item."
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "uses": {
+                "enum": [
+                  "http.get",
+                  "http.post"
+                ]
+              }
+            },
+            "required": [
+              "uses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "with": {
+                "required": [
+                  "path",
+                  "mapping"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ],
+            "description": "An HTTP step needs somewhere to call and a mapping to shape the call with."
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "uses": {
+                "const": "dedupe"
+              }
+            },
+            "required": [
+              "uses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "with": {
+                "required": [
+                  "key"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "uses": {
+                "const": "join"
+              }
+            },
+            "required": [
+              "uses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "with": {
+                "required": [
+                  "left",
+                  "right",
+                  "on"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "uses": {
+                "const": "derive"
+              }
+            },
+            "required": [
+              "uses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "with": {
+                "required": [
+                  "field",
+                  "rules"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "uses": {
+                "const": "const"
+              }
+            },
+            "required": [
+              "uses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "with": {
+                "required": [
+                  "records"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ],
+            "description": "A const step with no records would produce an empty collection and a run that reads as 'nothing to publish'."
+          }
+        }
+      ]
+    },
+    "stepOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "record": {
+          "type": "string",
+          "description": "The counter this outcome is recorded in. The file names it; the engine only counts."
+        },
+        "continue": {
+          "type": "boolean",
+          "description": "Whether the loop carries on. This is what keeps one region's empty answer from ending a thirty-six region collection."
+        }
+      }
+    },
+    "with": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A step's parameters. The union of what every primitive takes, because steps are heterogeneous; which keys are required depends on `uses` (see the conditionals on step).",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "mapping": {
+          "type": "string",
+          "description": "Relative to the mappings/ directory beside the pipeline file."
+        },
+        "local": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Values handed to the mapping, typically including ${auth.token}. The mapping decides where each one lands in the request."
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST"
+          ]
+        },
+        "contentType": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "when": {
+          "type": "string"
+        },
+        "left": {
+          "type": "string"
+        },
+        "right": {
+          "type": "string"
+        },
+        "on": {
+          "type": "string",
+          "description": "The key both sides are matched on."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "left"
+          ],
+          "description": "Only a left join is implemented. A left row with no match is KEPT: it is a real record whose extra fields are merely unknown."
+        },
+        "carry": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Fields carried across from the right side."
+        },
+        "field": {
+          "type": "string",
+          "description": "The field a derive computes."
+        },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Ordered; the FIRST match wins, so a file reads top to bottom. A rule with no `when` is the default and must come last -- a record matching no rule is an error, not an unset field.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "when": {
+                "type": "string"
+              },
+              "value": {}
+            },
+            "required": [
+              "value"
+            ]
+          }
+        },
+        "then": {
+          "type": "array",
+          "description": "Follow-up edits. `clear` removes fields, which is how a value that cannot be believed is prevented from being published as though it could.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "when": {
+                "type": "string"
+              },
+              "clear": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "key": {
+          "type": "string",
+          "description": "The key a dedupe collapses on; the first occurrence is kept."
+        },
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object"
+          },
+          "description": "A const step's output, written in the file. How a pipeline with no upstream -- a catalogue whose content is fixed -- still hands the catalog block a collection."
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "groupBy",
+        "chunk",
+        "identity",
+        "render"
+      ],
+      "properties": {
+        "groupBy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The field records are grouped by -- one catalogue per group. A group left with nothing publishable produces NO catalogue rather than an empty one: publishing an empty catalogue retires that group's resources from the network on the next MERGE."
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "when",
+              "reason"
+            ],
+            "properties": {
+              "when": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "description": "Stated, not implied: an excluded record is counted under this reason so somebody can find out which and why."
+              }
+            }
+          }
+        },
+        "annotate": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "when",
+              "as"
+            ],
+            "properties": {
+              "when": {
+                "type": "string"
+              },
+              "as": {
+                "type": "string",
+                "description": "The boolean field set on matching records. They stay in the catalogue."
+              }
+            }
+          }
+        },
+        "order": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "by"
+          ],
+          "description": "Makes a run read the same way twice, and fixes which records land in which chunk.",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        },
+        "chunk": {
+          "$ref": "#/$defs/chunk"
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "catalogId"
+          ],
+          "properties": {
+            "catalogId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The network-facing id template, e.g. catalog:example:${slug}. A catalogue with no id cannot be published."
+            },
+            "resourceId": {
+              "type": "string"
+            }
+          }
+        },
+        "render": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mapping"
+          ],
+          "properties": {
+            "mapping": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The JSONata mapping that turns a chunk into a catalogue document."
+            },
+            "local": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "budget",
+        "cost",
+        "slug"
+      ],
+      "description": "Splits a group so no catalogue exceeds what the far end will index.",
+      "properties": {
+        "budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The cap per catalogue. For Discovery this is 256 geometries, counted CUMULATIVELY per catalogId -- a catalogue over it indexes PARTIAL, meaning it goes in with resources missing and nothing downstream says so."
+        },
+        "cost": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What one record costs against the budget, as JSONata. It MUST agree with what the render actually emits -- if it counts records the render does not emit as geometries, a catalogue silently goes over the cap."
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Names each chunk, e.g. ${group}${chunkIndex > 1 ? '-' & chunkIndex : ''}. Chunk 1 keeps the bare group name so a group that stops splitting does not orphan its first catalogue."
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "accept"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "accept": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "The statuses that count as success. ACCEPTED is the only one publishing treats as such."
+        },
+        "treatAsFailure": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Must include PARTIAL where it lists anything. A PARTIAL read as success is the catalogue indexing with resources missing -- 273 markets published as 128 findable ones, with nothing downstream saying so."
+        },
+        "refuseWhen": {
+          "type": "string",
+          "pattern": "^collection\\.[A-Za-z][A-Za-z0-9_]*\\s*>\\s*0$",
+          "description": "The one refusal form understood: collection.<counter> > 0, where <counter> is a name this file's own steps record into. A partial collection must never publish as though it were whole."
+        },
+        "retireOld": {
+          "$ref": "#/$defs/retireOld"
+        }
+      }
+    },
+    "retireOld": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "description": "Deactivates a superseded catalogue, by posting a tombstone. Typically a ONE-TIME migration, so `enabled` points at an input that defaults to false.",
+      "properties": {
+        "enabled": {
+          "type": "string",
+          "description": "A ${inputs.*} reference. The publish step REFUSES an enable flag it cannot resolve: reading an unresolvable flag as 'off' would silently skip a retirement an operator asked for."
+        },
+        "catalogId": {
+          "type": "string"
+        },
+        "descriptorName": {
+          "type": "string"
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "updateMode": {
+          "type": "string",
+          "enum": [
+            "MERGE",
+            "FULL"
+          ]
+        },
+        "catalogType": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,31 +1,33 @@
 package sink
 
-// sink.go — DiscoverySink: crawlmanager.Sink backed by an HTTP push to a
-// Discovery service. Batches the resolved catalog if it exceeds MaxDocBytes,
-// pushes each batch, and rolls the outcomes up into one SinkOutcome.
+// sink.go — DiscoverySink: crawlmanager.Sink backed by an HTTP publish to the
+// provider adapter's /publish. Batches the resolved catalog if it exceeds
+// MaxDocBytes, publishes each batch, and rolls the outcomes up into one
+// SinkOutcome. Publish is the same client for the scheduled publish pipelines.
 
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 
 	"github.com/beckn/catalog-core/pkg/catalog"
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
 	"github.com/google/uuid"
 )
 
-// DiscoverySink pushes a resolved catalog's current content to a Discovery
-// endpoint as one or more FULL-mode /push requests.
+// DiscoverySink publishes a resolved catalog's current content to the
+// provider adapter's /publish as one or more MERGE-mode catalog/publish
+// requests.
 //
-// UpdateMode is always FULL: unlike the catalog-crawler prototype's runner,
-// crawlmanager never tracks an incremental Changeset (upserts/removals since
-// a cursor) -- catalog.Resolve always folds a catalog's COMPLETE current
-// content, so a FULL replace is the only mode that matches what SyncNext
-// actually resolved. A batch after the first still omits offers (Discovery's
-// existing MERGE semantics for the spillover batches of one push), even
-// though it's still conceptually "the same full push" split across requests.
+// UpdateMode is MERGE. catalog.Resolve folds a catalog's COMPLETE current
+// content, which FULL would match, but /publish rejects FULL as unsupported,
+// so every batch is a MERGE: a resource a source stops listing is no longer
+// removed by a crawl. A batch after the first still omits offers.
 type DiscoverySink struct {
-	Endpoint      string // Discovery's /push URL
+	Endpoint      string // the provider adapter's /publish URL
 	ParticipantID string // this deployment's bppId
 	BppURI        string // this deployment's bppUri
 	MaxDocBytes   int64  // 0 => no batching
@@ -47,7 +49,7 @@ func (d *DiscoverySink) now() time.Time {
 
 // Send implements crawlmanager.Sink.
 func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, content []byte) (crawlmanager.SinkOutcome, error) {
-	batches, err := BatchCatalog(content, d.MaxDocBytes, UpdateModeFull)
+	batches, err := BatchCatalog(content, d.MaxDocBytes, UpdateModeMerge)
 	if err != nil {
 		return crawlmanager.SinkOutcome{}, fmt.Errorf("catalogcrawler: batching %s: %w", entry.CatalogID, err)
 	}
@@ -78,4 +80,25 @@ func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, co
 
 	accepted, reason := Rollup(outcomes)
 	return crawlmanager.SinkOutcome{Accepted: accepted, Reason: reason}, nil
+}
+
+var _ pipeline.Publisher = (*DiscoverySink)(nil)
+
+// Publish implements pipeline.Publisher: a pipeline-built catalog/publish body
+// goes VERBATIM to baseURL's /publish through the same Client.Push the crawl
+// path uses, and the batch outcome maps onto the pipeline's.
+func (d *DiscoverySink) Publish(ctx context.Context, baseURL string, body []byte) pipeline.Outcome {
+	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/publish"
+	out, err := d.Client.Push(ctx, endpoint, body)
+	switch {
+	case err != nil:
+		return pipeline.Outcome{Status: pipeline.StatusTransportError, Reason: err.Error()}
+	case out.Acked:
+		return pipeline.Outcome{Status: pipeline.StatusPublished}
+	case out.HTTPStatus == 200:
+		return pipeline.Outcome{Status: pipeline.StatusRejected, Reason: out.Reason}
+	default:
+		return pipeline.Outcome{Status: pipeline.StatusTransportError,
+			Reason: fmt.Sprintf("HTTP %d: %s", out.HTTPStatus, out.Reason)}
+	}
 }

@@ -1,11 +1,14 @@
-// Package sink implements crawlmanager.Sink: an HTTP push to a Discovery
-// service. Ported from the catalog-crawler prototype's own publish package
+// Package sink implements crawlmanager.Sink: an HTTP publish to the provider
+// adapter's /publish, which signs and forwards to discovery. It is also the
+// pipeline.Publisher the scheduled publish pipelines go through, so there is
+// one way onto the network.
+//
+// Ported from the catalog-crawler prototype's own publish package
 // (request.go/batch.go/client.go), adapted to crawlmanager's simpler
-// Send(ctx, entry, content) contract -- in particular, UpdateMode is always
-// FULL here: crawlmanager always resolves a catalog's complete current
-// content (via catalog.Resolve) rather than tracking an incremental
-// Changeset the way the prototype's runner did, so there is no MERGE-vs-FULL
-// decision left to make.
+// Send(ctx, entry, content) contract. It first pushed to a Discovery
+// service's /push with UpdateMode FULL -- crawlmanager always resolves a
+// catalog's complete current content (via catalog.Resolve), which FULL
+// matches. /publish rejects FULL as unsupported, so it now publishes MERGE.
 package sink
 
 import (
@@ -37,8 +40,8 @@ type PushMeta struct {
 	SchemaContext []string
 }
 
-// BuildPushBody builds the Discovery /push request body: a Beckn
-// catalog/push context plus a CatalogPublishAction message
+// BuildPushBody builds the /publish request body: a Beckn catalog/publish
+// context plus a CatalogPublishAction message
 // (message.catalogs, min 1) and a matching message.publishDirectives entry
 // carrying catalogType, updateMode, and visibleTo.
 func BuildPushBody(meta PushMeta, catalog []byte) ([]byte, error) {
@@ -57,9 +60,14 @@ func BuildPushBody(meta PushMeta, catalog []byte) ([]byte, error) {
 	if len(meta.VisibleTo) > 0 {
 		directive["visibleTo"] = meta.VisibleTo
 	}
+	// /publish reads a catalogue's schema types from its directive; the
+	// context.schemaContext below is kept for anything still reading it there.
+	if len(meta.SchemaContext) > 0 {
+		directive["schemaTypes"] = meta.SchemaContext
+	}
 
 	context := map[string]any{
-		"action":        "catalog/push",
+		"action":        "catalog/publish",
 		"bppId":         meta.ParticipantID,
 		"bppUri":        meta.BppURI,
 		"messageId":     meta.MessageID,

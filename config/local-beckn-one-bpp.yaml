@@ -57,9 +57,121 @@ plugins:
   #   config:
   #     dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
   #     networks: "example.network.production"
-  #     discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
+  #     # MIGRATION: this used to be discovery's /push. It now names the
+  #     # PROVIDER ADAPTER's /publish, which signs and forwards. A config
+  #     # still ending in /push is refused at startup.
+  #     discoveryPushUrl: "https://provider-adapter.example.org:9200/publish"
   #     participantId: "bpp.example.org"
   #     bppUri: "https://bpp.example.org"
+
+  # --- Mandi variant of the block above (see dev_docs/plan-crawler-mandi/) ---
+  #
+  # Differs from the generic example in two ways, both load-bearing:
+  #
+  # 1. registry is sunbirdRegistry, not dediregistry -- matching
+  #    config/provider-adapter.yaml, the config that already serves
+  #    openagrinet:MandiPrice today. sunbirdRegistry does NOT implement
+  #    RegistryMetadataLookup (verified: no QueryByNetwork on it), and
+  #    catalogcrawler.go refuses to start if `networks` is set without a
+  #    registry that implements it. So `networks` is left OUT here on
+  #    purpose -- staticIndexUrls is the only discovery mode SunbirdRC
+  #    deployments can use with this crawler today.
+  #
+  # 2. Pipeline catalogues go through the SAME sink as crawled ones. The
+  #    mandi catalogue is built locally by the pipeline and published by the
+  #    crawler's DiscoverySink client to the provider adapter's /publish --
+  #    the address derived from discoveryPushUrl below. There is no separate
+  #    publish target and no MANDI_PUBLISH_URL: one crawler, one place
+  #    catalogues leave by.
+  #
+  # 3. Publish pipelines are turned on with publishPipelines: "true".
+  #
+  #    MIGRATION: publishBindingKeys is RETIRED. It used to list which
+  #    capabilities publish; a config still setting it is refused at startup
+  #    rather than ignored, because a deployment relying on it to LIMIT what
+  #    publishes would otherwise start publishing more.
+  #
+  #    The REGISTRY is now the only list. Each tick the crawler asks
+  #    discovery which binding keys it knows, looks each one up in SunbirdRC,
+  #    and publishes the ones whose record carries an action == "publish".
+  #    That action's `mappings` field names the pipeline YAML by its
+  #    repo-relative path. A capability with no publish action has no
+  #    pipeline, which is a fact rather than a misconfiguration -- every
+  #    other capability on this network is select-only.
+  #
+  #    So adding capability #2 is a registry edit plus a folder: give its
+  #    ProviderSchema record a publish action naming its own pipeline YAML,
+  #    and put that YAML in a */cataloguepublish-*/ folder under
+  #    pkg/plugin/implementation. The binary embeds every such folder. No
+  #    config list, no import per capability, no Go per capability.
+  #
+  #    Deriving the path from the capability's name instead would mean
+  #    guessing a filesystem layout and running a pipeline the registry
+  #    never sanctioned.
+  #
+  # registry:
+  #   id: sunbirdRegistry
+  #   config:
+  #     # Use a hostname the ADAPTER can resolve, never localhost: inside a
+  #     # container localhost is the adapter itself. The /api/v1 base path is
+  #     # required -- without it every lookup 404s on /ProviderSchema/search.
+  #     url: http://registry:8081/api/v1
+  #     entity: Participant
+  #     providerEntity: ProviderSchema
+  #     timeout: 2
+  #     retry_max: 1
+  #     retry_wait_min: 100ms
+  #     retry_wait_max: 500ms
+  # cache:
+  #   id: cache
+  #   config:
+  #     addr: redis:6379
+  # crawler:
+  #   id: catalogcrawler
+  #   config:
+  #     dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
+  #     staticIndexUrls: "https://mandi.example.org/catalog/index/becknCatalogs.index.json"
+  #     discoveryPushUrl: "https://discovery.example.org/beckn/catalog/publish"  # crawl path only
+  #     participantId: "agmarknet"
+  #     bppUri: "https://bpp.example.org"
+  #
+  #     # --- the scheduled publish pipelines ---
+  #
+  #     # Setting this is what turns publishing on. Off by default: a
+  #     # crawler deployment that never asked to publish must not start
+  #     # doing so because a registry it reads gained a publish action.
+  #     publishPipelines: "true"
+  #
+  #     # How often to CHECK whether a pipeline is due -- not how often one
+  #     # runs. The cadence itself lives in each pipeline's YAML as a standard
+  #     # cron expression ("0 0 * * *", Asia/Kolkata), because it belongs to
+  #     # the pipeline rather than to this deployment. Default 300s.
+  #     publishTickIntervalSeconds: "300"
+  #
+  #     # Reaching the network is a SEPARATE decision from turning the
+  #     # schedule on, and defaults to off. Left false, each run still
+  #     # collects and builds catalogues -- observable and reversible --
+  #     # and simply does not send them.
+  #     publishEnabled: "false"
+  #
+  #     # Optional. Keeps each run's catalogues on disk for inspection;
+  #     # empty means a temporary directory the run cleans up. Each pipeline
+  #     # gets its OWN subdirectory beneath it, named for the capability --
+  #     # two pipelines sharing one directory would delete and republish each
+  #     # other's catalogues.
+  #     publishCatalogOutputDir: "/var/lib/oan/catalogs"
+  #
+  #     # The registry plugin above must implement ProviderRecordLookup
+  #     # (sunbirdRegistry does; dediregistry does not). Without it there is
+  #     # no way to learn whether this capability may publish, so the
+  #     # crawler refuses to start rather than publishing unsanctioned.
+  #
+  #     # The pipeline also needs its own inputs from the environment:
+  #     # SUNBIRD_REGISTRY_URL, MANDI_API_URI, MANDI_TOKEN_USER,
+  #     # MANDI_TOKEN_SECRET, MANDI_PARTICIPANT_ID. (MANDI_PUBLISH_URL is
+  #     # gone: the crawler's own publish address is used.)
+  #     # See pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/
+  #     # mandi-price-agmarket.yaml for the full list.
 modules:
   - name: bppTxnReceiver
     path: /bpp/receiver/

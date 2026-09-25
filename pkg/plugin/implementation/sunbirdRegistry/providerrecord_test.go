@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -650,5 +651,56 @@ func TestNewAppliesTheDefaultResponseLimit(t *testing.T) {
 	if client.maxResponseBytes != DefaultMaxResponseBytes {
 		t.Errorf("maxResponseBytes = %d, want the %d default rather than unbounded",
 			client.maxResponseBytes, DefaultMaxResponseBytes)
+	}
+}
+
+// --- listing ----------------------------------------------------------------
+
+// ProviderBindingKeys enumerates every binding the registry holds, with an
+// empty filter, and drops rows that carry no key rather than returning "".
+func TestProviderBindingKeysListsEveryBinding(t *testing.T) {
+	t.Parallel()
+
+	var sawBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/"+DefaultProviderEntity+"/") {
+			t.Errorf("listing searched %q, want the %s entity", r.URL.Path, DefaultProviderEntity)
+		}
+		body, _ := io.ReadAll(r.Body)
+		sawBody = string(body)
+
+		second := bindingRecord()
+		second.BindingKey = "agmarknet-live|openagrinet:MandiPrice"
+		blank := bindingRecord()
+		blank.BindingKey = ""
+		fmt.Fprint(w, envelopeJSON(t, bindingRecord(), second, blank))
+	}))
+	defer srv.Close()
+
+	keys, err := newTestClient(t, srv.URL, nil).ProviderBindingKeys(context.Background())
+	if err != nil {
+		t.Fatalf("ProviderBindingKeys: %v", err)
+	}
+	want := []string{testBindingKey, "agmarknet-live|openagrinet:MandiPrice"}
+	if fmt.Sprint(keys) != fmt.Sprint(want) {
+		t.Errorf("keys = %v, want %v", keys, want)
+	}
+	if !strings.Contains(sawBody, `"filters":{}`) {
+		t.Errorf("request body = %s, want an empty filter object (null matches nothing on some backends)", sawBody)
+	}
+}
+
+// A registry that cannot be consulted is an error, never an empty list: an
+// empty list reads as "nothing publishes" and a tick would quietly stand down.
+func TestProviderBindingKeysReportsAnOutage(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv.URL, nil).ProviderBindingKeys(context.Background()); err == nil {
+		t.Fatal("a failed search was reported as an empty registry")
 	}
 }

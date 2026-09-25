@@ -1,8 +1,8 @@
 # Catalog Crawler
 
-`catalogcrawler` discovers Beckn catalog indexes (via a registry plugin's network-scoped query, or a fixed static list), polls them on a schedule, fetches and self-signature-verifies changed catalog entries and files, and pushes the resulting catalogs onward to a Discovery service. Progress and retry state are persisted in Postgres, so a restart resumes rather than re-crawling everything.
+`catalogcrawler` discovers Beckn catalog indexes (via a registry plugin's network-scoped query, or a fixed static list), polls them on a schedule, fetches and self-signature-verifies changed catalog entries and files, and publishes the resulting catalogs through the provider adapter's `/publish`, which signs and forwards them to discovery. The same sink publishes the scheduled publish pipelines' catalogues (see `publishpipelines.go`). Progress and retry state are persisted in Postgres, so a restart resumes rather than re-crawling everything.
 
-The core fetch/verify/decode and catalog-resolve/orchestration logic lives in [github.com/beckn/catalog-core](https://github.com/beckn/catalog-core) (`pkg/catalog`, `pkg/catalog/crawler`, `pkg/catalog/crawlmanager`) — this plugin is deployment-specific wiring on top of it: config parsing, the Postgres-backed store, the registry-backed/static discovery sources, the Discovery-push sink, and the ticker-driven scheduler.
+The core fetch/verify/decode and catalog-resolve/orchestration logic lives in [github.com/beckn/catalog-core](https://github.com/beckn/catalog-core) (`pkg/catalog`, `pkg/catalog/crawler`, `pkg/catalog/crawlmanager`) — this plugin is deployment-specific wiring on top of it: config parsing, the Postgres-backed store, the registry-backed/static discovery sources, the `/publish` sink, and the ticker-driven scheduler.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ catalogCrawler:
   config:
     dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
     networks: "example.network.production"
-    discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
+    discoveryPushUrl: "http://provider-adapter:9200/publish"
     participantId: "bpp.example.org"
     bppUri: "https://bpp.example.org"
     indexIntervalSeconds: "300"
@@ -38,14 +38,16 @@ catalogCrawler:
 Supported config keys:
 
 - `dbDsn`: required. Postgres connection string for the crawl queue/cursor store.
-- `discoveryPushUrl`: required. Where crawled catalogs are pushed.
+- `discoveryPushUrl`: required. The provider adapter's `/publish` endpoint (e.g. `http://provider-adapter:9200/publish`). Every catalog the crawler sends goes here as `catalog/publish` (updateMode MERGE; `/publish` rejects FULL): crawled catalogs, and the scheduled publish pipelines, which are handed its base (the URL without `/publish`). A batch counts as sent only on HTTP 200 **and** an `ACCEPTED` verdict -- a `PARTIAL` indexed with resources missing -- and an unreadable 200 answer is not a success. A value ending in `/push` (the old discovery address) is refused at startup.
+  - **MERGE consequence:** a resource a source stops listing stays indexed until its catalogue is deactivated; a crawl no longer removes it.
+  - **Split catalogues:** a catalogue over `maxPushBytes` is sent as several MERGE requests under one catalogId. Discovery's handling of a partial resource set per MERGE is not verified; keep catalogues under the cap.
+- `participantId`, `bppUri`: this deployment's own bppId/bppUri, stamped onto published crawled catalogs.
 - `networks`: comma-separated networkIds to discover indexes for via the configured `RegistryMetadataLookup` plugin (e.g. `dediregistry`'s `QueryByNetwork`). Drives both discovery and scope filtering — a catalog entry naming a network not in this list is skipped.
 - `staticIndexUrls`: comma-separated, optional fixed index URLs, unioned with any registry-discovered ones.
-- `participantId`, `bppUri`: this deployment's own bppId/bppUri, stamped onto pushed catalogs.
 - `fetchTimeoutSeconds`: optional, default `30`. Whole-attempt HTTP timeout for index/catalog fetches.
 - `maxFetchBytes`: optional, default `10485760` (10 MiB). Cap on a fetched artifact's at-rest size.
 - `maxDecompressedBytes`: optional, default `20971520` (20 MiB). Cap on a decompressed catalog file's size.
-- `maxPushBytes`: optional, default `10485760` (10 MiB). Cap on a single push request to Discovery.
+- `maxPushBytes`: optional, default `10485760` (10 MiB). Cap on a single publish request; a larger catalogue is split.
 - `indexIntervalSeconds`: optional, default `300` (5 min). How often index sources are re-discovered and polled.
 - `catalogIntervalSeconds`: optional, default `30`. How often the sync queue is drained.
 - `maxAttempts`: optional, default `0` (unlimited). Transient-failure retries before a queue item is parked; a fresh publish of the same catalog re-arms it regardless.
@@ -98,7 +100,7 @@ plugins:
     id: catalogcrawler
     config:
       dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
-      discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
+      discoveryPushUrl: "http://provider-adapter:9200/publish"
       # ... see Config above
 
 modules:

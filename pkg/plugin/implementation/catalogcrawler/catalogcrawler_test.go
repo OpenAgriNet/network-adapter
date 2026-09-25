@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -174,5 +175,59 @@ func TestDurationSecondsOr_FallsBackOnInvalid(t *testing.T) {
 	}
 	if got := durationSecondsOr("60", DefaultIndexInterval); got.Seconds() != 60 {
 		t.Fatalf("got %v, want 60s", got)
+	}
+}
+
+// discoveryPushUrl used to be discovery's /push; it is now the provider
+// adapter's /publish. A config still carrying an old /push value is refused
+// at startup -- otherwise crawled catalogues would go to /push as publish
+// bodies and every pipeline would post to .../push/publish, both failing far
+// from the cause.
+func TestProvider_New_RefusesAnOldDiscoveryPushURL(t *testing.T) {
+	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{
+		cfgDBDSN: "postgres://x", cfgDiscoveryURL: "https://discovery.example.org/beckn/catalog/push",
+	})
+	if err == nil || !strings.Contains(err.Error(), "/publish") {
+		t.Fatalf("err = %v, want a refusal naming the provider adapter's /publish", err)
+	}
+}
+
+// buildSource unions the static index list with the registry-backed one, and
+// leaves the registry out when no lookup can answer for the networks.
+func TestBuildSource_UnionsStaticAndRegistryIndexes(t *testing.T) {
+	lookup := fakeMetadataLookup{byNetwork: map[string][]model.SubscriberRecord{
+		"net-a": {{
+			Subscription: model.Subscription{Subscriber: model.Subscriber{SubscriberID: "p1"}},
+			MetaArrays:   map[string][]string{"catalog_index_urls": {"https://registry/index"}},
+		}},
+	}}
+	config := map[string]string{cfgStaticIndexURLs: "https://static/index", cfgNetworks: "net-a"}
+
+	refs, err := buildSource(config, lookup, slog.Default()).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, ref := range refs {
+		got[ref.IndexURL] = true
+	}
+	if len(refs) != 2 || !got["https://static/index"] || !got["https://registry/index"] {
+		t.Fatalf("refs = %+v, want the static and the registry index", refs)
+	}
+
+	refs, err = buildSource(config, nil, slog.Default()).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].IndexURL != "https://static/index" {
+		t.Fatalf("with no metadata lookup: refs = %+v, want only the static index", refs)
+	}
+}
+
+func TestInt64Or_FallsBackOnInvalid(t *testing.T) {
+	for in, want := range map[string]int64{"": 7, "abc": 7, "0": 7, "-3": 7, "12": 12, " 12 ": 12} {
+		if got := int64Or(in, 7); got != want {
+			t.Errorf("int64Or(%q, 7) = %d, want %d", in, got, want)
+		}
 	}
 }

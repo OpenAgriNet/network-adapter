@@ -1,0 +1,74 @@
+# A SECOND runnable pipeline, so a test can prove two pipelines do not tread on
+# each other. Its capability, metadata.name and slugs all differ from
+# minimal.yaml, which is what makes its directory and filenames differ.
+schemaRef:
+  uses: publish.oan/CataloguePipeline/v1
+
+apiVersion: publish.oan/v1
+kind: CataloguePipeline
+
+metadata:
+  name: other
+  capability: example:Other
+  provider: otherco
+
+schedule:
+  cron: "0 0 * * *"
+  timezone: Asia/Kolkata
+
+inputs:
+  baseUrl:
+    env: EXAMPLE_BASE_URL
+  tokenUser:
+    env: EXAMPLE_TOKEN_USER
+  tokenSecret:
+    env: EXAMPLE_TOKEN_SECRET
+    secret: true
+  publishUrl:
+    env: EXAMPLE_PUBLISH_URL
+
+upstream:
+  baseUrl: ${inputs.baseUrl}
+  auth:
+    kind: tokenExchange
+    request:
+      method: POST
+      path: /token
+      body:
+        access_name: ${inputs.tokenUser}
+        password: ${inputs.tokenSecret}
+    token:
+      at: $.token
+      carriedAs: query
+      name: token
+
+pipeline:
+  - id: things
+    uses: http.get
+    with:
+      path: /things
+      mapping: mappings/things.yaml
+      local:
+        token: ${auth.token}
+        kind: gadget
+    out: collection
+
+catalog:
+  groupBy: group
+  order: { by: id, direction: asc }
+  chunk:
+    budget: 100
+    cost: "1"
+    slug: "${group}"
+  identity:
+    catalogId: catalog:other:${slug}
+    resourceId: resource:other:${id}
+  render:
+    mapping: mappings/catalog.yaml
+    local:
+      slug: ${slug}
+
+publish:
+  url: ${inputs.publishUrl}/publish
+  accept: [ACCEPTED]
+  treatAsFailure: [PARTIAL, REJECTED]

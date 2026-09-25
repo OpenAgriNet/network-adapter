@@ -1,0 +1,99 @@
+# A complete, RUNNABLE pipeline for the engine's own tests. It uses the same
+# constructs a real capability does -- an auth exchange, steps, a catalogue
+# block -- so the engine is tested through its actual interpreter rather than
+# through a stub that agrees with it by construction.
+#
+# It is ALSO the drift guard between the three artifacts that describe a
+# pipeline file: this YAML, the Go structs in spec.go, and the JSON Schema in
+# schema/. A test asserts it both validates against the contract and survives
+# UnmappedKeys, so a key allowed by one and unknown to the other fails here.
+schemaRef:
+  uses: publish.oan/CataloguePipeline/v1
+
+apiVersion: publish.oan/v1
+kind: CataloguePipeline
+
+metadata:
+  name: example
+  capability: example:Thing
+  provider: exampleco
+  summary: a fixture
+
+schedule:
+  cron: "0 0 * * *"
+  timezone: Asia/Kolkata
+
+inputs:
+  baseUrl:
+    flag: base-url
+    env: EXAMPLE_BASE_URL
+    default: http://example.test
+  tokenUser:
+    env: EXAMPLE_TOKEN_USER
+  tokenSecret:
+    env: EXAMPLE_TOKEN_SECRET
+    secret: true
+  publishUrl:
+    env: EXAMPLE_PUBLISH_URL
+
+upstream:
+  baseUrl: ${inputs.baseUrl}
+  auth:
+    kind: tokenExchange
+    request:
+      method: POST
+      path: /token
+      body:
+        access_name: ${inputs.tokenUser}
+        password: ${inputs.tokenSecret}
+    token:
+      at: $.token
+      carriedAs: query
+      name: token
+
+pipeline:
+  - id: things
+    uses: http.get
+    with:
+      path: /things
+      mapping: mappings/things.yaml
+      local:
+        token: ${auth.token}
+        kind: widget
+    out: things
+    failWhenEmpty: "the upstream listed no things"
+
+  - id: dedupe
+    uses: dedupe
+    with: { key: id }
+    out: collection
+
+catalog:
+  groupBy: group
+
+  exclude:
+    - when: "$number($count(size)) = 0"
+      reason: "no size reported"
+
+  order: { by: id, direction: asc }
+
+  chunk:
+    budget: 2
+    cost: "1"
+    slug: "${group}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
+
+  identity:
+    catalogId: catalog:example:${slug}
+    resourceId: resource:example:${id}
+
+  render:
+    mapping: mappings/catalog.yaml
+    local:
+      slug: ${slug}
+
+publish:
+  url: ${inputs.publishUrl}/publish
+  accept: [ACCEPTED]
+  # PARTIAL means the catalogue indexed with resources MISSING, which reads as
+  # success everywhere else. Listing it here is what makes it a failure.
+  treatAsFailure: [PARTIAL, REJECTED]

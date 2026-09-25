@@ -1,0 +1,372 @@
+# mandi-price-agmarket.yaml -- the pipeline for the MandiPrice / Agmarknet
+# catalogue publisher.
+#
+# THIS FILE IS THE PROGRAM. Every block below drives real behaviour; there is
+# no Go that duplicates it and no Go to edit instead.
+#
+#   metadata.capability   checked against the registry's publish action
+#   schedule              cron + timezone decide when a run is due
+#   inputs                resolved flag > env > default
+#   upstream              base URL, auth exchange, error classification
+#   pipeline              the steps, in order, run by the interpreter
+#   catalog               grouping, chunking and the rendered document
+#   publish               accept / treatAsFailure / refuseWhen / retireOld
+#   mappings/*.yaml       JSONata, executed by jsonmapper
+#
+# The engine is catalogpublisher/pipeline. It knows seven primitives and
+# nothing about Agmarknet: which calls happen, in what order, against which
+# paths, with which mappings, is all here. A second provider copies this file
+# and changes its contents, not the engine.
+#
+# Full breakdown: dev_docs/plan-crawler-mandi/mandi-crawler-change-set.md.
+
+# Which contract this file is held to. LoadSpec validates against it and
+# REFUSES a file that does not match, naming the path that is wrong -- so a
+# misspelled key is a startup error rather than a rule that silently never
+# fires. The contract, and an annotated reference to copy from, are at
+# catalogpublisher/pipeline/schema/.
+schemaRef:
+  uses: publish.oan/CataloguePipeline/v1
+
+# Says the same thing as schemaRef, in the Kubernetes style. The engine
+# refuses a file where the two disagree rather than preferring one silently.
+# NOTE it is publish.oan, not publish.agmarket: the contract belongs to the
+# network, not to whichever provider happens to implement it.
+apiVersion: publish.oan/v1
+kind: CataloguePipeline
+metadata:
+  name: mandi-price
+  capability: openagrinet:MandiPrice
+  provider: agmarknet
+  summary: >
+    Publishes one Beckn catalog per Indian state, one resource per mandi
+    market, carrying the Agmarknet codes a select must send.
+
+# ---------------------------------------------------------------------------
+# schedule — how often the crawler's polling layer should run this pipeline.
+# Lives here, not in a global crawler setting, so each pipeline owns its own
+# cadence (see plan-2-low-level-design.md Part 2, "How daily triggering
+# works").
+# ---------------------------------------------------------------------------
+schedule:
+  # Standard five-field cron: minute hour day-of-month month day-of-week.
+  # "0 0 * * *" is every day at midnight. The expression is resolved in
+  # `timezone`, NOT the host's clock -- a UTC host reading this off its own
+  # clock would fire on the wrong calendar day and ask for yesterday's prices.
+  cron: "0 0 * * *"
+  timezone: Asia/Kolkata
+
+# ---------------------------------------------------------------------------
+# inputs — the CLI and environment surface. Unchanged from
+# tools/publish/mandi_publish's proven flag>env>default resolution.
+# ---------------------------------------------------------------------------
+inputs:
+  # Deliberately NO default. config/provider-adapter.yaml carries the same
+  # warning for the same field and the same reason: no deployment is obliged
+  # to name the service "registry", and a baked-in hostname that resolves
+  # nowhere fails as a DNS error far from here rather than as "you did not
+  # configure the registry". Use a hostname the ADAPTER can resolve, never
+  # localhost -- inside a container localhost is the adapter itself.
+  #
+  #   compose      http://registry:8081/api/v1
+  #   kubernetes   http://registry.oan.svc.cluster.local:8081/api/v1
+  #   from a shell http://localhost:8081/api/v1
+  #
+  # Note the /api/v1 base path: without it every lookup 404s on
+  # /ProviderSchema/search.
+  registryUrl:
+    flag: registry-url
+    env: SUNBIRD_REGISTRY_URL
+  # NO DEFAULT, on purpose.
+  #
+  # It used to default to a plain-HTTP address at a bare IP. Anyone who ran
+  # this without MANDI_API_URI set sent the credential exchange and every
+  # later request -- token in the query string -- in cleartext, to whatever
+  # answers on that address today. A missing address must fail loudly, not
+  # quietly pick an insecure one.
+  baseUrl:
+    flag: base-url
+    env: MANDI_API_URI
+  states:
+    flag: states
+    type: list
+    default: []          # empty means every state the upstream reports
+  # The window is env-settable, not flag-only: this pipeline runs inside a
+  # long-lived server process with no command line, so a flag-only window
+  # would be permanently stuck at "today" -- no backfill after an outage, and
+  # no way to widen it on a day the mandis are shut (a Sunday returns no rows
+  # for every state, which is correct and useless).
+  fromDate:
+    flag: from
+    env: MANDI_FROM_DATE
+    type: date
+    format: dd-MM-yyyy   # what this upstream reads; not ISO
+    default: today
+  toDate:
+    flag: to
+    env: MANDI_TO_DATE
+    type: date
+    format: dd-MM-yyyy
+    default: today
+  participantId:
+    flag: participant-id
+    env: MANDI_PARTICIPANT_ID
+    default: agmarknet
+  networkId:
+    flag: network-id
+    env: APP_NETWORK_ID
+    default: oan-dev
+  catalogOut:
+    flag: catalog-out
+    default: catalog
+  withoutGeometry:
+    flag: without-geometry
+    enum: [publish, skip]
+    default: publish
+  # SHARED by every publish pipeline: all of them post to the same provider
+  # adapter's /publish, so one address is set once for the whole crawler.
+  publishUrl:
+    flag: publish-url
+    env: CATALOG_PUBLISH_URL
+  # A ONE-TIME migration switch, off by default.
+  #
+  # `publish.retireOld` deactivates cat-agmarknet-mandi-prices -- the single
+  # monolithic catalogue these per-state ones replaced. An operator turns it on
+  # for one run when migrating, then leaves it off; turning it on every day
+  # would post a tombstone for a catalogue that is already retired.
+  #
+  # It is declared rather than left implicit because the publish step REFUSES
+  # an enable flag it cannot resolve: reading an unresolvable flag as "off"
+  # would silently skip a retirement an operator asked for.
+  retireOld:
+    flag: retire-old
+    env: MANDI_RETIRE_OLD
+    default: false
+  tokenUser:
+    env: MANDI_TOKEN_USER
+    secret: true
+  tokenSecret:
+    env: MANDI_TOKEN_SECRET
+    secret: true
+
+# ---------------------------------------------------------------------------
+# upstream — one service, its auth, and how its failures are classified.
+# ---------------------------------------------------------------------------
+upstream:
+  baseUrl: ${inputs.baseUrl}
+
+  # MEASURED, not assumed: this upstream answers on neither 443 nor its own
+  # port over https, so there is no TLS to switch to. Until it offers one, the
+  # credential exchange and every token afterwards travel in cleartext.
+  #
+  # Declared here so the exposure is visible in review and in the diff, rather
+  # than being the silent consequence of an unset variable. Every run logs a
+  # warning while this is set. Remove it the day the upstream supports TLS.
+  allowCleartext: true
+
+  auth:
+    kind: tokenExchange
+    request:
+      method: POST
+      path: /v1/generate-dynamic-token-agmarknet
+      body:
+        access_name: ${inputs.tokenUser}
+        password: ${inputs.tokenSecret}
+    token:
+      at: $.token
+      carriedAs: query      # the token rides in the query string, not a header
+      name: token
+      # The response carries NO expiry field. One token is held for the run
+      # and re-exchanged on a 401/403 rather than refreshed on a timer.
+      reexchangeOn: [401, 403]
+
+  # Classification, not cosmetics. Recording "no rows" as a failure once
+  # turned 27 of 36 states into 27 outages and exited non-zero on a
+  # collection that was as complete as the upstream allows.
+  errors:
+    - when: { status: 400, bodyContains: "No data available." }
+      classify: emptyResult
+    - when: { status: [401, 403] }
+      classify: reauth
+    - default: transportError
+
+  guards:
+    responseMustBe: array
+    neverQuoteBodyInErrors: true
+    maxResponseBytes: 32MiB
+
+# ---------------------------------------------------------------------------
+# pipeline — ordered steps, each naming what it produces. This IS the call
+# sequence: the interpreter runs these six in order, and when/forEach/onError/
+# concurrency all drive real behaviour.
+# ---------------------------------------------------------------------------
+pipeline:
+  - id: states
+    # `= ''`, NOT `= []`. inputs.states is a list input, but an input reaches
+    # an expression as TEXT -- empty when the operator named no states. The
+    # original `= []` compared "" against an empty array, which is false, so
+    # this step silently took the else branch and handed a bare string to the
+    # loop below. Measured, not assumed: "" = [] is false under the pinned
+    # jsonata build; "" = '' is true.
+    when: "${inputs.states} = ''"
+    uses: http.get
+    with:
+      path: /v1/fetch-agmarknet-master-data
+      mapping: mappings/master-states.yaml
+      local: { token: "${auth.token}" }
+    else:
+      # Only reached when an operator names states explicitly. That path is
+      # NOT finished: a comma-separated string is not the list of {code, name}
+      # objects the loop below needs, and this file has no primitive to split
+      # one. The runner refuses with a clear message rather than looping over
+      # characters. Nothing sets this today -- the input is flag-only and this
+      # pipeline runs in a server with no command line.
+      const: ${inputs.states}
+    out: states
+    failWhenEmpty: "state list resolved to zero states"
+
+  - id: masterMarkets
+    uses: http.get
+    with:
+      path: /v1/fetch-agmarknet-master-data
+      mapping: mappings/master-markets.yaml
+      local: { token: "${auth.token}" }
+    out: masterMarkets
+
+  - id: stateRows
+    uses: http.get
+    forEach: ${states}
+    as: state
+    concurrency: 1
+    with:
+      path: /v1/fetch-agmarknet-market-commodity-mapping
+      mapping: mappings/market-commodity.yaml
+      local:
+        token: ${auth.token}
+        stateCode: ${state.code}
+        fromDate: ${inputs.fromDate}
+        toDate: ${inputs.toDate}
+    onError:
+      emptyResult: { record: emptyStates, continue: true }
+      transportError: { record: stateErrors, continue: true }
+    onEmptyOutput: { record: emptyStates }
+    out: rows
+
+  - id: join
+    uses: join
+    with:
+      left: ${rows}
+      right: ${masterMarkets}
+      # Quoted because YAML 1.1 readers (PyYAML, and most linters) treat a
+      # bare `on` as the boolean true. Go's yaml.v3 is 1.2 and reads it as the
+      # string either way, so this costs nothing and stops the file breaking
+      # in any tool that is not this engine.
+      "on": marketId
+      type: left
+      carry: [latitude, longitude]
+    out: joined
+
+  # The coordinate QUALITY VOCABULARY is gone -- no missing/suspect/
+  # outOfBounds verdict field, no annotation, no verdict-based exclusion.
+  #
+  # What remains is the one thing that is not a classification but a
+  # correctness rule: a coordinate that cannot be real is removed, so it is
+  # never published as a location. Two cases, both measured in this upstream's
+  # own data: lat == lon is a copy-paste defect (and catches 0,0, which is a
+  # real place in the Gulf of Guinea), and a point outside India's bounding box
+  # did not come from an Indian market.
+  #
+  # A market whose coordinates are dropped is still PUBLISHED. It simply
+  # carries no point, so a proximity search cannot find it -- which is correct,
+  # because nobody knows where it is.
+  - id: coordinates
+    uses: derive
+    with:
+      field: hasUsableCoordinate
+      rules:
+        - when: "$not($exists(latitude)) or $not($exists(longitude))"
+          value: false
+        - when: "latitude = longitude"
+          value: false
+        - when: "latitude < 6.0 or latitude > 38.0 or longitude < 68.0 or longitude > 98.0"
+          value: false
+        - value: true
+      then:
+        - when: "$not(hasUsableCoordinate)"
+          clear: [latitude, longitude]
+    out: marketsWithCoordinates
+
+  - id: dedupe
+    uses: dedupe
+    with: { key: marketId }
+    out: collection
+
+# ---------------------------------------------------------------------------
+# catalog — from collection to catalog files, chunked to Discovery's
+# cumulative 256-geometry-per-catalogId cap.
+# ---------------------------------------------------------------------------
+catalog:
+  groupBy: stateCode
+
+  exclude:
+    # $number(...) is NOT decoration. Measured against the pinned jsonata
+    # build: `$count(commodities) = 0` is FALSE even when commodities is an
+    # empty array, so without the wrapper this rule never fires and a market
+    # trading nothing is published with zero commodities -- which then fails
+    # the catalogue's own minItems check at the far end.
+    - when: "$number($count(commodities)) = 0"
+      reason: "upstream reported no commodities trading in this window"
+    - when: "${inputs.withoutGeometry} = 'skip' and $not(hasUsableCoordinate)"
+      reason: "no usable coordinate, and withoutGeometry is skip"
+
+  order: { by: marketId, direction: asc }
+
+  chunk:
+    budget: 256
+    # Counts GEOMETRIES, not markets: a market with no point costs nothing,
+    # because the cap Discovery enforces is on geometries. This must agree
+    # with what the render actually emits as a Point, or a catalogue silently
+    # goes over the cap and indexes PARTIAL.
+    cost: "$exists(latitude) and $exists(longitude) ? 1 : 0"
+    slug: "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
+
+  identity:
+    catalogId: catalog:mandi-price:${slug}
+    resourceId: resource:mandi-price:market:${marketId}
+
+  render:
+    mapping: mappings/catalog.yaml
+    local:
+      participantId: ${inputs.participantId}
+      networkId: ${inputs.networkId}
+      catalogSlug: ${slug}
+      stateName: ${group.stateName}
+      windowFrom: ${inputs.fromDate}
+      windowTo: ${inputs.toDate}
+      generatedAt: ${now.rfc3339}
+      transactionId: ${uuid}
+      messageId: ${uuid}
+      publishWithoutGeometry: ${inputs.withoutGeometry}
+
+# ---------------------------------------------------------------------------
+# publish — catalog files to the provider adapter's /publish endpoint.
+# ---------------------------------------------------------------------------
+publish:
+  url: ${inputs.publishUrl}/publish
+  concurrency: 1
+  timeout: 180s
+
+  accept: [ACCEPTED]
+  treatAsFailure:
+    - PARTIAL   # indexed with pieces missing — measured cumulative geometry cap
+    - REJECTED
+
+  refuseWhen: collection.stateErrors > 0
+
+  retireOld:
+    enabled: ${inputs.retireOld}
+    catalogId: cat-agmarknet-mandi-prices
+    descriptorName: "Retired: superseded by the per-state market catalogs"
+    isActive: false
+    updateMode: MERGE
+    catalogType: REGULAR
