@@ -187,3 +187,8 @@ test_request.json
 # it is generated output that changes on every run and would bloat the history.
 /markets.json
 /mandi_*.json
+
+# Deployment configs carry real key material and must never be committed.
+# config/local-*.yaml use shared sample keys and are safe; anything else is not.
+config/network.yaml
+config/*-secrets.yaml

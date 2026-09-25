@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -454,8 +455,9 @@ func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 // resolves to nothing is an error, not an empty piece of name.
 func catalogSlug(catalog Catalog, index int, key string, scope *runContext, cache *exprCache) (string, error) {
 	if catalog.Chunk.Slug == "" {
-		// No template: the group's own key is its name.
-		return key, nil
+		// No template: the group's own key is its name -- still checked,
+		// because a group key is upstream data too.
+		return key, safeSlug(key, "the group key")
 	}
 
 	document := map[string]any{}
@@ -497,6 +499,9 @@ func catalogSlug(catalog Catalog, index int, key string, scope *runContext, cach
 	}
 	if strings.TrimSpace(out) == "" {
 		return "", fmt.Errorf("chunk slug %q rendered empty: a catalogue with no name cannot be written or published", catalog.Chunk.Slug)
+	}
+	if err := safeSlug(out, fmt.Sprintf("chunk slug %q", catalog.Chunk.Slug)); err != nil {
+		return "", err
 	}
 	return out, nil
 }
@@ -571,4 +576,34 @@ func RemoveStaleCatalogues(dir, filenamePrefix string) error {
 		}
 	}
 	return nil
+}
+
+// slugShape is what a catalogue name may contain.
+//
+// Deliberately narrow, because a slug is UPSTREAM DATA that becomes a
+// filename, and three separate things go wrong when it is not:
+//
+//   - "../../x" escapes the output directory. filepath.Join does not save us:
+//     "<prefix>-.." is an ordinary path element, so enough ".." segments walk
+//     out of the directory the operator chose.
+//   - "J/K" writes into a subdirectory, where the publisher's
+//     "<prefix>-*.json" glob never finds it. The catalogue is built, reported
+//     as built, and silently never published.
+//   - "mh" and "MH" are the same file on a case-insensitive filesystem, so
+//     one group's catalogue quietly overwrites another's.
+//
+// Refused rather than sanitised: rewriting two different upstream values into
+// one safe name would merge two groups' catalogues, which is worse than
+// stopping.
+var slugShape = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// safeSlug refuses a name that cannot safely become a file.
+func safeSlug(slug, source string) error {
+	if slugShape.MatchString(slug) {
+		return nil
+	}
+	return fmt.Errorf("%s produced %q, which cannot be used as a catalogue name: "+
+		"a name becomes a filename and must match %s. A value with a slash is never "+
+		"published (the publisher globs one directory), and one with .. can escape it",
+		source, slug, slugShape)
 }

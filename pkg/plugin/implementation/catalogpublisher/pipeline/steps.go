@@ -58,6 +58,16 @@ type stepRunner struct {
 	// counters are what `onError`/`onEmptyOutput` record into, and what the
 	// run reports. The file names them; this code only counts.
 	counters map[string]int
+
+	// lastOutput is what the step just before this one produced, whether or
+	// not it named itself with `out:`.
+	//
+	// This used to be found by scanning the pipeline for the last step that
+	// named an output, which silently DISCARDED the work of any step that did
+	// not. A filter with no `out:` followed by a dedupe is the ordinary shape
+	// that hits it: the filter runs, the dedupe reads the collection from
+	// before it, and the rows the file excluded are published anyway.
+	lastOutput any
 }
 
 // runSteps executes the declared steps in order and returns the output of the
@@ -91,6 +101,7 @@ func (r *stepRunner) runSteps(ctx context.Context) ([]map[string]any, error) {
 		if step.Out != "" {
 			r.rc.outputs[step.Out] = output
 		}
+		r.lastOutput = output
 
 		// How much each step produced, without the file having to ask. This
 		// is what an operator reads to tell "36 states, 4172 markets" from
@@ -404,6 +415,23 @@ func (r *stepRunner) dedupe(step Step, rc *runContext) (any, error) {
 		return nil, err
 	}
 
+	// A record with no key has no identity, and renderScalar turns every one
+	// of them into the SAME empty string -- so they would all collapse into a
+	// single survivor, silently. Keeping them all and dropping them all are
+	// both guesses about data the upstream did not give us, so neither is
+	// made: the run stops and says how many and on which key.
+	missing := 0
+	for _, record := range records {
+		if _, present := record[step.With.Key]; !present {
+			missing++
+		}
+	}
+	if missing > 0 {
+		return nil, fmt.Errorf("dedupe on %q: %d of %d records carry no %q, and records with no "+
+			"identity cannot be deduplicated -- they would all collapse into one",
+			step.With.Key, missing, len(records), step.With.Key)
+	}
+
 	seen := make(map[string]bool, len(records))
 	out := make([]map[string]any, 0, len(records))
 	for _, record := range records {
@@ -430,16 +458,9 @@ func (r *stepRunner) currentCollection(step Step, rc *runContext) ([]map[string]
 	return asRecords(previous)
 }
 
-// previousOutput is the output of the most recent step that named one.
+// previousOutput is what the step immediately before this one produced.
 func (r *stepRunner) previousOutput() any {
-	for i := len(r.spec.Pipeline) - 1; i >= 0; i-- {
-		if out := r.spec.Pipeline[i].Out; out != "" {
-			if value, ok := r.rc.outputs[out]; ok {
-				return value
-			}
-		}
-	}
-	return nil
+	return r.lastOutput
 }
 
 // collection resolves a `${...}` reference to a list of records.
@@ -697,7 +718,11 @@ func (r *stepRunner) filter(step Step, rc *runContext) (any, error) {
 	}
 	kept := make([]map[string]any, 0, len(records))
 	for _, rec := range records {
-		ok, err := r.cache.truthy(step.With.When, rec)
+		// Through predicate, not straight to truthy: a ${...} must be
+		// substituted as a LITERAL. Raw, "${inputs.mode} = 'skip'" compares a
+		// record field that does not exist and the filter silently keeps
+		// everything -- the same bug derive and exclude already had.
+		ok, err := r.predicate(step.With.When, rec, rc)
 		if err != nil {
 			return nil, fmt.Errorf("filter when %q: %w", step.With.When, err)
 		}

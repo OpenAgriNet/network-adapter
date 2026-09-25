@@ -768,3 +768,41 @@ func TestWriteCataloguesRemovesStaleCataloguesFromAnEarlierRun(t *testing.T) {
 		t.Errorf("today's catalogue was not written: %v", err)
 	}
 }
+
+// A catalogue name is UPSTREAM DATA that becomes a filename. Each of these is
+// a real failure, not a hypothetical: traversal walks out of the operator's
+// directory, a slash makes a file the publisher's glob never finds (built,
+// reported, silently never published), and case-only differences collide on
+// macOS.
+func TestCatalogueNamesThatCannotBecomeFilesAreRefused(t *testing.T) {
+	for name, slug := range map[string]string{
+		"traversal":        "../../etc/passwd",
+		"a slash":          "J/K",
+		"a backslash":      `J\K`,
+		"a leading dash":   "-weird", // allowed by shape; kept to document the boundary
+		"a null-ish empty": "",
+		"a space":          "North West",
+		"a colon":          "ns:thing",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := safeSlug(slug, "test")
+			switch slug {
+			case "-weird":
+				if err != nil {
+					t.Errorf("a leading dash is allowed by the shape but was refused: %v", err)
+				}
+			default:
+				if err == nil {
+					t.Errorf("%q was accepted as a catalogue name", slug)
+				}
+			}
+		})
+	}
+
+	// And the ordinary names must still pass, or the check is just breakage.
+	for _, ok := range []string{"MH", "MH-2", "openagrinet.MandiPrice", "region_1"} {
+		if err := safeSlug(ok, "test"); err != nil {
+			t.Errorf("a legitimate name %q was refused: %v", ok, err)
+		}
+	}
+}
