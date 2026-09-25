@@ -17,6 +17,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
@@ -326,3 +327,54 @@ func TestPublishDiscovererSkipsAPublishActionWithNoPipeline(t *testing.T) {
 		t.Errorf("ran %v, want nothing for a publish action with no mappings", *ran)
 	}
 }
+
+// ranAt is a run log that says the pipeline last ran at a fixed time.
+type ranAt struct{ last time.Time }
+
+func (r ranAt) LastPipelineRun(context.Context, string) (time.Time, error) { return r.last, nil }
+func (r ranAt) RecordPipelineRun(context.Context, string, time.Time) error { return nil }
+
+const mandiPipelinePath = "pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml"
+
+// newPublishSweep wires the real run and a publisher, so a tick does real work.
+func TestNewPublishSweepWiresTheRunAndThePublisher(t *testing.T) {
+	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, nil, slog.New(slog.DiscardHandler))
+	if sweep.run == nil || sweep.publisher == nil {
+		t.Fatalf("sweep = %+v, want run and publisher set", sweep)
+	}
+}
+
+// runPipeline hands the record to the real frame: a pipeline the run log says
+// already ran is not due, and nothing is fetched.
+func TestRunPipelineStandsDownWhenNotDue(t *testing.T) {
+	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	if err != nil {
+		t.Fatalf("PublishPipeline: %v", err)
+	}
+	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, ranAt{last: time.Now()}, slog.New(slog.DiscardHandler))
+	record := publishingRecord("agmarknet-live|openagrinet:MandiPrice", mandiPipelinePath)
+
+	if err := sweep.runPipeline(context.Background(), record, files); err != nil {
+		t.Fatalf("runPipeline: %v", err)
+	}
+}
+
+// A record naming a pipeline other than the files it is run with is refused
+// by the frame's registry gate, and the error reaches the sweep.
+func TestRunPipelineReportsTheFramesRefusal(t *testing.T) {
+	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	if err != nil {
+		t.Fatalf("PublishPipeline: %v", err)
+	}
+	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, nil, slog.New(slog.DiscardHandler))
+	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/cataloguepublish-x/p.yaml")
+
+	if err := sweep.runPipeline(context.Background(), record, files); err == nil {
+		t.Fatal("a record naming another pipeline was run")
+	}
+}
+
+// fixedTargets is a discovery source with fixed targets.
+type fixedTargets struct{ targets []publishTarget }
+
+func (s *fixedTargets) Discover(context.Context) ([]publishTarget, error) { return s.targets, nil }

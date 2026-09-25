@@ -665,11 +665,11 @@ func (r *stepRunner) httpPost(ctx context.Context, step Step, rc *runContext) (a
 		local[k] = resolved
 	}
 
-	out, err := r.client.Post(ctx, r.mapper, ref, path, local)
+	raw, err := r.client.Post(ctx, r.mapper, ref, path, local)
 	if err != nil {
 		return nil, err
 	}
-	return asRecords(out)
+	return decodeMapped(raw)
 }
 
 // filter keeps records in the current collection that match a JSONata predicate.
@@ -753,25 +753,20 @@ func (r *stepRunner) transform(ctx context.Context, step Step, rc *runContext) (
 	if err != nil {
 		return nil, fmt.Errorf("transform %s: %w", step.With.Mapping, err)
 	}
-	return asRecords(out)
+	return decodeMapped(out)
 }
 
-// asRecords2 coerces a value to []map[string]any for use inside filter.
-// It is the typed sibling of asRecords (which parses JSON bytes).
-func asRecords2(v any) []map[string]any {
-	switch typed := v.(type) {
-	case []map[string]any:
-		return typed
-	case []any:
-		out := make([]map[string]any, 0, len(typed))
-		for _, item := range typed {
-			if m, ok := item.(map[string]any); ok {
-				out = append(out, m)
-			}
-		}
-		return out
+// decodeMapped turns a mapping's JSON output into the step's collection.
+//
+// The mapper answers with JSON bytes, which asRecords does not read -- handing
+// them over undecoded failed every http.post and transform step with
+// "expected a list of objects, got []uint8". httpGet decodes the same way.
+func decodeMapped(raw []byte) ([]map[string]any, error) {
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("the mapped response did not decode: %w", err)
 	}
-	return nil
+	return asRecords(decoded)
 }
 
 // constRecords is the const primitive: the records the file declares, handed
