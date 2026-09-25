@@ -300,7 +300,10 @@ func catalogMatches(cache *exprCache, scope *runContext, when string, record map
 // a reason or an id template can name them: `coordinate ${coordinateQuality}`,
 // `resource:mandi-price:market:${marketId}`.
 func catalogRecordScope(scope *runContext, record map[string]any) *runContext {
-	locals := make(map[string]any, len(scope.locals)+len(record))
+	// Sized by the scope alone: summing two lengths for a capacity hint is an
+	// addition that can overflow in principle (CodeQL go/allocation-size-
+	// overflow), and the map grows as needed anyway.
+	locals := make(map[string]any, len(scope.locals))
 	for name, value := range scope.locals {
 		locals[name] = value
 	}

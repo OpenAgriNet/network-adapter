@@ -170,7 +170,7 @@ func newRunContext(inputs map[string]string, token string) *runContext {
 // with returns a copy carrying one extra local, so a loop iteration cannot
 // leak its variable into the next.
 func (c *runContext) with(name string, value any) *runContext {
-	locals := make(map[string]any, len(c.locals)+1)
+	locals := make(map[string]any, len(c.locals)) // no +1: see catalogRecordScope
 	for k, v := range c.locals {
 		locals[k] = v
 	}
