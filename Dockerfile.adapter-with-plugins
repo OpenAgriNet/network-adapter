@@ -46,7 +46,6 @@ WORKDIR /app
 
 # Copy binary and plugins built with same Go version
 COPY --from=builder /workspace/app/server .
-COPY --from=builder /workspace/app/bin ./bin
 COPY --from=builder /workspace/app/plugins ./plugins
 
 EXPOSE 8081

@@ -62,8 +62,8 @@ plugins:
   #
   # Each tick it lists every ProviderSchema binding in the registry, and runs
   # every one whose actions include `publish`, using that action's `mappings`
-  # as the pipeline path -- today agmarknet-live|MandiPrice and
-  # mausamgram|WeatherObservation. There is no list here and no filter: a
+  # as the pipeline path -- today agmarknet-live|MandiPrice. There is no list
+  # here and no filter: a
   # capability publishes by having a pipeline folder under
   # pkg/plugin/implementation/<Capability>/cataloguepublish-<source>/ (built
   # into the image) and a publish action naming it in the registry.
@@ -100,7 +100,7 @@ plugins:
 
       # How often to CHECK whether each pipeline is due -- not how often one
       # runs. The cadence lives in each pipeline's YAML as a cron expression
-      # (mandi 00:00 IST, weather 01:00 IST). Default 300s.
+      # (mandi 00:00 IST). Default 300s.
       publishTickIntervalSeconds: "300"
 
       # Reaching the network is a SEPARATE decision, off by default. Left
@@ -115,8 +115,6 @@ plugins:
       # container, not from this file:
       #   mandi    SUNBIRD_REGISTRY_URL, MANDI_API_URI, MANDI_TOKEN_USER,
       #            MANDI_TOKEN_SECRET, MANDI_PARTICIPANT_ID
-      #   weather  nothing else (no upstream, no credentials); optional
-      #            WEATHER_PARTICIPANT_ID, APP_NETWORK_ID
 
 modules:
   - name: network-adapter
