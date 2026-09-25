@@ -132,7 +132,19 @@ func (r *stepRunner) runStep(ctx context.Context, step Step) (any, error) {
 			return nil, err
 		}
 		if !run {
-			return r.elseValue(step)
+			value, err := r.elseValue(step)
+			if err != nil {
+				return nil, err
+			}
+			// A step skipped with no `else:` is a NO-OP, not a step that
+			// produced nothing: the collection flows past it untouched. The
+			// alternative -- nil -- makes the next implicit consumer fail
+			// with "no step before it produced one", which describes the
+			// runner's bookkeeping rather than anything the file did.
+			if value == nil && strings.TrimSpace(step.Else.Const) == "" {
+				return r.lastOutput, nil
+			}
+			return value, nil
 		}
 	}
 
@@ -420,16 +432,21 @@ func (r *stepRunner) dedupe(step Step, rc *runContext) (any, error) {
 	// single survivor, silently. Keeping them all and dropping them all are
 	// both guesses about data the upstream did not give us, so neither is
 	// made: the run stops and says how many and on which key.
+	// Presence is not enough: an explicit null is PRESENT, and renders to the
+	// same empty string as an absent key -- so every record carrying
+	// "marketId": null would still collapse into one survivor. Blank counts
+	// too, for the same reason.
 	missing := 0
 	for _, record := range records {
-		if _, present := record[step.With.Key]; !present {
+		value, present := record[step.With.Key]
+		if !present || value == nil || strings.TrimSpace(renderScalar(value)) == "" {
 			missing++
 		}
 	}
 	if missing > 0 {
-		return nil, fmt.Errorf("dedupe on %q: %d of %d records carry no %q, and records with no "+
-			"identity cannot be deduplicated -- they would all collapse into one",
-			step.With.Key, missing, len(records), step.With.Key)
+		return nil, fmt.Errorf("dedupe on %q: %d of %d records carry no usable %q (absent, null or "+
+			"blank), and records with no identity cannot be deduplicated -- they would all "+
+			"collapse into one", step.With.Key, missing, len(records), step.With.Key)
 	}
 
 	seen := make(map[string]bool, len(records))

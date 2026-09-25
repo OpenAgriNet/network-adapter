@@ -1,37 +1,30 @@
-# mandi-price-agmarket.yaml — the pipeline for the MandiPrice / Agmarknet
+# mandi-price-agmarket.yaml -- the pipeline for the MandiPrice / Agmarknet
 # catalogue publisher.
 #
-# STATUS: PARTLY LIVE. Some blocks drive real behaviour; two do not.
+# THIS FILE IS THE PROGRAM. Every block below drives real behaviour; there is
+# no Go that duplicates it and no Go to edit instead.
 #
-#   LIVE   metadata.capability   checked against the collector
-#   LIVE   schedule              cron + timezone decide when a run is due
-#   LIVE   inputs                resolved flag > env > default
-#   LIVE   publish               accept / treatAsFailure / refuseWhen / retireOld
-#   LIVE   mappings/*.yaml       JSONata, really executed by jsonmapper
+#   metadata.capability   checked against the registry's publish action
+#   schedule              cron + timezone decide when a run is due
+#   inputs                resolved flag > env > default
+#   upstream              base URL, auth exchange, error classification
+#   pipeline              the steps, in order, run by the interpreter
+#   catalog               grouping, chunking and the rendered document
+#   publish               accept / treatAsFailure / refuseWhen / retireOld
+#   mappings/*.yaml       JSONata, executed by jsonmapper
 #
-#   INERT  upstream              parsed, read by nothing
-#   INERT  pipeline              parsed, read by nothing
-#   INERT  discover, registry    parsed, read by nothing
+# The engine is catalogpublisher/pipeline. It knows seven primitives and
+# nothing about Agmarknet: which calls happen, in what order, against which
+# paths, with which mappings, is all here. A second provider copies this file
+# and changes its contents, not the engine.
 #
-# The call sequence, each call's upstream path, each call's mapping file and
-# the token endpoint are all hardcoded in Go -- see collect.go and the frame's
-# client.go. Editing an INERT block changes nothing at runtime.
-#
-# Keep the inert blocks accurate anyway: they are the specification a step
-# interpreter would implement, and the Go code is meant to agree with them.
-# But if you need behaviour to change TODAY, change the Go.
-#
-# Full breakdown: dev_docs/plan-crawler-mandi/mandi-crawler-change-set.md §5b.
-#
-# The `pipeline:`, `catalog:` and mappings/ content is not invented -- it is
-# the logic from the original working tool, which published end-to-end against
-# live Agmarknet.
+# Full breakdown: dev_docs/plan-crawler-mandi/mandi-crawler-change-set.md.
 
 # Which contract this file is held to. LoadSpec validates against it and
 # REFUSES a file that does not match, naming the path that is wrong -- so a
 # misspelled key is a startup error rather than a rule that silently never
 # fires. The contract, and an annotated reference to copy from, are at
-# catalogpublisher/pipeline/{schema,reference}/.
+# catalogpublisher/pipeline/schema/.
 schemaRef:
   uses: publish.oan/CataloguePipeline/v1
 
@@ -84,10 +77,16 @@ inputs:
   registryUrl:
     flag: registry-url
     env: SUNBIRD_REGISTRY_URL
+  # NO DEFAULT, on purpose.
+  #
+  # It used to default to a plain-HTTP address at a bare IP. Anyone who ran
+  # this without MANDI_API_URI set sent the credential exchange and every
+  # later request -- token in the query string -- in cleartext, to whatever
+  # answers on that address today. A missing address must fail loudly, not
+  # quietly pick an insecure one.
   baseUrl:
     flag: base-url
     env: MANDI_API_URI
-    default: http://34.0.4.235:8080
   states:
     flag: states
     type: list
@@ -159,6 +158,15 @@ inputs:
 # token endpoint and the "No data available." classification.
 upstream:
   baseUrl: ${inputs.baseUrl}
+
+  # MEASURED, not assumed: this upstream answers on neither 443 nor its own
+  # port over https, so there is no TLS to switch to. Until it offers one, the
+  # credential exchange and every token afterwards travel in cleartext.
+  #
+  # Declared here so the exposure is visible in review and in the diff, rather
+  # than being the silent consequence of an unset variable. Every run logs a
+  # warning while this is set. Remove it the day the upstream supports TLS.
+  allowCleartext: true
 
   auth:
     kind: tokenExchange

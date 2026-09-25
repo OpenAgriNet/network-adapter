@@ -60,10 +60,12 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 			Flag: "registry-url",
 			Env:  "SUNBIRD_REGISTRY_URL",
 		},
+		// NO Default. It used to be a plain-HTTP address at a bare IP, so a
+		// deployment that forgot MANDI_API_URI sent its credentials, and then
+		// every token, in cleartext. A missing address must fail loudly.
 		"baseUrl": {
-			Flag:    "base-url",
-			Env:     "MANDI_API_URI",
-			Default: "http://34.0.4.235:8080",
+			Flag: "base-url",
+			Env:  "MANDI_API_URI",
 		},
 		"states": {
 			Flag:    "states",
