@@ -153,3 +153,29 @@ func contains(haystack, needle string) bool {
 			return false
 		}()
 }
+
+// A rule's status is written as one code or a list, and YAML or JSON may hand
+// either back as int, int64 or float64. Every spelling must match the same
+// way, or `status: [401, 403]` from one parser would silently match nothing.
+func TestStatusMatchesEverySpellingOfAStatus(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stated any
+		want   bool
+	}{
+		"int":              {401, true},
+		"int, other":       {403, false},
+		"int64":            {int64(401), true},
+		"float64 (JSON)":   {float64(401), true},
+		"list of any":      {[]any{403, float64(401)}, true},
+		"list of any, no":  {[]any{403, 500}, false},
+		"list of int":      {[]int{400, 401}, true},
+		"list of int, no":  {[]int{400}, false},
+		"list with a word": {[]any{"401"}, false},
+		"a word":           {"401", false},
+		"nothing":          {nil, false},
+	} {
+		if got := statusMatches(tc.stated, 401); got != tc.want {
+			t.Errorf("%s: statusMatches(%v, 401) = %v, want %v", name, tc.stated, got, tc.want)
+		}
+	}
+}

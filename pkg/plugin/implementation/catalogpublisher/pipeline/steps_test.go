@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -592,5 +593,224 @@ func testErrorRules() []ErrorRule {
 	return []ErrorRule{
 		{When: &ErrorMatch{Status: 400, BodyContains: "No data available."}, Classify: classifyEmpty},
 		{Default: classifyTransport},
+	}
+}
+
+// postRunner is a runner whose upstream records the POST it receives and
+// answers with body.
+func postRunner(t *testing.T, spec Spec, status int, body string) (*stepRunner, *postSeen) {
+	t.Helper()
+	seen := &postSeen{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.method, seen.path, seen.query = r.Method, r.URL.Path, r.URL.Query().Get("token")
+		seen.auth, seen.contentType = r.Header.Get("Authorization"), r.Header.Get("Content-Type")
+		seen.body, _ = io.ReadAll(r.Body)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(upstream.Close)
+
+	runner, _ := testRunner(t, spec, `[]`)
+	runner.client = NewClient(upstream.URL)
+	runner.client.http = upstream.Client()
+	return runner, seen
+}
+
+type postSeen struct {
+	method, path, query, auth, contentType string
+	body                                   []byte
+}
+
+// http.post builds its JSON body from the mapping's request half, carries the
+// token where the upstream's auth says, and runs the response half over the
+// answer -- the three things a search-style upstream needs.
+func TestHTTPPostSendsTheMappedBodyAndReadsTheAnswer(t *testing.T) {
+	spec := Spec{Pipeline: []Step{{
+		ID: "search", Uses: usesHTTPPost, Out: "results",
+		With: With{Path: "/v1/search", Mapping: "mappings/search.yaml",
+			Local: map[string]string{"token": "${auth.token}", "dataset": "regions"}},
+	}}}
+	for _, place := range []string{"header", "query"} {
+		t.Run(place, func(t *testing.T) {
+			runner, seen := postRunner(t, spec, http.StatusOK, `[{"id":"r1"},{"id":"r2"}]`)
+			runner.client.tokenPlace = place
+
+			records, err := runner.runSteps(context.Background())
+			if err != nil {
+				t.Fatalf("runSteps: %v", err)
+			}
+			if len(records) != 2 || records[1]["id"] != "r2" {
+				t.Fatalf("records = %v, want the two the upstream answered", records)
+			}
+			if seen.method != http.MethodPost || seen.path != "/v1/search" || seen.contentType != "application/json" {
+				t.Errorf("request = %s %s (%s), want a JSON POST to /v1/search", seen.method, seen.path, seen.contentType)
+			}
+			var sent map[string]any
+			if err := json.Unmarshal(seen.body, &sent); err != nil || sent["dataset"] != "regions" {
+				t.Errorf("body = %s, want the mapping's request half", seen.body)
+			}
+			switch place {
+			case "header":
+				if seen.auth != "Bearer tok-fake" || seen.query != "" {
+					t.Errorf("auth header %q, query %q; want the token in the header only", seen.auth, seen.query)
+				}
+			case "query":
+				if seen.query != "tok-fake" || seen.auth != "" {
+					t.Errorf("auth header %q, query %q; want the token in the query only", seen.auth, seen.query)
+				}
+			}
+		})
+	}
+}
+
+// An answer that is not a JSON array is refused before the response half
+// runs: an error object would otherwise decode into one phantom record.
+func TestHTTPPostRefusesAnAnswerThatIsNotAnArray(t *testing.T) {
+	spec := Spec{Pipeline: []Step{{ID: "search", Uses: usesHTTPPost, Out: "results",
+		With: With{Path: "/v1/search", Mapping: "mappings/search.yaml"}}}}
+	runner, _ := postRunner(t, spec, http.StatusOK, `{"message":"no data found"}`)
+
+	_, err := runner.runSteps(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "array was expected") {
+		t.Fatalf("err = %v, want a refusal of the non-array answer", err)
+	}
+}
+
+// A failing upstream is classified like any other call, so onError can tell
+// a quiet "no rows" from an outage.
+func TestHTTPPostClassifiesAFailure(t *testing.T) {
+	spec := Spec{Pipeline: []Step{{ID: "search", Uses: usesHTTPPost, Out: "results",
+		With: With{Path: "/v1/search", Mapping: "mappings/search.yaml"}}}}
+	runner, _ := postRunner(t, spec, http.StatusInternalServerError, `{"error":"down"}`)
+
+	if _, err := runner.runSteps(context.Background()); err == nil {
+		t.Fatal("a 500 from the upstream was accepted")
+	}
+}
+
+func TestHTTPPostNeedsPathAndMapping(t *testing.T) {
+	runner, _ := postRunner(t, Spec{Pipeline: []Step{{ID: "search", Uses: usesHTTPPost}}}, http.StatusOK, `[]`)
+	if _, err := runner.runSteps(context.Background()); err == nil || !strings.Contains(err.Error(), "path") {
+		t.Fatalf("err = %v, want a refusal naming path and mapping", err)
+	}
+}
+
+// filter keeps the records its predicate holds for, in order, and drops the
+// rest -- the cleanup a join or dedupe needs before a defective row can
+// become a key.
+func TestFilterKeepsOnlyMatchingRecords(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "rows", Uses: usesConst, Out: "rows", With: With{Records: []map[string]any{
+			{"id": "a", "status": "ACTIVE"},
+			{"id": "", "status": "ACTIVE"},
+			{"id": "c", "status": "WITHDRAWN"},
+			{"id": "d", "status": "ACTIVE"},
+		}}},
+		{ID: "active", Uses: usesFilter, Out: "active",
+			With: With{When: "id != '' and status != 'WITHDRAWN'"}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	if len(records) != 2 || records[0]["id"] != "a" || records[1]["id"] != "d" {
+		t.Fatalf("records = %v, want a and d, in order", records)
+	}
+}
+
+func TestFilterRefusesAMissingOrBrokenPredicate(t *testing.T) {
+	rows := Step{ID: "rows", Uses: usesConst, Out: "rows", With: With{Records: []map[string]any{{"id": "a"}}}}
+	for name, when := range map[string]string{"missing": "", "broken": "id = = 'a'"} {
+		t.Run(name, func(t *testing.T) {
+			runner, _ := testRunner(t, Spec{Pipeline: []Step{rows,
+				{ID: "active", Uses: usesFilter, Out: "active", With: With{When: when}}}}, `[]`)
+			if _, err := runner.runSteps(context.Background()); err == nil {
+				t.Fatalf("a %s predicate was accepted", name)
+			}
+		})
+	}
+}
+
+// localMapper answers the response half with every record stamped with the
+// _local values it was given, so a test can see both reach the mapping.
+type localMapper struct{ ref string }
+
+func (m *localMapper) Verify(context.Context, string, any) error { return nil }
+
+func (m *localMapper) Transform(_ context.Context, ref string, _ definition.Direction, in any) ([]byte, error) {
+	m.ref = ref
+	input, _ := in.(map[string]any)
+	local, _ := input["_local"].(map[string]any)
+	var out []map[string]any
+	records, _ := input["response"].([]map[string]any)
+	for _, record := range records {
+		stamped := map[string]any{}
+		for k, v := range record {
+			stamped[k] = v
+		}
+		for k, v := range local {
+			stamped[k] = v
+		}
+		out = append(out, stamped)
+	}
+	return json.Marshal(out)
+}
+
+// transform runs a mapping over the collection with no HTTP call: the records
+// and the step's local values reach the mapping, and its output is the step's.
+func TestTransformRunsTheMappingOverTheCollection(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "rows", Uses: usesConst, Out: "rows", With: With{Records: []map[string]any{{"id": "a"}, {"id": "b"}}}},
+		{ID: "stamped", Uses: usesTransform, Out: "stamped",
+			With: With{Mapping: "mappings/enrich.yaml", Local: map[string]string{"sourceId": "example-source"}}},
+	}}
+	runner, upstream := testRunner(t, spec, `[]`)
+	upstream.Close() // a transform must not need the upstream
+	mapper := &localMapper{}
+	runner.mapper = mapper
+	runner.mappingBase = "http://127.0.0.1:1"
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	if len(records) != 2 || records[0]["sourceId"] != "example-source" || records[1]["id"] != "b" {
+		t.Fatalf("records = %v, want both records stamped with the local value", records)
+	}
+	if mapper.ref != "http://127.0.0.1:1/enrich.yaml" {
+		t.Errorf("mapping ref = %q, want the served mapping, prefix stripped", mapper.ref)
+	}
+}
+
+func TestTransformNeedsAMapping(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "rows", Uses: usesConst, Out: "rows", With: With{Records: []map[string]any{{"id": "a"}}}},
+		{ID: "stamped", Uses: usesTransform, Out: "stamped"},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+	if _, err := runner.runSteps(context.Background()); err == nil || !strings.Contains(err.Error(), "mapping") {
+		t.Fatalf("err = %v, want a refusal naming the missing mapping", err)
+	}
+}
+
+// renderScalar is the text a ${...} becomes -- a group key, a catalogue slug,
+// a query parameter. Whole numbers from JSON (float64) must render without a
+// ".0", or a marketId reaches an upstream as "101.0" and a slug as "MH.0".
+func TestRenderScalarRendersEachJSONType(t *testing.T) {
+	for want, value := range map[string]any{
+		"":          nil,
+		"MH":        "MH",
+		"true":      true,
+		"101":       float64(101),
+		"18.5204":   18.5204,
+		"42":        42,
+		`["a","b"]`: []any{"a", "b"},
+		`{"k":1}`:   map[string]any{"k": 1},
+	} {
+		if got := renderScalar(value); got != want {
+			t.Errorf("renderScalar(%#v) = %q, want %q", value, got, want)
+		}
 	}
 }
