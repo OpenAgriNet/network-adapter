@@ -14,9 +14,8 @@ package catalogcrawler
 //
 // Every pipeline publishes to the one address in CATALOG_PUBLISH_URL. Beyond
 // that each reads its own environment: mandi needs MANDI_TOKEN_USER and
-// MANDI_TOKEN_SECRET; weather needs nothing more (it has no upstream). A
-// pipeline missing its env fails its own run and is reported; it does not
-// stop the others.
+// MANDI_TOKEN_SECRET. A pipeline missing its env fails its own run and is
+// reported; it does not stop the others.
 //
 // Skipped unless MANDI_LIVE=1, so `go test ./...` stays hermetic.
 //
