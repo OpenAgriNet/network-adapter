@@ -340,3 +340,62 @@ func TestPublishAddressHintNamesThePipelinesOwnInput(t *testing.T) {
 		t.Errorf("err = %v, want it to name EXAMPLE_PUBLISH_URL", err)
 	}
 }
+
+// The retirement must not go out when its replacements did not.
+//
+// retireOld posts a TOMBSTONE: it deactivates the old catalogue, which is how
+// that catalogue's resources leave the network. Sending it after a run whose
+// new catalogues were all rejected removes the old data and puts nothing in
+// its place -- the network is left with neither. The next tick then retries
+// and sends the tombstone again.
+func TestRetireIsNotSentWhenEveryPublishFailed(t *testing.T) {
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+
+	pub := publisherAnswering(StatusRejected)
+	spec := Publish{
+		URL:       "${inputs.publishUrl}/publish",
+		Accept:    []string{"ACCEPTED"},
+		RetireOld: RetireOld{Enabled: "${inputs.retireOld}", CatalogID: "cat-old-monolith"},
+	}
+	resolved := map[string]string{"publishUrl": testAdapter, "retireOld": "true"}
+
+	result, err := PublishCatalogues(context.Background(), spec, resolved, dir, publishTestPrefix, 0, pub)
+	if err != nil {
+		t.Fatalf("PublishCatalogues: %v", err)
+	}
+	if result.RetiredOld != nil {
+		t.Error("the old catalogue was retired although every replacement was rejected; " +
+			"the network is left with neither the old data nor the new")
+	}
+	// One call for the catalogue, none for the tombstone.
+	if got := pub.calls(); got != 1 {
+		t.Errorf("publisher saw %d calls, want 1 (the catalogue only, no tombstone)", got)
+	}
+}
+
+// And it MUST still go out on a healthy run, or the migration never completes
+// and the check above is just breakage.
+func TestRetireIsSentWhenEveryPublishSucceeded(t *testing.T) {
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+
+	pub := publisherAnswering(StatusPublished)
+	spec := Publish{
+		URL:       "${inputs.publishUrl}/publish",
+		Accept:    []string{"ACCEPTED"},
+		RetireOld: RetireOld{Enabled: "${inputs.retireOld}", CatalogID: "cat-old-monolith"},
+	}
+	resolved := map[string]string{"publishUrl": testAdapter, "retireOld": "true"}
+
+	result, err := PublishCatalogues(context.Background(), spec, resolved, dir, publishTestPrefix, 0, pub)
+	if err != nil {
+		t.Fatalf("PublishCatalogues: %v", err)
+	}
+	if result.RetiredOld == nil {
+		t.Fatal("a healthy run did not retire the old catalogue, so the migration never completes")
+	}
+	if got := pub.calls(); got != 2 {
+		t.Errorf("publisher saw %d calls, want 2 (the catalogue and the tombstone)", got)
+	}
+}

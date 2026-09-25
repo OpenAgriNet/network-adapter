@@ -9,6 +9,7 @@ package pipeline
 import (
 	"encoding/json"
 	"sort"
+	"sync"
 
 	"embed"
 	"fmt"
@@ -479,6 +480,15 @@ var apiVersionFor = map[string]string{
 // loads the same handful of contracts repeatedly.
 var compiledSchemas = map[string]*jsonschema.Schema{}
 
+// compiling guards compiledSchemas.
+//
+// The crawler runs one runner per binding key, each on its own goroutine, so
+// two pipelines validating at the same time is the ordinary case rather than
+// an edge one. An unguarded map write there is not a subtle race: Go detects
+// it and kills the PROCESS with "fatal error: concurrent map writes", taking
+// the crawl loops down with the publish ones.
+var compiling sync.Mutex
+
 // Validate holds the pipeline file at path against the contract it names.
 //
 // It reports EVERY violation it can see, not just the first: an operator
@@ -560,6 +570,9 @@ func schemaRefOf(document any, path string) (string, error) {
 
 // schemaFor compiles the contract, or says which ones exist.
 func schemaFor(ref string) (*jsonschema.Schema, error) {
+	compiling.Lock()
+	defer compiling.Unlock()
+
 	if schema, ok := compiledSchemas[ref]; ok {
 		return schema, nil
 	}

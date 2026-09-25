@@ -41,6 +41,11 @@ type Outcome struct {
 type Result struct {
 	Outcomes   []Outcome
 	RetiredOld *Outcome
+
+	// RetiredSkipped says why a declared retirement did NOT happen. Without
+	// it, a skipped retirement and a pipeline that never asked for one look
+	// identical in the report.
+	RetiredSkipped string
 }
 
 // HasFailures reports whether anything did not reach the index intact, so a
@@ -176,12 +181,23 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 	for _, file := range files {
 		result.Outcomes = append(result.Outcomes, publishFile(ctx, publisher, publishURL, file))
 	}
+	// The tombstone goes out ONLY when everything that supersedes the old
+	// catalogue is actually on the network.
+	//
+	// Retiring is not a tidy-up, it is a deletion: deactivating the old
+	// catalogue is how its resources leave. Sending it after a run whose
+	// replacements were rejected removes the old data and puts nothing in its
+	// place, leaving the network with neither -- and the next tick repeats it.
 	if retire != nil {
-		outcome := publisher.Publish(ctx, publishURL, tombstone(retire.CatalogID, retire.DescriptorName))
-		if outcome.CatalogID == "" {
-			outcome.CatalogID = retire.CatalogID
+		if published, why := allPublished(result.Outcomes); !published {
+			result.RetiredSkipped = why
+		} else {
+			outcome := publisher.Publish(ctx, publishURL, tombstone(retire.CatalogID, retire.DescriptorName))
+			if outcome.CatalogID == "" {
+				outcome.CatalogID = retire.CatalogID
+			}
+			result.RetiredOld = &outcome
 		}
-		result.RetiredOld = &outcome
 	}
 	return result, nil
 }
@@ -379,4 +395,23 @@ func checkJudgement(spec Publish) error {
 			spec.TreatAsFailure)
 	}
 	return nil
+}
+
+// allPublished reports whether every catalogue this run built actually
+// reached the network, and says what stopped it when one did not.
+//
+// A run that built NOTHING does not qualify either: an empty directory plus a
+// tombstone would deactivate the old catalogue and replace it with nothing at
+// all, which is the same harm by a quieter route.
+func allPublished(outcomes []Outcome) (bool, string) {
+	if len(outcomes) == 0 {
+		return false, "no catalogues were built, so there is nothing to supersede the old one"
+	}
+	for _, outcome := range outcomes {
+		if outcome.Status != StatusPublished {
+			return false, fmt.Sprintf("%s is %s, so the old catalogue still has to serve its resources",
+				outcome.CatalogID, outcome.Status)
+		}
+	}
+	return true, ""
 }

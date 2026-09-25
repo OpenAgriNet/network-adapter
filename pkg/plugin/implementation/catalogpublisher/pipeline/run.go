@@ -364,6 +364,11 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	if err != nil {
 		return fmt.Errorf("publishing catalogues: %w", err)
 	}
+	if result.RetiredSkipped != "" {
+		// Loud, because the file ASKED for a retirement and did not get one.
+		log.WarnContext(ctx, "publish pipeline: the declared retirement was skipped",
+			"why", result.RetiredSkipped)
+	}
 	for _, outcome := range result.Outcomes {
 		log.InfoContext(ctx, "publish pipeline: outcome",
 			"catalogId", outcome.CatalogID, "status", outcome.Status, "reason", outcome.Reason)

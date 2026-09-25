@@ -814,3 +814,86 @@ func TestRenderScalarRendersEachJSONType(t *testing.T) {
 		}
 	}
 }
+
+// A step without `out:` must still feed the next one.
+//
+// previousOutput used to scan the whole pipeline for the last step that named
+// an output, so a step with no `out:` had its work DISCARDED and the step
+// after it silently read an older collection. A filter followed by a dedupe
+// is the ordinary shape that hits this: the filter runs, removes nothing from
+// what the dedupe sees, and the run publishes the rows the file excluded.
+func TestAStepWithoutOutStillFeedsTheNext(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		// The filter names its own input and deliberately has NO `out:`.
+		{ID: "drop", Uses: usesFilter, With: With{Left: "${rows}", When: "keep = true"}},
+		{ID: "final", Uses: usesDedupe, Out: "collection", With: With{Key: "id"}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+	runner.rc.outputs["rows"] = []any{
+		map[string]any{"id": 1, "keep": true},
+		map[string]any{"id": 2, "keep": false},
+		map[string]any{"id": 3, "keep": true},
+	}
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	if len(records) != 2 {
+		t.Errorf("got %d records, want 2 -- the filter's work was discarded and the "+
+			"excluded row reached the catalogue", len(records))
+	}
+	for _, record := range records {
+		if record["keep"] != true {
+			t.Errorf("a record the filter excluded survived: %v", record)
+		}
+	}
+}
+
+// dedupe turns every record missing its key into the SAME key, so they all
+// collapse into one. Thousands of rows can vanish with nothing said.
+func TestDedupeRefusesRecordsMissingTheKey(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "dedupe", Uses: usesDedupe, Out: "collection", With: With{Key: "id"}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+	runner.rc.outputs["seeded"] = nil
+	runner.lastOutput = []any{
+		map[string]any{"id": 1},
+		map[string]any{"name": "no id here"},
+		map[string]any{"name": "nor here"},
+	}
+
+	_, err := runner.runSteps(context.Background())
+	if err == nil {
+		t.Fatal("two records with no key collapsed into one and the run carried on")
+	}
+	if !strings.Contains(err.Error(), "id") {
+		t.Errorf("error %q does not name the key that was missing", err)
+	}
+}
+
+// filter evaluated its predicate without interpolating, so a ${...} inside it
+// was compared as a record path. The filter then kept everything, silently --
+// the same bug derive and exclude already had fixed.
+func TestFilterSubstitutesInterpolationAsALiteral(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "drop", Uses: usesFilter, Out: "kept",
+			With: With{Left: "${rows}", When: "region = ${inputs.onlyRegion}"}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+	runner.rc = newRunContext(map[string]string{"onlyRegion": "AA"}, "tok")
+	runner.rc.outputs["rows"] = []any{
+		map[string]any{"id": 1, "region": "AA"},
+		map[string]any{"id": 2, "region": "BB"},
+	}
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	if len(records) != 1 || records[0]["region"] != "AA" {
+		t.Errorf("filter kept %v; the interpolated value was compared as a record path, "+
+			"so the predicate never matched properly", records)
+	}
+}
