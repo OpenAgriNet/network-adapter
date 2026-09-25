@@ -836,3 +836,42 @@ func TestGroupsDifferingOnlyInCaseAreRefused(t *testing.T) {
 		t.Errorf("error %q does not explain that the collision is a case one", err)
 	}
 }
+
+// An EXACT slug collision is a different mistake from a case one, and the
+// error has to say which.
+//
+// A chunk template that ignores the chunk index renders the same slug for
+// every chunk of a group that splits. Telling the author that the two "differ
+// only in case" sends them looking at their group names, which are fine.
+func TestAnExactSlugCollisionIsNotReportedAsACaseCollision(t *testing.T) {
+	records := []map[string]any{
+		{"region": "MH", "id": 1},
+		{"region": "MH", "id": 2},
+		{"region": "MH", "id": 3},
+	}
+	catalog := Catalog{
+		GroupBy: "region",
+		Order:   Order{By: "id"},
+		// Budget 2 splits this group in two, and the template names both
+		// chunks the same thing.
+		Chunk:    Chunk{Budget: 2, Cost: "1", Slug: "${region}"},
+		Identity: Identity{CatalogID: "catalog:example:${slug}"},
+		Render:   Render{Mapping: "mappings/catalog.yaml"},
+	}
+
+	cache, err := newExprCache()
+	if err != nil {
+		t.Fatalf("newExprCache: %v", err)
+	}
+	_, _, err = buildCatalogues(context.Background(), catalog, records,
+		newRunContext(map[string]string{}, "tok"), cache, &echoMapper{}, "http://mappings.test")
+	if err == nil {
+		t.Fatal("two chunks rendering one slug were both built; the second overwrites the first")
+	}
+	if strings.Contains(err.Error(), "case") {
+		t.Errorf("an exact collision was reported as a case collision: %v", err)
+	}
+	if !strings.Contains(err.Error(), "chunk") {
+		t.Errorf("error %q does not point at the chunk template that caused it", err)
+	}
+}

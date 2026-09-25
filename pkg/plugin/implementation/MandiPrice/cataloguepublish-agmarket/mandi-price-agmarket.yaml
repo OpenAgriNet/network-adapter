@@ -152,10 +152,6 @@ inputs:
 # ---------------------------------------------------------------------------
 # upstream — one service, its auth, and how its failures are classified.
 # ---------------------------------------------------------------------------
-# !!! INERT -- parsed into Spec.Upstream, read by NOTHING outside tests. !!!
-# The real upstream address, auth exchange and error classification are
-# hardcoded in Go: collect.go for the paths, the frame's client.go for the
-# token endpoint and the "No data available." classification.
 upstream:
   baseUrl: ${inputs.baseUrl}
 
@@ -200,13 +196,10 @@ upstream:
     maxResponseBytes: 32MiB
 
 # ---------------------------------------------------------------------------
-# pipeline — ordered steps, each naming what it produces. Full six steps,
-# copied verbatim from tools/publish/mandi_publish's proven collect.go logic.
+# pipeline — ordered steps, each naming what it produces. This IS the call
+# sequence: the interpreter runs these six in order, and when/forEach/onError/
+# concurrency all drive real behaviour.
 # ---------------------------------------------------------------------------
-# !!! INERT -- parsed into Spec.Pipeline, read by NOTHING outside tests. !!!
-# The real call sequence is Collect() in collect.go: fetchStates ->
-# fetchMasterMarkets -> per state fetchStateRows -> join -> dedupe -> build.
-# The when/forEach/onError/concurrency keys below parse and drive nothing.
 pipeline:
   - id: states
     # `= ''`, NOT `= []`. inputs.states is a list input, but an input reaches
