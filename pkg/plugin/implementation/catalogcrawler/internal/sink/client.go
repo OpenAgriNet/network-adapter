@@ -14,6 +14,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/telemetry"
+	auditlog "go.opentelemetry.io/otel/log"
 )
 
 // BatchOutcome is the result of pushing one batch of a catalog.
@@ -63,12 +67,14 @@ func (c *Client) Push(ctx context.Context, endpoint string, body []byte) (BatchO
 	if err != nil {
 		c.logger().InfoContext(ctx, "publish call", append(fields,
 			"status", 0, "duration", time.Since(began).Round(time.Millisecond).String())...)
+		c.emitAudit(ctx, endpoint, body, 0, err)
 		return BatchOutcome{}, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxAnswerBytes))
 	c.logger().InfoContext(ctx, "publish call", append(fields,
 		"status", resp.StatusCode, "duration", time.Since(began).Round(time.Millisecond).String())...)
+	c.emitAudit(ctx, endpoint, body, resp.StatusCode, nil)
 	out := BatchOutcome{Acked: resp.StatusCode == http.StatusOK, HTTPStatus: resp.StatusCode}
 	if !out.Acked {
 		out.Reason = strings.TrimSpace(string(respBody))
@@ -90,6 +96,53 @@ func (c *Client) Push(ctx context.Context, endpoint string, body []byte) (BatchO
 		}
 	}
 	return out, nil
+}
+
+// pushContext is the sliver of a catalog/publish body's context this client
+// reads back out to correlate and attribute its own audit record -- every
+// field here is one BuildPushBody already wrote in, not new data.
+type pushContext struct {
+	Context struct {
+		TransactionID string `json:"transactionId"`
+		MessageID     string `json:"messageId"`
+		BppID         string `json:"bppId"`
+	} `json:"context"`
+}
+
+// emitAudit routes this push through the SAME audit pipeline every inbound
+// Beckn action goes through (core/module/handler/stdHandler.go ->
+// telemetry.EmitAuditLogs): masked per config/audit-fields.yaml, checksummed,
+// tagged with the transaction/message id, and shipped to the same OTel
+// backend. No new masking or redaction logic here on purpose -- reusing the
+// one place that already has it, rather than a second copy of "never log
+// the token" for this client to maintain.
+//
+// header is always nil: unlike an inbound Beckn request, this client's own
+// headers (Content-Type only, at present) are not a signature to preserve,
+// and passing headers here would opt this call into
+// captureSignatureHeaders' verbatim capture for whatever this client sends
+// in the future. Nil keeps that decision explicit rather than accidental.
+func (c *Client) emitAudit(ctx context.Context, endpoint string, body []byte, status int, pushErr error) {
+	var pc pushContext
+	_ = json.Unmarshal(body, &pc) // best-effort: audit fires with blank ids on a body EmitAuditLogs will itself also fail to parse
+
+	auditCtx := context.WithValue(ctx, model.ContextKeyTxnID, pc.Context.TransactionID)
+	auditCtx = context.WithValue(auditCtx, model.ContextKeyMsgID, pc.Context.MessageID)
+
+	telemetry.EmitAuditLogs(auditCtx, body, nil,
+		auditlog.String("audit.direction", "publish"),
+		auditlog.Int("http.response.status_code", status),
+		auditlog.String("http.request.error", errString(pushErr)),
+		auditlog.String("sender.id", pc.Context.BppID),
+		auditlog.String("receiver.id", endpoint),
+	)
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // maxAnswerBytes bounds what is read of an answer: large enough for an

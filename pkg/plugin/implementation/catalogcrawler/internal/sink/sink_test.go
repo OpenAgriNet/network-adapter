@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
+	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"github.com/beckn/catalog-core/pkg/catalog"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 func TestBuildPushBody_CarriesEntryMetadata(t *testing.T) {
@@ -435,6 +437,64 @@ func TestPushLogsEachCall(t *testing.T) {
 	}
 	if strings.Contains(out, "sig=abc") {
 		t.Errorf("the query reached the log:\n%s", out)
+	}
+}
+
+// TestPushEmitsAnAuditRecord proves a push goes through the SAME audit
+// pipeline (telemetry.EmitAuditLogs) every inbound Beckn action goes
+// through -- not a second, hand-rolled log line -- and that it carries the
+// correlation ids and identity BuildPushBody already put in the body.
+func TestPushEmitsAnAuditRecord(t *testing.T) {
+	ctx := context.Background()
+	provider, exporter, err := telemetry.NewTestProviderWithLogs(ctx)
+	if err != nil {
+		t.Fatalf("NewTestProviderWithLogs: %v", err)
+	}
+	defer provider.Shutdown(ctx)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"}]}}`))
+	}))
+	defer server.Close()
+
+	body := []byte(`{"context":{"transactionId":"t1","messageId":"m1","bppId":"agmarknet"}}`)
+	c := NewClient(5 * time.Second)
+	if _, err := c.Push(ctx, server.URL+"/publish", body); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	records := exporter.Records()
+	if len(records) != 1 {
+		t.Fatalf("want 1 audit record, got %d", len(records))
+	}
+
+	got := map[string]string{}
+	var statusCode int64
+	records[0].WalkAttributes(func(kv otellog.KeyValue) bool {
+		if kv.Key == "http.response.status_code" {
+			statusCode = kv.Value.AsInt64()
+			return true
+		}
+		got[string(kv.Key)] = kv.Value.AsString()
+		return true
+	})
+
+	for key, want := range map[string]string{
+		"audit.direction": "publish",
+		"sender.id":       "agmarknet",
+		"receiver.id":     server.URL + "/publish",
+		"transaction_id":  "t1",
+		"message_id":      "m1",
+	} {
+		if got[key] != want {
+			t.Errorf("attribute %q = %q, want %q (all: %+v)", key, got[key], want, got)
+		}
+	}
+	if statusCode != 200 {
+		t.Errorf("http.response.status_code = %d, want 200", statusCode)
+	}
+	if got["checkSum"] == "" {
+		t.Error("audit record missing checkSum -- this is the same helper stdHandler uses, it should always set one")
 	}
 }
 
