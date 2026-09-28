@@ -1,9 +1,6 @@
-// spec.go types and parses agmarknet.yaml itself. The engine that
-// runs a CatalogPipeline doesn't exist yet (see the file's own header
-// comment), so this is deliberately just the YAML<->struct mapping the
-// polling layer will need to validate and read the file with -- not a
-// pipeline executor. Field names and shapes come straight from the file, not
-// from what would be convenient to build later.
+// spec.go types and parses a pipeline file. Field names and shapes come
+// straight from the file, and LoadSpec validates the raw document against the
+// contract it names before parsing it into these structs.
 package pipeline
 
 import (
@@ -59,9 +56,8 @@ type Schedule struct {
 	Timezone string `yaml:"timezone"`
 }
 
-// Input is one entry of the CLI/env surface, resolved flag > env > default
-// by tools/publish/mandi_publish's proven order. Secret marks the two
-// credential inputs that have no flag and must never be logged or echoed.
+// Input is one entry of the env surface, resolved env > default. Secret marks
+// the credential inputs that have no flag and must never be logged or echoed.
 type Input struct {
 	Flag    string      `yaml:"flag,omitempty"`
 	Env     string      `yaml:"env,omitempty"`
@@ -70,6 +66,11 @@ type Input struct {
 	Default interface{} `yaml:"default,omitempty"`
 	Enum    []string    `yaml:"enum,omitempty"`
 	Secret  bool        `yaml:"secret,omitempty"`
+
+	// Required refuses the run when the input resolves to empty, naming the
+	// input and its env. For a value with no safe default -- the identity a
+	// catalog publishes under -- where empty is never a considered choice.
+	Required bool `yaml:"required,omitempty"`
 }
 
 // Upstream is the one service this pipeline calls, how it authenticates, and
@@ -293,17 +294,20 @@ type Render struct {
 	Local   map[string]string `yaml:"local,omitempty"`
 }
 
-// Publish is where catalog files go and what counts as success.
+// Publish is where catalog files go, under what safety rule.
+//
+// What counts as success is NOT the file's to say: the sink judges every
+// answer, ACCEPTED is the only success and anything else -- PARTIAL included,
+// a catalog indexed with resources missing -- is a failure. A file restating
+// that could only agree or be wrong.
 //
 // RefuseWhen is a safety rule, not a preference: a state that failed to
 // collect is not a state with no markets, so a partial collection must never
 // publish as though it were whole.
 type Publish struct {
-	URL            string    `yaml:"url"`
-	Accept         []string  `yaml:"accept"`
-	TreatAsFailure []string  `yaml:"treatAsFailure,omitempty"`
-	RefuseWhen     string    `yaml:"refuseWhen,omitempty"`
-	RetireOld      RetireOld `yaml:"retireOld,omitempty"`
+	URL        string    `yaml:"url"`
+	RefuseWhen string    `yaml:"refuseWhen,omitempty"`
+	RetireOld  RetireOld `yaml:"retireOld,omitempty"`
 
 	// AddressHint is not read from the file: the run fills it from the
 	// pipeline's own publishUrl input, so an unset address names the flag and

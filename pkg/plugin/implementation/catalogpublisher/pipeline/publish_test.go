@@ -80,10 +80,8 @@ const testAdapter = "http://adapter.test"
 // goodSpec is the publish block the pipeline actually declares.
 func goodSpec() Publish {
 	return Publish{
-		URL:            "${inputs.publishUrl}/publish",
-		Accept:         []string{"ACCEPTED"},
-		TreatAsFailure: []string{"PARTIAL", "REJECTED"},
-		RefuseWhen:     "collection.groupErrors > 0",
+		URL:        "${inputs.publishUrl}/publish",
+		RefuseWhen: "collection.groupErrors > 0",
 	}
 }
 
@@ -182,50 +180,6 @@ func TestPublishCatalogsNeedsAPublishURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "publishUrl") || !strings.Contains(err.Error(), "CATALOG_PUBLISH_URL") {
 		t.Errorf("error %q names neither the input nor its environment variable", err)
-	}
-}
-
-func TestPublishCatalogsRejectsASpecThatAcceptsPartial(t *testing.T) {
-	pub := publisherAnswering(StatusPublished)
-
-	dir := t.TempDir()
-	writeCatalog(t, dir, "MH")
-
-	spec := goodSpec()
-	spec.Accept = []string{"PARTIAL"}
-
-	_, err := PublishCatalogs(context.Background(), spec,
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, pub)
-	if err == nil {
-		t.Fatal("publishCatalogs honoured a spec accepting PARTIAL it cannot honour")
-	}
-	if !strings.Contains(err.Error(), "PARTIAL") {
-		t.Errorf("error %q does not name the status it cannot accept", err)
-	}
-	if pub.calls() != 0 {
-		t.Errorf("posted %d times despite an unhonourable spec, want 0", pub.calls())
-	}
-}
-
-func TestPublishCatalogsRejectsASpecThatDoesNotFailOnPartial(t *testing.T) {
-	spec := goodSpec()
-	spec.TreatAsFailure = []string{"REJECTED"}
-
-	// A real catalog file and a live server, so the call would otherwise
-	// SUCCEED. With an empty directory this test passed even with the
-	// judgement check removed -- the publish step would have returned "no
-	// catalog files in ..." and the assertion could not tell the two apart.
-	dir := t.TempDir()
-	writeCatalog(t, dir, "MH")
-	pub := publisherAnswering(StatusPublished)
-
-	_, err := PublishCatalogs(context.Background(), spec,
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, pub)
-	if err == nil {
-		t.Fatal("publishCatalogs honoured a spec that does not treat PARTIAL as a failure")
-	}
-	if !strings.Contains(err.Error(), "PARTIAL") {
-		t.Errorf("error %q does not name PARTIAL, so it may be reporting something else entirely", err)
 	}
 }
 
@@ -376,7 +330,6 @@ func TestRetireIsNotSentWhenEveryPublishFailed(t *testing.T) {
 	pub := publisherAnswering(StatusRejected)
 	spec := Publish{
 		URL:       "${inputs.publishUrl}/publish",
-		Accept:    []string{"ACCEPTED"},
 		RetireOld: RetireOld{Enabled: "${inputs.retireOld}", CatalogID: "cat-old-monolith"},
 	}
 	resolved := map[string]string{"publishUrl": testAdapter, "retireOld": "true"}
@@ -404,7 +357,6 @@ func TestRetireIsSentWhenEveryPublishSucceeded(t *testing.T) {
 	pub := publisherAnswering(StatusPublished)
 	spec := Publish{
 		URL:       "${inputs.publishUrl}/publish",
-		Accept:    []string{"ACCEPTED"},
 		RetireOld: RetireOld{Enabled: "${inputs.retireOld}", CatalogID: "cat-old-monolith"},
 	}
 	resolved := map[string]string{"publishUrl": testAdapter, "retireOld": "true"}

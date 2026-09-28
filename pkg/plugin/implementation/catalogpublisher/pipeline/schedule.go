@@ -11,6 +11,7 @@ package pipeline
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -355,28 +356,63 @@ const cronLookBack = 8 * 366 * 24 * time.Hour
 // have run by now, and has it" -- a next-firing API answers a different
 // question and forces the caller to keep state it would otherwise not need.
 //
-// Whole non-matching days are skipped in one step rather than minute by
-// minute, so a yearly expression costs a few hundred iterations rather than
-// half a million.
+// It walks back a day at a time, skipping non-matching days in one step, and
+// on a matching day tries the permitted hours and minutes latest first -- so a
+// yearly expression costs a few thousand iterations at most.
 func (c cronSchedule) prevFiring(now time.Time, loc *time.Location) (time.Time, error) {
-	local := now.In(loc).Truncate(time.Minute)
+	local := now.In(loc)
 	floor := local.Add(-cronLookBack)
+	hours, minutes := descending(c.hours), descending(c.minutes)
 
-	// Start at the current minute and walk back.
-	for at := local; at.After(floor); {
-		if !c.dayMatches(at) {
-			// Nothing this day can match: jump to 23:59 of the day before.
-			midnight := time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, loc)
-			at = midnight.Add(-time.Minute)
+	// Day by day, newest first, and within a day the latest wall time first.
+	// Each candidate is built from the WALL CLOCK (see wallTime) rather than
+	// reached by stepping back a minute at a time, because stepping the
+	// absolute clock walks straight past a wall time that daylight saving
+	// removes, and meets one it repeats twice.
+	for day := time.Date(local.Year(), local.Month(), local.Day(), 12, 0, 0, 0, loc); !day.Before(floor); day = day.AddDate(0, 0, -1) {
+		if !c.dayMatches(day) {
 			continue
 		}
-		if c.minutes[at.Minute()] && c.hours[at.Hour()] {
-			return at, nil
+		for _, hour := range hours {
+			for _, minute := range minutes {
+				if at := wallTime(day, hour, minute, loc); !at.After(now) {
+					return at, nil
+				}
+			}
 		}
-		at = at.Add(-time.Minute)
 	}
 	return time.Time{}, fmt.Errorf("cron %q has not fired in the last %d days; it may describe a date that does not occur",
 		c.expr, int(cronLookBack.Hours()/24))
+}
+
+// wallTime is the instant the clock in loc first reads hour:minute on day.
+//
+// A repeated wall time (the hour daylight saving gives back) is its FIRST
+// occurrence, so the repeat is not a second firing and a daily pipeline does
+// not run twice. A wall time that never happens (the hour daylight saving
+// skips) fires at the first instant after the gap, so the day's run still
+// happens rather than the day being skipped.
+func wallTime(day time.Time, hour, minute int, loc *time.Location) time.Time {
+	at := time.Date(day.Year(), day.Month(), day.Day(), hour, minute, 0, 0, loc)
+	if at.Hour() == hour && at.Minute() == minute {
+		return at // exists; for an ambiguous time Go gives the first occurrence
+	}
+	for next := hour + 1; next < 24; next++ {
+		if end := time.Date(day.Year(), day.Month(), day.Day(), next, 0, 0, 0, loc); end.Hour() == next {
+			return end
+		}
+	}
+	return at
+}
+
+// descending lists a cron field's permitted values, largest first.
+func descending(values map[int]bool) []int {
+	out := make([]int, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(out)))
+	return out
 }
 
 // dayMatches applies the month and day fields alone -- the part of matches

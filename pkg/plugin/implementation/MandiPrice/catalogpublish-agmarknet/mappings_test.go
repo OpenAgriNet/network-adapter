@@ -98,3 +98,26 @@ func TestCatalogMappingNeitherFiltersSortsNorBuildsIds(t *testing.T) {
 		}
 	}
 }
+
+// The Agmarknet -> ISO 3166-2 table is data, reviewed here as data.
+// Agmarknet's codes are its own -- measured in real output, KK is Karnataka
+// and MG is Meghalaya -- so "IN-" + code publishes wrong areas, which is worse
+// than none: consumers trust the codeScheme. Codes not listed get no ISO area.
+func TestCatalogMappingAreaCodeTable(t *testing.T) {
+	raw, err := Files.ReadFile(path.Join(mappingsDir, "catalog.yaml"))
+	if err != nil {
+		t.Fatalf("reading the mapping: %v", err)
+	}
+	mapping := string(raw)
+	for code, iso := range map[string]string{
+		"CG": "IN-CG", "KK": "IN-KA", "KA": "IN-KA", "MG": "IN-ML",
+		"MH": "IN-MH", "MP": "IN-MP", "TN": "IN-TN", "UP": "IN-UP",
+	} {
+		if !strings.Contains(mapping, `"`+code+`": "`+iso+`"`) {
+			t.Errorf("the table does not map %s -> %s", code, iso)
+		}
+	}
+	if strings.Contains(mapping, `"IN-" & $uppercase`) {
+		t.Error("the mapping still derives ISO codes from Agmarknet codes")
+	}
+}

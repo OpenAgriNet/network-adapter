@@ -207,6 +207,8 @@ func fakeUpstreamEnv(baseURL string) func(string) (string, bool) {
 			return "http://publish.invalid", true
 		case "MANDI_PARTICIPANT_ID":
 			return "test-participant", true
+		case "APP_NETWORK_ID":
+			return "test-network", true
 		}
 		return "", false
 	}
@@ -386,11 +388,10 @@ func TestRunCountsANoDataStateAsEmptyRatherThanBroken(t *testing.T) {
 // publishCatalogs and stop it -- and the failed run must not be recorded, or
 // the next tick would skip the retry.
 func TestRunRefusesToPublishWhenAStateFailedForARealReason(t *testing.T) {
+	// Four failed states: one more than the file tolerates.
 	states := twoGoodStates()
-	states[1] = upstreamState{
-		code: "KA", name: "Karnataka",
-		status: http.StatusInternalServerError, rows: `{"error":"upstream is down"}`,
-	}
+	states[1] = brokenState("KA", "Karnataka")
+	states = append(states, brokenState("GJ", "Gujarat"), brokenState("RJ", "Rajasthan"), brokenState("PB", "Punjab"))
 
 	upstream := fakeAgmarknet(t, states)
 	runLog := &fakeRunLog{}
@@ -425,8 +426,70 @@ func TestRunRefusesToPublishWhenAStateFailedForARealReason(t *testing.T) {
 	if len(runLog.recorded) != 0 {
 		t.Error("a refused publish was recorded as a completed run; the day's retry is now lost")
 	}
-	if report.Errors != 1 {
-		t.Errorf("StateErrors = %d, want 1", report.Errors)
+	if report.Errors != 4 {
+		t.Errorf("groupErrors = %d, want 4", report.Errors)
+	}
+}
+
+// brokenState is a state whose rows call fails for a real reason.
+func brokenState(code, name string) upstreamState {
+	return upstreamState{code: code, name: name,
+		status: http.StatusInternalServerError, rows: `{"error":"upstream is down"}`}
+}
+
+// acceptingPublisher accepts everything it is sent and counts it.
+type acceptingPublisher struct{ published, retired int }
+
+func (p *acceptingPublisher) Publish(context.Context, string, []byte) pipeline.Outcome {
+	p.published++
+	return pipeline.Outcome{Status: pipeline.StatusPublished}
+}
+
+func (p *acceptingPublisher) Retire(_ context.Context, _, catalogID, _ string) pipeline.Outcome {
+	p.retired++
+	return pipeline.Outcome{CatalogID: catalogID, Status: pipeline.StatusPublished}
+}
+
+// One failed state is within the tolerance: the healthy states still reach
+// the network, and the failure is still counted in the report.
+func TestRunPublishesTheRestWhenOneStateFailed(t *testing.T) {
+	states := twoGoodStates()
+	states[1] = brokenState("KA", "Karnataka")
+	upstream := fakeAgmarknet(t, states)
+	publisher := &acceptingPublisher{}
+
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: fakeUpstreamEnv(upstream.URL), Now: firingTime(t), OutDir: t.TempDir(),
+		Publish: true, Publisher: publisher,
+	})
+	if err != nil {
+		t.Fatalf("one failed state refused the whole publish: %v", err)
+	}
+	if publisher.published != 1 || report.Errors != 1 {
+		t.Errorf("published %d catalogs with %d group errors; want Maharashtra published and 1 error counted",
+			publisher.published, report.Errors)
+	}
+}
+
+// Review Focus 1: with no default, a deployment that never set its identity
+// is refused before anything is fetched -- never published under an empty id.
+func TestRunRefusesWithoutAParticipantID(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	env := fakeUpstreamEnv(upstream.URL)
+	_, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: func(name string) (string, bool) {
+			if name == "MANDI_PARTICIPANT_ID" {
+				return "", false
+			}
+			return env(name)
+		},
+		Now: firingTime(t), OutDir: t.TempDir(),
+		Publish: true, Publisher: refusingPublisher{t},
+	})
+	if err == nil || !strings.Contains(err.Error(), "participantId") || !strings.Contains(err.Error(), "MANDI_PARTICIPANT_ID") {
+		t.Fatalf("err = %v; want a refusal naming participantId and MANDI_PARTICIPANT_ID", err)
 	}
 }
 
@@ -552,4 +615,58 @@ func (p refusingPublisher) Publish(context.Context, string, []byte) pipeline.Out
 func (p refusingPublisher) Retire(_ context.Context, _, catalogID, _ string) pipeline.Outcome {
 	p.t.Error("a catalog was retired although the run should have refused")
 	return pipeline.Outcome{CatalogID: catalogID, Status: pipeline.StatusPublished}
+}
+
+// The rendered catalog's contract, from a real run:
+//   - an ISO 3166-2 area only for a state the table knows (Review Focus 2);
+//     an unknown state gets none, never a guessed "IN-<code>";
+//   - market.districtName and market.districtId, no bare `district`;
+//   - validity carries the schedule's offset (+05:30), not Z.
+func TestRunRendersTheCatalogContract(t *testing.T) {
+	states := append(twoGoodStates(), upstreamState{code: "ZZ", name: "Nowhere", rows: `[
+  {"market_id":1001,"mkt_name":"Nowhere Market","state_code":"ZZ","state_name":"Nowhere",
+   "district_id":9001,"district_name":"Nowhere District",
+   "cmdt_details":[{"cmdt_id":23,"cmdt_name":"Onion"}]}
+]`})
+	upstream := fakeAgmarknet(t, states)
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: fakeUpstreamEnv(upstream.URL), Now: firingTime(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	wantISO := map[string]string{"MH": "IN-MH", "KA": "IN-KA", "ZZ": ""}
+	for _, catalog := range report.Catalogs {
+		var doc map[string]any
+		if err := json.Unmarshal(catalog.Content, &doc); err != nil {
+			t.Fatalf("%s: %v", catalog.Slug, err)
+		}
+		entry := doc["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)
+		if start := entry["validity"].(map[string]any)["startDate"].(string); !strings.HasSuffix(start, "+05:30") {
+			t.Errorf("%s: validity.startDate = %q, want the +05:30 offset", catalog.Slug, start)
+		}
+		for _, raw := range entry["resources"].([]any) {
+			attrs := raw.(map[string]any)["resourceAttributes"].(map[string]any)
+			market := attrs["market"].(map[string]any)
+			if _, bare := market["district"]; bare || market["districtName"] == nil || market["districtId"] == nil {
+				t.Errorf("%s: market = %v; want districtName and districtId, no district", catalog.Slug, market)
+			}
+			iso := ""
+			for _, area := range attrs["coverageAreas"].([]any) {
+				if a := area.(map[string]any); a["codeScheme"] == "ISO-3166-2" {
+					iso = a["areaCode"].(string)
+				}
+			}
+			if iso != wantISO[catalog.Slug] {
+				t.Errorf("%s: ISO area = %q, want %q", catalog.Slug, iso, wantISO[catalog.Slug])
+			}
+			if start := attrs["validity"].(map[string]any)["startsAt"].(string); !strings.HasSuffix(start, "+05:30") {
+				t.Errorf("%s: resource validity.startsAt = %q, want +05:30", catalog.Slug, start)
+			}
+		}
+	}
+	if len(report.Catalogs) != 3 {
+		t.Errorf("built %d catalogs, want 3 (MH, KA, ZZ)", len(report.Catalogs))
+	}
 }

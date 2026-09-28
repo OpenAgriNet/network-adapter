@@ -136,9 +136,6 @@ func PublishCatalogs(ctx context.Context, spec Publish, resolved map[string]stri
 	if publisher == nil {
 		return result, fmt.Errorf("no publisher: this run was asked to publish but given nothing to publish with")
 	}
-	if err := checkJudgement(spec); err != nil {
-		return result, err
-	}
 
 	if rule := strings.TrimSpace(spec.RefuseWhen); rule != "" {
 		counter, threshold, ok := refuseWhenRule(rule)
@@ -291,8 +288,8 @@ const expectedPublishURL = "${inputs.publishUrl}/publish"
 // The address actually used comes from inputs.publishUrl, not from this
 // field. Without this check an operator could repoint publish.url at another
 // host, watch the edit take no effect, and have the catalog posted to
-// CATALOG_PUBLISH_URL anyway -- the same silent-divergence failure checkJudgement
-// exists to prevent, and the reason refuseWhen is compared literally above.
+// CATALOG_PUBLISH_URL anyway -- a rule the file states and nothing enforces,
+// which is also why refuseWhen is parsed strictly above.
 func checkPublishURL(spec Publish) error {
 	if url := strings.TrimSpace(spec.URL); url != expectedPublishURL {
 		return fmt.Errorf(
@@ -306,8 +303,7 @@ func checkPublishURL(spec Publish) error {
 // or it is switched off, the block itself when it is on.
 //
 // A declared retireOld that never reached the publish step would be a rule
-// the file states and nothing performs -- the same failure checkJudgement
-// guards.
+// the file states and nothing performs.
 //
 // Enabled is an `${inputs.*}` reference. One naming an input the file does not
 // declare is refused rather than read as false: treating an unresolvable
@@ -332,46 +328,6 @@ func retirement(spec RetireOld, resolved map[string]string) (*RetireOld, error) 
 		return nil, fmt.Errorf("publish.retireOld is enabled but names no catalogId to retire")
 	}
 	return &spec, nil
-}
-
-// checkJudgement verifies the spec's declared verdicts are the ones a
-// Publisher actually applies: ACCEPTED is the only success, and anything
-// else -- PARTIAL included -- is a failure.
-//
-// The judgement is not re-implemented here, so a pipeline declaring something
-// different would not change behaviour, it would only make the YAML lie about
-// it. A PARTIAL that read as success is precisely the failure this guards:
-// the catalog indexes with resources missing (273 markets published as 128
-// findable ones), and nothing downstream would say so.
-func checkJudgement(spec Publish) error {
-	const accepted = "ACCEPTED"
-
-	if len(spec.Accept) != 1 || !strings.EqualFold(strings.TrimSpace(spec.Accept[0]), accepted) {
-		return fmt.Errorf(
-			"publish.accept is %v, but publishing treats %s as the only success; "+
-				"this step cannot honour any other rule",
-			spec.Accept, accepted)
-	}
-
-	// PARTIAL must be declared a failure where the spec lists failures at all:
-	// a treatAsFailure that omits it reads as though PARTIAL were tolerated.
-	failsOnPartial := false
-	for _, status := range spec.TreatAsFailure {
-		status = strings.TrimSpace(status)
-		if strings.EqualFold(status, accepted) {
-			return fmt.Errorf("publish.treatAsFailure lists %s, which publishing treats as success", accepted)
-		}
-		if strings.EqualFold(status, "PARTIAL") {
-			failsOnPartial = true
-		}
-	}
-	if len(spec.TreatAsFailure) > 0 && !failsOnPartial {
-		return fmt.Errorf(
-			"publish.treatAsFailure is %v and omits PARTIAL, but publishing counts a PARTIAL as a failure: "+
-				"a PARTIAL means the catalog indexed with resources missing",
-			spec.TreatAsFailure)
-	}
-	return nil
 }
 
 // allPublished reports whether every catalog this run built actually

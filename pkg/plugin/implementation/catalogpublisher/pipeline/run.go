@@ -32,6 +32,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -123,6 +124,14 @@ type RunOptions struct {
 	// publish through is refused, not silently built-only.
 	Publisher Publisher
 
+	// Config is the calling plugin's own config (the crawler's
+	// plugins.<name>.config). Keys `publish.<pipeline>.<input>` override that
+	// input, and `publish.<pipeline>.schedule` the file's cron, where
+	// <pipeline> is the file's metadata.name -- so an operator changes a
+	// pipeline's schedule or identity without a rebuild. Every other key is
+	// ignored. Credentials cannot be overridden: they stay in the environment.
+	Config map[string]string
+
 	// DryRun stops after the decision, before any fetching.
 	DryRun bool
 
@@ -205,6 +214,20 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 		Capability:   capability,
 		PipelinePath: pipelinePath,
 		Unpersisted:  opts.RunLog == nil,
+	}
+
+	// The operator's schedule, when plugin config gives one, replaces the
+	// file's -- a schedule change is then a config edit, not a rebuild. It is
+	// parsed by the same due-check below, so a bad one fails loudly here.
+	if cron, set := pipelineOverrides(opts.Config, spec.Metadata.Name)[overrideSchedule]; set && strings.TrimSpace(cron) != "" {
+		log.InfoContext(ctx, "publish pipeline: schedule from plugin config",
+			"pipeline", spec.Metadata.Name, "file", spec.Schedule.Cron, "config", cron)
+		spec.Schedule.Cron = strings.TrimSpace(cron)
+	}
+	// Checked every tick, not only when due, so a mistyped key is reported
+	// now rather than at the next firing.
+	if _, err := inputOverrides(spec, opts.Config); err != nil {
+		return report, err
 	}
 
 	// The run log's key is the PIPELINE -- the embedded file -- not the
@@ -342,7 +365,9 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	// to call: no token, no client. Its steps are const/derive/filter and the
 	// like; an HTTP step among them is refused by the schema at load, and by
 	// the runner as a backstop.
+	offset := offsetIn(spec.Schedule.Timezone, now)
 	rc := newRunContext(resolved, "")
+	rc.utcOffset = offset
 	var client *Client
 	if hasUpstream(spec) {
 		log.InfoContext(ctx, "publish pipeline: preparing credentials",
@@ -367,6 +392,7 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		}
 		client.WithCredential(cred)
 		rc = newRunContext(resolved, cred.Value)
+		rc.utcOffset = offset
 		log.InfoContext(ctx, "publish pipeline: credentials ready",
 			"kind", authKind(spec.Upstream.Auth), "characters", len(cred.Value))
 	} else {
@@ -464,6 +490,59 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	return nil
 }
 
+// overrideSchedule is the plugin-config key, under publish.<pipeline>., that
+// replaces the file's cron.
+const overrideSchedule = "schedule"
+
+// pipelineOverrides returns the plugin-config values addressed to this
+// pipeline -- keys publish.<metadata.name>.<key> -- keyed by <key>. The name
+// scopes them, so two pipelines' baseUrl never collide.
+func pipelineOverrides(config map[string]string, name string) map[string]string {
+	prefix := "publish." + strings.TrimSpace(name) + "."
+	out := map[string]string{}
+	for key, value := range config {
+		if rest, found := strings.CutPrefix(key, prefix); found && rest != "" {
+			out[rest] = value
+		}
+	}
+	return out
+}
+
+// inputOverrides is pipelineOverrides less the schedule, checked: every key
+// must name an input the file declares -- a typo that matched nothing would
+// otherwise be an override an operator believes is in force -- and none may
+// be a secret. Credentials stay in the environment: plugin config is read,
+// logged and committed.
+func inputOverrides(spec Spec, config map[string]string) (map[string]string, error) {
+	overrides := pipelineOverrides(config, spec.Metadata.Name)
+	delete(overrides, overrideSchedule)
+
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		input, declared := spec.Inputs[key]
+		if !declared {
+			names := make([]string, 0, len(spec.Inputs))
+			for name, in := range spec.Inputs {
+				if !in.Secret {
+					names = append(names, name)
+				}
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("config publish.%s.%s names no input of this pipeline; it can override %s or %s",
+				spec.Metadata.Name, key, strings.Join(names, ", "), overrideSchedule)
+		}
+		if input.Secret {
+			return nil, fmt.Errorf("config publish.%s.%s overrides a secret input; credentials come from the "+
+				"environment only, never plugin config", spec.Metadata.Name, key)
+		}
+	}
+	return overrides, nil
+}
+
 // resolveRunInputs resolves the file's inputs against the RUN's clock and
 // applies the caller's publish address.
 //
@@ -471,14 +550,45 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 // must get the dates that instant implies, or every golden file pins the day
 // it was generated on.
 func resolveRunInputs(spec Spec, lookup func(string) (string, bool), opts RunOptions, now time.Time) (map[string]string, error) {
-	resolved, err := resolveInputsAt(spec, lookup, now)
+	overrides, err := inputOverrides(spec, opts.Config)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := resolveInputsWith(spec, lookup, overrides, now)
 	if err != nil {
 		return nil, fmt.Errorf("resolving pipeline inputs: %w", err)
 	}
 	if url := strings.TrimSpace(opts.PublishURL); url != "" {
 		resolved["publishUrl"] = url
 	}
+	// Sorted, so two runs of one broken config name the same input first.
+	names := make([]string, 0, len(spec.Inputs))
+	for name := range spec.Inputs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		input := spec.Inputs[name]
+		if input.Required && strings.TrimSpace(resolved[name]) == "" {
+			where := "it has no default"
+			if input.Env != "" {
+				where = "set " + input.Env
+			}
+			return nil, fmt.Errorf("input %q is required and resolved to empty (%s)", name, where)
+		}
+	}
 	return resolved, nil
+}
+
+// offsetIn renders the schedule zone's UTC offset at now, as +05:30. A
+// timestamp published without it reads as UTC and shifts the day for every
+// consumer east or west of Greenwich.
+func offsetIn(timezone string, now time.Time) string {
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "" // resolveInputsAt has already refused an unloadable zone
+	}
+	return now.In(location).Format("-07:00")
 }
 
 // pipelineDir gives this pipeline a directory of its own.

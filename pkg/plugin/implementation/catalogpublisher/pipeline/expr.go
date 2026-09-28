@@ -156,6 +156,10 @@ type runContext struct {
 	// outputs are each completed step's result, keyed by its `out:` name.
 	outputs map[string]any
 
+	// utcOffset is schedule.timezone's offset at the run's clock, as +05:30,
+	// reachable as ${schedule.utcOffset}. Empty until the run sets it.
+	utcOffset string
+
 	// locals are the current loop variable (`as: state` gives ${state.…}) and
 	// any per-group values the catalog builder adds (${slug}, ${group.…}).
 	locals map[string]any
@@ -178,7 +182,7 @@ func (c *runContext) with(name string, value any) *runContext {
 		locals[k] = v
 	}
 	locals[name] = value
-	return &runContext{inputs: c.inputs, token: c.token, outputs: c.outputs, locals: locals}
+	return &runContext{inputs: c.inputs, token: c.token, outputs: c.outputs, locals: locals, utcOffset: c.utcOffset}
 }
 
 // placeholder matches ${...}, non-greedy so two in one string stay separate.
@@ -246,6 +250,11 @@ func (c *runContext) lookup(path string) (any, error) {
 		return uuid.NewString(), nil
 	case "now.rfc3339":
 		return time.Now().UTC().Format(time.RFC3339), nil
+	case "schedule.utcOffset":
+		if c.utcOffset == "" {
+			return nil, fmt.Errorf("${schedule.utcOffset} used before the schedule's zone was resolved")
+		}
+		return c.utcOffset, nil
 	case "auth.token":
 		if c.token == "" {
 			return nil, fmt.Errorf("${auth.token} used before a token was exchanged")
@@ -448,6 +457,14 @@ func ResolveInputs(spec Spec, lookup func(string) (string, bool)) (map[string]st
 // resolveInputsAt is resolveInputs with the clock supplied, so a test can fix
 // "today" and assert an exact date rather than restate the formatting code.
 func resolveInputsAt(spec Spec, lookup func(string) (string, bool), now time.Time) (map[string]string, error) {
+	return resolveInputsWith(spec, lookup, nil, now)
+}
+
+// resolveInputsWith is resolveInputsAt with values that win over the
+// environment: the calling plugin's config (see RunOptions.Config). An
+// override is a value like any other -- typed and enum-checked below.
+func resolveInputsWith(spec Spec, lookup func(string) (string, bool), overrides map[string]string,
+	now time.Time) (map[string]string, error) {
 	inputs := spec.Inputs
 
 	// An empty zone would be read by time.LoadLocation as UTC, which is the
@@ -461,6 +478,10 @@ func resolveInputsAt(spec Spec, lookup func(string) (string, bool), now time.Tim
 	resolved := make(map[string]string, len(inputs))
 
 	for name, input := range inputs {
+		if value := strings.TrimSpace(overrides[name]); value != "" {
+			resolved[name] = value
+			continue
+		}
 		if input.Env != "" {
 			if value, ok := lookup(input.Env); ok && value != "" {
 				resolved[name] = value
@@ -514,7 +535,7 @@ func applyType(name, value string, input Input, now time.Time, timezone string) 
 			return "", fmt.Errorf("input %q declares date format %q, which this pipeline cannot translate "+
 				"(known: %s)", name, input.Format, strings.Join(knownDateFormats(), ", "))
 		}
-		if value != "today" {
+		if value != "today" && value != "yesterday" {
 			// Already a date, from an env var or a literal default. Checked
 			// against the declared format rather than trusted, so a
 			// wrong-format override fails here and not at the upstream.
@@ -528,7 +549,13 @@ func applyType(name, value string, input Input, now time.Time, timezone string) 
 		if err != nil {
 			return "", fmt.Errorf("input %q: loading %s: %w", name, timezone, err)
 		}
-		return now.In(location).Format(layout), nil
+		day := now.In(location)
+		if value == "yesterday" {
+			// A pipeline firing at midnight wants the day that just closed:
+			// "today" is seconds old and has no rows yet.
+			day = day.AddDate(0, 0, -1)
+		}
+		return day.Format(layout), nil
 
 	default:
 		return "", fmt.Errorf("input %q declares type %q, which this pipeline does not implement", name, input.Type)

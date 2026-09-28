@@ -332,7 +332,7 @@ func catalogRecordScope(scope *runContext, record map[string]any) *runContext {
 	for name, value := range record {
 		locals[name] = value
 	}
-	return &runContext{inputs: scope.inputs, token: scope.token, outputs: scope.outputs, locals: locals}
+	return &runContext{inputs: scope.inputs, token: scope.token, outputs: scope.outputs, locals: locals, utcOffset: scope.utcOffset}
 }
 
 func catalogCheckDirection(direction string) error {

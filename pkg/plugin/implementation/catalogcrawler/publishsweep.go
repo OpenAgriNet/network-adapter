@@ -108,6 +108,11 @@ type publishConfig struct {
 	// body as context.bppId/bppUri: the pipeline does not know who it runs as.
 	participantID string
 	bppURI        string
+
+	// pipelineConfig is every publish.<pipeline>.<key> line of this plugin's
+	// config, handed to each run as RunOptions.Config: per-pipeline schedule
+	// and input overrides, so they change without a rebuild.
+	pipelineConfig map[string]string
 }
 
 // publishConfigFrom reads the publish keys.
@@ -131,7 +136,21 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 
 		participantID: strings.TrimSpace(config[cfgParticipantID]),
 		bppURI:        strings.TrimSpace(config[cfgBppURI]),
+
+		pipelineConfig: pipelineConfigFrom(config),
 	}, nil
+}
+
+// pipelineConfigFrom keeps the publish.<pipeline>.<key> lines. The frame
+// picks out the ones addressed to each pipeline by its metadata.name.
+func pipelineConfigFrom(config map[string]string) map[string]string {
+	out := map[string]string{}
+	for key, value := range config {
+		if strings.HasPrefix(key, "publish.") {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 // publishActionName is the action a record must carry for anything to be
@@ -331,6 +350,7 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 
 		PublishURL: p.cfg.publishURL,
 		Publisher:  p.publisher,
+		Config:     p.cfg.pipelineConfig,
 	})
 	if err != nil {
 		return p.afterRun(ctx, files.Path, err)

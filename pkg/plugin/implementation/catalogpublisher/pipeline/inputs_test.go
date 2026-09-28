@@ -319,3 +319,22 @@ func TestRedactedInputsHidesSecrets(t *testing.T) {
 		t.Errorf("redactedInputs altered a non-secret: %q", safe["baseUrl"])
 	}
 }
+
+// yesterday is resolved in the schedule's zone from the run's clock: a
+// midnight IST firing asks for the day that just closed, not UTC's, and not
+// the day that is seconds old.
+func TestYesterdayResolvesInTheScheduleZone(t *testing.T) {
+	spec := Spec{
+		Schedule: Schedule{Timezone: "Asia/Kolkata"},
+		Inputs:   map[string]Input{"fromDate": {Type: "date", Format: "dd-MM-yyyy", Default: "yesterday"}},
+	}
+	// 00:05 IST on the 21st is 18:35 UTC on the 20th; yesterday in IST is the 20th.
+	now := time.Date(2026, 9, 20, 18, 35, 0, 0, time.UTC)
+	resolved, err := resolveInputsAt(spec, func(string) (string, bool) { return "", false }, now)
+	if err != nil {
+		t.Fatalf("resolveInputsAt: %v", err)
+	}
+	if got := resolved["fromDate"]; got != "20-09-2026" {
+		t.Fatalf("fromDate = %q, want 20-09-2026", got)
+	}
+}

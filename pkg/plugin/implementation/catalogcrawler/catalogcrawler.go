@@ -105,7 +105,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	// send (publish bodies at /push, pipelines at .../push/publish).
 	if strings.HasSuffix(strings.TrimRight(discoveryURL, "/"), "/push") {
 		return nil, nil, fmt.Errorf("catalogcrawler: config %q is %q, a discovery /push address; it now names the "+
-			"provider adapter's /publish endpoint (e.g. http://provider-adapter:9200/publish)", cfgDiscoveryURL, discoveryURL)
+			"provider adapter's /publish endpoint (e.g. http://<host>:<port>/publish)", cfgDiscoveryURL, discoveryURL)
 	}
 
 	log := slog.New(log.NewSlogHandler())

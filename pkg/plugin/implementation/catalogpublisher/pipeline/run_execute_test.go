@@ -423,3 +423,155 @@ func TestRunReadsTheLegacyCapabilityKeyedRow(t *testing.T) {
 		t.Errorf("claimed %v and made %d calls for a served firing", runLog.claimed, upstream.calls.Load())
 	}
 }
+
+// An input the file marks required must resolve to something, or the run is
+// refused naming it and where it comes from. participantId is the case: with
+// no default, an unset variable would otherwise publish catalogs under an
+// empty provider id.
+func TestResolveRunInputsRefusesAnEmptyRequiredInput(t *testing.T) {
+	spec := Spec{
+		Schedule: Schedule{Timezone: "Asia/Kolkata"},
+		Inputs: map[string]Input{
+			"participantId": {Env: "MANDI_PARTICIPANT_ID", Required: true},
+			"optional":      {Env: "X_OPTIONAL"},
+		},
+	}
+	_, err := resolveRunInputs(spec, func(string) (string, bool) { return "", false }, RunOptions{}, time.Now())
+	if err == nil {
+		t.Fatal("an empty required input was accepted")
+	}
+	for _, want := range []string{"participantId", "MANDI_PARTICIPANT_ID"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+
+	resolved, err := resolveRunInputs(spec, func(name string) (string, bool) {
+		return map[string]string{"MANDI_PARTICIPANT_ID": "bpp.example"}[name], name == "MANDI_PARTICIPANT_ID"
+	}, RunOptions{}, time.Now())
+	if err != nil || resolved["participantId"] != "bpp.example" {
+		t.Fatalf("a set required input: %v, %v", resolved, err)
+	}
+}
+
+// ${schedule.utcOffset} is the schedule zone's offset at the run's clock, so a
+// timestamp built from a date input says which day it means.
+func TestScheduleUTCOffsetIsTheZonesOffset(t *testing.T) {
+	rc := newRunContext(nil, "")
+	if _, err := rc.lookup("schedule.utcOffset"); err == nil {
+		t.Fatal("${schedule.utcOffset} resolved before the run set it")
+	}
+	rc.utcOffset = offsetIn("Asia/Kolkata", time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC))
+	got, err := rc.with("state", map[string]any{}).lookup("schedule.utcOffset")
+	if err != nil || got != "+05:30" {
+		t.Fatalf("${schedule.utcOffset} = %v, %v; want +05:30 (and carried into a loop scope)", got, err)
+	}
+}
+
+// overrideSpec is a pipeline named "x" with one ordinary input, one date input
+// and one credential.
+func overrideSpec() Spec {
+	return Spec{
+		Metadata: Metadata{Name: "x"},
+		Schedule: Schedule{Cron: "0 0 * * *", Timezone: "Asia/Kolkata"},
+		Inputs: map[string]Input{
+			"participantId": {Env: "X_PARTICIPANT_ID", Default: "from-file"},
+			"fromDate":      {Type: "date", Format: "dd-MM-yyyy", Default: "today"},
+			"tokenSecret":   {Env: "X_TOKEN_SECRET", Secret: true},
+		},
+	}
+}
+
+// Plugin config wins over env, which wins over the file: an operator changes
+// a pipeline's identity or window in the adapter's own config, without a
+// rebuild -- and an overridden input is still held to its declared type.
+func TestPluginConfigOverridesAPipelineInput(t *testing.T) {
+	env := func(name string) (string, bool) {
+		return map[string]string{"X_PARTICIPANT_ID": "from-env"}[name], name == "X_PARTICIPANT_ID"
+	}
+	ist, _ := time.LoadLocation("Asia/Kolkata")
+	resolved, err := resolveRunInputs(overrideSpec(), env, RunOptions{Config: map[string]string{
+		"publish.x.participantId": "from-config",
+		"publish.x.fromDate":      "yesterday",
+		"publish.other.fromDate":  "01-01-2020", // another pipeline's: not this one's business
+		"discoveryPushUrl":        "https://ignored",
+	}}, time.Date(2026, 9, 21, 6, 0, 0, 0, ist))
+	if err != nil {
+		t.Fatalf("resolveRunInputs: %v", err)
+	}
+	if resolved["participantId"] != "from-config" || resolved["fromDate"] != "20-09-2026" {
+		t.Fatalf("resolved = %v; want participantId from config and fromDate typed as yesterday", resolved)
+	}
+}
+
+// A typo in an override key is refused, naming what exists; a credential may
+// not come from plugin config at all -- config files are read, logged and
+// committed, secrets are not.
+func TestPluginConfigOverridesAreChecked(t *testing.T) {
+	cases := map[string]struct {
+		key    string
+		expect []string
+	}{
+		"an unknown input": {key: "publish.x.participantid", expect: []string{"participantid", "participantId"}},
+		"a credential":     {key: "publish.x.tokenSecret", expect: []string{"tokenSecret", "secret"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolveRunInputs(overrideSpec(), func(string) (string, bool) { return "", false },
+				RunOptions{Config: map[string]string{tc.key: "v"}}, time.Now())
+			if err == nil {
+				t.Fatalf("override %s was accepted", tc.key)
+			}
+			for _, want := range tc.expect {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// publish.<name>.schedule replaces the file's cron, so a schedule change is a
+// config edit. The file says midnight; config says 03:00, and at 04:00 after a
+// 00:01 run only the override makes the pipeline due again.
+func TestPluginConfigOverridesTheSchedule(t *testing.T) {
+	ist, _ := time.LoadLocation("Asia/Kolkata")
+	runLog := &fakeRunLog{last: time.Date(2026, 9, 21, 0, 1, 0, 0, ist)}
+	opts := RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: runLog,
+		Lookup: unreachableEnv, Now: time.Date(2026, 9, 21, 4, 0, 0, 0, ist), DryRun: true,
+	}
+	report, err := Run(context.Background(), opts)
+	if err != nil || report.Due {
+		t.Fatalf("without the override: due=%v err=%v; the file's midnight firing was served", report.Due, err)
+	}
+
+	opts.Config = map[string]string{"publish.example.schedule": "0 3 * * *"}
+	report, err = Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !report.Due || !strings.Contains(report.Reason, "0 3 * * *") {
+		t.Errorf("report = due %v, %q; want due under the configured 0 3 * * *", report.Due, report.Reason)
+	}
+
+	opts.Config = map[string]string{"publish.example.schedule": "every day"}
+	if _, err := Run(context.Background(), opts); err == nil {
+		t.Error("an unparseable configured schedule was accepted")
+	}
+}
+
+// A mistyped override fails every tick, not only the tick the pipeline is
+// due -- otherwise the typo sits unnoticed until midnight.
+func TestAMistypedOverrideFailsBeforeTheDueCheck(t *testing.T) {
+	ist, _ := time.LoadLocation("Asia/Kolkata")
+	_, err := Run(context.Background(), RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(),
+		RunLog: &fakeRunLog{last: time.Date(2026, 9, 21, 0, 1, 0, 0, ist)}, // served: not due
+		Lookup: unreachableEnv, Now: time.Date(2026, 9, 21, 4, 0, 0, 0, ist), DryRun: true,
+		Config: map[string]string{"publish.example.publishURL": "https://x"}, // it is publishUrl
+	})
+	if err == nil || !strings.Contains(err.Error(), "publishURL") {
+		t.Fatalf("err = %v; want the mistyped key refused even though the pipeline is not due", err)
+	}
+}

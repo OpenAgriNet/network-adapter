@@ -93,7 +93,3 @@ catalog:
 
 publish:
   url: ${inputs.publishUrl}/publish
-  accept: [ACCEPTED]
-  # PARTIAL means the catalog indexed with resources MISSING, which reads as
-  # success everywhere else. Listing it here is what makes it a failure.
-  treatAsFailure: [PARTIAL, REJECTED]

@@ -259,6 +259,10 @@
         "secret": {
           "type": "boolean",
           "description": "Marks a credential. A secret input is redacted wherever inputs are printed; it never appears in a log line or an error."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Refuse the run when this input resolves to empty, naming it and its env. For values with no safe default, such as the identity a catalog publishes under."
         }
       }
     },
@@ -1021,28 +1025,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "url",
-        "accept"
+        "url"
       ],
       "properties": {
         "url": {
           "type": "string",
           "minLength": 1
-        },
-        "accept": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string"
-          },
-          "description": "The statuses that count as success. ACCEPTED is the only one publishing treats as such."
-        },
-        "treatAsFailure": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Must include PARTIAL where it lists anything. A PARTIAL read as success is the catalog indexing with resources missing -- 273 markets published as 128 findable ones, with nothing downstream saying so."
         },
         "refuseWhen": {
           "type": "string",

@@ -479,3 +479,70 @@ func TestPrevFiringRefusesAnImpossibleDate(t *testing.T) {
 		t.Error("February 30th reported a previous firing")
 	}
 }
+
+// A schedule in a zone with daylight saving meets two days a year that the
+// minute-by-minute clock does not: one where a wall time never happens, one
+// where it happens twice. Mandi's Asia/Kolkata has neither; the next
+// capability's zone may.
+func TestPrevFiringAcrossDST(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	tests := map[string]struct {
+		expr string
+		now  time.Time
+		want time.Time
+	}{
+		// 2026-03-08 02:00 EST jumps to 03:00 EDT, so 02:30 never happens.
+		// The day's run must still happen -- as soon as the gap ends --
+		// rather than the day being skipped.
+		"spring forward: a firing inside the gap runs when it ends": {
+			expr: "30 2 * * *",
+			now:  time.Date(2026, 3, 8, 12, 0, 0, 0, ny),
+			want: time.Date(2026, 3, 8, 3, 0, 0, 0, ny),
+		},
+		// 2026-11-01 01:30 happens twice (EDT, then EST). The firing is the
+		// FIRST, so the second is not a new firing.
+		"fall back: a repeated wall time fires at its first occurrence": {
+			expr: "30 1 * * *",
+			now:  time.Date(2026, 11, 1, 12, 0, 0, 0, ny),
+			want: time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC), // 01:30 EDT
+		},
+		"an ordinary day in the same zone": {
+			expr: "30 2 * * *",
+			now:  time.Date(2026, 3, 9, 12, 0, 0, 0, ny),
+			want: time.Date(2026, 3, 9, 2, 30, 0, 0, ny),
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			schedule, err := parseCron(tc.expr)
+			if err != nil {
+				t.Fatalf("parseCron: %v", err)
+			}
+			got, err := schedule.prevFiring(tc.now, ny)
+			if err != nil {
+				t.Fatalf("prevFiring: %v", err)
+			}
+			if !got.Equal(tc.want) {
+				t.Errorf("prevFiring = %s, want %s", got.Format(time.RFC3339), tc.want.Format(time.RFC3339))
+			}
+		})
+	}
+}
+
+// The hour that repeats at fall-back must not run a daily pipeline twice: a
+// run at the first 01:30 serves the day, and the second 01:30 is not due.
+func TestDueNowDoesNotRunTwiceInTheRepeatedHour(t *testing.T) {
+	schedule := Schedule{Cron: "30 1 * * *", Timezone: "America/New_York"}
+	lastRun := time.Date(2026, 11, 1, 5, 31, 0, 0, time.UTC) // 01:31 EDT, the first pass
+	now := time.Date(2026, 11, 1, 6, 40, 0, 0, time.UTC)     // 01:40 EST, the second pass
+	due, _, reason, err := dueNow(schedule, now, lastRun)
+	if err != nil {
+		t.Fatalf("dueNow: %v", err)
+	}
+	if due {
+		t.Fatalf("due in the repeated hour after already running: %s", reason)
+	}
+}

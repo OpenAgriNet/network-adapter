@@ -82,12 +82,10 @@ func TestLive_0_RegistryLookup(t *testing.T) {
 func liveProviderRecord(t *testing.T, resolved map[string]string) *model.ProviderRecord {
 	t.Helper()
 
-	// The declared default is a container-network name; from a shell it has
-	// to be localhost. Override with SUNBIRD_REGISTRY_URL.
-	registryURL := resolved["registryUrl"]
-	if override := os.Getenv("SUNBIRD_REGISTRY_URL"); override != "" {
-		registryURL = override
-	}
+	// The registry is the crawler's to know, not the pipeline's: the file
+	// declares no registry input. This live test reads the same variable a
+	// deployment's registry plugin is configured from.
+	registryURL := os.Getenv("SUNBIRD_REGISTRY_URL")
 	t.Logf("registry: %s", registryURL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

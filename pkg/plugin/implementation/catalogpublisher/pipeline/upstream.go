@@ -27,11 +27,11 @@ import (
 // growth while keeping an unbounded read impossible.
 const maxResponseBytes = 32 << 20
 
-// mapperRunner is the slice of jsonmapper this package uses.
+// Mapper is the slice of jsonmapper this package uses.
 //
 // An interface rather than the concrete type so a test can substitute one,
 // and so each call site states which of the mapper's abilities it depends
-// on. Ported from tools/publish/mandi_publish/client.go's mapperRunner.
+// on.
 type Mapper interface {
 	Transform(ctx context.Context, ref string, d definition.Direction, in any) ([]byte, error)
 	Verify(ctx context.Context, ref string, in any) error

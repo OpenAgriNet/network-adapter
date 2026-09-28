@@ -14,13 +14,30 @@
 response: |
   (
     $toRFC3339Start := function($w) {
-      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T00:00:00Z'
+      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T00:00:00' & _local.utcOffset
     };
     $toRFC3339End := function($w) {
-      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T23:59:59Z'
+      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T23:59:59' & _local.utcOffset
     };
     $startDate := $toRFC3339Start(_local.windowFrom);
     $endDate := $toRFC3339End(_local.windowTo);
+
+    /* Agmarknet state code -> ISO 3166-2:IN. Agmarknet's codes are its own
+       (measured: KK is Karnataka, MG is Meghalaya), so "IN-" & code would
+       publish wrong areas -- worse than none, because consumers trust the
+       codeScheme. A state not listed here carries NO ISO area. Codes come
+       from observed output; extend from the live master-state list. ISO's
+       2023 revision is used (Chhattisgarh IN-CG). */
+    $isoByAgmarknet := {
+      "CG": "IN-CG",
+      "KA": "IN-KA",
+      "KK": "IN-KA",
+      "MG": "IN-ML",
+      "MH": "IN-MH",
+      "MP": "IN-MP",
+      "TN": "IN-TN",
+      "UP": "IN-UP"
+    };
 
     /* No filtering and no sorting here. Which markets publish, and in what
        order, is the pipeline file's catalog block (exclude, order), applied
@@ -32,21 +49,26 @@ response: |
         $hasCoords := $exists($row.latitude) and $exists($row.longitude);
         $coords := [$row.longitude, $row.latitude];
 
-        /* Agmarknet's own state code is a 2-letter alpha code (e.g. "MH") that,
-           for every state seeded so far, matches the ISO 3166-2 subdivision
-           suffix for India. Not verified against the full state list -- if a
-           newly seeded state's Agmarknet code diverges from its ISO suffix,
-           this produces a wrong areaCode and needs a real lookup table. */
-        $isoStateCode := "IN-" & $uppercase($row.stateCode);
+        $isoStateCode := $lookup($isoByAgmarknet, $row.stateCode);
 
         $marketObj := {
           "marketCode": $string($row.marketId),
           "marketName": $trim($row.marketName),
-          "district": $string($row.districtId),
+          "districtId": $string($row.districtId),
+          "districtName": $trim($row.districtName),
           "state": $row.stateCode
         };
 
-        $coverageAreas := $append($hasCoords ? [
+        $stateArea := $exists($isoStateCode) ? [
+          {
+            "codeScheme": "ISO-3166-2",
+            "areaCode": $isoStateCode,
+            "areaLevel": "State",
+            "areaName": $trim($row.stateName)
+          }
+        ] : [];
+
+        $coverageAreas := $append($append($hasCoords ? [
           {
             "type": "Point",
             "coordinates": $coords
@@ -57,14 +79,8 @@ response: |
             "areaCode": $string($row.districtId),
             "areaLevel": "District",
             "areaName": $trim($row.districtName)
-          },
-          {
-            "codeScheme": "ISO-3166-2",
-            "areaCode": $isoStateCode,
-            "areaLevel": "State",
-            "areaName": $trim($row.stateName)
           }
-        ]);
+        ]), $stateArea);
 
         /* Deduplicate and sort commodities */
         $distinctCommodities := [ $distinct($row.commodities) ];

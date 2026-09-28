@@ -192,6 +192,24 @@ func TestProvider_New_RefusesAnOldDiscoveryPushURL(t *testing.T) {
 	}
 }
 
+// Operator-facing text names the endpoint's SHAPE, not one deployment's
+// compose hostname -- the repo's placeholder convention -- so nobody pastes a
+// hostname that resolves only inside someone else's docker network.
+func TestDiscoveryURLErrorsUseAPlaceholder(t *testing.T) {
+	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{
+		cfgDBDSN: "postgres://x", cfgDiscoveryURL: "https://discovery.example.org/beckn/catalog/push",
+	})
+	if err == nil {
+		t.Fatal("an old /push address was accepted")
+	}
+	if strings.Contains(err.Error(), "provider-adapter:9200") {
+		t.Errorf("error %q names a compose hostname", err)
+	}
+	if !strings.Contains(err.Error(), "http://<host>:<port>/publish") {
+		t.Errorf("error %q does not show the placeholder form", err)
+	}
+}
+
 // buildSource unions the static index list with the registry-backed one, and
 // leaves the registry out when no lookup can answer for the networks.
 func TestBuildSource_UnionsStaticAndRegistryIndexes(t *testing.T) {

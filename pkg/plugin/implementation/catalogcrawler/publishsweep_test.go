@@ -622,3 +622,26 @@ func TestRunPipelineLeavesTheBudgetWhenAnotherReplicaClaimed(t *testing.T) {
 		t.Errorf("a run another replica owns was recorded %d times", runLog.recorded)
 	}
 }
+
+// The crawler hands its own plugin config to every pipeline run, so a
+// publish.<pipeline>.<key> line under plugins.crawler.config reaches the
+// pipeline -- here a mistyped one, which the frame refuses by name.
+func TestPublishSweepPassesPipelineOverridesFromPluginConfig(t *testing.T) {
+	cfg, err := publishConfigFrom(map[string]string{
+		cfgPublishPipelines:           "true",
+		"publish.mandi-price.typoKey": "x",
+	})
+	if err != nil {
+		t.Fatalf("publishConfigFrom: %v", err)
+	}
+	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	if err != nil {
+		t.Fatalf("PublishPipeline: %v", err)
+	}
+	sweep := newPublishSweep(cfg, &fixedTargets{}, nil, slog.New(slog.DiscardHandler))
+	record := publishingRecord("agmarknet-live|openagrinet:MandiPrice", mandiPipelinePath)
+	err = sweep.runPipeline(context.Background(), record, files)
+	if err == nil || !strings.Contains(err.Error(), "typoKey") {
+		t.Fatalf("err = %v; want the pipeline to see (and refuse) the configured override", err)
+	}
+}

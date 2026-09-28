@@ -69,7 +69,8 @@
                     "en"
                   ],
                   "market": {
-                    "district": "601",
+                    "districtId": "601",
+                    "districtName": "Dharwad",
                     "marketCode": "201",
                     "marketName": "Hubli",
                     "state": "KA"
@@ -95,15 +96,15 @@
                   ],
                   "updateFrequency": "P1D",
                   "validity": {
-                    "endsAt": "2026-09-21T23:59:59Z",
-                    "startsAt": "2026-09-21T00:00:00Z"
+                    "endsAt": "2026-09-20T23:59:59+05:30",
+                    "startsAt": "2026-09-20T00:00:00+05:30"
                   }
                 }
               }
             ],
             "validity": {
-              "endDate": "2026-09-21T23:59:59Z",
-              "startDate": "2026-09-21T00:00:00Z"
+              "endDate": "2026-09-20T23:59:59+05:30",
+              "startDate": "2026-09-20T00:00:00+05:30"
             }
           }
         ],
@@ -116,7 +117,7 @@
             ],
             "updateMode": "MERGE",
             "visibleTo": [
-              "oan-dev"
+              "test-network"
             ]
           }
         ]
@@ -186,7 +187,8 @@
                     "en"
                   ],
                   "market": {
-                    "district": "502",
+                    "districtId": "502",
+                    "districtName": "Nashik",
                     "marketCode": "102",
                     "marketName": "Nashik",
                     "state": "MH"
@@ -212,8 +214,8 @@
                   ],
                   "updateFrequency": "P1D",
                   "validity": {
-                    "endsAt": "2026-09-21T23:59:59Z",
-                    "startsAt": "2026-09-21T00:00:00Z"
+                    "endsAt": "2026-09-20T23:59:59+05:30",
+                    "startsAt": "2026-09-20T00:00:00+05:30"
                   }
                 }
               },
@@ -256,7 +258,8 @@
                     "en"
                   ],
                   "market": {
-                    "district": "501",
+                    "districtId": "501",
+                    "districtName": "Pune",
                     "marketCode": "101",
                     "marketName": "Pune",
                     "state": "MH"
@@ -286,15 +289,15 @@
                   ],
                   "updateFrequency": "P1D",
                   "validity": {
-                    "endsAt": "2026-09-21T23:59:59Z",
-                    "startsAt": "2026-09-21T00:00:00Z"
+                    "endsAt": "2026-09-20T23:59:59+05:30",
+                    "startsAt": "2026-09-20T00:00:00+05:30"
                   }
                 }
               }
             ],
             "validity": {
-              "endDate": "2026-09-21T23:59:59Z",
-              "startDate": "2026-09-21T00:00:00Z"
+              "endDate": "2026-09-20T23:59:59+05:30",
+              "startDate": "2026-09-20T00:00:00+05:30"
             }
           }
         ],
@@ -307,7 +310,7 @@
             ],
             "updateMode": "MERGE",
             "visibleTo": [
-              "oan-dev"
+              "test-network"
             ]
           }
         ]

@@ -56,12 +56,6 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 	}
 
 	wantInputs := map[string]pipeline.Input{
-		// No Default: a registry hostname baked into the pipeline is wrong for
-		// every deployment that did not happen to use it.
-		"registryUrl": {
-			Flag: "registry-url",
-			Env:  "SUNBIRD_REGISTRY_URL",
-		},
 		// NO Default. It used to be a plain-HTTP address at a bare IP, so a
 		// deployment that forgot MANDI_API_URI sent its credentials, and then
 		// every token, in cleartext. A missing address must fail loudly.
@@ -69,38 +63,32 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 			Flag: "base-url",
 			Env:  "MANDI_API_URI",
 		},
-		"states": {
-			Flag:    "states",
-			Type:    "list",
-			Default: []interface{}{},
-		},
 		"fromDate": {
 			Flag:    "from",
 			Env:     "MANDI_FROM_DATE",
 			Type:    "date",
 			Format:  "dd-MM-yyyy",
-			Default: "today",
+			Default: "yesterday",
 		},
 		"toDate": {
 			Flag:    "to",
 			Env:     "MANDI_TO_DATE",
 			Type:    "date",
 			Format:  "dd-MM-yyyy",
-			Default: "today",
+			Default: "yesterday",
 		},
+		// No defaults: a guessed identity publishes under someone else's name
+		// and to someone else's network. Required, so an unset variable
+		// refuses the run instead of publishing under an empty id.
 		"participantId": {
-			Flag:    "participant-id",
-			Env:     "MANDI_PARTICIPANT_ID",
-			Default: "agmarknet",
+			Flag:     "participant-id",
+			Env:      "MANDI_PARTICIPANT_ID",
+			Required: true,
 		},
 		"networkId": {
-			Flag:    "network-id",
-			Env:     "APP_NETWORK_ID",
-			Default: "oan-dev",
-		},
-		"catalogOut": {
-			Flag:    "catalog-out",
-			Default: "catalog",
+			Flag:     "network-id",
+			Env:      "APP_NETWORK_ID",
+			Required: true,
 		},
 		// A one-time migration switch. It must be DECLARED, because the
 		// publish step refuses an enable flag it cannot resolve rather than
@@ -302,12 +290,6 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 	if got, want := spec.Publish.URL, "${inputs.publishUrl}/publish"; got != want {
 		t.Errorf("Publish.URL = %q, want %q", got, want)
 	}
-	if got, want := len(spec.Publish.Accept), 1; got != want {
-		t.Fatalf("len(Publish.Accept) = %d, want %d", got, want)
-	}
-	if got, want := spec.Publish.Accept[0], "ACCEPTED"; got != want {
-		t.Errorf("Publish.Accept[0] = %q, want %q", got, want)
-	}
 }
 
 // lookupFrom makes an os.LookupEnv-shaped function out of a map, so a test
@@ -339,8 +321,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 	}
 
 	for _, key := range []string{
-		"registryUrl", "baseUrl", "states", "fromDate", "toDate",
-		"participantId", "networkId", "catalogOut",
+		"baseUrl", "fromDate", "toDate", "participantId", "networkId",
 		"publishUrl", "tokenUser", "tokenSecret",
 	} {
 		if _, ok := got[key]; !ok {
@@ -352,12 +333,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 		"publishUrl":    "http://publish.test/catalog", // env only, no default
 		"tokenSecret":   "secret",                      // secret, env only
 		"baseUrl":       "http://upstream.test:8080",   // env beats default
-		"participantId": "agmarknet",                   // empty env falls back
-		// registryUrl has NO default on purpose -- see the file's own comment.
-		// It must resolve to empty here, so a deployment that forgot to set it
-		// is told that rather than sent to a hostname that resolves nowhere.
-		"registryUrl": "",
-		"states":      "", // `default: []` means all states
+		"participantId": "",                            // no default; the run refuses it
 	} {
 		if got[key] != want {
 			t.Errorf("%s = %q, want %q", key, got[key], want)
@@ -390,5 +366,23 @@ func TestCatalogRulesAreTheFilesOnly(t *testing.T) {
 	}
 	if _, declared := spec.Inputs["withoutGeometry"]; declared {
 		t.Error("withoutGeometry is still declared, but nothing reads it any more")
+	}
+}
+
+// A partial collection is refused only past the file's tolerance: up to three
+// failed states is an upstream hiccup, more is not a fair picture of the day.
+// The states step is unconditional -- the operator-supplied list it once fell
+// back to was never finished and is gone.
+func TestPublishToleranceAndStatesStep(t *testing.T) {
+	spec, err := pipeline.LoadSpec(pipelineFiles.FS, pipelineFiles.Path)
+	if err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	if got := spec.Publish.RefuseWhen; got != "collection.groupErrors > 3" {
+		t.Errorf("refuseWhen = %q, want collection.groupErrors > 3", got)
+	}
+	states := spec.Pipeline[0]
+	if states.ID != "states" || states.When != "" || states.Else.Const != "" {
+		t.Errorf("states step = %+v; want it unconditional, with no else", states)
 	}
 }

@@ -447,6 +447,19 @@ func TestInertKeysAreRefused(t *testing.T) {
 			mutate: func(doc map[string]any) { doc["publish"].(map[string]any)["timeout"] = "180s" },
 			expect: "timeout",
 		},
+		// The judgement is fixed -- ACCEPTED is the only success, PARTIAL a
+		// failure -- and the sink applies it. A file restating it can only
+		// agree or be wrong, so it is not a file's to state.
+		"publish.accept": {
+			mutate: func(doc map[string]any) { doc["publish"].(map[string]any)["accept"] = []any{"ACCEPTED"} },
+			expect: "accept",
+		},
+		"publish.treatAsFailure": {
+			mutate: func(doc map[string]any) {
+				doc["publish"].(map[string]any)["treatAsFailure"] = []any{"PARTIAL", "REJECTED"}
+			},
+			expect: "treatAsFailure",
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -475,5 +488,14 @@ func TestOrderRenderByMatchesTheContract(t *testing.T) {
 	order["renderBy"] = "name"
 	if err := validateDocument(t, doc); err == nil {
 		t.Fatal("order.renderBy as a bare string was accepted; it is a list of keys")
+	}
+}
+
+// An input may declare itself required; the contract allows the key.
+func TestInputRequiredMatchesTheContract(t *testing.T) {
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	doc["inputs"].(map[string]any)["publishUrl"].(map[string]any)["required"] = true
+	if err := validateDocument(t, doc); err != nil {
+		t.Fatalf("inputs.*.required was refused: %v", err)
 	}
 }
