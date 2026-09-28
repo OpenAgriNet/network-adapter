@@ -496,29 +496,20 @@ func TestPredicateSubstitutesInterpolationAsALiteral(t *testing.T) {
 	}
 }
 
-// Every primitive that names a mapping must resolve it the SAME way.
+// Every primitive that names a mapping must resolve it the SAME way:
+// relative to the pipeline file's URL, like a link in a page.
 //
 // Three call sites once resolved `mapping:` two different ways, and two of
 // them used filepath.Join on a URL -- which collapses "http://host" to
-// "http:/host", an address nothing can fetch. http.post and transform were
-// therefore broken for every mapping, not merely for a prefixed one, and
-// nothing said so because no test named a mapping from those steps.
+// "http:/host", an address nothing can fetch.
 func TestMappingRefIsResolvedTheSameWayEverywhere(t *testing.T) {
-	runner := &stepRunner{mappingBase: "http://127.0.0.1:53211"}
-
-	// Both spellings a file might use must land on the same served ref: a
-	// mapping is written relative to the pipeline file, and served from the
-	// root of that directory.
-	for _, spelling := range []string{"mappings/things.yaml", "things.yaml"} {
-		got := runner.mappingRef(spelling)
-		if want := "http://127.0.0.1:53211/things.yaml"; got != want {
-			t.Errorf("mappingRef(%q) = %q, want %q", spelling, got, want)
-		}
+	runner := &stepRunner{mappingBase: "http://127.0.0.1:53211/testdata/minimal.yaml"}
+	got, err := runner.mappingRef("mappings/things.yaml")
+	if err != nil {
+		t.Fatalf("mappingRef: %v", err)
 	}
-
-	// And the scheme must survive. "http:/" is the failure this guards.
-	if ref := runner.mappingRef("mappings/x.yaml"); !strings.HasPrefix(ref, "http://") {
-		t.Errorf("mappingRef produced %q -- the URL scheme was mangled", ref)
+	if want := "http://127.0.0.1:53211/testdata/mappings/things.yaml"; got != want {
+		t.Errorf("mappingRef = %q, want %q", got, want)
 	}
 }
 
@@ -774,7 +765,7 @@ func TestTransformRunsTheMappingOverTheCollection(t *testing.T) {
 	upstream.Close() // a transform must not need the upstream
 	mapper := &localMapper{}
 	runner.mapper = mapper
-	runner.mappingBase = "http://127.0.0.1:1"
+	runner.mappingBase = "http://127.0.0.1:1/pipeline.yaml"
 
 	records, err := runner.runSteps(context.Background())
 	if err != nil {
@@ -783,8 +774,8 @@ func TestTransformRunsTheMappingOverTheCollection(t *testing.T) {
 	if len(records) != 2 || records[0]["sourceId"] != "example-source" || records[1]["id"] != "b" {
 		t.Fatalf("records = %v, want both records stamped with the local value", records)
 	}
-	if mapper.ref != "http://127.0.0.1:1/enrich.yaml" {
-		t.Errorf("mapping ref = %q, want the served mapping, prefix stripped", mapper.ref)
+	if mapper.ref != "http://127.0.0.1:1/mappings/enrich.yaml" {
+		t.Errorf("mapping ref = %q, want it resolved beside the pipeline file", mapper.ref)
 	}
 }
 

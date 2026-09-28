@@ -5,8 +5,11 @@
 // implements (see collector.go).
 //
 // It must NOT be moved under an internal/ directory: the crawler that ticks a
-// pipeline and pkg/plugin/implementation, which embeds every pipeline, both
-// import it.
+// pipeline imports it, and so do the capability folders' tests.
+//
+// A pipeline is a hosted file: the registry's publish action names its https
+// URL, and a run fetches it (remote.go), exactly as the adapter fetches every
+// other mapping.
 //
 // It builds catalogs and decides what may be published; it does not make
 // the HTTP call. A run that publishes is given a Publisher -- the crawler's
@@ -30,7 +33,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -57,7 +59,7 @@ const (
 // not a fact about the clock. The method names match the crawler plugin's
 // store exactly, so its *store.Store satisfies this without an adapter.
 //
-// The key is the pipeline's embedded path (Files.Path), never the capability.
+// The key is the pipeline's URL (Files.URL), never the capability.
 type RunLog interface {
 	LastPipelineRun(ctx context.Context, pipeline string) (time.Time, error)
 	RecordPipelineRun(ctx context.Context, pipeline string, at time.Time) error
@@ -179,8 +181,8 @@ type RunReport struct {
 // A failed run is deliberately NOT recorded, so a transient upstream outage at
 // midnight is retried on the next tick rather than costing the whole day.
 func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
-	if opts.Pipeline.Path == "" {
-		return RunReport{}, fmt.Errorf("no pipeline: RunOptions.Pipeline names no YAML to run")
+	if strings.TrimSpace(opts.Pipeline.URL) == "" {
+		return RunReport{}, fmt.Errorf("no pipeline: RunOptions.Pipeline names no URL to run")
 	}
 	log := opts.Log
 	if log == nil {
@@ -199,7 +201,7 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	if err != nil {
 		return RunReport{}, err
 	}
-	spec, err := loadRegistryPipeline(opts.Pipeline, pipelinePath)
+	spec, err := loadRegistryPipeline(ctx, opts.Pipeline, pipelinePath)
 	if err != nil {
 		return RunReport{}, err
 	}
@@ -230,13 +232,11 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 		return report, err
 	}
 
-	// The run log's key is the PIPELINE -- the embedded file -- not the
-	// capability. One capability may have several sources, each its own
-	// catalogpublish-<source>/ folder; keyed by capability they would share a
-	// row and each would read the other's run as its own. Files.Path is also
-	// the same whether the registry names the current path or its deprecated
-	// alias, so a registry edit does not re-run a served firing.
-	key := opts.Pipeline.Path
+	// The run log's key is the PIPELINE -- its URL -- not the capability.
+	// One capability may have several providers, each its own pipeline file;
+	// keyed by capability they would share a row and each would read the
+	// other's run as its own.
+	key := opts.Pipeline.URL
 
 	// 2. When did it last run. An unreadable log is fatal: "has this firing
 	// been served" is then unknown, and the guess that publishes anyway is
@@ -341,19 +341,10 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		}
 	}
 
-	// The mappings are served over loopback because jsonmapper resolves them
-	// by URL; they are embedded in the binary, not read from disk.
-	//
-	// They are found NEXT TO the pipeline file rather than at the root of the
-	// embedded filesystem, because that is what a file's `mapping:` references
-	// are relative to -- and because a capability is free to put its pipeline
-	// wherever it likes inside its own package.
-	mappingsDir := path.Join(path.Dir(opts.Pipeline.Path), "mappings")
-	mappingBase, stopMappings, err := ServeMappings(opts.Pipeline.FS, mappingsDir)
-	if err != nil {
-		return fmt.Errorf("serving the pipeline's mappings: %w", err)
-	}
-	defer stopMappings()
+	// The file's mapping references resolve against its own URL, and
+	// jsonmapper fetches them from there -- the same way it loads every
+	// other mapping the adapter uses.
+	mappingBase := opts.Pipeline.URL
 
 	mapper, closeMapper, err := NewMapper(ctx)
 	if err != nil {

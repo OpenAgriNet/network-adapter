@@ -6,7 +6,6 @@ package pipeline
 
 import (
 	"context"
-	"embed"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,8 +16,10 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// ServeMappings publishes an embedded mappings directory on a loopback
-// listener and returns the base URL to reference its files by.
+// ServeMappings publishes a directory of pipeline files on a loopback listener
+// and returns the base URL to reference them by. Production fetches pipelines
+// from their hosted URL; this is for tests and local runs, which serve the
+// same files the same way.
 //
 // A SERVER RATHER THAN A FILE PATH, and not a workaround to route around.
 // jsonmapper.verifyFetchable accepts only http and https, because a mapping
@@ -28,7 +29,7 @@ import (
 //
 // Port 0: the OS picks a free port, so two runs on one machine cannot
 // collide.
-func ServeMappings(files embed.FS, dir string) (string, func(), error) {
+func ServeMappings(files fs.FS, dir string) (string, func(), error) {
 	sub, err := fs.Sub(files, dir)
 	if err != nil {
 		return "", nil, fmt.Errorf("pipeline: embedded mappings: %w", err)

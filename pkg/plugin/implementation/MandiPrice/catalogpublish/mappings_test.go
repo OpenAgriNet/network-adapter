@@ -1,55 +1,52 @@
-package agmarknet
+package catalogpublish
 
-// mappings_test.go gives this package's tests the pipeline they exercise, and
-// proves the embed actually carries what a deployment needs: the pipeline
-// definition and the four mapping files its steps and catalog block reference.
+// mappings_test.go gives this package's tests the pipeline they exercise.
 //
-// There is no Go in this package any more. The pipeline is embedded centrally,
-// by folder convention (pkg/plugin/implementation/embedded.go), and
-// the crawler finds it through the registry's publish action. The names below
-// are what these tests used to import from pipeline_files.go, resolved the
-// same way the crawler resolves them -- so the tests run the file production
-// runs, reached the way production reaches it.
+// There is no Go in this folder that production runs. The pipeline and its
+// mappings are HOSTED -- the registry's publish action names the pipeline's
+// https URL, and the crawler fetches it the way the adapter fetches every
+// mapping. These tests host this folder the same way, on a loopback server, so
+// they run the file production runs, reached the way production reaches it.
 
 import (
+	"io/fs"
+	"os"
 	"path"
 	"strings"
 	"testing"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
-
-// RegistryPipelinePath is the repo-relative path the registry's publish action
-// names for this pipeline.
-const RegistryPipelinePath = "pkg/plugin/implementation/MandiPrice/" +
-	"catalogpublish-agmarknet/agmarknet.yaml"
 
 // Capability is the code the registry knows this pipeline by, as declared in
 // the YAML's metadata.capability (spec_conformance_test checks they agree).
 const Capability = "openagrinet:MandiPrice"
 
-// pipelineFiles is the pipeline as the crawler resolves it.
-var pipelineFiles = func() pipeline.Files {
-	files, err := implementation.PublishPipeline(RegistryPipelinePath)
+// Files, PipelinePath and mappingsDir address this folder on disk, for the
+// tests that read the files directly.
+var (
+	Files        = os.DirFS(".").(fs.ReadFileFS)
+	PipelinePath = "agmarknet.yaml"
+	mappingsDir  = "mappings"
+)
+
+// host serves this folder over HTTP, as it is served in production.
+var host = func() string {
+	base, _, err := pipeline.ServeMappings(Files, ".")
 	if err != nil {
 		panic(err)
 	}
-	return files
+	return base
 }()
 
-// Files, PipelinePath and mappingsDir address the pipeline inside the central
-// embed, where it sits under its own folder rather than at the root.
-var (
-	Files        = pipelineFiles.FS
-	PipelinePath = pipelineFiles.Path
-	mappingsDir  = path.Join(path.Dir(PipelinePath), "mappings")
-)
+// RegistryPipelinePath is what the registry's publish action names for this
+// pipeline: its URL.
+var RegistryPipelinePath = host + "/" + PipelinePath
 
 // Pipeline is what a runner needs to execute this capability.
-func Pipeline() pipeline.Files { return pipelineFiles }
+func Pipeline() pipeline.Files { return pipeline.Files{URL: RegistryPipelinePath} }
 
-// wantFiles is every file the embed must serve for this pipeline.
+// wantFiles is every file this pipeline needs hosted beside it.
 var wantFiles = []string{
 	PipelinePath,
 	path.Join(mappingsDir, "master-states.yaml"),

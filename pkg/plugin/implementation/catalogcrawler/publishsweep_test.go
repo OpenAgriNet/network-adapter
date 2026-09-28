@@ -4,13 +4,14 @@ package catalogcrawler
 // pipelines: reading its configuration, sweeping the registry, skipping what
 // does not publish, and not letting two sweeps overlap. The pipeline's own
 // behaviour -- the registry gate, the cron schedule, the fetch/build/publish --
-// is tested in catalogpublisher/pipeline and pkg/plugin/implementation.
+// is tested in catalogpublisher/pipeline and pkg/plugin.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +19,6 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
@@ -153,14 +153,14 @@ func ranSweep(reg *stubRegistry, resolveErr map[string]error) (*publishSweep, *[
 				if err := resolveErr[path]; err != nil {
 					return pipeline.Files{}, err
 				}
-				return pipeline.Files{Path: path, RegistryPath: path}, nil
+				return pipeline.Files{URL: path}, nil
 			},
 		},
 		log: log,
 		run: func(_ context.Context, record *model.ProviderRecord, files pipeline.Files) error {
 			mu.Lock()
 			defer mu.Unlock()
-			ran = append(ran, record.BindingKey+" -> "+files.RegistryPath)
+			ran = append(ran, record.BindingKey+" -> "+files.URL)
 			return nil
 		},
 	}
@@ -336,7 +336,15 @@ type ranAt struct{ last time.Time }
 func (r ranAt) LastPipelineRun(context.Context, string) (time.Time, error) { return r.last, nil }
 func (r ranAt) RecordPipelineRun(context.Context, string, time.Time) error { return nil }
 
-const mandiPipelinePath = "pkg/plugin/implementation/MandiPrice/catalogpublish-agmarknet/agmarknet.yaml"
+// mandiPipelinePath is the Mandi pipeline's URL: its folder hosted on a
+// loopback server, as production hosts it on https.
+var mandiPipelinePath = func() string {
+	base, _, err := pipeline.ServeMappings(os.DirFS("../MandiPrice/catalogpublish"), ".")
+	if err != nil {
+		panic(err)
+	}
+	return base + "/agmarknet.yaml"
+}()
 
 // newPublishSweep wires the real run and a publisher, so a tick does real work.
 func TestNewPublishSweepWiresTheRunAndThePublisher(t *testing.T) {
@@ -349,7 +357,7 @@ func TestNewPublishSweepWiresTheRunAndThePublisher(t *testing.T) {
 // runPipeline hands the record to the real frame: a pipeline the run log says
 // already ran is not due, and nothing is fetched.
 func TestRunPipelineStandsDownWhenNotDue(t *testing.T) {
-	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	files, err := pipeline.RemotePipeline(mandiPipelinePath)
 	if err != nil {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
@@ -364,7 +372,7 @@ func TestRunPipelineStandsDownWhenNotDue(t *testing.T) {
 // A record naming a pipeline other than the files it is run with is refused
 // by the frame's registry gate, and the error reaches the sweep.
 func TestRunPipelineReportsTheFramesRefusal(t *testing.T) {
-	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	files, err := pipeline.RemotePipeline(mandiPipelinePath)
 	if err != nil {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
@@ -401,7 +409,7 @@ func TestAPermanentFailureStopsRetryingWithinOneFiring(t *testing.T) {
 		log:    slog.New(slog.DiscardHandler),
 		source: staticSource{targets: []publishTarget{{
 			record: &model.ProviderRecord{BindingKey: "who|example:Thing"},
-			files:  pipeline.Files{Path: "x.yaml"},
+			files:  pipeline.Files{URL: "https://host/x.yaml"},
 		}}},
 	}
 	// The fake stands in for pipeline.Run, including its schedule gate: once
@@ -568,7 +576,7 @@ func TestPublishDiscovererResolvesOnlyPublishingBindings(t *testing.T) {
 // row the run itself reads -- or the next tick would not see the give-up and
 // would start the storm again.
 func TestGivingUpMarksThePipelineServed(t *testing.T) {
-	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	files, err := pipeline.RemotePipeline(mandiPipelinePath)
 	if err != nil {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
@@ -583,8 +591,8 @@ func TestGivingUpMarksThePipelineServed(t *testing.T) {
 			t.Fatal("a refused pipeline reported success")
 		}
 	}
-	if fmt.Sprint(runLog.keys) != "["+files.Path+"]" {
-		t.Fatalf("give-up recorded under %v, want [%s]", runLog.keys, files.Path)
+	if fmt.Sprint(runLog.keys) != "["+files.URL+"]" {
+		t.Fatalf("give-up recorded under %v, want [%s]", runLog.keys, files.URL)
 	}
 }
 
@@ -600,20 +608,20 @@ func (c *claimingElsewhere) ReleasePipelineRun(context.Context, string, time.Tim
 // A firing another replica claimed is neither a success nor a failure here:
 // this replica did no work, so its attempt budget is left exactly as it was.
 func TestRunPipelineLeavesTheBudgetWhenAnotherReplicaClaimed(t *testing.T) {
-	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	files, err := pipeline.RemotePipeline(mandiPipelinePath)
 	if err != nil {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
 	runLog := &claimingElsewhere{}
 	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, runLog, slog.New(slog.DiscardHandler))
 	// Seeded under both keys, so the test holds whichever one the sweep uses.
-	sweep.failures = map[string]*attemptBudget{files.Path: {count: 2}, "openagrinet:MandiPrice": {count: 2}}
+	sweep.failures = map[string]*attemptBudget{files.URL: {count: 2}, "openagrinet:MandiPrice": {count: 2}}
 	record := publishingRecord("agmarknet-live|openagrinet:MandiPrice", mandiPipelinePath)
 
 	if err := sweep.runPipeline(context.Background(), record, files); err != nil {
 		t.Fatalf("runPipeline: %v", err)
 	}
-	for _, key := range []string{files.Path, "openagrinet:MandiPrice"} {
+	for _, key := range []string{files.URL, "openagrinet:MandiPrice"} {
 		if budget := sweep.failures[key]; budget == nil || budget.count != 2 {
 			t.Errorf("budget[%s] = %+v, want the 2 failed attempts untouched", key, budget)
 		}
@@ -634,7 +642,7 @@ func TestPublishSweepPassesPipelineOverridesFromPluginConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("publishConfigFrom: %v", err)
 	}
-	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	files, err := pipeline.RemotePipeline(mandiPipelinePath)
 	if err != nil {
 		t.Fatalf("PublishPipeline: %v", err)
 	}

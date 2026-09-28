@@ -1,4 +1,4 @@
-package agmarknet
+package catalogpublish
 
 // live_test.go drives each pipeline step against the REAL services, one step
 // at a time, so a person can watch what each stage actually produces before

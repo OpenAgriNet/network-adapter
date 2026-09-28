@@ -11,9 +11,8 @@ package catalogcrawler
 // /publish named by discoveryPushUrl. This file owns only WHEN.
 //
 // NOTHING HERE LISTS CAPABILITIES. The registry's publish action names a
-// pipeline YAML by its repo-relative path; the binary embeds every
-// */catalogpublish-*/ folder under pkg/plugin/implementation (see that
-// package's embedded.go); a capability publishes by having both. No
+// pipeline YAML by its https URL, and each run fetches that file; a
+// capability publishes by having a hosted pipeline and a record naming it. No
 // config list, no import per capability, no Go per capability.
 //
 // The crawler deliberately owns as little of this as possible. It owns WHEN to
@@ -353,17 +352,17 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 		Config:     p.cfg.pipelineConfig,
 	})
 	if err != nil {
-		return p.afterRun(ctx, files.Path, err)
+		return p.afterRun(ctx, files.URL, err)
 	}
 	if !report.Due || report.ClaimedElsewhere {
 		// Not a success and not a failure: nothing ran here -- not due, or
 		// another replica owns this firing -- so the attempt budget is left
 		// exactly as it was.
 		p.log.DebugContext(ctx, "catalogcrawler: publish pipeline did not run here",
-			"pipeline", files.Path, "reason", report.Reason)
+			"pipeline", files.URL, "reason", report.Reason)
 		return nil
 	}
-	_ = p.afterRun(ctx, files.Path, nil)
+	_ = p.afterRun(ctx, files.URL, nil)
 
 	published := 0
 	if report.Published != nil {

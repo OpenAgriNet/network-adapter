@@ -1,4 +1,4 @@
-package agmarknet
+package catalogpublish
 
 // client_test.go exercises the frame's upstream Client against THIS pipeline's
 // real mappings. That pairing is the point: the mappings decide what a request

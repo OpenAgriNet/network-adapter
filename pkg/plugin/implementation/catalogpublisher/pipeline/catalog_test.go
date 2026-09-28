@@ -107,7 +107,7 @@ func TestBuildCatalogsGroupsByTheNamedField(t *testing.T) {
 		{"stateCode": "MH", "marketId": 3.0},
 	}
 
-	built, counters, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, mapper, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, mapper, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
@@ -129,8 +129,8 @@ func TestBuildCatalogsGroupsByTheNamedField(t *testing.T) {
 	if len(response) != 2 {
 		t.Fatalf("MH carries %d records, want 2", len(response))
 	}
-	if mapper.refs[0] != "http://mappings/catalog.yaml" {
-		t.Errorf("mapping ref is %q, want the mappings/ prefix stripped", mapper.refs[0])
+	if mapper.refs[0] != "http://mappings/mappings/catalog.yaml" {
+		t.Errorf("mapping ref is %q, want it resolved beside the pipeline file", mapper.refs[0])
 	}
 }
 
@@ -138,7 +138,7 @@ func TestBuildCatalogsRefusesARecordMissingTheGroupField(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 
 	records := []map[string]any{{"marketId": 1.0}}
-	if _, _, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
+	if _, _, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml"); err == nil {
 		t.Fatal("a record with nothing to group by built a catalog")
 	}
 }
@@ -198,7 +198,7 @@ func TestBuildCatalogsExclusions(t *testing.T) {
 			catalog := simpleCatalog()
 			catalog.Exclude = []ExcludeRule{commodityRule, geometryRule}
 
-			built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+			built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 			if err != nil {
 				t.Fatalf("buildCatalogs: %v", err)
 			}
@@ -228,7 +228,7 @@ func TestBuildCatalogsAnnotatesWithoutExcluding(t *testing.T) {
 		{"stateCode": "MH", "marketId": 2.0, "coordinateQuality": "suspect"},
 	}
 
-	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestBuildCatalogsOrders(t *testing.T) {
 			catalog := simpleCatalog()
 			catalog.Order = Order{By: "marketId", Direction: tc.direction}
 
-			built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+			built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 			if err != nil {
 				t.Fatalf("buildCatalogs: %v", err)
 			}
@@ -296,7 +296,7 @@ func TestBuildCatalogsRefusesAnUnknownOrderDirection(t *testing.T) {
 	catalog.Order = Order{By: "marketId", Direction: "sideways"}
 
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
-	if _, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
+	if _, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml"); err == nil {
 		t.Fatal("an unknown order direction was accepted")
 	}
 }
@@ -352,7 +352,7 @@ func TestChunkAtTheBudgetBoundary(t *testing.T) {
 			catalog.Chunk = chunk
 			catalog.Order = Order{By: "marketId", Direction: "asc"}
 
-			built, _, err := buildCatalogs(context.Background(), catalog, tc.records, rc, cache, &echoMapper{}, "http://mappings")
+			built, _, err := buildCatalogs(context.Background(), catalog, tc.records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 			if err != nil {
 				t.Fatalf("buildCatalogs: %v", err)
 			}
@@ -384,7 +384,7 @@ func TestChunkRefusesASlugThatCannotDistinguishChunks(t *testing.T) {
 		{"stateCode": "MH", "marketId": 1.0},
 		{"stateCode": "MH", "marketId": 2.0},
 	}
-	_, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	_, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 	if err == nil {
 		t.Fatal("two chunks published under one slug")
 	}
@@ -399,7 +399,7 @@ func TestChunkRefusesANonNumericCost(t *testing.T) {
 	catalog.Chunk = Chunk{Budget: 2, Cost: "'expensive'", Slug: "${stateCode}"}
 
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
-	if _, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
+	if _, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml"); err == nil {
 		t.Fatal("a cost that is not a number was accepted")
 	}
 }
@@ -418,7 +418,7 @@ func TestBuildCatalogsEmptyGroupProducesNoCatalog(t *testing.T) {
 	}
 
 	mapper := &echoMapper{}
-	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, mapper, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, mapper, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestBuildCatalogsBrokenExpressionsAreErrorsNotFalse(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rc, cache := testBuildContext(t, nil)
-			_, _, err := buildCatalogs(context.Background(), tc.catalog(simpleCatalog()), records, rc, cache, &echoMapper{}, "http://mappings")
+			_, _, err := buildCatalogs(context.Background(), tc.catalog(simpleCatalog()), records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 			if err == nil {
 				t.Fatal("a broken expression was read as false instead of failing the build")
 			}
@@ -502,7 +502,7 @@ func TestBuildCatalogsRendersLocalsAndIdentities(t *testing.T) {
 		{"stateCode": "MH", "marketId": 2.0, "stateName": "Maharashtra"},
 	}
 
-	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestBuildCatalogsNeverCarriesTheToken(t *testing.T) {
 	catalog := simpleCatalog()
 
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
-	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestBuildCatalogsReportsARenderFailure(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
 
-	if _, _, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, failingMapper{}, "http://mappings"); err == nil {
+	if _, _, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, failingMapper{}, "http://mappings/pipeline.yaml"); err == nil {
 		t.Fatal("a failing render mapping built a catalog")
 	}
 }
@@ -635,7 +635,7 @@ output:
 		market("KA", 9, "suspect", 2, false),
 	}
 
-	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestRenderByOrdersWithinEachChunkWithoutMovingTheSplit(t *testing.T) {
 	catalog.Chunk = Chunk{Budget: 3, Cost: "1", Slug: "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}"}
 	catalog.Order = Order{By: "marketId", Direction: "asc", RenderBy: []string{"marketName", "marketId"}}
 
-	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}
@@ -929,7 +929,7 @@ func TestRenderByBreaksTiesOnTheNextKey(t *testing.T) {
 	catalog := simpleCatalog()
 	catalog.Order = Order{By: "marketId", RenderBy: []string{"marketName", "marketId"}}
 
-	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
 	if err != nil {
 		t.Fatalf("buildCatalogs: %v", err)
 	}

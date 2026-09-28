@@ -9,8 +9,8 @@ package pipeline
 // Wiring them to the crawler's own ticker is a separate, thin step.
 
 import (
+	"context"
 	"fmt"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,61 +65,18 @@ func servedActions(record *model.ProviderRecord) string {
 	return strings.Join(names, ", ")
 }
 
-// loadRegistryPipeline loads the pipeline the registry named, for this
-// collector.
-//
-// It refuses any path that is not the collector's own. The registry is data an
-// operator edits; a path pointing at some other capability's pipeline must
-// read as "that is not mine to run" rather than quietly loading this one and
-// publishing one capability's catalogs under another's name. A binary can
-// only run what it embeds.
-//
-// Both spellings are accepted: the repo-relative path an operator pastes into
-// a record, and the bare filename, which is what the embedded filesystem knows.
-func loadRegistryPipeline(files Files, registryPath string) (Spec, error) {
-
-	cleaned := path.Clean(strings.TrimSpace(registryPath))
-	if cleaned == "." || cleaned == "" {
-		return Spec{}, fmt.Errorf("the registry names no pipeline path")
+// loadRegistryPipeline loads the pipeline the registry named, refusing one
+// that is not the pipeline this run was given: a record naming another URL
+// must read as "that is not mine to run", never quietly run this one.
+func loadRegistryPipeline(ctx context.Context, files Files, registryPath string) (Spec, error) {
+	named := strings.TrimSpace(registryPath)
+	if named == "" {
+		return Spec{}, fmt.Errorf("the registry names no pipeline")
 	}
-	if cleaned != files.Path && cleaned != path.Clean(files.RegistryPath) &&
-		(files.AliasOf == "" || cleaned != path.Clean(files.AliasOf)) {
-		return Spec{}, fmt.Errorf("the registry names pipeline %q, which is not this pipeline's own %s; "+
-			"this binary can only run the pipelines it embeds", cleaned, files.RegistryPath)
+	if named != strings.TrimSpace(files.URL) {
+		return Spec{}, fmt.Errorf("the registry names pipeline %q, which is not this run's %s", named, files.URL)
 	}
-	return LoadSpec(files.FS, files.Path)
-}
-
-// TickDecision is everything a tick establishes before doing any work: which
-// pipeline the registry sanctioned, what it says, and whether it is due.
-type TickDecision struct {
-	PipelinePath string
-	Spec         Spec
-	Due          bool
-	Reason       string
-}
-
-// decideTick runs the pre-flight in order: the registry gate, then the
-// pipeline it named, then that pipeline's own schedule.
-//
-// An error means the tick must not proceed -- the capability does not publish,
-// or names a pipeline this binary does not have. A decision with Due false is
-// the normal quiet outcome and carries the reason, so an operator asking "why
-// did nothing run at 00:05" gets an answer instead of silence.
-func decideTick(files Files, record *model.ProviderRecord, now, lastRun time.Time) (TickDecision, error) {
-	pipelinePath, err := PipelinePathFor(record)
-	if err != nil {
-		return TickDecision{}, err
-	}
-	spec, err := loadRegistryPipeline(files, pipelinePath)
-	if err != nil {
-		return TickDecision{}, err
-	}
-	due, _, reason, err := dueNow(spec.Schedule, now, lastRun)
-	if err != nil {
-		return TickDecision{}, err
-	}
-	return TickDecision{PipelinePath: pipelinePath, Spec: spec, Due: due, Reason: reason}, nil
+	return loadPipeline(ctx, files)
 }
 
 // dueNow decides whether a pipeline should run, given when it last ran.

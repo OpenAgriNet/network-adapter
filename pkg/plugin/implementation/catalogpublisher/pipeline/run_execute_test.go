@@ -109,7 +109,7 @@ func TestRunKeepsEachPipelineInItsOwnDirectory(t *testing.T) {
 	run := func(files Files) RunReport {
 		t.Helper()
 		record := publishingRecord()
-		record.Actions["publish"] = model.ActionPlan{Mappings: files.RegistryPath}
+		record.Actions["publish"] = model.ActionPlan{Mappings: files.URL}
 
 		report, err := Run(context.Background(), RunOptions{
 			Pipeline: files,
@@ -119,7 +119,7 @@ func TestRunKeepsEachPipelineInItsOwnDirectory(t *testing.T) {
 			OutDir:   shared,
 		})
 		if err != nil {
-			t.Fatalf("Run(%s): %v", files.Path, err)
+			t.Fatalf("Run(%s): %v", files.URL, err)
 		}
 		return report
 	}
@@ -335,7 +335,7 @@ func TestRunKeysTheRunLogOnThePipeline(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	key := fixturePipeline().Path
+	key := fixturePipeline().URL
 	if len(runLog.claimed) != 1 || runLog.claimed[0] != key {
 		t.Errorf("claimed %v, want exactly [%s]", runLog.claimed, key)
 	}
@@ -383,7 +383,7 @@ func TestRunStandsDownWhenAnotherReplicaClaimedTheFiring(t *testing.T) {
 // next tick retries the firing rather than treating it as served.
 func TestRunReleasesTheClaimWhenTheRunFails(t *testing.T) {
 	runLog := newClaimingRunLog()
-	key := fixturePipeline().Path
+	key := fixturePipeline().URL
 	previous := firedAt(t).Add(-24 * time.Hour)
 	runLog.last[key] = previous
 

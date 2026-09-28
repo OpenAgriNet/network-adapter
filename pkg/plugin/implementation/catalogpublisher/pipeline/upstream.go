@@ -262,6 +262,9 @@ func (c *Client) exchangeToken(ctx context.Context, auth Auth, rc *runContext) (
 	if err != nil {
 		return "", fmt.Errorf("upstream.auth.request.path: %w", err)
 	}
+	if err := checkCallPath("token endpoint", path); err != nil {
+		return "", err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
@@ -364,9 +367,24 @@ func asQuery(mapped []byte) (string, error) {
 	return values.Encode(), nil
 }
 
+// checkCallPath refuses a path that could change the host it is appended to.
+// The client builds every request as baseURL + path, and the credential rides
+// on it: "@evil.example/x" after https://host is a request to evil.example.
+// A path starting with "/" stays on the host the deployment configured.
+func checkCallPath(call, path string) error {
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("%s: path %q must start with \"/\"; anything else appended to the upstream "+
+			"address can change the host the credential is sent to", call, path)
+	}
+	return nil
+}
+
 // fetchGet makes one GET, applying the client's credential (see
 // applyCredential), and returns the body of a 2xx.
 func (c *Client) fetchGet(ctx context.Context, urlPath, query string) ([]byte, error) {
+	if err := checkCallPath("GET", urlPath); err != nil {
+		return nil, err
+	}
 	// The query is the mapping's, whole: on the query-carried path the
 	// mapping is what puts the token in it, under the file's own name.
 	endpoint := c.baseURL + urlPath
@@ -394,6 +412,9 @@ func (c *Client) fetchGet(ctx context.Context, urlPath, query string) ([]byte, e
 
 // fetchPost makes one POST with a JSON body and returns the body of a 2xx.
 func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []byte) ([]byte, error) {
+	if err := checkCallPath("POST", urlPath); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+urlPath, bytes.NewReader(bodyPayload))
 	if err != nil {
 		return nil, fmt.Errorf("POST %s request could not be built: %w", urlPath, err)

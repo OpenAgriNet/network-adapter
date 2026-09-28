@@ -11,6 +11,7 @@ import (
 	"embed"
 	"fmt"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"io/fs"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -329,10 +330,9 @@ type RetireOld struct {
 }
 
 // LoadSpec reads and parses the pipeline definition at path inside files.
-// It takes an embed.FS rather than a bare path so callers always read the
-// copy a binary was built with (see pkg/plugin/implementation/embedded.go),
-// never one edited on disk after the fact.
-func LoadSpec(files embed.FS, path string) (Spec, error) {
+// A run loads its pipeline from a URL (loadPipeline); this is the same
+// validation over a filesystem, for tests and tools holding the file locally.
+func LoadSpec(files fs.ReadFileFS, path string) (Spec, error) {
 	data, err := files.ReadFile(path)
 	if err != nil {
 		return Spec{}, fmt.Errorf("read %s: %w", path, err)
@@ -353,30 +353,13 @@ func LoadSpec(files embed.FS, path string) (Spec, error) {
 	return spec, nil
 }
 
-// Files is a capability's pipeline definition: the YAML, and the mappings it
-// references, embedded in the binary.
+// Files locates a capability's pipeline.
 type Files struct {
-	// FS and Path locate the pipeline YAML inside the binary. The mappings
-	// are expected in a `mappings/` directory alongside it, because that is
-	// what a file's `mapping:` references are relative to.
-	FS   embed.FS
-	Path string
-
-	// RegistryPath is the repo-relative path the registry's publish action is
-	// expected to name, e.g.
-	// "pkg/plugin/implementation/MandiPrice/catalogpublish-agmarknet/agmarknet.yaml".
-	//
-	// The gate compares the registry's answer against this rather than
-	// deriving it from the capability's name. Deriving it would mean guessing
-	// a filesystem layout and running a pipeline the registry never
-	// sanctioned; comparing means a registry pointing somewhere else is
-	// refused rather than silently served by whatever this binary embeds.
-	RegistryPath string
-
-	// AliasOf is a deprecated registry path this file also answers to, so a
-	// registry record not yet updated after a rename still passes the gate.
-	// "" when there is none. RegistryPath stays the canonical path.
-	AliasOf string
+	// URL is where the pipeline YAML is fetched from: the registry's publish
+	// action `mappings`, verbatim -- https, the same as every other mapping
+	// the adapter loads. The file's own mapping references resolve relative
+	// to it, and the run log keys the pipeline on it.
+	URL string
 }
 
 // BuiltCatalog is one rendered catalog document and the identity it carries.
@@ -400,7 +383,7 @@ type BuiltCatalog struct {
 // A key is reported only when its PARENT survived the round trip. A value the
 // file leaves empty, or a field carrying omitempty, legitimately does not come
 // back, and flagging those would drown the real finding in noise.
-func UnmappedKeys(files embed.FS, path string) ([]string, error) {
+func UnmappedKeys(files fs.ReadFileFS, path string) ([]string, error) {
 	raw, err := files.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
@@ -518,7 +501,7 @@ var compiling sync.Mutex
 //
 // It reports EVERY violation it can see, not just the first: an operator
 // fixing a file one error per run is an operator who stops reading the errors.
-func Validate(files embed.FS, path string) error {
+func Validate(files fs.ReadFileFS, path string) error {
 	raw, err := files.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)

@@ -1,4 +1,4 @@
-package agmarknet
+package catalogpublish
 
 // spec_conformance_test.go holds this pipeline's side of the YAML<->struct
 // contract: that agmarknet.yaml really does parse into the values
@@ -347,7 +347,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 // numeric marketId, so a new market never moves another between catalogIds,
 // and each catalog lists its markets by name, then id.
 func TestCatalogRulesAreTheFilesOnly(t *testing.T) {
-	spec, err := pipeline.LoadSpec(pipelineFiles.FS, pipelineFiles.Path)
+	spec, err := pipeline.LoadSpec(Files, PipelinePath)
 	if err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestCatalogRulesAreTheFilesOnly(t *testing.T) {
 // The states step is unconditional -- the operator-supplied list it once fell
 // back to was never finished and is gone.
 func TestPublishToleranceAndStatesStep(t *testing.T) {
-	spec, err := pipeline.LoadSpec(pipelineFiles.FS, pipelineFiles.Path)
+	spec, err := pipeline.LoadSpec(Files, PipelinePath)
 	if err != nil {
 		t.Fatalf("LoadSpec: %v", err)
 	}

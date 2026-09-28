@@ -37,7 +37,6 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/sunbirdRegistry"
@@ -59,7 +58,7 @@ func watched(t *testing.T,
 			t.Logf("  sweep reached %s -- outside MANDI_LIVE_BINDING_KEY, skipped", record.BindingKey)
 			return nil
 		}
-		t.Logf("  ▶ %s -> %s", record.BindingKey, files.RegistryPath)
+		t.Logf("  ▶ %s -> %s", record.BindingKey, files.URL)
 		return run(ctx, record, files)
 	}
 }
@@ -78,7 +77,7 @@ func liveRegistry(ctx context.Context, t *testing.T, registryURL string) *sunbir
 }
 
 // sanctioned is what a sweep will run: every binding with a publish action
-// whose YAML this binary embeds, narrowed by the filter. Resolved up front so
+// naming a pipeline URL, narrowed by the filter. Resolved up front so
 // a test knows what to expect and can clear each one's run log.
 func sanctioned(ctx context.Context, t *testing.T, registry *sunbirdRegistry.Client) []*model.ProviderRecord {
 	t.Helper()
@@ -100,7 +99,7 @@ func sanctioned(ctx context.Context, t *testing.T, registry *sunbirdRegistry.Cli
 		if err != nil {
 			continue
 		}
-		if _, err := implementation.PublishPipeline(path); err != nil {
+		if _, err := pipeline.RemotePipeline(path); err != nil {
 			t.Logf("  %s names %s, which this binary does not embed -- the sweep will skip it", key, path)
 			continue
 		}
@@ -126,11 +125,11 @@ func clearRunLog(ctx context.Context, t *testing.T, runLog pipeline.RunLog, reco
 		if err != nil {
 			t.Fatalf("%s: %v", record.BindingKey, err)
 		}
-		files, err := implementation.PublishPipeline(path)
+		files, err := pipeline.RemotePipeline(path)
 		if err != nil {
 			t.Fatalf("%s: %v", record.BindingKey, err)
 		}
-		for _, key := range []string{files.Path, record.CapabilityCode} {
+		for _, key := range []string{files.URL, record.CapabilityCode} {
 			if err := runLog.RecordPipelineRun(ctx, key, time.Time{}); err != nil {
 				t.Fatalf("clearing the run log for %s: %v", key, err)
 			}
@@ -218,7 +217,6 @@ func TestLive_CrawlerTick(t *testing.T) {
 		t.Fatalf("config refused: %v", err)
 	}
 	t.Logf("  enabled=%v tick=%s publish=%v filter=%q", cfg.enabled, cfg.tick, cfg.publish, liveFilter())
-	t.Logf("  this binary carries pipelines: %v", implementation.PublishPipelines())
 
 	t.Log("STEP 2 — connect to the registry and see what it sanctions")
 	registry := liveRegistry(ctx, t, registryURL)
@@ -776,8 +774,7 @@ func TestLive_SurveyRegistryForPublishActions(t *testing.T) {
 	}
 	defer func() { _ = closeRegistry() }()
 
-	t.Logf("the registry holds %d capabilities; this binary carries pipelines %v",
-		len(keys), implementation.PublishPipelines())
+	t.Logf("the registry holds %d capabilities", len(keys))
 
 	ready, selectOnly, unserveable := 0, 0, 0
 	for _, key := range keys {
@@ -806,7 +803,7 @@ func TestLive_SurveyRegistryForPublishActions(t *testing.T) {
 		}
 		t.Logf("    publish names  %s", path)
 
-		if _, err := implementation.PublishPipeline(path); err != nil {
+		if _, err := pipeline.RemotePipeline(path); err != nil {
 			unserveable++
 			t.Logf("    gate           NO PIPELINE — the registry sanctions publishing, but")
 			t.Logf("                   %v", err)

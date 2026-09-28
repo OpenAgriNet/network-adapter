@@ -317,7 +317,11 @@ func (r *stepRunner) httpGet(ctx context.Context, step Step, rc *runContext) (an
 		local[key] = value
 	}
 
-	raw, err := r.client.Get(ctx, r.mapper, r.mappingRef(step.With.Mapping), path, local)
+	ref, err := r.mappingRef(step.With.Mapping)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := r.client.Get(ctx, r.mapper, ref, path, local)
 	if err != nil {
 		return nil, err
 	}
@@ -330,19 +334,13 @@ func (r *stepRunner) httpGet(ctx context.Context, step Step, rc *runContext) (an
 }
 
 // mappingRef turns a file-relative mapping path into the URL the mapper
-// resolves. A file writes `mappings/master-states.yaml`; the mappings are
-// served from the root of that directory.
-func (r *stepRunner) mappingRef(mapping string) string {
-	// The base is a URL, so this is deliberately string concatenation and not
-	// filepath.Join: Join collapses the "//" in "http://host" to "http:/",
-	// producing an address nothing can fetch. Two call sites used Join and
-	// were broken for every mapping, not merely prefixed ones.
-	//
-	// The "mappings/" prefix is stripped because a file writes its mappings
-	// relative to itself, while they are SERVED from the root of that
-	// directory. Both spellings therefore resolve to the same ref, so a
-	// provider cannot be wrong about which one to use.
-	return strings.TrimRight(r.mappingBase, "/") + "/" + strings.TrimPrefix(mapping, "mappings/")
+// fetches.
+func (r *stepRunner) mappingRef(mapping string) (string, error) {
+	// Resolved against the pipeline file's URL, the way a link in a page is
+	// resolved against the page: `mappings/master-states.yaml` beside the
+	// file. url.ResolveReference, not string joins -- filepath.Join collapses
+	// the "//" in "https://host".
+	return resolveMappingRef(r.mappingBase, mapping)
 }
 
 // join matches left against right on a shared key, carrying named fields
@@ -835,7 +833,10 @@ func (r *stepRunner) httpPost(ctx context.Context, step Step, rc *runContext) (a
 	if err != nil {
 		return nil, err
 	}
-	ref := r.mappingRef(step.With.Mapping)
+	ref, err := r.mappingRef(step.With.Mapping)
+	if err != nil {
+		return nil, err
+	}
 
 	local := map[string]any{}
 	for k, v := range step.With.Local {
@@ -920,7 +921,10 @@ func (r *stepRunner) transform(ctx context.Context, step Step, rc *runContext) (
 	if err != nil {
 		return nil, err
 	}
-	ref := r.mappingRef(step.With.Mapping)
+	ref, err := r.mappingRef(step.With.Mapping)
+	if err != nil {
+		return nil, err
+	}
 
 	local := map[string]any{}
 	for k, v := range step.With.Local {

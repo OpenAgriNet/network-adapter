@@ -26,7 +26,6 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/source"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
@@ -315,7 +314,7 @@ func buildPublishSource(registry definition.RegistryLookup, log *slog.Logger) (*
 			"catalogcrawler: config %q needs a registry plugin that can list and resolve provider bindings (e.g. sunbirdRegistry)",
 			cfgPublishPipelines)
 	}
-	return &publishDiscoverer{lookup: lookup, resolve: implementation.PublishPipeline, log: log}, nil
+	return &publishDiscoverer{lookup: lookup, resolve: pipeline.RemotePipeline, log: log}, nil
 }
 
 // publishRegistry is what publish discovery needs from the registry plugin.
@@ -324,7 +323,7 @@ type publishRegistry interface {
 	definition.ProviderRecordLookup
 }
 
-// publishTarget is one pipeline the registry sanctions and this binary embeds.
+// publishTarget is one pipeline the registry sanctions, by URL.
 type publishTarget struct {
 	record *model.ProviderRecord
 	files  pipeline.Files
@@ -336,14 +335,14 @@ type publishTarget struct {
 // and this is only the mapping from its records to runnable pipelines.
 type publishDiscoverer struct {
 	lookup publishRegistry
-	// resolve turns the registry's pipeline path into the embedded files.
-	// Injectable so discovery is testable without the real embed.
+	// resolve turns the registry's pipeline URL into the Files a run is given.
+	// Injectable so discovery is testable without a registry.
 	resolve func(registryPath string) (pipeline.Files, error)
 	log     *slog.Logger
 }
 
 // Discover lists every binding and returns the ones with a publish action
-// whose pipeline this binary embeds.
+// naming a pipeline URL.
 //
 // Only a failed LIST is an error. Each binding is judged on its own: one that
 // cannot be resolved, serves no publish action, or names a pipeline this
@@ -383,10 +382,10 @@ func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, erro
 		}
 		files, err := d.resolve(pipelinePath)
 		if err != nil {
-			// The registry sanctions a pipeline this binary was not built with.
-			// A deployment problem, said loudly with what IS available.
-			d.log.ErrorContext(ctx, "catalogcrawler: the registry names a pipeline this binary does not carry",
-				"bindingKey", key, "pipeline", pipelinePath, "carried", implementation.PublishPipelines(), "error", err)
+			// The record's publish mappings is not a pipeline URL (a repo path
+			// from before pipelines were hosted, say). A registry fix, said loudly.
+			d.log.ErrorContext(ctx, "catalogcrawler: the registry's publish mappings is not a pipeline URL",
+				"bindingKey", key, "pipeline", pipelinePath, "error", err)
 			continue
 		}
 

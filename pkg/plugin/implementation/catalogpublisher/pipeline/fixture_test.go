@@ -23,22 +23,34 @@ var fixtureFS embed.FS
 const (
 	fixtureCapability   = "example:Thing"
 	fixturePipelinePath = "testdata/minimal.yaml"
-	fixtureRegistryPath = "pkg/plugin/implementation/Example/catalogpublish-example/testdata/minimal.yaml"
 )
+
+// fixtureHost serves the test data the way a pipeline is hosted in
+// production -- over HTTP, the file and its mappings beside it -- so a run
+// fetches its pipeline and resolves its mappings by URL exactly as it would
+// from raw.githubusercontent.com. Started once for the package; it lives as
+// long as the test binary.
+var fixtureHost = func() string {
+	base, _, err := ServeMappings(fixtureFS, ".")
+	if err != nil {
+		panic(err)
+	}
+	return base
+}()
+
+// fixtureRegistryPath is what the registry's publish action names: the
+// pipeline's URL.
+var fixtureRegistryPath = fixtureHost + "/" + fixturePipelinePath
 
 // fixturePipeline is the Files a run is given.
 func fixturePipeline() Files {
-	return Files{FS: fixtureFS, Path: fixturePipelinePath, RegistryPath: fixtureRegistryPath}
+	return Files{URL: fixtureRegistryPath}
 }
 
 // otherPipeline is a SECOND capability, for the tests about two pipelines not
 // treading on each other.
 func otherPipeline() Files {
-	return Files{
-		FS:           fixtureFS,
-		Path:         "testdata/other.yaml",
-		RegistryPath: "pkg/plugin/implementation/Other/catalogpublish-other/testdata/other.yaml",
-	}
+	return Files{URL: fixtureHost + "/testdata/other.yaml"}
 }
 
 // fixtureUpstream serves the token exchange and the `things` call, and counts

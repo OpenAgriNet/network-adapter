@@ -55,7 +55,7 @@ Supported config keys:
 - `parkSweepIntervalSeconds`: optional, default `900` (15 min). How often the revive-or-abandon sweep runs — see "Parked and abandoned catalogs" below. Independent of `indexIntervalSeconds`/`catalogIntervalSeconds`.
 - `parkOlderThanSeconds`: optional, default `0`. How long a catalog must have been sitting parked before a sweep acts on it. `0` means no extra grace period — each sweep acts on anything currently parked.
 - `maxParkCount`: optional, default `0`, meaning derived from `parkSweepIntervalSeconds` and a 12-hour total retry budget (e.g. the default 15-minute sweep interval yields 48). How many times a parked catalog is revived before being abandoned instead.
-- `publishPipelines`: optional, default `false`. `"true"` sweeps the registry each tick for bindings serving a `publish` action and runs the pipeline each one names (an embedded `*/catalogpublish-*/` YAML under `pkg/plugin/implementation`). Requires a registry plugin that can list and resolve provider bindings (e.g. `sunbirdRegistry`).
+- `publishPipelines`: optional, default `false`. `"true"` sweeps the registry each tick for bindings serving a `publish` action and runs the pipeline each one names. The action's `mappings` is the pipeline file's **https URL**, fetched every run, exactly like a select mapping. Requires a registry plugin that can list and resolve provider bindings (e.g. `sunbirdRegistry`).
 - `publishEnabled`: optional, default `false`. `"true"` lets a due pipeline run post to `discoveryPushUrl`. Off, runs still build their catalogs (observable and reversible), but nothing reaches the network.
 - `publishTickIntervalSeconds`: optional, default `300` (5 min). How often to CHECK whether a pipeline is due; each pipeline's own `schedule.cron` decides when it actually runs.
 - `publishCatalogOutputDir`: optional, default empty (a temporary directory each run removes). Keeps built catalogs for inspection, one subdirectory per pipeline.
@@ -63,24 +63,32 @@ Supported config keys:
 - `publish.<pipeline>.schedule`: optional. Replaces the file's `schedule.cron` (five-field cron, in the file's `schedule.timezone`). A schedule change is then a config edit, not a rebuild.
 - `publishBindingKeys`: retired. The registry now decides which capabilities publish; a config still setting it is refused at startup.
 
-### Renaming or moving a publish pipeline
+### Hosting a publish pipeline
 
-A pipeline's path is stored in two places: in this repo (the embedded
-`*/catalogpublish-*/` folder), and in the Sunbird registry record whose
-`publish` action names it in `mappings`. CI can only check the first.
+A pipeline is a hosted file, like a select mapping. The registry record's
+`publish` action names it by **https URL** in `mappings`, and every run
+fetches it. Its own mapping references (`mapping: mappings/catalog.yaml`)
+resolve **relative to that URL**, so the pipeline file and its `mappings/`
+folder are hosted side by side. In this repo they live in
+`pkg/plugin/implementation/<Capability>/catalogpublish/`: one `<provider>.yaml`
+per provider (Mandi: `MandiPrice/catalogpublish/agmarknet.yaml`), next to
+`mappings/`.
 
-1. Move the folder with `git mv`, and keep it matching `catalogpublish-*`.
-   `TestEveryPipelineFolderOnDiskIsEmbedded` fails otherwise.
-2. Add the old path to `deprecatedPaths` in `pkg/plugin/implementation/embedded.go`.
-   A record that still names the old path then keeps publishing, with a
-   deprecation WARN.
-3. **On deploy**, update the registry record's `publish` `mappings` to the new
-   path. Do this after the new binary is running, not before.
-4. In the next release, delete the `deprecatedPaths` entry.
+- **Only https** (plain http only on loopback, for local runs). A repo path
+  in the record is refused with a message asking for the URL.
+- **Credentials:** a pipeline file cannot choose where they go.
+  `upstream.baseUrl` must be `${inputs.baseUrl}` (env or plugin config), and
+  every call path must start with `/`.
+- **Availability:** if the host is unreachable at a firing, the run uses the
+  last copy of that URL that loaded and validated (logged as a WARN). A
+  process that never loaded it fails the run, and the next tick retries.
+- **Changes take effect at the next run:** no rebuild and no restart, the
+  same as select mappings. The run log is keyed by the URL, so moving a file
+  to a new URL starts a fresh schedule for it.
 
-Current alias (remove after the registry record is updated):
-`pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml`
-→ `pkg/plugin/implementation/MandiPrice/catalogpublish-agmarknet/agmarknet.yaml`.
+**On deploy:** the Mandi record's `publish` `mappings` must be changed from
+the old repo path to the hosted URL of `MandiPrice/catalogpublish/agmarknet.yaml`
+(e.g. in the helmcharts repo, beside `mandi-price.select.yaml`).
 
 ## Signature verification
 

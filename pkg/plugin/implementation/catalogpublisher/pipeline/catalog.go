@@ -65,7 +65,8 @@ const catalogResourceField = "resourceId"
 //
 // rc supplies everything a `${...}` outside a record can name (the resolved
 // inputs, the built-ins); cache compiles and applies the JSONata that reaches
-// inside one. mappingBase is the root the mappings are served from, as
+// inside one. mappingBase is the pipeline file's URL, which a mapping
+// reference resolves against, as
 // steps.go's mappingRef uses it.
 //
 // The counters are the domain's own report numbers, handed back rather than
@@ -452,9 +453,11 @@ func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 	// `_local`.
 	input := map[string]any{"response": chunk, "_local": local}
 
-	// A file writes `mappings/catalog.yaml`; the mappings are served from the
-	// root of that directory. Same rule as steps.go's mappingRef.
-	ref := mappingBase + "/" + strings.TrimPrefix(catalog.Render.Mapping, "mappings/")
+	// Resolved against the pipeline file's URL, as steps.go's mappingRef.
+	ref, err := resolveMappingRef(mappingBase, catalog.Render.Mapping)
+	if err != nil {
+		return BuiltCatalog{}, err
+	}
 
 	content, err := mapper.Transform(ctx, ref, definition.DirectionResponse, input)
 	if err != nil {

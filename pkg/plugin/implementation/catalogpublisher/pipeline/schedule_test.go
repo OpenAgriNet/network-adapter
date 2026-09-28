@@ -7,6 +7,7 @@ package pipeline
 // fires on the wrong calendar day, every day, while looking healthy.
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -150,90 +151,32 @@ func TestDueNowRejectsAnUnusableSchedule(t *testing.T) {
 	}
 }
 
-// The registry stores a repo-relative path; the embedded filesystem knows only
-// a filename. loadRegistryPipeline is the join, and it is also a boundary: a
-// path pointing at some other package's pipeline must not silently load ours.
-func TestLoadRegistryPipelineAcceptsThisPackagesOwnPath(t *testing.T) {
-	for _, path := range []string{
-		fixtureRegistryPath,
-		"./" + fixtureRegistryPath,
-		fixturePipelinePath,
-	} {
-		t.Run(path, func(t *testing.T) {
-			spec, err := loadRegistryPipeline(fixturePipeline(), path)
-			if err != nil {
-				t.Fatalf("loadRegistryPipeline(%q): %v", path, err)
-			}
-			if spec.Metadata.Capability == "" {
-				t.Error("loaded a spec with no capability")
-			}
-		})
+// The registry names the pipeline by its URL, and a run is given the pipeline
+// it is to run. loadRegistryPipeline is the join, and it is a boundary: a
+// record naming some other URL must not silently run this one.
+func TestLoadRegistryPipelineAcceptsItsOwnURL(t *testing.T) {
+	for _, named := range []string{fixtureRegistryPath, "  " + fixtureRegistryPath + " "} {
+		spec, err := loadRegistryPipeline(context.Background(), fixturePipeline(), named)
+		if err != nil {
+			t.Fatalf("loadRegistryPipeline(%q): %v", named, err)
+		}
+		if spec.Metadata.Capability == "" {
+			t.Error("loaded a spec with no capability")
+		}
 	}
 }
 
-func TestLoadRegistryPipelineRefusesAnotherPackagesPipeline(t *testing.T) {
-	for name, path := range map[string]string{
-		"another package":    "pkg/plugin/implementation/WeatherObservation/catalogpublish-imd/imd.yaml",
-		"same name, else":    "pkg/plugin/implementation/Other/minimal.yaml",
-		"escaping traversal": "pkg/plugin/implementation/Example/catalogpublish-example/../../minimal.yaml",
-		"empty":              "  ",
+func TestLoadRegistryPipelineRefusesAnotherPipeline(t *testing.T) {
+	for name, named := range map[string]string{
+		"another pipeline": fixtureHost + "/testdata/other.yaml",
+		"a repo path":      "pkg/plugin/implementation/Example/catalogpublish/minimal.yaml",
+		"empty":            "  ",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := loadRegistryPipeline(fixturePipeline(), path); err == nil {
-				t.Errorf("loadRegistryPipeline(%q) loaded the collector's own pipeline anyway", path)
+			if _, err := loadRegistryPipeline(context.Background(), fixturePipeline(), named); err == nil {
+				t.Errorf("loadRegistryPipeline(%q) ran this pipeline anyway", named)
 			}
 		})
-	}
-}
-
-// decideTick is the whole pre-flight: gate, then load, then schedule. A live
-// tick runs exactly this before it touches the upstream.
-func TestDecideTick(t *testing.T) {
-	record := &model.ProviderRecord{
-		BindingKey: "exampleco|example:Thing",
-		Actions: map[string]model.ActionPlan{
-			"select":  {Method: "GET", Path: "/v1/fetch"},
-			"publish": {Mappings: fixtureRegistryPath},
-		},
-	}
-	ist, err := time.LoadLocation("Asia/Kolkata")
-	if err != nil {
-		t.Fatalf("LoadLocation: %v", err)
-	}
-
-	decision, err := decideTick(fixturePipeline(), record, time.Date(2026, 9, 22, 6, 0, 0, 0, ist), time.Time{})
-	if err != nil {
-		t.Fatalf("decideTick: %v", err)
-	}
-	if !decision.Due {
-		t.Errorf("not due at 06:00 IST having never run: %s", decision.Reason)
-	}
-	if decision.Spec.Metadata.Capability == "" {
-		t.Error("decision carries no spec; the caller has nothing to run")
-	}
-	if decision.PipelinePath == "" {
-		t.Error("decision does not say which pipeline it resolved")
-	}
-
-	// Same record an hour later, having just run: not due, and no error --
-	// "already ran" is a normal outcome, not a failure.
-	ranAt := time.Date(2026, 9, 22, 6, 0, 0, 0, ist)
-	decision, err = decideTick(fixturePipeline(), record, ranAt.Add(time.Hour), ranAt)
-	if err != nil {
-		t.Fatalf("decideTick after a run: %v", err)
-	}
-	if decision.Due {
-		t.Error("due again an hour after running; this publishes twice a day")
-	}
-}
-
-func TestDecideTickRefusesACapabilityThatDoesNotPublish(t *testing.T) {
-	record := &model.ProviderRecord{
-		BindingKey: "mausamgram|openagrinet:WeatherObservation",
-		Actions:    map[string]model.ActionPlan{"select": {Method: "GET"}},
-	}
-	if _, err := decideTick(fixturePipeline(), record, time.Now(), time.Time{}); err == nil {
-		t.Fatal("a select-only capability produced a tick decision")
 	}
 }
 
