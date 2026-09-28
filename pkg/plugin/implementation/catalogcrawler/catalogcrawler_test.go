@@ -180,7 +180,7 @@ func TestDurationSecondsOr_FallsBackOnInvalid(t *testing.T) {
 
 // discoveryPushUrl used to be discovery's /push; it is now the provider
 // adapter's /publish. A config still carrying an old /push value is refused
-// at startup -- otherwise crawled catalogues would go to /push as publish
+// at startup -- otherwise crawled catalogs would go to /push as publish
 // bodies and every pipeline would post to .../push/publish, both failing far
 // from the cause.
 func TestProvider_New_RefusesAnOldDiscoveryPushURL(t *testing.T) {

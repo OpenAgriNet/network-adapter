@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -25,7 +26,19 @@ type BatchOutcome struct {
 // Client POSTs catalog/publish bodies to the (trusted, operator-configured)
 // provider adapter endpoint. No SSRF guard -- the endpoint is config, not
 // attacker input.
-type Client struct{ hc *http.Client }
+type Client struct {
+	hc *http.Client
+
+	// Log receives one line per push. nil means slog.Default().
+	Log *slog.Logger
+}
+
+func (c *Client) logger() *slog.Logger {
+	if c.Log == nil {
+		return slog.Default()
+	}
+	return c.Log
+}
 
 // NewClient builds a push transport with the given timeout.
 func NewClient(timeout time.Duration) *Client {
@@ -34,7 +47,7 @@ func NewClient(timeout time.Duration) *Client {
 
 // Push POSTs a /publish body. 200 with an ACCEPTED on_publish verdict is an
 // ack; anything else is a non-ack with the reason. /publish answers 200 even
-// for a catalogue it did not accept -- the verdict is in message.results -- so
+// for a catalog it did not accept -- the verdict is in message.results -- so
 // the status code alone would read a PARTIAL (indexed with resources missing)
 // as success. An answer carrying no results keeps the 200 rule.
 func (c *Client) Push(ctx context.Context, endpoint string, body []byte) (BatchOutcome, error) {
@@ -43,12 +56,19 @@ func (c *Client) Push(ctx context.Context, endpoint string, body []byte) (BatchO
 		return BatchOutcome{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// One line per call, with the path and never the query.
+	began := time.Now()
+	fields := []any{"method", http.MethodPost, "path", req.URL.Path, "bytes", len(body)}
 	resp, err := c.hc.Do(req)
 	if err != nil {
+		c.logger().InfoContext(ctx, "publish call", append(fields,
+			"status", 0, "duration", time.Since(began).Round(time.Millisecond).String())...)
 		return BatchOutcome{}, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxAnswerBytes))
+	c.logger().InfoContext(ctx, "publish call", append(fields,
+		"status", resp.StatusCode, "duration", time.Since(began).Round(time.Millisecond).String())...)
 	out := BatchOutcome{Acked: resp.StatusCode == http.StatusOK, HTTPStatus: resp.StatusCode}
 	if !out.Acked {
 		out.Reason = strings.TrimSpace(string(respBody))
@@ -78,9 +98,13 @@ func (c *Client) Push(ctx context.Context, endpoint string, body []byte) (BatchO
 // enough that a misbehaving server cannot exhaust memory.
 const maxAnswerBytes = 1 << 20
 
-// verdict reads the first on_publish result's status and reason. readable is
-// false only for a non-empty body that is not an on_publish answer; an empty
-// body, or one carrying no results, is readable with an empty status.
+// verdict reads the on_publish results and returns the first one that is not
+// ACCEPTED -- or the first result when all are. readable is false only for a
+// non-empty body that is not an on_publish answer; an empty body, or one
+// carrying no results, is readable with an empty status.
+//
+// Every result is judged: an answer listing one ACCEPTED and one PARTIAL is a
+// PARTIAL, and reading only the first would call it a success.
 func verdict(body []byte) (status, reason string, readable bool) {
 	var answer struct {
 		Message struct {
@@ -102,12 +126,17 @@ func verdict(body []byte) (status, reason string, readable bool) {
 	if len(answer.Message.Results) == 0 {
 		return "", "", true
 	}
-	first := answer.Message.Results[0]
-	reason = first.Reason
-	if reason == "" && len(first.Errors) > 0 {
-		reason = first.Errors[0].Message
+	for _, result := range answer.Message.Results {
+		if strings.EqualFold(result.Status, "ACCEPTED") {
+			continue
+		}
+		reason = result.Reason
+		if reason == "" && len(result.Errors) > 0 {
+			reason = result.Errors[0].Message
+		}
+		return result.Status, reason, true
 	}
-	return first.Status, reason, true
+	return answer.Message.Results[0].Status, "", true
 }
 
 // firstLine trims an answer down to something a log line can carry.

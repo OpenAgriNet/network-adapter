@@ -45,3 +45,53 @@ func (s *Store) RecordPipelineRun(ctx context.Context, pipeline string, at time.
 	}
 	return nil
 }
+
+// ClaimPipelineRun takes pipeline's firing before the run does any work,
+// reporting false when the firing is already served or another replica holds
+// it.
+//
+// It is the run-log write moved to the START of the run and made
+// conditional: last_run_at is set to now only while it is still before
+// firing, the instant the current schedule window opened. Two replicas racing
+// are ordered by the row lock, and the loser's WHERE sees the winner's now and
+// matches nothing -- so RETURNING yields zero rows and it stands down.
+//
+// A replica that crashes mid-run leaves its claim in place, and that firing
+// is then treated as served until the next one. That is the price of this
+// shape; ReleasePipelineRun covers the ordinary failure.
+func (s *Store) ClaimPipelineRun(ctx context.Context, pipeline string, now, firing time.Time) (bool, error) {
+	var claimed string
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO crawler_pipeline_run (pipeline, last_run_at)
+		 VALUES ($1, $2)
+		 ON CONFLICT (pipeline) DO UPDATE
+		    SET last_run_at = EXCLUDED.last_run_at
+		  WHERE crawler_pipeline_run.last_run_at < $3
+		 RETURNING pipeline`,
+		pipeline, now, firing).Scan(&claimed)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: ClaimPipelineRun: %w", err)
+	}
+	return true, nil
+}
+
+// ReleasePipelineRun gives back a claim whose run failed, restoring the
+// marker to previous -- what LastPipelineRun read before the claim -- so the
+// next tick, on this replica or another, retries the same firing. A zero
+// previous means the pipeline had never run, and the row is removed.
+func (s *Store) ReleasePipelineRun(ctx context.Context, pipeline string, previous time.Time) error {
+	var err error
+	if previous.IsZero() {
+		_, err = s.db.ExecContext(ctx, `DELETE FROM crawler_pipeline_run WHERE pipeline=$1`, pipeline)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE crawler_pipeline_run SET last_run_at=$2 WHERE pipeline=$1`, pipeline, previous)
+	}
+	if err != nil {
+		return fmt.Errorf("store: ReleasePipelineRun: %w", err)
+	}
+	return nil
+}

@@ -73,7 +73,7 @@ func decodeEcho(t *testing.T, content []byte) (response []any, local map[string]
 }
 
 // zeroCommoditiesRule is "this record lists nothing", and it is NOT spelled
-// `$count(commodities) = 0` the way mandi-price-agmarket.yaml spells it.
+// `$count(commodities) = 0` the way agmarknet.yaml spells it.
 //
 // Under this jsonata build that comparison is ALWAYS false: a field holding an
 // empty array resolves to an empty sequence, and the 0 that $count returns for
@@ -97,7 +97,7 @@ func simpleCatalog() Catalog {
 	}
 }
 
-func TestBuildCataloguesGroupsByTheNamedField(t *testing.T) {
+func TestBuildCatalogsGroupsByTheNamedField(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	mapper := &echoMapper{}
 
@@ -107,12 +107,12 @@ func TestBuildCataloguesGroupsByTheNamedField(t *testing.T) {
 		{"stateCode": "MH", "marketId": 3.0},
 	}
 
-	built, counters, err := buildCatalogues(context.Background(), simpleCatalog(), records, rc, cache, mapper, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, mapper, "http://mappings")
 	if err != nil {
-		t.Fatalf("buildCatalogues: %v", err)
+		t.Fatalf("buildCatalogs: %v", err)
 	}
 	if len(built) != 2 {
-		t.Fatalf("built %d catalogues, want 2", len(built))
+		t.Fatalf("built %d catalogs, want 2", len(built))
 	}
 	// Groups are walked in sorted key order so two runs read the same way.
 	if built[0].Slug != "KA" || built[1].Slug != "MH" {
@@ -121,7 +121,7 @@ func TestBuildCataloguesGroupsByTheNamedField(t *testing.T) {
 	if built[1].CatalogID != "catalog:test:MH" {
 		t.Errorf("catalogId is %q", built[1].CatalogID)
 	}
-	if counters["groups"] != 2 || counters["catalogues"] != 2 {
+	if counters["groups"] != 2 || counters["catalogs"] != 2 {
 		t.Errorf("counters = %v", counters)
 	}
 
@@ -134,16 +134,16 @@ func TestBuildCataloguesGroupsByTheNamedField(t *testing.T) {
 	}
 }
 
-func TestBuildCataloguesRefusesARecordMissingTheGroupField(t *testing.T) {
+func TestBuildCatalogsRefusesARecordMissingTheGroupField(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 
 	records := []map[string]any{{"marketId": 1.0}}
-	if _, _, err := buildCatalogues(context.Background(), simpleCatalog(), records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
-		t.Fatal("a record with nothing to group by built a catalogue")
+	if _, _, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
+		t.Fatal("a record with nothing to group by built a catalog")
 	}
 }
 
-func TestBuildCataloguesExclusions(t *testing.T) {
+func TestBuildCatalogsExclusions(t *testing.T) {
 	commodityRule := ExcludeRule{
 		// NOT `$count(commodities) = 0`: see the note on
 		// zeroCommoditiesRule below.
@@ -198,16 +198,16 @@ func TestBuildCataloguesExclusions(t *testing.T) {
 			catalog := simpleCatalog()
 			catalog.Exclude = []ExcludeRule{commodityRule, geometryRule}
 
-			built, counters, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+			built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
 			if err != nil {
-				t.Fatalf("buildCatalogues: %v", err)
+				t.Fatalf("buildCatalogs: %v", err)
 			}
 			if len(built) != 1 {
-				t.Fatalf("built %d catalogues, want 1", len(built))
+				t.Fatalf("built %d catalogs, want 1", len(built))
 			}
 			response, _ := decodeEcho(t, built[0].Content)
 			if len(response) != tc.wantPublished {
-				t.Fatalf("catalogue carries %d records, want %d", len(response), tc.wantPublished)
+				t.Fatalf("catalog carries %d records, want %d", len(response), tc.wantPublished)
 			}
 			for key, want := range tc.wantCounters {
 				if counters[key] != want {
@@ -218,7 +218,7 @@ func TestBuildCataloguesExclusions(t *testing.T) {
 	}
 }
 
-func TestBuildCataloguesAnnotatesWithoutExcluding(t *testing.T) {
+func TestBuildCatalogsAnnotatesWithoutExcluding(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	catalog := simpleCatalog()
 	catalog.Annotate = []AnnotateRule{{When: "coordinateQuality != 'ok'", As: "publishedWithoutLocation"}}
@@ -228,9 +228,9 @@ func TestBuildCataloguesAnnotatesWithoutExcluding(t *testing.T) {
 		{"stateCode": "MH", "marketId": 2.0, "coordinateQuality": "suspect"},
 	}
 
-	built, counters, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
 	if err != nil {
-		t.Fatalf("buildCatalogues: %v", err)
+		t.Fatalf("buildCatalogs: %v", err)
 	}
 	response, _ := decodeEcho(t, built[0].Content)
 	if len(response) != 2 {
@@ -253,7 +253,7 @@ func TestBuildCataloguesAnnotatesWithoutExcluding(t *testing.T) {
 	}
 }
 
-func TestBuildCataloguesOrders(t *testing.T) {
+func TestBuildCatalogsOrders(t *testing.T) {
 	records := []map[string]any{
 		{"stateCode": "MH", "marketId": 10.0},
 		{"stateCode": "MH", "marketId": 9.0},
@@ -276,9 +276,9 @@ func TestBuildCataloguesOrders(t *testing.T) {
 			catalog := simpleCatalog()
 			catalog.Order = Order{By: "marketId", Direction: tc.direction}
 
-			built, _, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+			built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
 			if err != nil {
-				t.Fatalf("buildCatalogues: %v", err)
+				t.Fatalf("buildCatalogs: %v", err)
 			}
 			response, _ := decodeEcho(t, built[0].Content)
 			for i, want := range tc.want {
@@ -290,20 +290,20 @@ func TestBuildCataloguesOrders(t *testing.T) {
 	}
 }
 
-func TestBuildCataloguesRefusesAnUnknownOrderDirection(t *testing.T) {
+func TestBuildCatalogsRefusesAnUnknownOrderDirection(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	catalog := simpleCatalog()
 	catalog.Order = Order{By: "marketId", Direction: "sideways"}
 
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
-	if _, _, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
+	if _, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
 		t.Fatal("an unknown order direction was accepted")
 	}
 }
 
 // TestChunkAtTheBudgetBoundary is the rule the geometry cap turns on: a chunk
 // is cut only when adding the NEXT record would exceed the budget, so exactly
-// budget-many costing records still make one catalogue.
+// budget-many costing records still make one catalog.
 func TestChunkAtTheBudgetBoundary(t *testing.T) {
 	chunk := Chunk{
 		Budget: 4,
@@ -352,12 +352,12 @@ func TestChunkAtTheBudgetBoundary(t *testing.T) {
 			catalog.Chunk = chunk
 			catalog.Order = Order{By: "marketId", Direction: "asc"}
 
-			built, _, err := buildCatalogues(context.Background(), catalog, tc.records, rc, cache, &echoMapper{}, "http://mappings")
+			built, _, err := buildCatalogs(context.Background(), catalog, tc.records, rc, cache, &echoMapper{}, "http://mappings")
 			if err != nil {
-				t.Fatalf("buildCatalogues: %v", err)
+				t.Fatalf("buildCatalogs: %v", err)
 			}
 			if len(built) != len(tc.wantSlugs) {
-				t.Fatalf("built %d catalogues, want %d", len(built), len(tc.wantSlugs))
+				t.Fatalf("built %d catalogs, want %d", len(built), len(tc.wantSlugs))
 			}
 			for i, want := range tc.wantSlugs {
 				if built[i].Slug != want {
@@ -384,7 +384,7 @@ func TestChunkRefusesASlugThatCannotDistinguishChunks(t *testing.T) {
 		{"stateCode": "MH", "marketId": 1.0},
 		{"stateCode": "MH", "marketId": 2.0},
 	}
-	_, _, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	_, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
 	if err == nil {
 		t.Fatal("two chunks published under one slug")
 	}
@@ -399,15 +399,15 @@ func TestChunkRefusesANonNumericCost(t *testing.T) {
 	catalog.Chunk = Chunk{Budget: 2, Cost: "'expensive'", Slug: "${stateCode}"}
 
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
-	if _, _, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
+	if _, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings"); err == nil {
 		t.Fatal("a cost that is not a number was accepted")
 	}
 }
 
-// TestBuildCataloguesEmptyGroupProducesNoCatalogue is the one rule that cannot
-// be got wrong: an empty catalogue retires the group's resources from the
+// TestBuildCatalogsEmptyGroupProducesNoCatalog is the one rule that cannot
+// be got wrong: an empty catalog retires the group's resources from the
 // network on the next MERGE.
-func TestBuildCataloguesEmptyGroupProducesNoCatalogue(t *testing.T) {
+func TestBuildCatalogsEmptyGroupProducesNoCatalog(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	catalog := simpleCatalog()
 	catalog.Exclude = []ExcludeRule{{When: zeroCommoditiesRule, Reason: "nothing traded"}}
@@ -418,9 +418,9 @@ func TestBuildCataloguesEmptyGroupProducesNoCatalogue(t *testing.T) {
 	}
 
 	mapper := &echoMapper{}
-	built, counters, err := buildCatalogues(context.Background(), catalog, records, rc, cache, mapper, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, mapper, "http://mappings")
 	if err != nil {
-		t.Fatalf("buildCatalogues: %v", err)
+		t.Fatalf("buildCatalogs: %v", err)
 	}
 	if len(built) != 1 || built[0].Slug != "KA" {
 		t.Fatalf("built %+v, want only KA", built)
@@ -428,12 +428,12 @@ func TestBuildCataloguesEmptyGroupProducesNoCatalogue(t *testing.T) {
 	if mapper.calls != 1 {
 		t.Errorf("the render mapping ran %d times, want 1", mapper.calls)
 	}
-	if counters["emptyGroups"] != 1 {
+	if counters["excludedGroups"] != 1 {
 		t.Errorf("an emptied group was not counted: %v", counters)
 	}
 }
 
-func TestBuildCataloguesBrokenExpressionsAreErrorsNotFalse(t *testing.T) {
+func TestBuildCatalogsBrokenExpressionsAreErrorsNotFalse(t *testing.T) {
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0, "commodities": []any{"rice"}}}
 
 	cases := []struct {
@@ -473,7 +473,7 @@ func TestBuildCataloguesBrokenExpressionsAreErrorsNotFalse(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rc, cache := testBuildContext(t, nil)
-			_, _, err := buildCatalogues(context.Background(), tc.catalog(simpleCatalog()), records, rc, cache, &echoMapper{}, "http://mappings")
+			_, _, err := buildCatalogs(context.Background(), tc.catalog(simpleCatalog()), records, rc, cache, &echoMapper{}, "http://mappings")
 			if err == nil {
 				t.Fatal("a broken expression was read as false instead of failing the build")
 			}
@@ -481,7 +481,7 @@ func TestBuildCataloguesBrokenExpressionsAreErrorsNotFalse(t *testing.T) {
 	}
 }
 
-func TestBuildCataloguesRendersLocalsAndIdentities(t *testing.T) {
+func TestBuildCatalogsRendersLocalsAndIdentities(t *testing.T) {
 	rc, cache := testBuildContext(t, map[string]string{
 		"participantId": "agmarknet",
 		"networkId":     "oan-dev",
@@ -497,14 +497,14 @@ func TestBuildCataloguesRendersLocalsAndIdentities(t *testing.T) {
 
 	records := []map[string]any{
 		// The first row's stateName is blank, so a group value taken blindly
-		// from the first record would name the catalogue after nothing.
+		// from the first record would name the catalog after nothing.
 		{"stateCode": "MH", "marketId": 1.0, "stateName": ""},
 		{"stateCode": "MH", "marketId": 2.0, "stateName": "Maharashtra"},
 	}
 
-	built, _, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
 	if err != nil {
-		t.Fatalf("buildCatalogues: %v", err)
+		t.Fatalf("buildCatalogs: %v", err)
 	}
 	response, local := decodeEcho(t, built[0].Content)
 	want := map[string]any{
@@ -523,33 +523,33 @@ func TestBuildCataloguesRendersLocalsAndIdentities(t *testing.T) {
 	}
 }
 
-func TestBuildCataloguesNeverCarriesTheToken(t *testing.T) {
+func TestBuildCatalogsNeverCarriesTheToken(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	catalog := simpleCatalog()
 
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
-	built, _, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
 	if err != nil {
-		t.Fatalf("buildCatalogues: %v", err)
+		t.Fatalf("buildCatalogs: %v", err)
 	}
 	if strings.Contains(string(built[0].Content), "never-logged-token") {
-		t.Error("the rendered catalogue carries the upstream token")
+		t.Error("the rendered catalog carries the upstream token")
 	}
 }
 
-func TestBuildCataloguesReportsARenderFailure(t *testing.T) {
+func TestBuildCatalogsReportsARenderFailure(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	records := []map[string]any{{"stateCode": "MH", "marketId": 1.0}}
 
-	if _, _, err := buildCatalogues(context.Background(), simpleCatalog(), records, rc, cache, failingMapper{}, "http://mappings"); err == nil {
-		t.Fatal("a failing render mapping built a catalogue")
+	if _, _, err := buildCatalogs(context.Background(), simpleCatalog(), records, rc, cache, failingMapper{}, "http://mappings"); err == nil {
+		t.Fatal("a failing render mapping built a catalog")
 	}
 }
 
-// TestBuildCataloguesFromADeclaredCatalogBlock runs the mandi file's OWN
+// TestBuildCatalogsFromADeclaredCatalogBlock runs the mandi file's OWN
 // catalog block, parsed as YAML, over synthetic records: the point of this
 // builder is that a capability adds one by writing YAML and no Go.
-func TestBuildCataloguesFromADeclaredCatalogBlock(t *testing.T) {
+func TestBuildCatalogsFromADeclaredCatalogBlock(t *testing.T) {
 	const block = `
 groupBy: stateCode
 
@@ -635,9 +635,9 @@ output:
 		market("KA", 9, "suspect", 2, false),
 	}
 
-	built, counters, err := buildCatalogues(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	built, counters, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
 	if err != nil {
-		t.Fatalf("buildCatalogues: %v", err)
+		t.Fatalf("buildCatalogs: %v", err)
 	}
 
 	// KA first, then MH split at the two-geometry budget: markets 1 and 2
@@ -645,14 +645,14 @@ output:
 	// rides along for free.
 	wantSlugs := []string{"KA", "MH", "MH-2"}
 	if len(built) != len(wantSlugs) {
-		t.Fatalf("built %d catalogues, want %d", len(built), len(wantSlugs))
+		t.Fatalf("built %d catalogs, want %d", len(built), len(wantSlugs))
 	}
 	for i, want := range wantSlugs {
 		if built[i].Slug != want {
-			t.Fatalf("catalogue %d is %q, want %q", i, built[i].Slug, want)
+			t.Fatalf("catalog %d is %q, want %q", i, built[i].Slug, want)
 		}
 		if built[i].CatalogID != "catalog:mandi-price:"+want {
-			t.Errorf("catalogue %d id is %q", i, built[i].CatalogID)
+			t.Errorf("catalog %d id is %q", i, built[i].CatalogID)
 		}
 	}
 
@@ -683,18 +683,18 @@ output:
 	}
 }
 
-func TestWriteCataloguesWritesOneFilePerSlug(t *testing.T) {
-	built := []Catalogue{
+func TestWriteCatalogsWritesOneFilePerSlug(t *testing.T) {
+	built := []BuiltCatalog{
 		{Slug: "MH", CatalogID: "catalog:example:MH", Content: []byte(`{"context":{"a":1}}`)},
 		{Slug: "MH-2", CatalogID: "catalog:example:MH-2", Content: []byte(`{"context":{"a":2}}`)},
 		{Slug: "KA", CatalogID: "catalog:example:KA", Content: []byte(`{"context":{"a":3}}`)},
 	}
 
-	// A directory that does not exist yet: WriteCatalogues is what a fresh run
+	// A directory that does not exist yet: WriteCatalogs is what a fresh run
 	// relies on to create its output directory.
 	dir := filepath.Join(t.TempDir(), "catalog")
-	if err := WriteCatalogues(built, dir, "example"); err != nil {
-		t.Fatalf("WriteCatalogues: %v", err)
+	if err := WriteCatalogs(built, dir, "example"); err != nil {
+		t.Fatalf("WriteCatalogs: %v", err)
 	}
 
 	for _, name := range []string{"example-KA.json", "example-MH.json", "example-MH-2.json"} {
@@ -724,13 +724,13 @@ func TestWriteCataloguesWritesOneFilePerSlug(t *testing.T) {
 	}
 }
 
-func TestWriteCataloguesRemovesStaleCataloguesFromAnEarlierRun(t *testing.T) {
+func TestWriteCatalogsRemovesStaleCatalogsFromAnEarlierRun(t *testing.T) {
 	dir := t.TempDir()
 
-	// Monday: a split state left two catalogues behind.
+	// Monday: a split state left two catalogs behind.
 	stale := filepath.Join(dir, "example-MH-2.json")
 	if err := os.WriteFile(stale, []byte(`{"stale":true}`), 0o644); err != nil {
-		t.Fatalf("seed stale catalogue: %v", err)
+		t.Fatalf("seed stale catalog: %v", err)
 	}
 	// Something that is not ours, in the same directory. It must survive:
 	// this directory is an operator's to point wherever they like.
@@ -738,43 +738,43 @@ func TestWriteCataloguesRemovesStaleCataloguesFromAnEarlierRun(t *testing.T) {
 	if err := os.WriteFile(bystander, []byte("keep me"), 0o644); err != nil {
 		t.Fatalf("seed bystander: %v", err)
 	}
-	// Another pipeline's catalogue, under its own prefix. Also must survive --
+	// Another pipeline's catalog, under its own prefix. Also must survive --
 	// this is the sweep half of the two-pipelines-one-directory corruption.
 	neighbour := filepath.Join(dir, "weather-KA.json")
 	if err := os.WriteFile(neighbour, []byte(`{"someone else":true}`), 0o644); err != nil {
 		t.Fatalf("seed neighbour: %v", err)
 	}
 
-	// Tuesday: the state fits in one catalogue.
-	built := []Catalogue{{
+	// Tuesday: the state fits in one catalog.
+	built := []BuiltCatalog{{
 		Slug:      "MH",
 		CatalogID: "catalog:example:MH",
 		Content:   []byte(`{"current":true}`),
 	}}
-	if err := WriteCatalogues(built, dir, "example"); err != nil {
-		t.Fatalf("WriteCatalogues: %v", err)
+	if err := WriteCatalogs(built, dir, "example"); err != nil {
+		t.Fatalf("WriteCatalogs: %v", err)
 	}
 
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Error("yesterday's catalogue survived; the publish step would post it again as today's")
+		t.Error("yesterday's catalog survived; the publish step would post it again as today's")
 	}
 	if _, err := os.Stat(bystander); err != nil {
 		t.Errorf("a file that was not ours was deleted: %v", err)
 	}
 	if _, err := os.Stat(neighbour); err != nil {
-		t.Errorf("another pipeline's catalogue was deleted: %v", err)
+		t.Errorf("another pipeline's catalog was deleted: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "example-MH.json")); err != nil {
-		t.Errorf("today's catalogue was not written: %v", err)
+		t.Errorf("today's catalog was not written: %v", err)
 	}
 }
 
-// A catalogue name is UPSTREAM DATA that becomes a filename. Each of these is
+// A catalog name is UPSTREAM DATA that becomes a filename. Each of these is
 // a real failure, not a hypothetical: traversal walks out of the operator's
 // directory, a slash makes a file the publisher's glob never finds (built,
 // reported, silently never published), and case-only differences collide on
 // macOS.
-func TestCatalogueNamesThatCannotBecomeFilesAreRefused(t *testing.T) {
+func TestCatalogNamesThatCannotBecomeFilesAreRefused(t *testing.T) {
 	for name, slug := range map[string]string{
 		"traversal":        "../../etc/passwd",
 		"a slash":          "J/K",
@@ -793,7 +793,7 @@ func TestCatalogueNamesThatCannotBecomeFilesAreRefused(t *testing.T) {
 				}
 			default:
 				if err == nil {
-					t.Errorf("%q was accepted as a catalogue name", slug)
+					t.Errorf("%q was accepted as a catalog name", slug)
 				}
 			}
 		})
@@ -809,7 +809,7 @@ func TestCatalogueNamesThatCannotBecomeFilesAreRefused(t *testing.T) {
 
 // Two groups whose names differ only in case are ONE file on macOS and
 // Windows. Left uncaught, the second overwrites the first on disk and the
-// network gets one catalogue published under two ids.
+// network gets one catalog published under two ids.
 func TestGroupsDifferingOnlyInCaseAreRefused(t *testing.T) {
 	records := []map[string]any{
 		{"region": "mh", "id": 1},
@@ -827,7 +827,7 @@ func TestGroupsDifferingOnlyInCaseAreRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newExprCache: %v", err)
 	}
-	_, _, err = buildCatalogues(context.Background(), catalog, records,
+	_, _, err = buildCatalogs(context.Background(), catalog, records,
 		newRunContext(map[string]string{}, "tok"), cache, &echoMapper{}, "http://mappings.test")
 	if err == nil {
 		t.Fatal("two groups differing only in case were both built; one overwrites the other on disk")
@@ -863,7 +863,7 @@ func TestAnExactSlugCollisionIsNotReportedAsACaseCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newExprCache: %v", err)
 	}
-	_, _, err = buildCatalogues(context.Background(), catalog, records,
+	_, _, err = buildCatalogs(context.Background(), catalog, records,
 		newRunContext(map[string]string{}, "tok"), cache, &echoMapper{}, "http://mappings.test")
 	if err == nil {
 		t.Fatal("two chunks rendering one slug were both built; the second overwrites the first")

@@ -5,7 +5,7 @@ package pipeline
 // var runs the pipeline against the wrong host, and a non-string default
 // rendered with the wrong verb reaches the upstream as "%!s(int=7)" rather
 // than "7". The last test runs the real declared inputs through it, so this
-// stays wired to mandi-price-agmarket.yaml rather than to a fixture that can
+// stays wired to agmarknet.yaml rather than to a fixture that can
 // drift away from it.
 
 import (

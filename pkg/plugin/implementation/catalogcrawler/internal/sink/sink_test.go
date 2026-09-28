@@ -1,9 +1,11 @@
 package sink
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,7 +131,7 @@ func TestDiscoverySink_Send_PushesAndReportsAccepted(t *testing.T) {
 	if directive["catalogType"] != "REGULAR" {
 		t.Fatalf("directive = %+v, want catalogType REGULAR from the entry", directive)
 	}
-	// /publish rejects FULL as unsupported, so a crawled catalogue goes MERGE.
+	// /publish rejects FULL as unsupported, so a crawled catalog goes MERGE.
 	if directive["updateMode"] != UpdateModeMerge {
 		t.Fatalf("directive = %+v, want updateMode MERGE", directive)
 	}
@@ -166,7 +168,7 @@ func onPublish(t *testing.T, status string) *httptest.Server {
 	return srv
 }
 
-// /publish answers 200 even when it did not accept the catalogue: the verdict
+// /publish answers 200 even when it did not accept the catalog: the verdict
 // is in message.results. Only ACCEPTED is an ack -- a PARTIAL indexed with
 // resources missing, and must not read as success.
 func TestPush_JudgesTheOnPublishVerdict(t *testing.T) {
@@ -302,7 +304,7 @@ func TestDiscoverySink_Publish_200WithoutResultsIsPublished(t *testing.T) {
 	}
 }
 
-// A split catalogue goes as several requests, every one of them MERGE:
+// A split catalog goes as several requests, every one of them MERGE:
 // /publish rejects FULL, so not even the lead batch may carry it.
 func TestDiscoverySink_Send_EveryBatchIsMerge(t *testing.T) {
 	resources := make([]map[string]string, 20)
@@ -325,11 +327,126 @@ func TestDiscoverySink_Send_EveryBatchIsMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(modes) < 2 {
-		t.Fatalf("sent %d requests, want the catalogue split", len(modes))
+		t.Fatalf("sent %d requests, want the catalog split", len(modes))
 	}
 	for i, mode := range modes {
 		if mode != UpdateModeMerge {
 			t.Errorf("request %d updateMode = %v, want MERGE", i, mode)
 		}
+	}
+}
+
+// Pipeline-built bodies carry no identity of their own -- the mapping does not
+// know which deployment it runs in -- so the sink stamps it on the way out.
+func TestPublishStampsTheDeploymentIdentity(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"}]}}`))
+	}))
+	defer server.Close()
+
+	d := NewDiscoverySink("", "bpp.example", "https://bpp.example/bpp", 0, 5*time.Second)
+	body := []byte(`{"context":{"action":"catalog/publish","version":"2.0.0"},"message":{"catalogs":[{"id":"c1"}]}}`)
+	if out := d.Publish(context.Background(), server.URL, body); out.Status != pipeline.StatusPublished {
+		t.Fatalf("outcome = %+v", out)
+	}
+	ctx := got["context"].(map[string]any)
+	if ctx["bppId"] != "bpp.example" || ctx["bppUri"] != "https://bpp.example/bpp" {
+		t.Fatalf("context = %v; want bppId/bppUri stamped", ctx)
+	}
+	if ctx["action"] != "catalog/publish" || ctx["version"] != "2.0.0" {
+		t.Fatalf("stamping lost the existing context: %v", ctx)
+	}
+	if got["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)["id"] != "c1" {
+		t.Fatalf("stamping changed the message: %v", got["message"])
+	}
+}
+
+// A sink with no identity configured changes nothing: the body goes as built.
+func TestPublishWithoutIdentityPostsTheBodyVerbatim(t *testing.T) {
+	var got []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"}]}}`))
+	}))
+	defer server.Close()
+
+	body := []byte(`{"context":{"action":"catalog/publish"},"message":{}}`)
+	NewDiscoverySink("", "", "", 0, 5*time.Second).Publish(context.Background(), server.URL, body)
+	if string(got) != string(body) {
+		t.Fatalf("posted %s, want the body verbatim %s", got, body)
+	}
+}
+
+func TestRetireSendsAnInactiveCatalogWithIdentity(t *testing.T) {
+	var got map[string]any
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"}]}}`))
+	}))
+	defer server.Close()
+
+	d := NewDiscoverySink("", "bpp.example", "https://bpp.example/bpp", 0, 5*time.Second)
+	out := d.Retire(context.Background(), server.URL, "cat-old", "Retired")
+	if out.Status != pipeline.StatusPublished || out.CatalogID != "cat-old" {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if path != "/publish" {
+		t.Errorf("posted to %q, want /publish", path)
+	}
+	ctx := got["context"].(map[string]any)
+	if ctx["bppId"] != "bpp.example" || ctx["bppUri"] != "https://bpp.example/bpp" {
+		t.Fatalf("retire context = %v", ctx)
+	}
+	message := got["message"].(map[string]any)
+	catalog := message["catalogs"].([]any)[0].(map[string]any)
+	if catalog["id"] != "cat-old" || catalog["isActive"] != false || len(catalog["resources"].([]any)) != 0 {
+		t.Fatalf("retired catalog = %v; want cat-old, isActive false, no resources", catalog)
+	}
+	directive := message["publishDirectives"].([]any)[0].(map[string]any)
+	if directive["catalogId"] != "cat-old" || directive["updateMode"] != "MERGE" || directive["catalogType"] != "REGULAR" {
+		t.Fatalf("directive = %v", directive)
+	}
+}
+
+// One line per publish call, with the path but never the query.
+func TestPushLogsEachCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"}]}}`))
+	}))
+	defer server.Close()
+	var buf bytes.Buffer
+	c := NewClient(5 * time.Second)
+	c.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := c.Push(context.Background(), server.URL+"/publish?sig=abc", []byte(`{}`)); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"publish call", "method=POST", "path=/publish", "status=200", "duration=", "bytes="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "sig=abc") {
+		t.Errorf("the query reached the log:\n%s", out)
+	}
+}
+
+// A PARTIAL in the second result is still a failure: every catalog in the
+// answer is judged, not just the first.
+func TestPushJudgesEveryResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"},{"status":"PARTIAL","reason":"geometry cap"}]}}`))
+	}))
+	defer server.Close()
+	out, err := NewClient(5*time.Second).Push(context.Background(), server.URL, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if out.Acked || !strings.Contains(out.Reason, "PARTIAL") || !strings.Contains(out.Reason, "geometry cap") {
+		t.Fatalf("outcome = %+v; want not acked, PARTIAL: geometry cap", out)
 	}
 }

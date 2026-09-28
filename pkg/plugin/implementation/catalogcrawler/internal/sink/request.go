@@ -60,7 +60,7 @@ func BuildPushBody(meta PushMeta, catalog []byte) ([]byte, error) {
 	if len(meta.VisibleTo) > 0 {
 		directive["visibleTo"] = meta.VisibleTo
 	}
-	// /publish reads a catalogue's schema types from its directive; the
+	// /publish reads a catalog's schema types from its directive; the
 	// context.schemaContext below is kept for anything still reading it there.
 	if len(meta.SchemaContext) > 0 {
 		directive["schemaTypes"] = meta.SchemaContext

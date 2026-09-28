@@ -100,7 +100,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		return nil, nil, fmt.Errorf("catalogcrawler: config %q is required", cfgDiscoveryURL)
 	}
 	// discoveryPushUrl is now the provider adapter's /publish, where every
-	// catalogue this crawler sends goes. It used to be discovery's /push; a
+	// catalog this crawler sends goes. It used to be discovery's /push; a
 	// config still carrying that is refused rather than left to fail at every
 	// send (publish bodies at /push, pipelines at .../push/publish).
 	if strings.HasSuffix(strings.TrimRight(discoveryURL, "/"), "/push") {
@@ -110,7 +110,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 
 	log := slog.New(log.NewSlogHandler())
 	if !strings.HasSuffix(strings.TrimRight(discoveryURL, "/"), "/publish") {
-		log.Warn("catalogcrawler: discoveryPushUrl does not end in /publish; catalogues are sent to the provider adapter's /publish",
+		log.Warn("catalogcrawler: discoveryPushUrl does not end in /publish; catalogs are sent to the provider adapter's /publish",
 			"discoveryPushUrl", discoveryURL)
 	}
 
@@ -135,6 +135,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 
 	src := buildSource(config, metadataLookup, log)
 	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgBppURI], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
+	snk.Client.Log = log
 
 	// The same configured networks drive both registry-backed discovery
 	// (buildSource) and scope filtering (Params.Networks) -- one deployment
@@ -179,7 +180,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 
 	// The scheduled publish sweep, if this deployment asked for one. They
 	// ride the same Scheduler as the crawl loops so they share its context and
-	// shutdown; see publishpipelines.go for why the crawler owns so little of
+	// shutdown; see publishsweep.go for why the crawler owns so little of
 	// them. Registered before Start, which AddPeriodic requires.
 	publishCfg, err := publishConfigFrom(config)
 	if err != nil {
@@ -348,7 +349,7 @@ type publishDiscoverer struct {
 // cannot be resolved, serves no publish action, or names a pipeline this
 // binary does not carry is logged and skipped, and never hides the others.
 func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, error) {
-	keys, err := d.lookup.ProviderBindingKeys(ctx)
+	keys, err := d.bindingKeys(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing the registry's capabilities: %w", err)
 	}
@@ -394,6 +395,15 @@ func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, erro
 		targets = append(targets, publishTarget{record: record, files: files})
 	}
 	return targets, nil
+}
+
+// bindingKeys lists the bindings worth resolving: only those serving publish
+// when the registry can say so from its listing, every binding otherwise.
+func (d *publishDiscoverer) bindingKeys(ctx context.Context) ([]string, error) {
+	if narrowed, ok := d.lookup.(definition.ProviderActionBindingLister); ok {
+		return narrowed.ProviderBindingKeysServing(ctx, publishActionName)
+	}
+	return d.lookup.ProviderBindingKeys(ctx)
 }
 
 // crawlerImpl implements definition.Crawler.

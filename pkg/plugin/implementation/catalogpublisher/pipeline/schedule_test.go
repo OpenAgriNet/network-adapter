@@ -118,7 +118,7 @@ func TestDueNow(t *testing.T) {
 			if using == (Schedule{}) {
 				using = schedule
 			}
-			due, reason, err := dueNow(using, tc.now, tc.lastRun)
+			due, _, reason, err := dueNow(using, tc.now, tc.lastRun)
 			if err != nil {
 				t.Fatalf("dueNow: %v", err)
 			}
@@ -143,7 +143,7 @@ func TestDueNowRejectsAnUnusableSchedule(t *testing.T) {
 		"a date that never occurs": {Cron: "0 0 30 2 *", Timezone: "Asia/Kolkata"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, _, err := dueNow(schedule, time.Now(), time.Time{}); err == nil {
+			if _, _, _, err := dueNow(schedule, time.Now(), time.Time{}); err == nil {
 				t.Error("an unusable schedule was accepted")
 			}
 		})
@@ -173,9 +173,9 @@ func TestLoadRegistryPipelineAcceptsThisPackagesOwnPath(t *testing.T) {
 
 func TestLoadRegistryPipelineRefusesAnotherPackagesPipeline(t *testing.T) {
 	for name, path := range map[string]string{
-		"another package":    "pkg/plugin/implementation/WeatherObservation/cataloguepublish-imd/imd.yaml",
+		"another package":    "pkg/plugin/implementation/WeatherObservation/catalogpublish-imd/imd.yaml",
 		"same name, else":    "pkg/plugin/implementation/Other/minimal.yaml",
-		"escaping traversal": "pkg/plugin/implementation/Example/cataloguepublish-example/../../minimal.yaml",
+		"escaping traversal": "pkg/plugin/implementation/Example/catalogpublish-example/../../minimal.yaml",
 		"empty":              "  ",
 	} {
 		t.Run(name, func(t *testing.T) {

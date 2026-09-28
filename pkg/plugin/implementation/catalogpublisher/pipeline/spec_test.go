@@ -58,7 +58,7 @@ func TestLoadSpecReadsEveryBlock(t *testing.T) {
 	if got, want := spec.Pipeline[0].With.Mapping, "mappings/things.yaml"; got != want {
 		t.Errorf("Pipeline[0].With.Mapping = %q, want %q", got, want)
 	}
-	// The catalogue block has to arrive intact: it is the second half of the
+	// The catalog block has to arrive intact: it is the second half of the
 	// program, and a dropped key here is a rule nothing enforces.
 	if got, want := spec.Catalog.GroupBy, "group"; got != want {
 		t.Errorf("Catalog.GroupBy = %q, want %q", got, want)

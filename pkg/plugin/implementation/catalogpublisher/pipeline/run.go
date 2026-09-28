@@ -8,7 +8,7 @@
 // pipeline and pkg/plugin/implementation, which embeds every pipeline, both
 // import it.
 //
-// It builds catalogues and decides what may be published; it does not make
+// It builds catalogs and decides what may be published; it does not make
 // the HTTP call. A run that publishes is given a Publisher -- the crawler's
 // sink -- so exactly one piece of code posts to the provider adapter.
 //
@@ -19,10 +19,10 @@ package pipeline
 
 // run.go is the frame: the one exported entry point that turns "the registry
 // says this capability publishes, and the clock says it is due" into a day's
-// catalogues on the network.
+// catalogs on the network.
 //
 // Everything here is the same for every pipeline. What differs -- what to
-// fetch, how to shape it, what a catalogue of it contains -- is the
+// fetch, how to shape it, what a catalog of it contains -- is the
 // Collector's, and this file never inspects it.
 
 import (
@@ -55,9 +55,24 @@ const (
 // -- the schedule alone cannot tell the difference, because "has it run" is
 // not a fact about the clock. The method names match the crawler plugin's
 // store exactly, so its *store.Store satisfies this without an adapter.
+//
+// The key is the pipeline's embedded path (Files.Path), never the capability.
 type RunLog interface {
 	LastPipelineRun(ctx context.Context, pipeline string) (time.Time, error)
 	RecordPipelineRun(ctx context.Context, pipeline string, at time.Time) error
+}
+
+// RunClaimer is a RunLog that can claim a firing before the run does it, so
+// two replicas ticking at once do not both run and both publish. Optional: a
+// RunLog without it runs unclaimed, which is correct for one replica.
+//
+// ClaimPipelineRun sets the marker to now only while it is still before
+// firing -- the start of the current schedule window -- and reports whether
+// it did. ReleasePipelineRun restores the marker to previous after a failed
+// run, so the firing is retried.
+type RunClaimer interface {
+	ClaimPipelineRun(ctx context.Context, pipeline string, now, firing time.Time) (bool, error)
+	ReleasePipelineRun(ctx context.Context, pipeline string, previous time.Time) error
 }
 
 // RunOptions is everything a run does not decide for itself.
@@ -81,25 +96,25 @@ type RunOptions struct {
 	// time.Now(). A test fixes it; production leaves it zero.
 	Now time.Time
 
-	// OutDir is where catalogues are written before publishing. Empty means a
+	// OutDir is where catalogs are written before publishing. Empty means a
 	// temporary directory removed when the run finishes.
 	//
 	// Each pipeline gets its OWN subdirectory beneath it, named for the
 	// capability. Sharing one directory would be silent corruption: the stale
 	// sweep below deletes by filename prefix and the publish step globs by
 	// the same prefix, so two pipelines in one directory would delete and
-	// then publish each other's catalogues.
+	// then publish each other's catalogs.
 	OutDir string
 
-	// Publish sends the built catalogues to the network. It defaults to
+	// Publish sends the built catalogs to the network. It defaults to
 	// FALSE: building is observable and reversible, publishing is neither,
 	// so it is opted into rather than out of.
 	Publish bool
 
-	// PublishURL, when set, is where catalogues are published, whatever the
+	// PublishURL, when set, is where catalogs are published, whatever the
 	// pipeline's own publishUrl input resolves to. The crawler sets it from
 	// its one publishUrl config, so every pipeline it runs -- and every
-	// catalogue it crawls -- goes to the same provider adapter. Empty leaves
+	// catalog it crawls -- goes to the same provider adapter. Empty leaves
 	// the pipeline's input in charge (a standalone run, a test).
 	PublishURL string
 
@@ -127,16 +142,20 @@ type RunReport struct {
 	// normal operation in every log.
 	Unpersisted bool
 
-	// Catalogues, Errors and Counters are the collector's own result. Errors
+	// ClaimedElsewhere is true when the firing was due but another replica
+	// had already claimed it, so this one did no work. Not a failure.
+	ClaimedElsewhere bool
+
+	// Catalogs, Errors and Counters are the collector's own result. Errors
 	// counts parts of the collection that failed for a real reason; Counters
 	// are the domain's numbers, printed but not interpreted.
-	Catalogues []Catalogue
-	Errors     int
-	Counters   map[string]int
+	Catalogs []BuiltCatalog
+	Errors   int
+	Counters map[string]int
 
 	OutDir string
 
-	// Published is nil when the run built catalogues without sending them.
+	// Published is nil when the run built catalogs without sending them.
 	Published *Result
 }
 
@@ -188,44 +207,91 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 		Unpersisted:  opts.RunLog == nil,
 	}
 
+	// The run log's key is the PIPELINE -- the embedded file -- not the
+	// capability. One capability may have several sources, each its own
+	// catalogpublish-<source>/ folder; keyed by capability they would share a
+	// row and each would read the other's run as its own. Files.Path is also
+	// the same whether the registry names the current path or its deprecated
+	// alias, so a registry edit does not re-run a served firing.
+	key := opts.Pipeline.Path
+
 	// 2. When did it last run. An unreadable log is fatal: "has this firing
 	// been served" is then unknown, and the guess that publishes anyway is
 	// the one with consequences.
-	var lastRun time.Time
+	var lastRun, previous time.Time
 	if opts.RunLog != nil {
-		if lastRun, err = opts.RunLog.LastPipelineRun(ctx, capability); err != nil {
-			return report, fmt.Errorf("reading the run log for %s: %w", capability, err)
+		if previous, err = opts.RunLog.LastPipelineRun(ctx, key); err != nil {
+			return report, fmt.Errorf("reading the run log for %s: %w", key, err)
+		}
+		lastRun = previous
+		// LEGACY, one release: rows used to be keyed by capability. Read the
+		// old row when the pipeline has none, so the first tick after deploy
+		// does not run -- and publish -- a firing already served. Removed
+		// together with the registry-path alias.
+		if lastRun.IsZero() {
+			if lastRun, err = opts.RunLog.LastPipelineRun(ctx, capability); err != nil {
+				return report, fmt.Errorf("reading the run log for %s: %w", capability, err)
+			}
 		}
 	}
 
 	// 3. Is it due.
-	due, reason, err := dueNow(spec.Schedule, now, lastRun)
+	due, firing, reason, err := dueNow(spec.Schedule, now, lastRun)
 	if err != nil {
 		return report, err
 	}
 	report.Due, report.Reason = due, reason
 	if !due {
-		log.InfoContext(ctx, "publish pipeline: not due", "capability", capability, "reason", reason)
+		log.InfoContext(ctx, "publish pipeline: not due", "pipeline", key, "reason", reason)
 		return report, nil
 	}
 	if opts.DryRun {
 		log.InfoContext(ctx, "publish pipeline: due (dry run, nothing fetched)",
-			"capability", capability, "reason", reason)
+			"pipeline", key, "reason", reason)
 		return report, nil
 	}
 
-	// 4. Do the work.
-	if err := execute(ctx, spec, lookup, opts, &report, log); err != nil {
+	// 4. Claim the firing BEFORE doing the work. Replicas each see "not run
+	// yet"; without a claim each would run the whole pipeline and publish.
+	// The claim writes the marker now, conditionally, so exactly one of them
+	// gets through and the rest stand down here, having fetched nothing.
+	claimer, claims := opts.RunLog.(RunClaimer)
+	if claims {
+		won, err := claimer.ClaimPipelineRun(ctx, key, now, firing)
+		if err != nil {
+			return report, fmt.Errorf("claiming %s: %w", key, err)
+		}
+		if !won {
+			report.ClaimedElsewhere = true
+			report.Reason = "claimed by another replica: " + reason
+			log.InfoContext(ctx, "publish pipeline: firing claimed by another replica; standing down",
+				"pipeline", key)
+			return report, nil
+		}
+	}
+
+	// 5. Do the work. A failed run gives the claim back, so a transient
+	// outage at midnight is retried on the next tick -- on any replica --
+	// rather than costing the whole day.
+	if err := execute(ctx, spec, lookup, opts, &report, log, now); err != nil {
+		if claims {
+			if relErr := claimer.ReleasePipelineRun(ctx, key, previous); relErr != nil {
+				log.ErrorContext(ctx, "publish pipeline: run failed and its claim could not be released; "+
+					"this firing will not be retried", "pipeline", key, "error", relErr)
+			}
+		}
 		return report, err
 	}
 
-	// 5. Only a run that finished is a run that happened.
+	// 6. Only a run that finished is a run that happened. With a claim the
+	// marker is already written; recording again is harmless, and it is the
+	// only write a run log without claims gets.
 	if opts.RunLog != nil {
-		if err := opts.RunLog.RecordPipelineRun(ctx, capability, now); err != nil {
+		if err := opts.RunLog.RecordPipelineRun(ctx, key, now); err != nil {
 			// The work is done and published; failing here would make a
 			// caller retry a completed run. Loud, but not fatal.
 			log.ErrorContext(ctx, "publish pipeline: run finished but could not be recorded; it may run again",
-				"capability", capability, "error", err)
+				"pipeline", key, "error", err)
 		}
 	}
 	return report, nil
@@ -234,16 +300,18 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 // execute prepares everything the collector needs, hands off, then writes and
 // publishes what comes back.
 func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
-	opts RunOptions, report *RunReport, log *slog.Logger) error {
-	resolved, err := ResolveInputs(spec, lookup)
+	opts RunOptions, report *RunReport, log *slog.Logger, now time.Time) error {
+	resolved, err := resolveRunInputs(spec, lookup, opts, now)
 	if err != nil {
-		return fmt.Errorf("resolving pipeline inputs: %w", err)
+		return err
 	}
-	if url := strings.TrimSpace(opts.PublishURL); url != "" {
-		resolved["publishUrl"] = url
-	}
+	var authenticator Authenticator
 	if hasUpstream(spec) {
-		for _, required := range []string{inputBaseURL, inputTokenUser, inputTokenSecret} {
+		authenticator, err = authenticatorFor(spec.Upstream.Auth)
+		if err != nil {
+			return err
+		}
+		for _, required := range append([]string{inputBaseURL}, authenticator.RequiredInputs()...) {
 			if resolved[required] == "" {
 				return fmt.Errorf("input %q is empty; the pipeline cannot reach the upstream without it", required)
 			}
@@ -277,7 +345,7 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	rc := newRunContext(resolved, "")
 	var client *Client
 	if hasUpstream(spec) {
-		log.InfoContext(ctx, "publish pipeline: exchanging credentials",
+		log.InfoContext(ctx, "publish pipeline: preparing credentials",
 			"upstream", resolved[inputBaseURL], "path", spec.Upstream.Auth.Request.Path)
 		// The provider's own error classification rides with the client, so
 		// what counts as 'nothing here' versus an outage comes from the file
@@ -291,13 +359,16 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		}
 		client = NewClient(resolved[inputBaseURL]).
 			WithErrorRules(spec.Upstream.Errors).
-			WithCleartextAllowed(spec.Upstream.AllowCleartext)
-		token, err := client.Token(ctx, spec.Upstream.Auth, rc)
+			WithCleartextAllowed(spec.Upstream.AllowCleartext).
+			WithLogger(log)
+		cred, err := authenticator.Prepare(ctx, client, rc)
 		if err != nil {
-			return fmt.Errorf("exchanging credentials: %w", err)
+			return fmt.Errorf("preparing credentials: %w", err)
 		}
-		rc = newRunContext(resolved, token)
-		log.InfoContext(ctx, "publish pipeline: token exchanged", "characters", len(token))
+		client.WithCredential(cred)
+		rc = newRunContext(resolved, cred.Value)
+		log.InfoContext(ctx, "publish pipeline: credentials ready",
+			"kind", authKind(spec.Upstream.Auth), "characters", len(cred.Value))
 	} else {
 		log.InfoContext(ctx, "publish pipeline: no upstream declared; skipping credentials")
 	}
@@ -315,8 +386,8 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 
 	// Yesterday's files in a reused directory would be published again today
 	// as though they were fresh.
-	if err := RemoveStaleCatalogues(outDir, prefix); err != nil {
-		return fmt.Errorf("clearing previous catalogues: %w", err)
+	if err := RemoveStaleCatalogs(outDir, prefix); err != nil {
+		return fmt.Errorf("clearing previous catalogs: %w", err)
 	}
 
 	cache, err := newExprCache()
@@ -328,7 +399,7 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	runner := &stepRunner{
 		spec: spec, rc: rc, cache: cache, client: client,
 		mapper: mapper, mappingBase: mappingBase, log: log,
-		counters: map[string]int{},
+		counters: map[string]int{}, auth: authenticator,
 	}
 	log.InfoContext(ctx, "publish pipeline: running steps", "steps", len(spec.Pipeline))
 	records, err := runner.runSteps(ctx)
@@ -337,12 +408,12 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	}
 	log.InfoContext(ctx, "publish pipeline: steps done", "records", len(records))
 
-	// The catalogues the file's `catalog:` block describes.
-	log.InfoContext(ctx, "publish pipeline: building catalogues",
+	// The catalogs the file's `catalog:` block describes.
+	log.InfoContext(ctx, "publish pipeline: building catalogs",
 		"groupBy", spec.Catalog.GroupBy, "budget", spec.Catalog.Chunk.Budget)
-	catalogues, buildCounters, err := buildCatalogues(ctx, spec.Catalog, records, rc, cache, mapper, mappingBase)
+	catalogs, buildCounters, err := buildCatalogs(ctx, spec.Catalog, records, rc, cache, mapper, mappingBase)
 	if err != nil {
-		return fmt.Errorf("building catalogues: %w", err)
+		return fmt.Errorf("building catalogs: %w", err)
 	}
 
 	// Both halves report into one set of counters, named by the file.
@@ -350,28 +421,28 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	for name, count := range buildCounters {
 		counters[name] += count
 	}
-	report.Catalogues = catalogues
+	report.Catalogs = catalogs
 	report.Counters = counters
 	report.Errors = collectionErrors(spec.Publish, counters)
 
-	if err := WriteCatalogues(catalogues, outDir, prefix); err != nil {
-		return fmt.Errorf("writing catalogues: %w", err)
+	if err := WriteCatalogs(catalogs, outDir, prefix); err != nil {
+		return fmt.Errorf("writing catalogs: %w", err)
 	}
-	log.InfoContext(ctx, "publish pipeline: built catalogues",
-		"capability", report.Capability, "catalogs", len(catalogues),
+	log.InfoContext(ctx, "publish pipeline: built catalogs",
+		"capability", report.Capability, "catalogs", len(catalogs),
 		"collectionErrors", report.Errors, "counters", counters, "dir", outDir)
 
 	if !opts.Publish {
 		return nil
 	}
 	log.InfoContext(ctx, "publish pipeline: PUBLISHING to the network",
-		"catalogues", len(catalogues), "target", resolved["publishUrl"])
+		"catalogs", len(catalogs), "target", resolved["publishUrl"])
 	publishSpec := spec.Publish
 	publishSpec.AddressHint = publishAddressHintFor(spec.Inputs["publishUrl"])
-	result, err := PublishCatalogues(ctx, publishSpec, resolved, outDir, prefix, report.Errors, opts.Publisher)
+	result, err := PublishCatalogs(ctx, publishSpec, resolved, outDir, prefix, counters, opts.Publisher)
 	report.Published = &result
 	if err != nil {
-		return fmt.Errorf("publishing catalogues: %w", err)
+		return fmt.Errorf("publishing catalogs: %w", err)
 	}
 	if result.RetiredSkipped != "" {
 		// Loud, because the file ASKED for a retirement and did not get one.
@@ -382,10 +453,32 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 		log.InfoContext(ctx, "publish pipeline: outcome",
 			"catalogId", outcome.CatalogID, "status", outcome.Status, "reason", outcome.Reason)
 	}
+	if result.RetiredOld != nil {
+		log.InfoContext(ctx, "publish pipeline: retired",
+			"catalogId", result.RetiredOld.CatalogID, "status", result.RetiredOld.Status,
+			"reason", result.RetiredOld.Reason)
+	}
 	if result.HasFailures() {
-		return fmt.Errorf("at least one catalogue did not reach the network intact")
+		return fmt.Errorf("at least one catalog did not reach the network intact")
 	}
 	return nil
+}
+
+// resolveRunInputs resolves the file's inputs against the RUN's clock and
+// applies the caller's publish address.
+//
+// The clock is the run's, not the wall's: a test that fixes RunOptions.Now
+// must get the dates that instant implies, or every golden file pins the day
+// it was generated on.
+func resolveRunInputs(spec Spec, lookup func(string) (string, bool), opts RunOptions, now time.Time) (map[string]string, error) {
+	resolved, err := resolveInputsAt(spec, lookup, now)
+	if err != nil {
+		return nil, fmt.Errorf("resolving pipeline inputs: %w", err)
+	}
+	if url := strings.TrimSpace(opts.PublishURL); url != "" {
+		resolved["publishUrl"] = url
+	}
+	return resolved, nil
 }
 
 // pipelineDir gives this pipeline a directory of its own.
@@ -400,7 +493,7 @@ func pipelineDir(opts RunOptions, capability string) (string, func(), error) {
 	if opts.OutDir == "" {
 		dir, err := os.MkdirTemp("", "catalogs-"+slug+"-")
 		if err != nil {
-			return "", nil, fmt.Errorf("making a directory for the catalogues: %w", err)
+			return "", nil, fmt.Errorf("making a directory for the catalogs: %w", err)
 		}
 		return dir, func() { _ = os.RemoveAll(dir) }, nil
 	}
@@ -424,14 +517,14 @@ func filenamePrefix(spec Spec) string {
 
 // collectionErrors reads the counter the file's publish.refuseWhen names.
 //
-// The rule is `collection.<counter> > 0`, and <counter> is whatever the
-// pipeline's own steps record into -- mandi calls it stateErrors, another
+// The rule is `collection.<counter> > <N>`, and <counter> is whatever the
+// pipeline's own steps record into -- mandi calls it groupErrors, another
 // pipeline will call it something else. Resolving it by name rather than
 // hardcoding one keeps the refusal the file's decision.
 //
 // A file with no refuseWhen has no refusal, and reports zero.
 func collectionErrors(spec Publish, counters map[string]int) int {
-	counter, ok := refuseWhenCounter(spec.RefuseWhen)
+	counter, _, ok := refuseWhenRule(spec.RefuseWhen)
 	if !ok {
 		return 0
 	}
@@ -441,7 +534,7 @@ func collectionErrors(spec Publish, counters map[string]int) int {
 // hasUpstream reports whether the file declares an upstream at all.
 //
 // The absence of the block is the signal, not an auth kind: a pipeline whose
-// catalogue is fixed has no service to name, and asking it to invent a
+// catalog is fixed has no service to name, and asking it to invent a
 // baseUrl and credentials it never uses would make every such file lie.
 func hasUpstream(spec Spec) bool {
 	return strings.TrimSpace(spec.Upstream.BaseURL) != ""

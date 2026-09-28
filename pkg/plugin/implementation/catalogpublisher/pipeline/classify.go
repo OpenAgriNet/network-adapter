@@ -16,6 +16,7 @@ package pipeline
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -153,8 +154,27 @@ func classifiedError(classification string, status int, call string) error {
 	case classifyEmpty:
 		return fmt.Errorf("%s: %w", call, ErrNoUpstreamData)
 	case classifyReauth:
-		return fmt.Errorf("%s: the upstream rejected the token (status %d)", call, status)
+		return &ReauthError{Call: call, Status: status}
 	default:
 		return fmt.Errorf("%s returned status %d", call, status)
 	}
 }
+
+// ErrReauthRequired reports that the upstream rejected the credential. A step
+// dispatches on it to re-exchange once and retry, and a file's onError can
+// name it as `reauth`.
+var ErrReauthRequired = errors.New("the upstream rejected the credential")
+
+// ReauthError carries the status, because only the statuses the file lists in
+// token.reexchangeOn earn a re-exchange. Call is already stripped of its
+// query by classifiedError.
+type ReauthError struct {
+	Call   string
+	Status int
+}
+
+func (e *ReauthError) Error() string {
+	return fmt.Sprintf("%s: the upstream rejected the token (status %d)", e.Call, e.Status)
+}
+
+func (e *ReauthError) Unwrap() error { return ErrReauthRequired }

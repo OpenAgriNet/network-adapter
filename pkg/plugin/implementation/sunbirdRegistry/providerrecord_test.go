@@ -704,3 +704,28 @@ func TestProviderBindingKeysReportsAnOutage(t *testing.T) {
 		t.Fatal("a failed search was reported as an empty registry")
 	}
 }
+
+// ProviderBindingKeysServing narrows the listing to bindings with an ACTIVE
+// entry for the action, from the listing itself -- no per-key lookups.
+func TestProviderBindingKeysServingListsOnlyBindingsWithTheAction(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publishes := bindingRecord()
+		publishes.BindingKey = "agmarknet-live|openagrinet:MandiPrice"
+		publishes.Actions = append(publishes.Actions, actionPlan{Action: "publish", Mappings: "p.yaml", Status: "active"})
+		retired := bindingRecord()
+		retired.BindingKey = "old|openagrinet:MandiPrice"
+		retired.Actions = append(retired.Actions, actionPlan{Action: "publish", Mappings: "p.yaml", Status: "inactive"})
+		fmt.Fprint(w, envelopeJSON(t, bindingRecord(), publishes, retired))
+	}))
+	defer srv.Close()
+
+	keys, err := newTestClient(t, srv.URL, nil).ProviderBindingKeysServing(context.Background(), "publish")
+	if err != nil {
+		t.Fatalf("ProviderBindingKeysServing: %v", err)
+	}
+	if want := []string{"agmarknet-live|openagrinet:MandiPrice"}; fmt.Sprint(keys) != fmt.Sprint(want) {
+		t.Errorf("keys = %v, want %v (select-only and inactive-publish bindings excluded)", keys, want)
+	}
+}

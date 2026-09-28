@@ -7,6 +7,7 @@ package sink
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -85,9 +86,86 @@ func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, co
 var _ pipeline.Publisher = (*DiscoverySink)(nil)
 
 // Publish implements pipeline.Publisher: a pipeline-built catalog/publish body
-// goes VERBATIM to baseURL's /publish through the same Client.Push the crawl
-// path uses, and the batch outcome maps onto the pipeline's.
+// goes to baseURL's /publish through the same Client.Push the crawl path
+// uses, and the batch outcome maps onto the pipeline's.
+//
+// The body is posted as built EXCEPT for context.bppId/bppUri, which the sink
+// stamps: identity is the deployment's, not the pipeline's, and a mapping
+// that wrote it would have to be told who it runs as.
 func (d *DiscoverySink) Publish(ctx context.Context, baseURL string, body []byte) pipeline.Outcome {
+	stamped, err := d.stampIdentity(body)
+	if err != nil {
+		return pipeline.Outcome{Status: pipeline.StatusTransportError, Reason: err.Error()}
+	}
+	return d.post(ctx, baseURL, stamped)
+}
+
+// stampIdentity sets context.bppId/bppUri on a publish body, leaving the rest
+// of the context and the message as built. A sink with no identity
+// configured posts the body unchanged.
+func (d *DiscoverySink) stampIdentity(body []byte) ([]byte, error) {
+	if d.ParticipantID == "" && d.BppURI == "" {
+		return body, nil
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("publish body is not a JSON object: %w", err)
+	}
+	context := map[string]any{}
+	if raw, ok := envelope["context"]; ok {
+		if err := json.Unmarshal(raw, &context); err != nil {
+			return nil, fmt.Errorf("publish body's context is not an object: %w", err)
+		}
+	}
+	if d.ParticipantID != "" {
+		context["bppId"] = d.ParticipantID
+	}
+	if d.BppURI != "" {
+		context["bppUri"] = d.BppURI
+	}
+	encoded, err := json.Marshal(context)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding the publish context: %w", err)
+	}
+	envelope["context"] = encoded
+	return json.Marshal(envelope)
+}
+
+// Retire implements pipeline.Publisher: it deactivates catalogID, which is how
+// its resources leave the network (FULL is rejected, MERGE removal is
+// undocumented). Built with BuildPushBody, so it carries the same identity as
+// every other publish.
+func (d *DiscoverySink) Retire(ctx context.Context, baseURL, catalogID, descriptorName string) pipeline.Outcome {
+	doc, err := json.Marshal(map[string]any{
+		"id":         catalogID,
+		"isActive":   false,
+		"descriptor": map[string]any{"code": catalogID, "name": descriptorName},
+		"resources":  []any{},
+	})
+	if err == nil {
+		var body []byte
+		body, err = BuildPushBody(PushMeta{
+			ParticipantID: d.ParticipantID,
+			BppURI:        d.BppURI,
+			MessageID:     uuid.NewString(),
+			TransactionID: uuid.NewString(),
+			Timestamp:     d.now().UTC().Format(time.RFC3339),
+			UpdateMode:    UpdateModeMerge,
+			CatalogType:   "REGULAR",
+		}, doc)
+		if err == nil {
+			out := d.post(ctx, baseURL, body)
+			out.CatalogID = catalogID
+			return out
+		}
+	}
+	return pipeline.Outcome{CatalogID: catalogID, Status: pipeline.StatusTransportError, Reason: err.Error()}
+}
+
+// post sends one body to baseURL's /publish and maps the batch outcome onto
+// the pipeline's: ACCEPTED is published, any other verdict is rejected, and a
+// failure to reach the adapter is a transport error.
+func (d *DiscoverySink) post(ctx context.Context, baseURL string, body []byte) pipeline.Outcome {
 	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/publish"
 	out, err := d.Client.Push(ctx, endpoint, body)
 	switch {

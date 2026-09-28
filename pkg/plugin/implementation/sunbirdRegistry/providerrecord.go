@@ -75,9 +75,10 @@ type actionPlan struct {
 }
 
 var (
-	_ definition.RegistryLookup        = (*Client)(nil)
-	_ definition.ProviderRecordLookup  = (*Client)(nil)
-	_ definition.ProviderBindingLister = (*Client)(nil)
+	_ definition.RegistryLookup              = (*Client)(nil)
+	_ definition.ProviderRecordLookup        = (*Client)(nil)
+	_ definition.ProviderBindingLister       = (*Client)(nil)
+	_ definition.ProviderActionBindingLister = (*Client)(nil)
 )
 
 // searchURLFor builds the search endpoint for one registry entity.
@@ -162,6 +163,39 @@ func (c *Client) ProviderBindingKeys(ctx context.Context) ([]string, error) {
 	for _, binding := range bindings {
 		if key := strings.TrimSpace(binding.BindingKey); key != "" {
 			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
+// ProviderBindingKeysServing lists the bindings whose listed record carries an
+// active entry for action.
+//
+// The BINDING's own status is still judged by ProviderRecord, so there remains
+// one place that decides whether a binding is usable; this only avoids
+// resolving bindings that cannot serve the action at all.
+func (c *Client) ProviderBindingKeysServing(ctx context.Context, action string) ([]string, error) {
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry provider binding keys serving")
+	defer span.End()
+
+	bindings, err := searchRecords[providerBinding](ctx, c, tracer, c.providerSearchURL, map[string]eqFilter{})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, classify(err))
+		return nil, err
+	}
+	var keys []string
+	for _, binding := range bindings {
+		key := strings.TrimSpace(binding.BindingKey)
+		if key == "" {
+			continue
+		}
+		for _, plan := range servableActions(binding) {
+			if plan.Action == action {
+				keys = append(keys, key)
+				break
+			}
 		}
 	}
 	return keys, nil

@@ -58,7 +58,7 @@ func TestTokenUsesTheDeclaredPathAndBodyKeys(t *testing.T) {
 	client := NewClient(upstream.URL)
 	client.http = upstream.Client()
 
-	token, err := client.Token(context.Background(), authSpec(), authInputs())
+	token, err := prepareToken(client, authSpec(), authInputs())
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestTokenFollowsADifferentUpstreamsSpelling(t *testing.T) {
 	client := NewClient(upstream.URL)
 	client.http = upstream.Client()
 
-	token, err := client.Token(context.Background(), auth, authInputs())
+	token, err := prepareToken(client, auth, authInputs())
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestTokenRefusesAnUnusableAuthBlock(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client := NewClient(upstream.URL)
 			client.http = upstream.Client()
-			if _, err := client.Token(context.Background(), auth, authInputs()); err == nil {
+			if _, err := prepareToken(client, auth, authInputs()); err == nil {
 				t.Error("an unusable auth block was accepted")
 			}
 		})
@@ -149,7 +149,7 @@ func TestTokenRefusesAnEmptyCredential(t *testing.T) {
 	client.http = upstream.Client()
 
 	rc := newRunContext(map[string]string{"tokenUser": "", "tokenSecret": "s"}, "")
-	_, err := client.Token(context.Background(), authSpec(), rc)
+	_, err := prepareToken(client, authSpec(), rc)
 	if err == nil {
 		t.Fatal("an empty credential was sent")
 	}
@@ -185,7 +185,7 @@ func TestTokenNeverLeaksTheCredential(t *testing.T) {
 			client.http = upstream.Client()
 
 			rc := newRunContext(map[string]string{"tokenUser": "u", "tokenSecret": secret}, "")
-			_, err := client.Token(context.Background(), authSpec(), rc)
+			_, err := prepareToken(client, authSpec(), rc)
 			if err == nil {
 				t.Fatal("want an error")
 			}
@@ -200,7 +200,7 @@ func TestTokenNeverLeaksTheCredential(t *testing.T) {
 // whole URL, and a token endpoint's URL is where a credential could sit.
 func TestTokenDoesNotQuoteTheURLWhenUnreachable(t *testing.T) {
 	client := NewClient("http://127.0.0.1:1")
-	_, err := client.Token(context.Background(), authSpec(), authInputs())
+	_, err := prepareToken(client, authSpec(), authInputs())
 	if err == nil {
 		t.Fatal("want an error")
 	}
@@ -222,7 +222,7 @@ func readAll(r *http.Request) string {
 // default stops that one file; this stops any file.
 func TestTokenRefusesCleartextUpstream(t *testing.T) {
 	client := NewClient("http://an-upstream.test")
-	_, err := client.Token(context.Background(), authSpec(), authInputs())
+	_, err := prepareToken(client, authSpec(), authInputs())
 	if err == nil {
 		t.Fatal("credentials were sent to a plain-HTTP upstream")
 	}
@@ -291,7 +291,7 @@ func TestARedirectDoesNotCarryCredentialsToAnotherHost(t *testing.T) {
 	client := NewClient(upstream.URL)
 	client.http = upstream.Client()
 
-	_, err := client.Token(context.Background(), authSpec(), authInputs())
+	_, err := prepareToken(client, authSpec(), authInputs())
 	if err == nil {
 		t.Fatal("a cross-host redirect was followed with the credentials attached")
 	}
@@ -328,7 +328,7 @@ func TestARedirectOnTheSameHostIsFollowed(t *testing.T) {
 	client := NewClient(upstream.URL)
 	client.http = upstream.Client()
 
-	token, err := client.Token(context.Background(), authSpec(), authInputs())
+	token, err := prepareToken(client, authSpec(), authInputs())
 	if err != nil {
 		t.Fatalf("a same-host redirect was refused: %v", err)
 	}
@@ -359,12 +359,12 @@ func TestPostCarriesTheTokenUnderTheDeclaredName(t *testing.T) {
 
 	client := NewClient(upstream.URL)
 	client.http = upstream.Client()
-	token, err := client.Token(context.Background(), auth, authInputs())
+	_, err := prepareToken(client, auth, authInputs())
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
 
-	if _, err := client.fetchPost(context.Background(), "/data", []byte(`{}`), token); err != nil {
+	if _, err := client.fetchPost(context.Background(), "/data", []byte(`{}`)); err != nil {
 		t.Fatalf("fetchPost: %v", err)
 	}
 	if got := gotQuery.Get("api_key"); got != "tok-abc" {
@@ -373,4 +373,20 @@ func TestPostCarriesTheTokenUnderTheDeclaredName(t *testing.T) {
 	if gotQuery.Has("token") {
 		t.Error("the token was also sent under the engine's own spelling")
 	}
+}
+
+// prepareToken does what execute does: runs the auth block through the
+// Authenticator the run would pick, hands the credential to the client, and
+// returns its value -- the token, for a tokenExchange.
+func prepareToken(client *Client, auth Auth, rc *runContext) (string, error) {
+	authenticator, err := authenticatorFor(auth)
+	if err != nil {
+		return "", err
+	}
+	cred, err := authenticator.Prepare(context.Background(), client, rc)
+	if err != nil {
+		return "", err
+	}
+	client.WithCredential(cred)
+	return cred.Value, nil
 }

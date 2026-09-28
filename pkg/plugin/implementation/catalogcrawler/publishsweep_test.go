@@ -1,6 +1,6 @@
 package catalogcrawler
 
-// publishpipelines_test.go covers the crawler's side of the scheduled publish
+// publishsweep_test.go covers the crawler's side of the scheduled publish
 // pipelines: reading its configuration, sweeping the registry, skipping what
 // does not publish, and not letting two sweeps overlap. The pipeline's own
 // behaviour -- the registry gate, the cron schedule, the fetch/build/publish --
@@ -9,6 +9,7 @@ package catalogcrawler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
@@ -56,7 +58,7 @@ func TestPublishConfigReadsItsSettings(t *testing.T) {
 	}
 	// The crawler's one publish address reaches every pipeline.
 	// The pipelines' base is discoveryPushUrl without its /publish, so they
-	// reach the same endpoint the sink publishes crawled catalogues to.
+	// reach the same endpoint the sink publishes crawled catalogs to.
 	if cfg.publishURL != "http://provider-adapter:9200" {
 		t.Errorf("publishURL = %q, want discoveryPushUrl's base", cfg.publishURL)
 	}
@@ -239,7 +241,7 @@ func (lookupOnly) Lookup(context.Context, *model.Subscription) ([]model.Subscrip
 
 // A sweep takes minutes; the tick is far shorter. A second sweep starting
 // while the first is still running would double every upstream call and race
-// to write the same catalogue files.
+// to write the same catalog files.
 func TestPublishSweepDoesNotOverlap(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
@@ -334,7 +336,7 @@ type ranAt struct{ last time.Time }
 func (r ranAt) LastPipelineRun(context.Context, string) (time.Time, error) { return r.last, nil }
 func (r ranAt) RecordPipelineRun(context.Context, string, time.Time) error { return nil }
 
-const mandiPipelinePath = "pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml"
+const mandiPipelinePath = "pkg/plugin/implementation/MandiPrice/catalogpublish-agmarknet/agmarknet.yaml"
 
 // newPublishSweep wires the real run and a publisher, so a tick does real work.
 func TestNewPublishSweepWiresTheRunAndThePublisher(t *testing.T) {
@@ -367,7 +369,7 @@ func TestRunPipelineReportsTheFramesRefusal(t *testing.T) {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
 	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, nil, slog.New(slog.DiscardHandler))
-	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/cataloguepublish-x/p.yaml")
+	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/catalogpublish-x/p.yaml")
 
 	if err := sweep.runPipeline(context.Background(), record, files); err == nil {
 		t.Fatal("a record naming another pipeline was run")
@@ -383,9 +385,9 @@ func (s *fixedTargets) Discover(context.Context) ([]publishTarget, error) { retu
 //
 // A failed run is deliberately not recorded, so the next tick tries again --
 // which is right for a transient outage at midnight. But a permanent failure
-// (a rejected catalogue, a credential that will not work) then re-fetches and
+// (a rejected catalog, a credential that will not work) then re-fetches and
 // re-publishes EVERYTHING every five minutes: about 288 full runs a day, each
-// re-sending catalogues the network already accepted.
+// re-sending catalogs the network already accepted.
 //
 // After a few attempts the firing is marked served, so the pipeline waits for
 // its next scheduled firing instead.
@@ -475,13 +477,15 @@ var errAlwaysFails = errors.New("this failure will not clear")
 type countingRunLog struct {
 	recorded int
 	last     time.Time
+	keys     []string
 }
 
 func (c *countingRunLog) LastPipelineRun(context.Context, string) (time.Time, error) {
 	return c.last, nil
 }
 
-func (c *countingRunLog) RecordPipelineRun(_ context.Context, _ string, at time.Time) error {
+func (c *countingRunLog) RecordPipelineRun(_ context.Context, key string, at time.Time) error {
+	c.keys = append(c.keys, key)
 	c.recorded++
 	c.last = at
 	return nil
@@ -490,3 +494,131 @@ func (c *countingRunLog) RecordPipelineRun(_ context.Context, _ string, at time.
 type staticSource struct{ targets []publishTarget }
 
 func (s staticSource) Discover(context.Context) ([]publishTarget, error) { return s.targets, nil }
+
+// Pipeline publishes carry this deployment's identity, from the same keys the
+// crawl sink reads: the sweep's sink stamps them onto every body.
+func TestPublishSweepCarriesTheDeploymentIdentity(t *testing.T) {
+	cfg, err := publishConfigFrom(map[string]string{
+		cfgPublishPipelines: "true",
+		cfgParticipantID:    "bpp.example",
+		cfgBppURI:           "https://bpp.example/bpp",
+	})
+	if err != nil {
+		t.Fatalf("publishConfigFrom: %v", err)
+	}
+	sweep := newPublishSweep(cfg, &fixedTargets{}, nil, slog.New(slog.DiscardHandler))
+	discovery, ok := sweep.publisher.(*sink.DiscoverySink)
+	if !ok {
+		t.Fatalf("publisher is %T, want *sink.DiscoverySink", sweep.publisher)
+	}
+	if discovery.ParticipantID != "bpp.example" || discovery.BppURI != "https://bpp.example/bpp" {
+		t.Fatalf("sink identity = %q, %q; want the crawler's participantId and bppUri",
+			discovery.ParticipantID, discovery.BppURI)
+	}
+}
+
+// The sweep's publish calls log through the crawler's logger, not the
+// process default, so they land with the rest of the crawler's lines.
+func TestPublishSweepSinkLogsThroughTheCrawlerLogger(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, nil, log)
+	if got := sweep.publisher.(*sink.DiscoverySink).Client.Log; got != log {
+		t.Fatalf("sink logger = %v, want the crawler's", got)
+	}
+}
+
+// narrowingRegistry is a stubRegistry that can also say, from its listing,
+// which bindings serve an action.
+type narrowingRegistry struct {
+	*stubRegistry
+	serving map[string][]string
+}
+
+func (n narrowingRegistry) ProviderBindingKeysServing(_ context.Context, action string) ([]string, error) {
+	return n.serving[action], nil
+}
+
+// A registry that can narrow its listing is asked to: only the bindings that
+// publish are resolved, rather than every capability it holds.
+func TestPublishDiscovererResolvesOnlyPublishingBindings(t *testing.T) {
+	stub := &stubRegistry{
+		keys: []string{"a|x:A", "b|x:B", "c|x:C"},
+		records: map[string]*model.ProviderRecord{
+			"b|x:B": publishingRecord("b|x:B", "pkg/plugin/implementation/X/catalogpublish-y/y.yaml"),
+		},
+	}
+	d := &publishDiscoverer{
+		lookup:  narrowingRegistry{stubRegistry: stub, serving: map[string][]string{"publish": {"b|x:B"}}},
+		resolve: func(string) (pipeline.Files, error) { return pipeline.Files{}, nil },
+		log:     slog.New(slog.DiscardHandler),
+	}
+	targets, err := d.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Errorf("targets = %d, want 1", len(targets))
+	}
+	if fmt.Sprint(stub.lookups) != "[b|x:B]" {
+		t.Errorf("resolved %v, want only the publishing binding", stub.lookups)
+	}
+}
+
+// Giving up on a firing marks it served under the PIPELINE's key -- the same
+// row the run itself reads -- or the next tick would not see the give-up and
+// would start the storm again.
+func TestGivingUpMarksThePipelineServed(t *testing.T) {
+	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	if err != nil {
+		t.Fatalf("PublishPipeline: %v", err)
+	}
+	runLog := &countingRunLog{}
+	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, runLog, slog.New(slog.DiscardHandler))
+	// A record naming some other pipeline: the frame's gate refuses it every
+	// time, which is a failure that will not clear.
+	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/catalogpublish-x/p.yaml")
+
+	for i := 0; i < maxAttemptsPerFiring; i++ {
+		if err := sweep.runPipeline(context.Background(), record, files); err == nil {
+			t.Fatal("a refused pipeline reported success")
+		}
+	}
+	if fmt.Sprint(runLog.keys) != "["+files.Path+"]" {
+		t.Fatalf("give-up recorded under %v, want [%s]", runLog.keys, files.Path)
+	}
+}
+
+// claimingElsewhere is a run log whose claim always loses: another replica
+// owns every firing.
+type claimingElsewhere struct{ countingRunLog }
+
+func (c *claimingElsewhere) ClaimPipelineRun(context.Context, string, time.Time, time.Time) (bool, error) {
+	return false, nil
+}
+func (c *claimingElsewhere) ReleasePipelineRun(context.Context, string, time.Time) error { return nil }
+
+// A firing another replica claimed is neither a success nor a failure here:
+// this replica did no work, so its attempt budget is left exactly as it was.
+func TestRunPipelineLeavesTheBudgetWhenAnotherReplicaClaimed(t *testing.T) {
+	files, err := implementation.PublishPipeline(mandiPipelinePath)
+	if err != nil {
+		t.Fatalf("PublishPipeline: %v", err)
+	}
+	runLog := &claimingElsewhere{}
+	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, runLog, slog.New(slog.DiscardHandler))
+	// Seeded under both keys, so the test holds whichever one the sweep uses.
+	sweep.failures = map[string]*attemptBudget{files.Path: {count: 2}, "openagrinet:MandiPrice": {count: 2}}
+	record := publishingRecord("agmarknet-live|openagrinet:MandiPrice", mandiPipelinePath)
+
+	if err := sweep.runPipeline(context.Background(), record, files); err != nil {
+		t.Fatalf("runPipeline: %v", err)
+	}
+	for _, key := range []string{files.Path, "openagrinet:MandiPrice"} {
+		if budget := sweep.failures[key]; budget == nil || budget.count != 2 {
+			t.Errorf("budget[%s] = %+v, want the 2 failed attempts untouched", key, budget)
+		}
+	}
+	if runLog.recorded != 0 {
+		t.Errorf("a run another replica owns was recorded %d times", runLog.recorded)
+	}
+}

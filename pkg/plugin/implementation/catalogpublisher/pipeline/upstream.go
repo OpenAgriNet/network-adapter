@@ -1,5 +1,5 @@
 // upstream.go is the HTTP client for the `upstream:` YAML block: token
-// exchange, GET and POST data calls, error classification, and guards.
+// exchange, GET and POST data calls, and error classification.
 // All communication with the upstream service happens here.
 package pipeline
 
@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -45,8 +46,8 @@ type Mapper interface {
 type Client struct {
 	baseURL    string
 	http       *http.Client
-	tokenPlace string // "query" or "header" — how the token rides on requests
-	tokenName  string // the query parameter the file names for it
+	credential Credential // what every request carries; see applyCredential
+	log        *slog.Logger
 
 	// allowCleartext carries the file's deliberate acceptance of an http
 	// upstream. See checkUpstreamScheme.
@@ -86,15 +87,67 @@ func NewClient(baseURL string) *Client {
 	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 120 * time.Second}}
 }
 
-// do is the one place a request leaves this package, so the redirect policy
-// cannot be forgotten at a call site.
-func (c *Client) do(req *http.Request) (*http.Response, error) {
+// WithLogger sets where each call's line goes. nil means slog.Default().
+func (c *Client) WithLogger(log *slog.Logger) *Client {
+	c.log = log
+	return c
+}
+
+func (c *Client) logger() *slog.Logger {
+	if c.log == nil {
+		return slog.Default()
+	}
+	return c.log
+}
+
+type logItemKey struct{}
+
+// withLogItem tags a context with the forEach item a call is made for, so the
+// call's log line says which state stalled.
+func withLogItem(ctx context.Context, item string) context.Context {
+	return context.WithValue(ctx, logItemKey{}, item)
+}
+
+// do is the one place a request leaves this package, so the redirect policy,
+// the credential and the call's log line cannot be forgotten at a call site.
+// It reads (bounded) and closes the body.
+//
+// carryCredential is false only for the token exchange, which carries the
+// credentials in its body and must not carry the token it is replacing.
+//
+// A nil response means the call never completed; a response with an error
+// means it was answered but the body could not be read.
+//
+// The log line carries the path WITHOUT its query: for this class of
+// upstream the query is where the token rides.
+func (c *Client) do(req *http.Request, carryCredential bool) (*http.Response, []byte, error) {
 	c.policyOnce.Do(func() {
 		if c.http.CheckRedirect == nil {
 			c.http.CheckRedirect = refuseOffHostRedirect
 		}
 	})
-	return c.http.Do(req)
+	if carryCredential {
+		c.applyCredential(req)
+	}
+
+	began := time.Now()
+	resp, err := c.http.Do(req)
+	fields := []any{"method", req.Method, "path", req.URL.Path}
+	if item, ok := req.Context().Value(logItemKey{}).(string); ok && item != "" {
+		fields = append(fields, "item", item)
+	}
+	if err != nil {
+		c.logger().InfoContext(req.Context(), "upstream call", append(fields,
+			"status", 0, "duration", time.Since(began).Round(time.Millisecond).String(), "bytes", 0)...)
+		return nil, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	c.logger().InfoContext(req.Context(), "upstream call", append(fields,
+		"status", resp.StatusCode, "duration", time.Since(began).Round(time.Millisecond).String(),
+		"bytes", len(body))...)
+	return resp, body, readErr
 }
 
 // refuseOffHostRedirect stops a redirect from carrying a credential to a host
@@ -155,13 +208,13 @@ func isSchemeDowngrade(from, to string) bool {
 	return strings.EqualFold(from, "https") && !strings.EqualFold(to, "https")
 }
 
-// token exchanges the credentials for a token.
+// exchangeToken performs the token exchange the pipeline file DECLARES,
+// rather than one this package knows about. It is the tokenExchange
+// Authenticator's round trip (see auth.go).
 //
 // The credentials are marshalled rather than concatenated, so a secret
 // carrying a quote or a backslash cannot break out of the JSON it travels
 // in.
-// Token performs the token exchange the pipeline file DECLARES, rather than
-// one this package knows about.
 //
 // Everything that varies -- the method, the path, which JSON keys carry the
 // credentials, and where the token sits in the response -- comes from
@@ -171,38 +224,15 @@ func isSchemeDowngrade(from, to string) bool {
 // The credentials themselves are never in the file: the body's values are
 // ${inputs.…} references, and the inputs that hold them are declared
 // `secret: true`, so what the file carries is the NAME of a variable.
-func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, error) {
+func (c *Client) exchangeToken(ctx context.Context, auth Auth, rc *runContext) (string, error) {
 	// Checked HERE rather than at the first data call, because this is the
 	// request that carries the credentials themselves.
 	if err := checkUpstreamScheme(c.baseURL, c.allowCleartext); err != nil {
 		return "", err
 	}
 
-	if auth.Kind != "" && auth.Kind != authTokenExchange {
-		return "", fmt.Errorf("upstream.auth.kind %q is not supported; this client performs %q",
-			auth.Kind, authTokenExchange)
-	}
 	if auth.Request.Path == "" {
 		return "", fmt.Errorf("upstream.auth.request.path is empty, so there is no token endpoint to call")
-	}
-
-	// Validate and store the token placement so Get/Post can apply it.
-	// Defaults to "query" when unset, matching the existing behaviour.
-	carried := strings.TrimSpace(auth.Token.CarriedAs)
-	if carried == "" {
-		carried = "query"
-	}
-	if carried != "query" && carried != "header" {
-		return "", fmt.Errorf("upstream.auth.token.carriedAs %q is not supported; use %q or %q",
-			auth.Token.CarriedAs, "query", "header")
-	}
-	c.tokenPlace = carried
-
-	// The file's own spelling. A second upstream calls it "api_key"; keeping
-	// the engine's spelling here would authenticate as nobody.
-	c.tokenName = strings.TrimSpace(auth.Token.Name)
-	if c.tokenName == "" {
-		c.tokenName = "token"
 	}
 
 	body := make(map[string]string, len(auth.Request.Body))
@@ -239,15 +269,12 @@ func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.do(req)
-	if err != nil {
+	resp, raw, err := c.do(req, false)
+	if resp == nil {
 		// Not %w: Go's transport errors quote the whole URL, and a token
 		// endpoint's URL is the one place a credential could appear in it.
 		return "", unreachable("token endpoint", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("token response could not be read: %w", err)
 	}
@@ -265,8 +292,8 @@ func (c *Client) Token(ctx context.Context, auth Auth, rc *runContext) (string, 
 	return token, nil
 }
 
-// authTokenExchange is the one auth kind this client performs: POST
-// credentials, receive a token, carry it on each later request.
+// authTokenExchange is the default auth kind: POST credentials, receive a
+// token, carry it on each later request.
 const authTokenExchange = "tokenExchange"
 
 // extractToken reads the token from the response at the declared location.
@@ -337,9 +364,9 @@ func asQuery(mapped []byte) (string, error) {
 	return values.Encode(), nil
 }
 
-// fetchGet makes one GET, applying the token as a query param or header
-// depending on c.tokenPlace, and returns the body of a 2xx.
-func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]byte, error) {
+// fetchGet makes one GET, applying the client's credential (see
+// applyCredential), and returns the body of a 2xx.
+func (c *Client) fetchGet(ctx context.Context, urlPath, query string) ([]byte, error) {
 	// The query is the mapping's, whole: on the query-carried path the
 	// mapping is what puts the token in it, under the file's own name.
 	endpoint := c.baseURL + urlPath
@@ -350,17 +377,11 @@ func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("request could not be built: %w", err)
 	}
-	if c.tokenPlace == "header" && token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 
-	resp, err := c.do(req)
-	if err != nil {
+	resp, body, err := c.do(req, true)
+	if resp == nil {
 		return nil, unreachable("GET "+urlPath, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: response could not be read: %w", urlPath, err)
 	}
@@ -372,27 +393,17 @@ func (c *Client) fetchGet(ctx context.Context, urlPath, query, token string) ([]
 }
 
 // fetchPost makes one POST with a JSON body and returns the body of a 2xx.
-func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []byte, token string) ([]byte, error) {
+func (c *Client) fetchPost(ctx context.Context, urlPath string, bodyPayload []byte) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+urlPath, bytes.NewReader(bodyPayload))
 	if err != nil {
 		return nil, fmt.Errorf("POST %s request could not be built: %w", urlPath, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.tokenPlace == "header" && token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	} else if c.tokenPlace == "query" && token != "" {
-		q := req.URL.Query()
-		q.Set(c.tokenQueryName(), token)
-		req.URL.RawQuery = q.Encode()
-	}
 
-	resp, err := c.do(req)
-	if err != nil {
+	resp, body, err := c.do(req, true)
+	if resp == nil {
 		return nil, unreachable("POST "+urlPath, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("POST %s: response could not be read: %w", urlPath, err)
 	}
@@ -429,11 +440,7 @@ func (c *Client) Get(ctx context.Context, m Mapper, mappingRef, path string, loc
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	token := ""
-	if t, ok := local["token"].(string); ok {
-		token = t
-	}
-	body, err := c.fetchGet(ctx, path, query, token)
+	body, err := c.fetchGet(ctx, path, query)
 	if err != nil {
 		return nil, err
 	}
@@ -462,11 +469,7 @@ func (c *Client) Post(ctx context.Context, m Mapper, mappingRef, path string, lo
 		return nil, fmt.Errorf("%s: request half: %w", path, err)
 	}
 
-	token := ""
-	if t, ok := local["token"].(string); ok {
-		token = t
-	}
-	rawBody, err := c.fetchPost(ctx, path, bodyPayload, token)
+	rawBody, err := c.fetchPost(ctx, path, bodyPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -577,13 +580,4 @@ func isLoopback(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
-}
-
-// tokenQueryName is the query parameter the token rides in, defaulting to
-// "token" for a client whose Token() was never called (no auth declared).
-func (c *Client) tokenQueryName() string {
-	if c.tokenName == "" {
-		return "token"
-	}
-	return c.tokenName
 }

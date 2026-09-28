@@ -36,10 +36,14 @@ func writeCatalog(t *testing.T, dir, state string) {
 type fakePublisher struct {
 	status string
 
-	mu     sync.Mutex
-	urls   []string
-	bodies [][]byte
+	mu      sync.Mutex
+	urls    []string
+	bodies  [][]byte
+	retires []retireCall
 }
+
+// retireCall is one Retire the publish step asked for.
+type retireCall struct{ baseURL, catalogID, descriptorName string }
 
 func publisherAnswering(status string) *fakePublisher { return &fakePublisher{status: status} }
 
@@ -49,6 +53,19 @@ func (f *fakePublisher) Publish(_ context.Context, baseURL string, body []byte) 
 	f.urls = append(f.urls, baseURL)
 	f.bodies = append(f.bodies, body)
 	return Outcome{Status: f.status, Reason: "fake"}
+}
+
+func (f *fakePublisher) Retire(_ context.Context, baseURL, catalogID, descriptorName string) Outcome {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retires = append(f.retires, retireCall{baseURL, catalogID, descriptorName})
+	return Outcome{CatalogID: catalogID, Status: f.status, Reason: "fake"}
+}
+
+func (f *fakePublisher) retired() []retireCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]retireCall(nil), f.retires...)
 }
 
 func (f *fakePublisher) calls() int {
@@ -64,11 +81,9 @@ const testAdapter = "http://adapter.test"
 func goodSpec() Publish {
 	return Publish{
 		URL:            "${inputs.publishUrl}/publish",
-		Concurrency:    1,
-		Timeout:        "180s",
 		Accept:         []string{"ACCEPTED"},
 		TreatAsFailure: []string{"PARTIAL", "REJECTED"},
-		RefuseWhen:     "collection.stateErrors > 0",
+		RefuseWhen:     "collection.groupErrors > 0",
 	}
 }
 
@@ -78,8 +93,8 @@ func TestPublishCatalogsReportsAnAcceptedCatalogAsPublished(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	result, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
+	result, err := PublishCatalogs(context.Background(), goodSpec(),
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, pub)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
@@ -106,8 +121,8 @@ func TestPublishCatalogsTreatsPartialAsAFailure(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	result, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
+	result, err := PublishCatalogs(context.Background(), goodSpec(),
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, pub)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
@@ -125,8 +140,8 @@ func TestPublishCatalogsRefusesAPartialCollection(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	_, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 3, pub)
+	_, err := PublishCatalogs(context.Background(), goodSpec(),
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, map[string]int{"groupErrors": 3}, pub)
 	if err == nil {
 		t.Fatal("publishCatalogs published a collection with 3 failed states")
 	}
@@ -147,8 +162,8 @@ func TestPublishCatalogsPublishesWhenRefuseWhenIsNotDeclared(t *testing.T) {
 	spec := goodSpec()
 	spec.RefuseWhen = ""
 
-	if _, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 3, pub); err != nil {
+	if _, err := PublishCatalogs(context.Background(), spec,
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, map[string]int{"groupErrors": 3}, pub); err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
 	if pub.calls() != 1 {
@@ -160,8 +175,8 @@ func TestPublishCatalogsNeedsAPublishURL(t *testing.T) {
 	// The hint the run fills in from the pipeline's own publishUrl input.
 	spec := goodSpec()
 	spec.AddressHint = publishAddressHintFor(Input{Flag: "publish-url", Env: "CATALOG_PUBLISH_URL"})
-	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{}, t.TempDir(), publishTestPrefix, 0, publisherAnswering(StatusPublished))
+	_, err := PublishCatalogs(context.Background(), spec,
+		map[string]string{}, t.TempDir(), publishTestPrefix, nil, publisherAnswering(StatusPublished))
 	if err == nil {
 		t.Fatal("publishCatalogs accepted an empty publish address")
 	}
@@ -179,8 +194,8 @@ func TestPublishCatalogsRejectsASpecThatAcceptsPartial(t *testing.T) {
 	spec := goodSpec()
 	spec.Accept = []string{"PARTIAL"}
 
-	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
+	_, err := PublishCatalogs(context.Background(), spec,
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, pub)
 	if err == nil {
 		t.Fatal("publishCatalogs honoured a spec accepting PARTIAL it cannot honour")
 	}
@@ -196,16 +211,16 @@ func TestPublishCatalogsRejectsASpecThatDoesNotFailOnPartial(t *testing.T) {
 	spec := goodSpec()
 	spec.TreatAsFailure = []string{"REJECTED"}
 
-	// A real catalogue file and a live server, so the call would otherwise
+	// A real catalog file and a live server, so the call would otherwise
 	// SUCCEED. With an empty directory this test passed even with the
 	// judgement check removed -- the publish step would have returned "no
-	// catalogue files in ..." and the assertion could not tell the two apart.
+	// catalog files in ..." and the assertion could not tell the two apart.
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 	pub := publisherAnswering(StatusPublished)
 
-	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
+	_, err := PublishCatalogs(context.Background(), spec,
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, pub)
 	if err == nil {
 		t.Fatal("publishCatalogs honoured a spec that does not treat PARTIAL as a failure")
 	}
@@ -225,8 +240,8 @@ func TestPublishCatalogsRejectsAPublishURLItWouldIgnore(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0, publisherAnswering(StatusPublished))
+	_, err := PublishCatalogs(context.Background(), spec,
+		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, nil, publisherAnswering(StatusPublished))
 	if err == nil {
 		t.Fatal("publishCatalogs accepted a publish.url it does not honour")
 	}
@@ -250,8 +265,8 @@ func TestPublishCatalogsRefusesAnUnresolvableRetireOld(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
 
-	_, err := PublishCatalogues(context.Background(), spec,
-		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, 0, publisherAnswering(StatusPublished))
+	_, err := PublishCatalogs(context.Background(), spec,
+		map[string]string{"publishUrl": "http://127.0.0.1:1"}, dir, publishTestPrefix, nil, publisherAnswering(StatusPublished))
 	if err == nil {
 		t.Fatal("publishCatalogs accepted a retireOld gated on an undeclared input")
 	}
@@ -262,7 +277,7 @@ func TestPublishCatalogsRefusesAnUnresolvableRetireOld(t *testing.T) {
 
 // TestPublishCatalogsCarriesAnEnabledRetireOld proves the block reaches
 // the publisher rather than being parsed and dropped: an enabled retirement
-// posts a tombstone for the named catalog alongside the current ones.
+// retires the named catalog alongside publishing the current ones.
 func TestPublishCatalogsCarriesAnEnabledRetireOld(t *testing.T) {
 	spec := goodSpec()
 	spec.RetireOld = RetireOld{
@@ -275,19 +290,25 @@ func TestPublishCatalogsCarriesAnEnabledRetireOld(t *testing.T) {
 	writeCatalog(t, dir, "MH")
 	pub := publisherAnswering(StatusPublished)
 
-	result, err := PublishCatalogues(context.Background(), spec, map[string]string{
+	result, err := PublishCatalogs(context.Background(), spec, map[string]string{
 		"publishUrl": testAdapter,
 		"retireOld":  "true",
-	}, dir, publishTestPrefix, 0, pub)
+	}, dir, publishTestPrefix, nil, pub)
 	if err != nil {
 		t.Fatalf("publishCatalogs: %v", err)
 	}
 	if result.RetiredOld == nil {
 		t.Fatal("retireOld was declared and enabled, but no retirement was attempted")
 	}
-	// The catalogue AND the tombstone went through the publisher.
-	if pub.calls() != 2 || !strings.Contains(string(pub.bodies[1]), `"isActive":false`) {
-		t.Errorf("publisher got %d bodies, want the catalogue then a tombstone", pub.calls())
+	// The catalog was published and the old one retired, both through the
+	// publisher -- which builds the retirement body, identity and all.
+	want := retireCall{testAdapter, "cat-agmarknet-mandi-prices", "Retired: superseded by the per-state market catalogs"}
+	if pub.calls() != 1 || len(pub.retired()) != 1 || pub.retired()[0] != want {
+		t.Errorf("publisher got %d bodies and retires %+v; want the catalog, then Retire(%+v)",
+			pub.calls(), pub.retired(), want)
+	}
+	if result.RetiredOld.CatalogID != want.catalogID {
+		t.Errorf("RetiredOld = %+v, want catalogId %s", result.RetiredOld, want.catalogID)
 	}
 }
 
@@ -299,15 +320,15 @@ func TestPublishCatalogsHandsTheFileVerbatimWithTheBaseAddress(t *testing.T) {
 	want, _ := os.ReadFile(filepath.Join(dir, publishTestPrefix+"-MH.json"))
 	pub := publisherAnswering(StatusPublished)
 
-	result, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, pub)
+	result, err := PublishCatalogs(context.Background(), goodSpec(),
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, pub)
 	if err != nil {
-		t.Fatalf("PublishCatalogues: %v", err)
+		t.Fatalf("PublishCatalogs: %v", err)
 	}
 	if pub.urls[0] != testAdapter || string(pub.bodies[0]) != string(want) {
 		t.Errorf("publisher got url %q body %s; want %q and the file verbatim", pub.urls[0], pub.bodies[0], testAdapter)
 	}
-	if got := result.Outcomes[0]; got.CatalogID != "cat-mandi-MH" || got.StateCode != "MH" {
+	if got := result.Outcomes[0]; got.CatalogID != "cat-mandi-MH" || got.Group != "MH" {
 		t.Errorf("outcome = %+v, want the id from the body and the group from the filename", got)
 	}
 }
@@ -317,8 +338,8 @@ func TestPublishCatalogsHandsTheFileVerbatimWithTheBaseAddress(t *testing.T) {
 func TestPublishCatalogsRefusesWithoutAPublisher(t *testing.T) {
 	dir := t.TempDir()
 	writeCatalog(t, dir, "MH")
-	_, err := PublishCatalogues(context.Background(), goodSpec(),
-		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, 0, nil)
+	_, err := PublishCatalogs(context.Background(), goodSpec(),
+		map[string]string{"publishUrl": testAdapter}, dir, publishTestPrefix, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "publisher") {
 		t.Fatalf("err = %v, want a refusal naming the missing publisher", err)
 	}
@@ -335,7 +356,7 @@ func TestPublishAddressHintNamesThePipelinesOwnInput(t *testing.T) {
 
 	spec := goodSpec()
 	spec.AddressHint = hint
-	_, err := PublishCatalogues(context.Background(), spec, map[string]string{}, t.TempDir(), "x", 0, publisherAnswering(StatusPublished))
+	_, err := PublishCatalogs(context.Background(), spec, map[string]string{}, t.TempDir(), "x", nil, publisherAnswering(StatusPublished))
 	if err == nil || !strings.Contains(err.Error(), "EXAMPLE_PUBLISH_URL") {
 		t.Errorf("err = %v, want it to name EXAMPLE_PUBLISH_URL", err)
 	}
@@ -343,9 +364,9 @@ func TestPublishAddressHintNamesThePipelinesOwnInput(t *testing.T) {
 
 // The retirement must not go out when its replacements did not.
 //
-// retireOld posts a TOMBSTONE: it deactivates the old catalogue, which is how
-// that catalogue's resources leave the network. Sending it after a run whose
-// new catalogues were all rejected removes the old data and puts nothing in
+// retireOld posts a TOMBSTONE: it deactivates the old catalog, which is how
+// that catalog's resources leave the network. Sending it after a run whose
+// new catalogs were all rejected removes the old data and puts nothing in
 // its place -- the network is left with neither. The next tick then retries
 // and sends the tombstone again.
 func TestRetireIsNotSentWhenEveryPublishFailed(t *testing.T) {
@@ -360,17 +381,17 @@ func TestRetireIsNotSentWhenEveryPublishFailed(t *testing.T) {
 	}
 	resolved := map[string]string{"publishUrl": testAdapter, "retireOld": "true"}
 
-	result, err := PublishCatalogues(context.Background(), spec, resolved, dir, publishTestPrefix, 0, pub)
+	result, err := PublishCatalogs(context.Background(), spec, resolved, dir, publishTestPrefix, nil, pub)
 	if err != nil {
-		t.Fatalf("PublishCatalogues: %v", err)
+		t.Fatalf("PublishCatalogs: %v", err)
 	}
 	if result.RetiredOld != nil {
-		t.Error("the old catalogue was retired although every replacement was rejected; " +
+		t.Error("the old catalog was retired although every replacement was rejected; " +
 			"the network is left with neither the old data nor the new")
 	}
-	// One call for the catalogue, none for the tombstone.
-	if got := pub.calls(); got != 1 {
-		t.Errorf("publisher saw %d calls, want 1 (the catalogue only, no tombstone)", got)
+	// One call for the catalog, no retirement.
+	if got := pub.calls(); got != 1 || len(pub.retired()) != 0 {
+		t.Errorf("publisher saw %d publishes and %d retires, want 1 and 0", got, len(pub.retired()))
 	}
 }
 
@@ -388,14 +409,50 @@ func TestRetireIsSentWhenEveryPublishSucceeded(t *testing.T) {
 	}
 	resolved := map[string]string{"publishUrl": testAdapter, "retireOld": "true"}
 
-	result, err := PublishCatalogues(context.Background(), spec, resolved, dir, publishTestPrefix, 0, pub)
+	result, err := PublishCatalogs(context.Background(), spec, resolved, dir, publishTestPrefix, nil, pub)
 	if err != nil {
-		t.Fatalf("PublishCatalogues: %v", err)
+		t.Fatalf("PublishCatalogs: %v", err)
 	}
 	if result.RetiredOld == nil {
-		t.Fatal("a healthy run did not retire the old catalogue, so the migration never completes")
+		t.Fatal("a healthy run did not retire the old catalog, so the migration never completes")
 	}
-	if got := pub.calls(); got != 2 {
-		t.Errorf("publisher saw %d calls, want 2 (the catalogue and the tombstone)", got)
+	if got := pub.calls(); got != 1 || len(pub.retired()) != 1 {
+		t.Errorf("publisher saw %d publishes and %d retires, want 1 and 1", got, len(pub.retired()))
+	}
+}
+
+func TestRefuseWhenAcceptsAThreshold(t *testing.T) {
+	counter, threshold, ok := refuseWhenRule("collection.groupErrors > 3")
+	if !ok || counter != "groupErrors" || threshold != 3 {
+		t.Fatalf("refuseWhenRule = %q, %d, %v; want groupErrors, 3, true", counter, threshold, ok)
+	}
+	if _, _, ok := refuseWhenRule("collection.groupErrors >= 3"); ok {
+		t.Fatal(">= was accepted; only > N is understood")
+	}
+}
+
+// A pipeline that tolerates three failed groups publishes with three and
+// refuses with four.
+func TestPublishRefusesOnlyAboveTheThreshold(t *testing.T) {
+	spec := goodSpec()
+	spec.RefuseWhen = "collection.groupErrors > 3"
+	resolved := map[string]string{"publishUrl": testAdapter}
+
+	dir := t.TempDir()
+	writeCatalog(t, dir, "MH")
+
+	if _, err := PublishCatalogs(context.Background(), spec, resolved, dir, publishTestPrefix,
+		map[string]int{"groupErrors": 3}, publisherAnswering(StatusPublished)); err != nil {
+		t.Fatalf("three failed groups under `> 3` were refused: %v", err)
+	}
+
+	pub := publisherAnswering(StatusPublished)
+	_, err := PublishCatalogs(context.Background(), spec, resolved, dir, publishTestPrefix,
+		map[string]int{"groupErrors": 4}, pub)
+	if err == nil || !strings.Contains(err.Error(), "refusing to publish") {
+		t.Fatalf("four failed groups under `> 3`: err = %v, want a refusal", err)
+	}
+	if pub.calls() != 0 {
+		t.Errorf("a refused collection still posted %d times", pub.calls())
 	}
 }

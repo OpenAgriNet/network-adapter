@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "publish.oan/CataloguePipeline/v1",
-  "title": "CataloguePipeline v1",
-  "description": "The contract every publish pipeline file is held to. A provider adding a capability writes a file declaring `schemaRef: {uses: publish.oan/CataloguePipeline/v1}` and is checked against this at load time: a file that does not match is REFUSED at startup, naming the path that is wrong, rather than failing at 00:00 against a live upstream or silently declaring a rule nothing enforces. additionalProperties is false everywhere on purpose -- a misspelled key is the failure this exists to catch. Every `description` below states the failure its rule prevents, so this file is also the documentation; MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml is a complete working example.",
+  "$id": "publish.oan/CatalogPipeline/v1",
+  "title": "CatalogPipeline v1",
+  "description": "The contract every publish pipeline file is held to. A provider adding a capability writes a file declaring `schemaRef: {uses: publish.oan/CatalogPipeline/v1}` and is checked against this at load time: a file that does not match is REFUSED at startup, naming the path that is wrong, rather than failing at 00:00 against a live upstream or silently declaring a rule nothing enforces. additionalProperties is false everywhere on purpose -- a misspelled key is the failure this exists to catch. Every `description` below states the failure its rule prevents, so this file is also the documentation; MandiPrice/catalogpublish-agmarknet/agmarknet.yaml is a complete working example.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -44,19 +44,27 @@
           "upstream": {
             "properties": {
               "auth": {
-                "properties": {
-                  "kind": {
-                    "const": "tokenExchange"
+                "anyOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "kind"
+                      ]
+                    }
+                  },
+                  {
+                    "properties": {
+                      "kind": {
+                        "const": "tokenExchange"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
                   }
-                },
-                "required": [
-                  "kind"
                 ]
               }
-            },
-            "required": [
-              "auth"
-            ]
+            }
           }
         }
       },
@@ -117,7 +125,7 @@
     },
     "kind": {
       "type": "string",
-      "const": "CataloguePipeline"
+      "const": "CatalogPipeline"
     },
     "metadata": {
       "$ref": "#/$defs/metadata"
@@ -158,7 +166,7 @@
         "uses": {
           "type": "string",
           "enum": [
-            "publish.oan/CataloguePipeline/v1"
+            "publish.oan/CatalogPipeline/v1"
           ],
           "description": "The contract id. The engine resolves it to a schema it embeds; an id it does not carry is refused, naming the ones it does."
         }
@@ -175,7 +183,7 @@
         "name": {
           "type": "string",
           "minLength": 1,
-          "description": "Names the catalogue files on disk. Three things must agree on it: what writes them, what sweeps the previous run's, and the glob the publish step sends from."
+          "description": "Names the catalog files on disk. Three things must agree on it: what writes them, what sweeps the previous run's, and the glob the publish step sends from."
         },
         "capability": {
           "type": "string",
@@ -276,9 +284,6 @@
           },
           "description": "How this upstream's failures are classified. Classification, not cosmetics: recording 'no rows' as a failure once turned 27 of 36 quiet regions into 27 reported outages."
         },
-        "guards": {
-          "$ref": "#/$defs/guards"
-        },
         "allowCleartext": {
           "type": "boolean",
           "description": "Permits an http:// upstream that is not loopback. Off by default, because the credential exchange and every token after it travel over this address. It exists because some upstreams offer no TLS at all, and a rule that makes a real integration impossible gets worked around rather than obeyed. Setting it is a deliberate decision recorded in this file and warned about on every run -- not an accident of an unset variable."
@@ -288,17 +293,15 @@
     "auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "kind"
-      ],
       "properties": {
         "kind": {
           "type": "string",
           "enum": [
             "tokenExchange",
-            "none"
+            "none",
+            "apiKey"
           ],
-          "description": "tokenExchange posts credentials and receives a token. none is for an upstream that needs no credential."
+          "description": "tokenExchange (the default when kind is omitted) posts credentials and receives a token. none is for an upstream that needs no credential. apiKey carries an input's value, placed per token.carriedAs and token.name, with no round trip."
         },
         "request": {
           "$ref": "#/$defs/authRequest"
@@ -310,9 +313,43 @@
       "allOf": [
         {
           "if": {
+            "anyOf": [
+              {
+                "not": {
+                  "required": [
+                    "kind"
+                  ]
+                }
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "const": "tokenExchange"
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "request",
+              "token"
+            ],
+            "properties": {
+              "token": {
+                "required": [
+                  "at"
+                ]
+              }
+            },
+            "description": "A tokenExchange (including an auth block with no kind) with no request has no endpoint to call, and with no token.at has nowhere to read the token from."
+          }
+        },
+        {
+          "if": {
             "properties": {
               "kind": {
-                "const": "tokenExchange"
+                "const": "apiKey"
               }
             },
             "required": [
@@ -321,10 +358,18 @@
           },
           "then": {
             "required": [
-              "request",
               "token"
             ],
-            "description": "A tokenExchange with no request has no endpoint to call, and with no token has nowhere to read the token from."
+            "properties": {
+              "token": {
+                "required": [
+                  "value",
+                  "carriedAs",
+                  "name"
+                ]
+              }
+            },
+            "description": "An apiKey needs the input holding the key and where it rides."
           }
         }
       ]
@@ -360,9 +405,6 @@
     "authToken": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "at"
-      ],
       "properties": {
         "at": {
           "type": "string",
@@ -372,9 +414,10 @@
         "carriedAs": {
           "type": "string",
           "enum": [
-            "query"
+            "query",
+            "header"
           ],
-          "description": "How the token rides on later requests. Only query is honoured today: the token is handed to each step's mapping, and the MAPPING decides placement. Accepting header here would let this field and the mappings disagree silently."
+          "description": "How the credential rides on later requests. header: on every request. query: on POST the client adds it; on GET the step's mapping places it, so it is never sent twice."
         },
         "name": {
           "type": "string"
@@ -385,6 +428,11 @@
             "type": "integer"
           },
           "description": "Statuses that mean the token died, e.g. [401, 403]. Re-exchanged on these rather than refreshed on a timer, because this class of upstream returns no expiry."
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^\\$\\{inputs\\.[A-Za-z][A-Za-z0-9_]*\\}$",
+          "description": "apiKey only: the input holding the key, as ${inputs.name}. Never the key itself."
         }
       }
     },
@@ -458,26 +506,6 @@
         }
       ]
     },
-    "guards": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "responseMustBe": {
-          "type": "string",
-          "enum": [
-            "array",
-            "object"
-          ]
-        },
-        "neverQuoteBodyInErrors": {
-          "type": "boolean",
-          "description": "Not decoration. An upstream that echoes the request back in its error bodies will echo the token with it, and that error is printed to terminals and pasted into tickets."
-        },
-        "maxResponseBytes": {
-          "type": "string"
-        }
-      }
-    },
     "step": {
       "type": "object",
       "additionalProperties": false,
@@ -549,11 +577,12 @@
           "additionalProperties": {
             "$ref": "#/$defs/stepOutcome"
           },
-          "description": "Keyed by classification (emptyResult, transportError). A failure with no matching entry ABORTS -- a swallowed error is worse than a loud one.",
+          "description": "Keyed by classification (emptyResult, transportError, reauth). A failure with no matching entry ABORTS -- a swallowed error is worse than a loud one.",
           "propertyNames": {
             "enum": [
               "emptyResult",
-              "transportError"
+              "transportError",
+              "reauth"
             ]
           }
         },
@@ -830,7 +859,7 @@
           "items": {
             "type": "object"
           },
-          "description": "A const step's output, written in the file. How a pipeline with no upstream -- a catalogue whose content is fixed -- still hands the catalog block a collection."
+          "description": "A const step's output, written in the file. How a pipeline with no upstream -- a catalog whose content is fixed -- still hands the catalog block a collection."
         }
       }
     },
@@ -847,7 +876,7 @@
         "groupBy": {
           "type": "string",
           "minLength": 1,
-          "description": "The field records are grouped by -- one catalogue per group. A group left with nothing publishable produces NO catalogue rather than an empty one: publishing an empty catalogue retires that group's resources from the network on the next MERGE."
+          "description": "The field records are grouped by -- one catalog per group. A group left with nothing publishable produces NO catalog rather than an empty one: publishing an empty catalog retires that group's resources from the network on the next MERGE."
         },
         "exclude": {
           "type": "array",
@@ -884,7 +913,7 @@
               },
               "as": {
                 "type": "string",
-                "description": "The boolean field set on matching records. They stay in the catalogue."
+                "description": "The boolean field set on matching records. They stay in the catalog."
               }
             }
           }
@@ -922,7 +951,7 @@
             "catalogId": {
               "type": "string",
               "minLength": 1,
-              "description": "The network-facing id template, e.g. catalog:example:${slug}. A catalogue with no id cannot be published."
+              "description": "The network-facing id template, e.g. catalog:example:${slug}. A catalog with no id cannot be published."
             },
             "resourceId": {
               "type": "string"
@@ -939,7 +968,7 @@
             "mapping": {
               "type": "string",
               "minLength": 1,
-              "description": "The JSONata mapping that turns a chunk into a catalogue document."
+              "description": "The JSONata mapping that turns a chunk into a catalog document."
             },
             "local": {
               "type": "object",
@@ -959,22 +988,22 @@
         "cost",
         "slug"
       ],
-      "description": "Splits a group so no catalogue exceeds what the far end will index.",
+      "description": "Splits a group so no catalog exceeds what the far end will index.",
       "properties": {
         "budget": {
           "type": "integer",
           "minimum": 1,
-          "description": "The cap per catalogue. For Discovery this is 256 geometries, counted CUMULATIVELY per catalogId -- a catalogue over it indexes PARTIAL, meaning it goes in with resources missing and nothing downstream says so."
+          "description": "The cap per catalog. For Discovery this is 256 geometries, counted CUMULATIVELY per catalogId -- a catalog over it indexes PARTIAL, meaning it goes in with resources missing and nothing downstream says so."
         },
         "cost": {
           "type": "string",
           "minLength": 1,
-          "description": "What one record costs against the budget, as JSONata. It MUST agree with what the render actually emits -- if it counts records the render does not emit as geometries, a catalogue silently goes over the cap."
+          "description": "What one record costs against the budget, as JSONata. It MUST agree with what the render actually emits -- if it counts records the render does not emit as geometries, a catalog silently goes over the cap."
         },
         "slug": {
           "type": "string",
           "minLength": 1,
-          "description": "Names each chunk, e.g. ${group}${chunkIndex > 1 ? '-' & chunkIndex : ''}. Chunk 1 keeps the bare group name so a group that stops splitting does not orphan its first catalogue."
+          "description": "Names each chunk, e.g. ${group}${chunkIndex > 1 ? '-' & chunkIndex : ''}. Chunk 1 keeps the bare group name so a group that stops splitting does not orphan its first catalog."
         }
       }
     },
@@ -990,13 +1019,6 @@
           "type": "string",
           "minLength": 1
         },
-        "concurrency": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "timeout": {
-          "type": "string"
-        },
         "accept": {
           "type": "array",
           "minItems": 1,
@@ -1010,12 +1032,12 @@
           "items": {
             "type": "string"
           },
-          "description": "Must include PARTIAL where it lists anything. A PARTIAL read as success is the catalogue indexing with resources missing -- 273 markets published as 128 findable ones, with nothing downstream saying so."
+          "description": "Must include PARTIAL where it lists anything. A PARTIAL read as success is the catalog indexing with resources missing -- 273 markets published as 128 findable ones, with nothing downstream saying so."
         },
         "refuseWhen": {
           "type": "string",
-          "pattern": "^collection\\.[A-Za-z][A-Za-z0-9_]*\\s*>\\s*0$",
-          "description": "The one refusal form understood: collection.<counter> > 0, where <counter> is a name this file's own steps record into. A partial collection must never publish as though it were whole."
+          "pattern": "^collection\\.[A-Za-z][A-Za-z0-9_]*\\s*>\\s*[0-9]+$",
+          "description": "The one refusal form understood: collection.<counter> > <N>, where <counter> is a name this file's own steps record into and N the number of failures tolerated (0 refuses on any). A partial collection must never publish as though it were whole."
         },
         "retireOld": {
           "$ref": "#/$defs/retireOld"
@@ -1028,7 +1050,7 @@
       "required": [
         "enabled"
       ],
-      "description": "Deactivates a superseded catalogue, by posting a tombstone. Typically a ONE-TIME migration, so `enabled` points at an input that defaults to false.",
+      "description": "Deactivates a superseded catalog, by posting a tombstone. Typically a ONE-TIME migration, so `enabled` points at an input that defaults to false.",
       "properties": {
         "enabled": {
           "type": "string",

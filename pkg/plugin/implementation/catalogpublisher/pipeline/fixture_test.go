@@ -6,7 +6,7 @@ package pipeline
 // would agree with the interpreter by construction, which is precisely what
 // the interpreter must not be tested against. The fixture exercises the same
 // constructs a capability uses -- an auth exchange, a step with a mapping, a
-// catalogue block -- so the frame is tested through the path it really runs.
+// catalog block -- so the frame is tested through the path it really runs.
 
 import (
 	"embed"
@@ -23,7 +23,7 @@ var fixtureFS embed.FS
 const (
 	fixtureCapability   = "example:Thing"
 	fixturePipelinePath = "testdata/minimal.yaml"
-	fixtureRegistryPath = "pkg/plugin/implementation/Example/cataloguepublish-example/testdata/minimal.yaml"
+	fixtureRegistryPath = "pkg/plugin/implementation/Example/catalogpublish-example/testdata/minimal.yaml"
 )
 
 // fixturePipeline is the Files a run is given.
@@ -37,7 +37,7 @@ func otherPipeline() Files {
 	return Files{
 		FS:           fixtureFS,
 		Path:         "testdata/other.yaml",
-		RegistryPath: "pkg/plugin/implementation/Other/cataloguepublish-other/testdata/other.yaml",
+		RegistryPath: "pkg/plugin/implementation/Other/catalogpublish-other/testdata/other.yaml",
 	}
 }
 
@@ -104,18 +104,18 @@ func assertNeverCalled(t *testing.T, upstream *fixtureUpstream) {
 	}
 }
 
-// decodeFixtureCatalogue reads what testdata/mappings/catalog.yaml renders.
-type fixtureCatalogue struct {
+// decodeFixtureCatalog reads what testdata/mappings/catalog.yaml renders.
+type fixtureCatalog struct {
 	Slug  string  `json:"slug"`
 	Count float64 `json:"count"`
 	IDs   []any   `json:"ids"`
 }
 
-func decodeFixtureCatalogue(t *testing.T, content []byte) fixtureCatalogue {
+func decodeFixtureCatalog(t *testing.T, content []byte) fixtureCatalog {
 	t.Helper()
-	var out fixtureCatalogue
+	var out fixtureCatalog
 	if err := json.Unmarshal(content, &out); err != nil {
-		t.Fatalf("the rendered catalogue did not decode: %v\nbody: %s", err, content)
+		t.Fatalf("the rendered catalog did not decode: %v\nbody: %s", err, content)
 	}
 	return out
 }

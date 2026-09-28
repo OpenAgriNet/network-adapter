@@ -1,5 +1,5 @@
 # A complete, RUNNABLE pipeline for the engine's own tests. It uses the same
-# constructs a real capability does -- an auth exchange, steps, a catalogue
+# constructs a real capability does -- an auth exchange, steps, a catalog
 # block -- so the engine is tested through its actual interpreter rather than
 # through a stub that agrees with it by construction.
 #
@@ -8,10 +8,10 @@
 # schema/. A test asserts it both validates against the contract and survives
 # UnmappedKeys, so a key allowed by one and unknown to the other fails here.
 schemaRef:
-  uses: publish.oan/CataloguePipeline/v1
+  uses: publish.oan/CatalogPipeline/v1
 
 apiVersion: publish.oan/v1
-kind: CataloguePipeline
+kind: CatalogPipeline
 
 metadata:
   name: example
@@ -94,6 +94,6 @@ catalog:
 publish:
   url: ${inputs.publishUrl}/publish
   accept: [ACCEPTED]
-  # PARTIAL means the catalogue indexed with resources MISSING, which reads as
+  # PARTIAL means the catalog indexed with resources MISSING, which reads as
   # success everywhere else. Listing it here is what makes it a failure.
   treatAsFailure: [PARTIAL, REJECTED]

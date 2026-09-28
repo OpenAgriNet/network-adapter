@@ -1,5 +1,5 @@
-# mandi-price-agmarket.yaml -- the pipeline for the MandiPrice / Agmarknet
-# catalogue publisher.
+# agmarknet.yaml -- the pipeline for the MandiPrice / Agmarknet
+# catalog publisher.
 #
 # THIS FILE IS THE PROGRAM. Every block below drives real behaviour; there is
 # no Go that duplicates it and no Go to edit instead.
@@ -26,14 +26,14 @@
 # fires. The contract, and an annotated reference to copy from, are at
 # catalogpublisher/pipeline/schema/.
 schemaRef:
-  uses: publish.oan/CataloguePipeline/v1
+  uses: publish.oan/CatalogPipeline/v1
 
 # Says the same thing as schemaRef, in the Kubernetes style. The engine
 # refuses a file where the two disagree rather than preferring one silently.
-# NOTE it is publish.oan, not publish.agmarket: the contract belongs to the
+# NOTE it is publish.oan, not publish.agmarknet: the contract belongs to the
 # network, not to whichever provider happens to implement it.
 apiVersion: publish.oan/v1
-kind: CataloguePipeline
+kind: CatalogPipeline
 metadata:
   name: mandi-price
   capability: openagrinet:MandiPrice
@@ -131,9 +131,9 @@ inputs:
   # A ONE-TIME migration switch, off by default.
   #
   # `publish.retireOld` deactivates cat-agmarknet-mandi-prices -- the single
-  # monolithic catalogue these per-state ones replaced. An operator turns it on
+  # monolithic catalog these per-state ones replaced. An operator turns it on
   # for one run when migrating, then leaves it off; turning it on every day
-  # would post a tombstone for a catalogue that is already retired.
+  # would post a tombstone for a catalog that is already retired.
   #
   # It is declared rather than left implicit because the publish step REFUSES
   # an enable flag it cannot resolve: reading an unresolvable flag as "off"
@@ -190,11 +190,6 @@ upstream:
       classify: reauth
     - default: transportError
 
-  guards:
-    responseMustBe: array
-    neverQuoteBodyInErrors: true
-    maxResponseBytes: 32MiB
-
 # ---------------------------------------------------------------------------
 # pipeline — ordered steps, each naming what it produces. This IS the call
 # sequence: the interpreter runs these six in order, and when/forEach/onError/
@@ -247,9 +242,9 @@ pipeline:
         fromDate: ${inputs.fromDate}
         toDate: ${inputs.toDate}
     onError:
-      emptyResult: { record: emptyStates, continue: true }
-      transportError: { record: stateErrors, continue: true }
-    onEmptyOutput: { record: emptyStates }
+      emptyResult: { record: emptyGroups, continue: true }
+      transportError: { record: groupErrors, continue: true }
+    onEmptyOutput: { record: emptyGroups }
     out: rows
 
   - id: join
@@ -313,7 +308,7 @@ catalog:
     # build: `$count(commodities) = 0` is FALSE even when commodities is an
     # empty array, so without the wrapper this rule never fires and a market
     # trading nothing is published with zero commodities -- which then fails
-    # the catalogue's own minItems check at the far end.
+    # the catalog's own minItems check at the far end.
     - when: "$number($count(commodities)) = 0"
       reason: "upstream reported no commodities trading in this window"
     - when: "${inputs.withoutGeometry} = 'skip' and $not(hasUsableCoordinate)"
@@ -325,7 +320,7 @@ catalog:
     budget: 256
     # Counts GEOMETRIES, not markets: a market with no point costs nothing,
     # because the cap Discovery enforces is on geometries. This must agree
-    # with what the render actually emits as a Point, or a catalogue silently
+    # with what the render actually emits as a Point, or a catalog silently
     # goes over the cap and indexes PARTIAL.
     cost: "$exists(latitude) and $exists(longitude) ? 1 : 0"
     slug: "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
@@ -353,15 +348,13 @@ catalog:
 # ---------------------------------------------------------------------------
 publish:
   url: ${inputs.publishUrl}/publish
-  concurrency: 1
-  timeout: 180s
 
   accept: [ACCEPTED]
   treatAsFailure:
     - PARTIAL   # indexed with pieces missing — measured cumulative geometry cap
     - REJECTED
 
-  refuseWhen: collection.stateErrors > 0
+  refuseWhen: collection.groupErrors > 0
 
   retireOld:
     enabled: ${inputs.retireOld}

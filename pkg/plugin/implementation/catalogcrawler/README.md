@@ -1,6 +1,6 @@
 # Catalog Crawler
 
-`catalogcrawler` discovers Beckn catalog indexes (via a registry plugin's network-scoped query, or a fixed static list), polls them on a schedule, fetches and self-signature-verifies changed catalog entries and files, and publishes the resulting catalogs through the provider adapter's `/publish`, which signs and forwards them to discovery. The same sink publishes the scheduled publish pipelines' catalogues (see `publishpipelines.go`). Progress and retry state are persisted in Postgres, so a restart resumes rather than re-crawling everything.
+`catalogcrawler` discovers Beckn catalog indexes (via a registry plugin's network-scoped query, or a fixed static list), polls them on a schedule, fetches and self-signature-verifies changed catalog entries and files, and publishes the resulting catalogs through the provider adapter's `/publish`, which signs and forwards them to discovery. The same sink publishes the scheduled publish pipelines' catalogs (see `publishsweep.go`). Progress and retry state are persisted in Postgres, so a restart resumes rather than re-crawling everything.
 
 The core fetch/verify/decode and catalog-resolve/orchestration logic lives in [github.com/beckn/catalog-core](https://github.com/beckn/catalog-core) (`pkg/catalog`, `pkg/catalog/crawler`, `pkg/catalog/crawlmanager`) — this plugin is deployment-specific wiring on top of it: config parsing, the Postgres-backed store, the registry-backed/static discovery sources, the `/publish` sink, and the ticker-driven scheduler.
 
@@ -39,15 +39,15 @@ Supported config keys:
 
 - `dbDsn`: required. Postgres connection string for the crawl queue/cursor store.
 - `discoveryPushUrl`: required. The provider adapter's `/publish` endpoint (e.g. `http://provider-adapter:9200/publish`). Every catalog the crawler sends goes here as `catalog/publish` (updateMode MERGE; `/publish` rejects FULL): crawled catalogs, and the scheduled publish pipelines, which are handed its base (the URL without `/publish`). A batch counts as sent only on HTTP 200 **and** an `ACCEPTED` verdict -- a `PARTIAL` indexed with resources missing -- and an unreadable 200 answer is not a success. A value ending in `/push` (the old discovery address) is refused at startup.
-  - **MERGE consequence:** a resource a source stops listing stays indexed until its catalogue is deactivated; a crawl no longer removes it.
-  - **Split catalogues:** a catalogue over `maxPushBytes` is sent as several MERGE requests under one catalogId. Discovery's handling of a partial resource set per MERGE is not verified; keep catalogues under the cap.
-- `participantId`, `bppUri`: this deployment's own bppId/bppUri, stamped onto published crawled catalogs.
+  - **MERGE consequence:** a resource a source stops listing stays indexed until its catalog is deactivated; a crawl no longer removes it.
+  - **Split catalogs:** a catalog over `maxPushBytes` is sent as several MERGE requests under one catalogId. Discovery's handling of a partial resource set per MERGE is not verified; keep catalogs under the cap.
+- `participantId`, `bppUri`: this deployment's own bppId/bppUri, stamped onto every published catalog -- crawled ones and those the scheduled publish pipelines build (as `context.bppId`/`context.bppUri`).
 - `networks`: comma-separated networkIds to discover indexes for via the configured `RegistryMetadataLookup` plugin (e.g. `dediregistry`'s `QueryByNetwork`). Drives both discovery and scope filtering — a catalog entry naming a network not in this list is skipped.
 - `staticIndexUrls`: comma-separated, optional fixed index URLs, unioned with any registry-discovered ones.
 - `fetchTimeoutSeconds`: optional, default `30`. Whole-attempt HTTP timeout for index/catalog fetches.
 - `maxFetchBytes`: optional, default `10485760` (10 MiB). Cap on a fetched artifact's at-rest size.
 - `maxDecompressedBytes`: optional, default `20971520` (20 MiB). Cap on a decompressed catalog file's size.
-- `maxPushBytes`: optional, default `10485760` (10 MiB). Cap on a single publish request; a larger catalogue is split.
+- `maxPushBytes`: optional, default `10485760` (10 MiB). Cap on a single publish request; a larger catalog is split.
 - `indexIntervalSeconds`: optional, default `300` (5 min). How often index sources are re-discovered and polled.
 - `catalogIntervalSeconds`: optional, default `30`. How often the sync queue is drained.
 - `maxAttempts`: optional, default `0` (unlimited). Transient-failure retries before a queue item is parked; a fresh publish of the same catalog re-arms it regardless.
@@ -55,6 +55,30 @@ Supported config keys:
 - `parkSweepIntervalSeconds`: optional, default `900` (15 min). How often the revive-or-abandon sweep runs — see "Parked and abandoned catalogs" below. Independent of `indexIntervalSeconds`/`catalogIntervalSeconds`.
 - `parkOlderThanSeconds`: optional, default `0`. How long a catalog must have been sitting parked before a sweep acts on it. `0` means no extra grace period — each sweep acts on anything currently parked.
 - `maxParkCount`: optional, default `0`, meaning derived from `parkSweepIntervalSeconds` and a 12-hour total retry budget (e.g. the default 15-minute sweep interval yields 48). How many times a parked catalog is revived before being abandoned instead.
+- `publishPipelines`: optional, default `false`. `"true"` sweeps the registry each tick for bindings serving a `publish` action and runs the pipeline each one names (an embedded `*/catalogpublish-*/` YAML under `pkg/plugin/implementation`). Requires a registry plugin that can list and resolve provider bindings (e.g. `sunbirdRegistry`).
+- `publishEnabled`: optional, default `false`. `"true"` lets a due pipeline run post to `discoveryPushUrl`. Off, runs still build their catalogs (observable and reversible), but nothing reaches the network.
+- `publishTickIntervalSeconds`: optional, default `300` (5 min). How often to CHECK whether a pipeline is due; each pipeline's own `schedule.cron` decides when it actually runs.
+- `publishCatalogOutputDir`: optional, default empty (a temporary directory each run removes). Keeps built catalogs for inspection, one subdirectory per pipeline.
+- `publishBindingKeys`: retired. The registry now decides which capabilities publish; a config still setting it is refused at startup.
+
+### Renaming or moving a publish pipeline
+
+A pipeline's path is stored in two places: in this repo (the embedded
+`*/catalogpublish-*/` folder), and in the Sunbird registry record whose
+`publish` action names it in `mappings`. CI can only check the first.
+
+1. Move the folder with `git mv`, and keep it matching `catalogpublish-*`.
+   `TestEveryPipelineFolderOnDiskIsEmbedded` fails otherwise.
+2. Add the old path to `deprecatedPaths` in `pkg/plugin/implementation/embedded.go`.
+   A record that still names the old path then keeps publishing, with a
+   deprecation WARN.
+3. **On deploy**, update the registry record's `publish` `mappings` to the new
+   path. Do this after the new binary is running, not before.
+4. In the next release, delete the `deprecatedPaths` entry.
+
+Current alias (remove after the registry record is updated):
+`pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml`
+→ `pkg/plugin/implementation/MandiPrice/catalogpublish-agmarknet/agmarknet.yaml`.
 
 ## Signature verification
 

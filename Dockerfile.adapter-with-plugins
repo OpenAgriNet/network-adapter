@@ -6,7 +6,6 @@ WORKDIR /workspace/app
 COPY cmd/adapter/ ./cmd/adapter/
 COPY core/ ./core/
 COPY pkg/ ./pkg/
-COPY tools/ ./tools/
 COPY install/build-plugins.sh ./install/build-plugins.sh
 COPY install/scripts/version-vars.sh ./install/scripts/version-vars.sh
 COPY go.mod .

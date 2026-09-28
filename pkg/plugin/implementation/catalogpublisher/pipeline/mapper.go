@@ -7,8 +7,10 @@ package pipeline
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net"
 	"net/http"
 
@@ -38,7 +40,14 @@ func ServeMappings(files embed.FS, dir string) (string, func(), error) {
 	}
 
 	server := &http.Server{Handler: http.FileServer(http.FS(sub))}
-	go func() { _ = server.Serve(listener) }()
+	go func() {
+		// ErrServerClosed is the normal stop. Anything else means the
+		// mappings stopped being served mid-run, and every later transform
+		// will fail far from here -- so the cause is said where it is known.
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("publish pipeline: mapping server stopped", "error", err)
+		}
+	}()
 
 	stop := func() { _ = server.Close() }
 	return "http://" + listener.Addr().String(), stop, nil

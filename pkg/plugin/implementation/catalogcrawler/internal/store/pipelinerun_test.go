@@ -17,6 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -44,6 +45,19 @@ func storeOrSkip(t *testing.T) (*Store, *sql.DB) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return New(db), db
+}
+
+// freshPipeline is pipelineName with any row an earlier run of the same test
+// left behind removed first. The claim tests depend on starting from
+// never-run; the database is shared and never truncated.
+func freshPipeline(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	key := pipelineName(t)
+	if _, err := db.ExecContext(context.Background(),
+		`DELETE FROM crawler_pipeline_run WHERE pipeline=$1`, key); err != nil {
+		t.Fatalf("clearing %s: %v", key, err)
+	}
+	return key
 }
 
 // pipelineName keys a test's rows on its own name, so tests sharing the
@@ -150,5 +164,127 @@ func TestStore_PipelineRun_NameIsParameterised(t *testing.T) {
 	}
 	if !got.Equal(want) {
 		t.Fatalf("LastPipelineRun = %v, want %v", got, want)
+	}
+}
+
+// Two replicas racing for one firing: the conditional upsert lets exactly one
+// through. The loser gets false and must not run.
+func TestStore_ClaimPipelineRun_OneWinnerPerFiring(t *testing.T) {
+	s, db := storeOrSkip(t)
+	ctx := context.Background()
+	key := freshPipeline(t, db)
+	firing := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	now := firing.Add(5 * time.Minute)
+
+	first, err := s.ClaimPipelineRun(ctx, key, now, firing)
+	if err != nil || !first {
+		t.Fatalf("first claim = %v, %v; want true", first, err)
+	}
+	second, err := s.ClaimPipelineRun(ctx, key, now.Add(time.Second), firing)
+	if err != nil || second {
+		t.Fatalf("second claim = %v, %v; want false, the firing is taken", second, err)
+	}
+	if got, _ := s.LastPipelineRun(ctx, key); !got.Equal(now) {
+		t.Fatalf("last run = %v, want the winning claim's %v", got, now)
+	}
+}
+
+// A firing an earlier run already served cannot be claimed; the next firing can.
+func TestStore_ClaimPipelineRun_ServedFiringIsNotClaimedAgain(t *testing.T) {
+	s, db := storeOrSkip(t)
+	ctx := context.Background()
+	key := freshPipeline(t, db)
+	firing := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+
+	if err := s.RecordPipelineRun(ctx, key, firing.Add(time.Minute)); err != nil {
+		t.Fatalf("RecordPipelineRun: %v", err)
+	}
+	if ok, err := s.ClaimPipelineRun(ctx, key, firing.Add(time.Hour), firing); err != nil || ok {
+		t.Fatalf("claim of a served firing = %v, %v; want false", ok, err)
+	}
+	next := firing.Add(24 * time.Hour)
+	if ok, err := s.ClaimPipelineRun(ctx, key, next.Add(time.Minute), next); err != nil || !ok {
+		t.Fatalf("claim of the next firing = %v, %v; want true", ok, err)
+	}
+}
+
+// A failed run gives its claim back: last_run_at returns to what it was, so
+// the next tick -- on any replica -- retries the same firing.
+func TestStore_ReleasePipelineRun_RestoresThePreviousRun(t *testing.T) {
+	s, db := storeOrSkip(t)
+	ctx := context.Background()
+	key := freshPipeline(t, db)
+	previous := time.Date(2026, 9, 20, 0, 1, 0, 0, time.UTC)
+	firing := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+
+	if err := s.RecordPipelineRun(ctx, key, previous); err != nil {
+		t.Fatalf("RecordPipelineRun: %v", err)
+	}
+	if ok, _ := s.ClaimPipelineRun(ctx, key, firing.Add(time.Minute), firing); !ok {
+		t.Fatal("claim failed")
+	}
+	if err := s.ReleasePipelineRun(ctx, key, previous); err != nil {
+		t.Fatalf("ReleasePipelineRun: %v", err)
+	}
+	if got, _ := s.LastPipelineRun(ctx, key); !got.Equal(previous) {
+		t.Fatalf("last run = %v, want the restored %v", got, previous)
+	}
+	if ok, _ := s.ClaimPipelineRun(ctx, key, firing.Add(2*time.Minute), firing); !ok {
+		t.Fatal("a released firing could not be claimed again")
+	}
+}
+
+// Releasing a claim on a pipeline that had never run removes the row, so it
+// reads as never-run again rather than as having run at the claim instant.
+func TestStore_ReleasePipelineRun_OfAFirstEverClaimForgetsIt(t *testing.T) {
+	s, db := storeOrSkip(t)
+	ctx := context.Background()
+	key := freshPipeline(t, db)
+	firing := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+
+	if ok, _ := s.ClaimPipelineRun(ctx, key, firing.Add(time.Minute), firing); !ok {
+		t.Fatal("claim failed")
+	}
+	if err := s.ReleasePipelineRun(ctx, key, time.Time{}); err != nil {
+		t.Fatalf("ReleasePipelineRun: %v", err)
+	}
+	if got, _ := s.LastPipelineRun(ctx, key); !got.IsZero() {
+		t.Fatalf("last run = %v, want never-run", got)
+	}
+}
+
+// Ten replicas claiming the same firing at the same moment: exactly one wins.
+// This is the double-publish the claim exists to stop, exercised against the
+// real row lock rather than a sequence of calls.
+func TestStore_ClaimPipelineRun_ConcurrentClaimantsOneWins(t *testing.T) {
+	s, db := storeOrSkip(t)
+	ctx := context.Background()
+	key := freshPipeline(t, db)
+	firing := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+
+	const replicas = 10
+	var wg sync.WaitGroup
+	wins := make(chan bool, replicas)
+	for i := 0; i < replicas; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ok, err := s.ClaimPipelineRun(ctx, key, firing.Add(time.Duration(i+1)*time.Second), firing)
+			if err != nil {
+				t.Errorf("replica %d: %v", i, err)
+			}
+			wins <- ok
+		}(i)
+	}
+	wg.Wait()
+	close(wins)
+	won := 0
+	for ok := range wins {
+		if ok {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Fatalf("%d replicas claimed the firing, want exactly 1", won)
 	}
 }

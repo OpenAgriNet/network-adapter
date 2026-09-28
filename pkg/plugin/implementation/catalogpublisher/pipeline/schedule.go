@@ -19,7 +19,7 @@ import (
 )
 
 // publishAction is the action name the registry uses to say "this capability
-// publishes a catalogue, and here is the pipeline that does it".
+// publishes a catalog, and here is the pipeline that does it".
 const publishAction = "publish"
 
 // pipelinePathFor is the registry gate: it returns the pipeline definition the
@@ -70,7 +70,7 @@ func servedActions(record *model.ProviderRecord) string {
 // It refuses any path that is not the collector's own. The registry is data an
 // operator edits; a path pointing at some other capability's pipeline must
 // read as "that is not mine to run" rather than quietly loading this one and
-// publishing one capability's catalogues under another's name. A binary can
+// publishing one capability's catalogs under another's name. A binary can
 // only run what it embeds.
 //
 // Both spellings are accepted: the repo-relative path an operator pastes into
@@ -81,7 +81,8 @@ func loadRegistryPipeline(files Files, registryPath string) (Spec, error) {
 	if cleaned == "." || cleaned == "" {
 		return Spec{}, fmt.Errorf("the registry names no pipeline path")
 	}
-	if cleaned != files.Path && cleaned != path.Clean(files.RegistryPath) {
+	if cleaned != files.Path && cleaned != path.Clean(files.RegistryPath) &&
+		(files.AliasOf == "" || cleaned != path.Clean(files.AliasOf)) {
 		return Spec{}, fmt.Errorf("the registry names pipeline %q, which is not this pipeline's own %s; "+
 			"this binary can only run the pipelines it embeds", cleaned, files.RegistryPath)
 	}
@@ -113,7 +114,7 @@ func decideTick(files Files, record *model.ProviderRecord, now, lastRun time.Tim
 	if err != nil {
 		return TickDecision{}, err
 	}
-	due, reason, err := dueNow(spec.Schedule, now, lastRun)
+	due, _, reason, err := dueNow(spec.Schedule, now, lastRun)
 	if err != nil {
 		return TickDecision{}, err
 	}
@@ -136,30 +137,30 @@ func decideTick(files Files, record *model.ProviderRecord, now, lastRun time.Tim
 // It must outlive the process -- a restart at 00:05 must not re-fire a run
 // that already happened at 00:01 -- which is what the RunLog in run.go is
 // for. A zero lastRun means "never ran".
-func dueNow(schedule Schedule, now, lastRun time.Time) (bool, string, error) {
+func dueNow(schedule Schedule, now, lastRun time.Time) (bool, time.Time, string, error) {
 	location, err := time.LoadLocation(schedule.Timezone)
 	if err != nil {
-		return false, "", fmt.Errorf("schedule.timezone %q: %w", schedule.Timezone, err)
+		return false, time.Time{}, "", fmt.Errorf("schedule.timezone %q: %w", schedule.Timezone, err)
 	}
 	expr, err := parseCron(schedule.Cron)
 	if err != nil {
-		return false, "", fmt.Errorf("schedule.cron: %w", err)
+		return false, time.Time{}, "", fmt.Errorf("schedule.cron: %w", err)
 	}
 
 	firing, err := expr.prevFiring(now, location)
 	if err != nil {
-		return false, "", fmt.Errorf("schedule.cron: %w", err)
+		return false, time.Time{}, "", fmt.Errorf("schedule.cron: %w", err)
 	}
 	stamp := firing.Format("2006-01-02 15:04 MST")
 
 	if lastRun.IsZero() {
-		return true, fmt.Sprintf("due: %q last fired %s and this pipeline has never run", schedule.Cron, stamp), nil
+		return true, firing, fmt.Sprintf("due: %q last fired %s and this pipeline has never run", schedule.Cron, stamp), nil
 	}
 	if lastRun.Before(firing) {
-		return true, fmt.Sprintf("due: %q fired %s, after the last run at %s",
+		return true, firing, fmt.Sprintf("due: %q fired %s, after the last run at %s",
 			schedule.Cron, stamp, lastRun.In(location).Format("2006-01-02 15:04 MST")), nil
 	}
-	return false, fmt.Sprintf("not due: already ran at %s, at or after the %s firing",
+	return false, firing, fmt.Sprintf("not due: already ran at %s, at or after the %s firing",
 		lastRun.In(location).Format("2006-01-02 15:04 MST"), stamp), nil
 }
 

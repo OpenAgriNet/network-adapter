@@ -80,7 +80,7 @@ func TestRunStepsExecutesInOrderAndNamesOutputs(t *testing.T) {
 		t.Errorf("got %d records after dedupe, want 2", len(records))
 	}
 	// The intermediate output must still be reachable by name -- later steps
-	// and the catalogue block address it that way.
+	// and the catalog block address it that way.
 	if _, ok := runner.rc.outputs["rows"]; !ok {
 		t.Error("the first step's output was not recorded under its `out:` name")
 	}
@@ -172,8 +172,8 @@ func TestForEachClassifiesEmptyResultSeparatelyFromTransportError(t *testing.T) 
 		With: With{Path: "/rows", Mapping: "mappings/rows.yaml",
 			Local: map[string]string{"stateCode": "${state.code}"}},
 		OnError: map[string]StepOutcome{
-			"emptyResult":    {Record: "emptyStates", Continue: true},
-			"transportError": {Record: "stateErrors", Continue: true},
+			"emptyResult":    {Record: "emptyGroups", Continue: true},
+			"transportError": {Record: "groupErrors", Continue: true},
 		},
 	}}}
 
@@ -195,12 +195,12 @@ func TestForEachClassifiesEmptyResultSeparatelyFromTransportError(t *testing.T) 
 	if len(records) != 1 {
 		t.Errorf("got %d records, want 1 (only the healthy state had rows)", len(records))
 	}
-	if runner.counters["emptyStates"] != 1 {
-		t.Errorf("emptyStates = %d, want 1", runner.counters["emptyStates"])
+	if runner.counters["emptyGroups"] != 1 {
+		t.Errorf("emptyGroups = %d, want 1", runner.counters["emptyGroups"])
 	}
-	if runner.counters["stateErrors"] != 1 {
-		t.Errorf("stateErrors = %d, want 1 -- a 500 is an outage, not a quiet state",
-			runner.counters["stateErrors"])
+	if runner.counters["groupErrors"] != 1 {
+		t.Errorf("groupErrors = %d, want 1 -- a 500 is an outage, not a quiet state",
+			runner.counters["groupErrors"])
 	}
 }
 
@@ -551,7 +551,7 @@ func TestConstEmitsTheRecordsTheFileDeclares(t *testing.T) {
 }
 
 // A const step with nothing in it is refused: it would walk cleanly into an
-// empty catalogue build and read as "this provider has nothing".
+// empty catalog build and read as "this provider has nothing".
 func TestConstWithNoRecordsIsRefused(t *testing.T) {
 	spec := Spec{Pipeline: []Step{{ID: "resources", Uses: usesConst, Out: "collection"}}}
 	runner, _ := testRunner(t, spec, `[]`)
@@ -633,7 +633,11 @@ func TestHTTPPostSendsTheMappedBodyAndReadsTheAnswer(t *testing.T) {
 	for _, place := range []string{"header", "query"} {
 		t.Run(place, func(t *testing.T) {
 			runner, seen := postRunner(t, spec, http.StatusOK, `[{"id":"r1"},{"id":"r2"}]`)
-			runner.client.tokenPlace = place
+			credential := Credential{Value: "tok-fake", CarriedAs: "query", Name: "token"}
+			if place == "header" {
+				credential = Credential{Value: "tok-fake", CarriedAs: "header", Name: "Authorization", Prefix: "Bearer "}
+			}
+			runner.client.WithCredential(credential)
 
 			records, err := runner.runSteps(context.Background())
 			if err != nil {
@@ -795,7 +799,7 @@ func TestTransformNeedsAMapping(t *testing.T) {
 	}
 }
 
-// renderScalar is the text a ${...} becomes -- a group key, a catalogue slug,
+// renderScalar is the text a ${...} becomes -- a group key, a catalog slug,
 // a query parameter. Whole numbers from JSON (float64) must render without a
 // ".0", or a marketId reaches an upstream as "101.0" and a slug as "MH.0".
 func TestRenderScalarRendersEachJSONType(t *testing.T) {
@@ -841,7 +845,7 @@ func TestAStepWithoutOutStillFeedsTheNext(t *testing.T) {
 	}
 	if len(records) != 2 {
 		t.Errorf("got %d records, want 2 -- the filter's work was discarded and the "+
-			"excluded row reached the catalogue", len(records))
+			"excluded row reached the catalog", len(records))
 	}
 	for _, record := range records {
 		if record["keep"] != true {
@@ -985,5 +989,132 @@ func TestASkippedStepDoesNotClaimThePreviousStepsOutput(t *testing.T) {
 	}
 	if count, recorded := runner.counters["step:enrich"]; recorded {
 		t.Errorf("a skipped step recorded %d records as its own", count)
+	}
+}
+
+// countingAuth hands out a fresh token on every Prepare, so a test can tell
+// the dead token from its replacement.
+type countingAuth struct{ calls int }
+
+func (a *countingAuth) RequiredInputs() []string { return nil }
+
+func (a *countingAuth) Prepare(context.Context, *Client, *runContext) (Credential, error) {
+	a.calls++
+	return Credential{Value: fmt.Sprintf("tok-%d", a.calls), CarriedAs: "query", Name: "token"}, nil
+}
+
+// reauthRunner is a runner over an upstream that rejects every token accept
+// reports true for. The step loops over n items and carries ${auth.token}.
+func reauthRunner(t *testing.T, accept func(token string) bool, n int, onError map[string]StepOutcome,
+	log *slog.Logger) (*stepRunner, *countingAuth) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !accept(r.URL.Query().Get("token")) {
+			http.Error(w, `{"error":"token expired"}`, http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"marketId":1}]`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	cache, _ := newExprCache()
+	client := NewClient(upstream.URL).WithErrorRules([]ErrorRule{
+		{When: &ErrorMatch{Status: []any{401, 403}}, Classify: classifyReauth},
+		{Default: classifyTransport},
+	})
+	client.http = upstream.Client()
+
+	spec := Spec{
+		Upstream: Upstream{Auth: Auth{Token: AuthTokenSpec{ReexchangeOn: []int{401, 403}}}},
+		Pipeline: []Step{{
+			ID: "rows", Uses: usesHTTPGet, Out: "rows",
+			ForEach: "${states}", As: "state", Concurrency: 1,
+			With: With{Path: "/rows", Mapping: "mappings/rows.yaml",
+				Local: map[string]string{"token": "${auth.token}", "stateCode": "${state.code}"}},
+			OnError: onError,
+		}},
+	}
+	auth := &countingAuth{}
+	runner := &stepRunner{
+		spec: spec, cache: cache, client: client, mapper: passthroughMapper{},
+		log: log, counters: map[string]int{}, auth: auth,
+		rc: newRunContext(map[string]string{}, "tok-0"),
+	}
+	states := make([]any, 0, n)
+	for i := 0; i < n; i++ {
+		states = append(states, map[string]any{"code": fmt.Sprintf("S%d", i)})
+	}
+	runner.rc.outputs["states"] = states
+	return runner, auth
+}
+
+// A dead token is replaced once and the call retried, and every later item
+// carries the replacement rather than dying on the old one.
+func TestHTTPStepReexchangesADeadTokenAndRetries(t *testing.T) {
+	runner, auth := reauthRunner(t, func(token string) bool { return token != "tok-0" }, 3, nil,
+		slog.New(slog.DiscardHandler))
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	if len(records) != 3 {
+		t.Errorf("got %d records, want 3", len(records))
+	}
+	if auth.calls != 1 || runner.counters["reauth"] != 1 {
+		t.Errorf("Prepare calls = %d, reauth counter = %d; want 1 and 1", auth.calls, runner.counters["reauth"])
+	}
+}
+
+// Review Focus 3: an upstream that rejects every token is re-exchanged at most
+// maxReauthsPerRun times, then each failure falls through to onError -- and
+// no token ever reaches the log.
+func TestHTTPStepStopsReexchangingAfterTheCap(t *testing.T) {
+	var buf strings.Builder
+	runner, auth := reauthRunner(t, func(string) bool { return false }, 5,
+		map[string]StepOutcome{"reauth": {Record: "authErrors", Continue: true}},
+		slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	if _, err := runner.runSteps(context.Background()); err != nil {
+		t.Fatalf("runSteps: %v; onError.reauth says continue", err)
+	}
+	if auth.calls != maxReauthsPerRun || runner.counters["reauth"] != maxReauthsPerRun {
+		t.Errorf("Prepare calls = %d, reauth counter = %d; want %d each",
+			auth.calls, runner.counters["reauth"], maxReauthsPerRun)
+	}
+	if runner.counters["authErrors"] != 5 {
+		t.Errorf("authErrors = %d, want 5 (every item fell through to onError)", runner.counters["authErrors"])
+	}
+	if strings.Contains(buf.String(), "tok-") {
+		t.Errorf("a token reached the log:\n%s", buf.String())
+	}
+}
+
+// Each upstream call inside a forEach names the item it was made for, so a
+// run stuck on one state says which.
+func TestForEachCallsNameTheirItemInTheLog(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	runner, _ := reauthRunner(t, func(string) bool { return true }, 2, nil, log)
+	runner.client.WithLogger(log)
+
+	if _, err := runner.runSteps(context.Background()); err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	for _, want := range []string{"item=S0", "item=S1"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+// A step whose output is not a collection says what it was, rather than
+// reporting zero records -- which reads as "the upstream had nothing".
+func TestProducedLogsTheRawTypeOfANonCollection(t *testing.T) {
+	if got := recordsForLog("text"); got.count != 0 || got.rawType != "string" {
+		t.Fatalf("recordsForLog(string) = %+v, want count 0 and rawType string", got)
+	}
+	if got := recordsForLog([]any{map[string]any{"a": 1}}); got.count != 1 || got.rawType != "" {
+		t.Fatalf("recordsForLog(records) = %+v, want count 1 and no rawType", got)
 	}
 }

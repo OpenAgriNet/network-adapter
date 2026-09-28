@@ -11,6 +11,7 @@ package pipeline
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -177,5 +178,22 @@ func TestStatusMatchesEverySpellingOfAStatus(t *testing.T) {
 		if got := statusMatches(tc.stated, 401); got != tc.want {
 			t.Errorf("%s: statusMatches(%v, 401) = %v, want %v", name, tc.stated, got, tc.want)
 		}
+	}
+}
+
+// A reauth classification is something a step can act on: it carries the
+// sentinel for errors.Is and the status for the reexchangeOn check, and never
+// the query the token rides in.
+func TestReauthClassificationWrapsTheSentinel(t *testing.T) {
+	err := classifiedError(classifyReauth, 401, "GET /v1/x?token=secret")
+	if !errors.Is(err, ErrReauthRequired) {
+		t.Fatalf("errors.Is(%v, ErrReauthRequired) = false", err)
+	}
+	var reauth *ReauthError
+	if !errors.As(err, &reauth) || reauth.Status != 401 {
+		t.Fatalf("errors.As ReauthError = %+v", reauth)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("the error carries the query: %q", err)
 	}
 }

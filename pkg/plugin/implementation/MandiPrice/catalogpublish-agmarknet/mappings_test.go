@@ -1,11 +1,11 @@
-package agmarket
+package agmarknet
 
 // mappings_test.go gives this package's tests the pipeline they exercise, and
 // proves the embed actually carries what a deployment needs: the pipeline
 // definition and the four mapping files its steps and catalog block reference.
 //
 // There is no Go in this package any more. The pipeline is embedded centrally,
-// by folder convention (pkg/plugin/implementation/publishpipelines.go), and
+// by folder convention (pkg/plugin/implementation/embedded.go), and
 // the crawler finds it through the registry's publish action. The names below
 // are what these tests used to import from pipeline_files.go, resolved the
 // same way the crawler resolves them -- so the tests run the file production
@@ -22,7 +22,7 @@ import (
 // RegistryPipelinePath is the repo-relative path the registry's publish action
 // names for this pipeline.
 const RegistryPipelinePath = "pkg/plugin/implementation/MandiPrice/" +
-	"cataloguepublish-agmarket/mandi-price-agmarket.yaml"
+	"catalogpublish-agmarknet/agmarknet.yaml"
 
 // Capability is the code the registry knows this pipeline by, as declared in
 // the YAML's metadata.capability (spec_conformance_test checks they agree).

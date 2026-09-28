@@ -4,7 +4,7 @@ package pipeline
 // of: everything after the schedule says "go".
 //
 // It runs the fixture pipeline in testdata/ against a fake upstream, through
-// the real interpreter and the real catalogue builder. Nothing here is stubbed
+// the real interpreter and the real catalog builder. Nothing here is stubbed
 // except the upstream itself, so what is under test is the path production
 // takes.
 
@@ -12,6 +12,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func firedAt(t *testing.T) time.Time {
 // The whole path: token, step, mapping, grouping, chunking, render, write.
 //
 // The fixture has four things in two groups and a chunk budget of 2, so group
-// AA (three things) must split into two catalogues and BB must not.
+// AA (three things) must split into two catalogs and BB must not.
 func TestRunExecutesTheFileAndWritesWhatItDescribes(t *testing.T) {
 	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	outDir := t.TempDir()
@@ -49,38 +50,38 @@ func TestRunExecutesTheFileAndWritesWhatItDescribes(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// AA splits at the budget, BB does not: three catalogues in all.
-	if len(report.Catalogues) != 3 {
-		t.Fatalf("got %d catalogues, want 3 (AA, AA-2, BB): %+v", len(report.Catalogues), report.Catalogues)
+	// AA splits at the budget, BB does not: three catalogs in all.
+	if len(report.Catalogs) != 3 {
+		t.Fatalf("got %d catalogs, want 3 (AA, AA-2, BB): %+v", len(report.Catalogs), report.Catalogs)
 	}
 
-	bySlug := map[string]Catalogue{}
-	for _, catalogue := range report.Catalogues {
-		bySlug[catalogue.Slug] = catalogue
+	bySlug := map[string]BuiltCatalog{}
+	for _, catalog := range report.Catalogs {
+		bySlug[catalog.Slug] = catalog
 	}
 	for _, slug := range []string{"AA", "AA-2", "BB"} {
-		catalogue, ok := bySlug[slug]
+		catalog, ok := bySlug[slug]
 		if !ok {
-			t.Fatalf("no catalogue for %s; got %v", slug, report.Catalogues)
+			t.Fatalf("no catalog for %s; got %v", slug, report.Catalogs)
 		}
-		if want := "catalog:example:" + slug; catalogue.CatalogID != want {
+		if want := "catalog:example:" + slug; catalog.CatalogID != want {
 			t.Errorf("%s catalogId = %q, want %q -- the identity template did not resolve",
-				slug, catalogue.CatalogID, want)
+				slug, catalog.CatalogID, want)
 		}
 		// The file's `output.filenamePrefix` is not used for the filename --
 		// metadata.name is -- so assert what actually reaches disk.
 		path := filepath.Join(report.OutDir, "example-"+slug+".json")
 		if _, err := os.Stat(path); err != nil {
-			t.Errorf("catalogue for %s was not written: %v", slug, err)
+			t.Errorf("catalog for %s was not written: %v", slug, err)
 		}
 	}
 
 	// The chunk boundary, from the rendered document rather than the report:
 	// the first chunk carries the budget and the second the remainder.
-	if got := decodeFixtureCatalogue(t, bySlug["AA"].Content); got.Count != 2 {
+	if got := decodeFixtureCatalog(t, bySlug["AA"].Content); got.Count != 2 {
 		t.Errorf("AA carries %v records, want 2 (the chunk budget)", got.Count)
 	}
-	if got := decodeFixtureCatalogue(t, bySlug["AA-2"].Content); got.Count != 1 {
+	if got := decodeFixtureCatalog(t, bySlug["AA-2"].Content); got.Count != 1 {
 		t.Errorf("AA-2 carries %v records, want 1 (the remainder)", got.Count)
 	}
 
@@ -94,7 +95,7 @@ func TestRunExecutesTheFileAndWritesWhatItDescribes(t *testing.T) {
 
 // The corruption this design exists to prevent: two DIFFERENT pipelines
 // pointed at one configured directory must not delete or publish each other's
-// catalogues.
+// catalogs.
 //
 // The stale sweep runs before every collection and deletes by filename prefix,
 // and the publish step globs by the same prefix -- so if both pipelines wrote
@@ -127,16 +128,16 @@ func TestRunKeepsEachPipelineInItsOwnDirectory(t *testing.T) {
 	second := run(otherPipeline())
 
 	if first.OutDir == second.OutDir {
-		t.Fatalf("both pipelines wrote to %s; each would sweep away the other's catalogues", first.OutDir)
+		t.Fatalf("both pipelines wrote to %s; each would sweep away the other's catalogs", first.OutDir)
 	}
 	if filepath.Dir(first.OutDir) != shared || filepath.Dir(second.OutDir) != shared {
 		t.Errorf("directories %q and %q are not both beneath %q", first.OutDir, second.OutDir, shared)
 	}
 
-	// The first pipeline's catalogues must have survived the second's run --
+	// The first pipeline's catalogs must have survived the second's run --
 	// this is what fails if the sweep is pointed at a shared directory.
 	if _, err := os.Stat(filepath.Join(first.OutDir, "example-AA.json")); err != nil {
-		t.Errorf("the first pipeline's catalogue did not survive the second's run: %v", err)
+		t.Errorf("the first pipeline's catalog did not survive the second's run: %v", err)
 	}
 }
 
@@ -229,12 +230,196 @@ func TestRunPublishesToTheCallersPublishURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if pub.calls() != len(report.Catalogues) || pub.calls() == 0 {
-		t.Errorf("the publisher got %d bodies, want one per catalogue (%d)", pub.calls(), len(report.Catalogues))
+	if pub.calls() != len(report.Catalogs) || pub.calls() == 0 {
+		t.Errorf("the publisher got %d bodies, want one per catalog (%d)", pub.calls(), len(report.Catalogs))
 	}
 	for _, url := range pub.urls {
 		if url != "http://caller.test" {
 			t.Errorf("published to %q, want the caller's address", url)
 		}
+	}
+}
+
+// The run's own clock, not the wall clock, decides what "today" is. Without
+// this a golden file pins whatever day it was generated on and fails the next
+// morning -- which is exactly what happened.
+func TestExecuteResolvesDatesFromTheRunClock(t *testing.T) {
+	spec := Spec{
+		Schedule: Schedule{Cron: "0 0 * * *", Timezone: "Asia/Kolkata"},
+		Inputs: map[string]Input{
+			"fromDate": {Type: "date", Format: "dd-MM-yyyy", Default: "today"},
+		},
+	}
+	ist, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 9, 21, 6, 0, 0, 0, ist)
+
+	resolved, err := resolveRunInputs(spec, func(string) (string, bool) { return "", false }, RunOptions{}, now)
+	if err != nil {
+		t.Fatalf("resolveRunInputs: %v", err)
+	}
+	if got := resolved["fromDate"]; got != "21-09-2026" {
+		t.Fatalf("fromDate = %q, want 21-09-2026 (the run's clock, not the wall clock)", got)
+	}
+}
+
+// The caller's publish address wins over the pipeline's own input.
+func TestResolveRunInputsAppliesThePublishURL(t *testing.T) {
+	spec := Spec{
+		Schedule: Schedule{Timezone: "Asia/Kolkata"},
+		Inputs:   map[string]Input{"publishUrl": {Env: "X_PUBLISH_URL", Default: "http://file.invalid"}},
+	}
+	resolved, err := resolveRunInputs(spec, func(string) (string, bool) { return "", false },
+		RunOptions{PublishURL: " http://crawler.invalid "}, time.Now())
+	if err != nil {
+		t.Fatalf("resolveRunInputs: %v", err)
+	}
+	if got := resolved["publishUrl"]; got != "http://crawler.invalid" {
+		t.Fatalf("publishUrl = %q, want the caller's", got)
+	}
+}
+
+// claimingRunLog is a run log keyed by pipeline, with the claim a real store
+// makes. Rows are per key, so a test can prove which key a run used.
+type claimingRunLog struct {
+	last     map[string]time.Time
+	refuse   bool // another replica already holds the firing
+	claimed  []string
+	firings  []time.Time
+	released map[string]time.Time
+	recorded map[string]time.Time
+}
+
+func newClaimingRunLog() *claimingRunLog {
+	return &claimingRunLog{last: map[string]time.Time{}, released: map[string]time.Time{},
+		recorded: map[string]time.Time{}}
+}
+
+func (f *claimingRunLog) LastPipelineRun(_ context.Context, key string) (time.Time, error) {
+	return f.last[key], nil
+}
+
+func (f *claimingRunLog) RecordPipelineRun(_ context.Context, key string, at time.Time) error {
+	f.recorded[key] = at
+	f.last[key] = at
+	return nil
+}
+
+func (f *claimingRunLog) ClaimPipelineRun(_ context.Context, key string, now, firing time.Time) (bool, error) {
+	f.firings = append(f.firings, firing)
+	if f.refuse {
+		return false, nil
+	}
+	f.claimed = append(f.claimed, key)
+	f.last[key] = now
+	return true, nil
+}
+
+func (f *claimingRunLog) ReleasePipelineRun(_ context.Context, key string, previous time.Time) error {
+	f.released[key] = previous
+	f.last[key] = previous
+	return nil
+}
+
+// The run log is keyed on the PIPELINE, not the capability: two sources for
+// one capability must not share a row and starve each other.
+func TestRunKeysTheRunLogOnThePipeline(t *testing.T) {
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
+	runLog := newClaimingRunLog()
+
+	if _, err := Run(context.Background(), RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: runLog,
+		Lookup: fixtureEnv(upstream.URL), Now: firedAt(t), OutDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	key := fixturePipeline().Path
+	if len(runLog.claimed) != 1 || runLog.claimed[0] != key {
+		t.Errorf("claimed %v, want exactly [%s]", runLog.claimed, key)
+	}
+	if _, ok := runLog.recorded[key]; !ok {
+		t.Errorf("recorded %v, want a row under the pipeline %s", runLog.recorded, key)
+	}
+	// The claim's window is the firing the schedule says is due -- midnight
+	// in the pipeline's own zone -- not the run's wall clock.
+	ist, _ := time.LoadLocation("Asia/Kolkata")
+	if want := time.Date(2026, 9, 21, 0, 0, 0, 0, ist); len(runLog.firings) != 1 || !runLog.firings[0].Equal(want) {
+		t.Errorf("claimed with firing %v, want %v", runLog.firings, want)
+	}
+	if _, ok := runLog.recorded[fixtureCapability]; ok {
+		t.Errorf("a row was written under the capability %s", fixtureCapability)
+	}
+}
+
+// Another replica already claimed this firing: this one stands down before
+// fetching anything, and says why.
+func TestRunStandsDownWhenAnotherReplicaClaimedTheFiring(t *testing.T) {
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
+	runLog := newClaimingRunLog()
+	runLog.refuse = true
+
+	report, err := Run(context.Background(), RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: runLog,
+		Lookup: fixtureEnv(upstream.URL), Now: firedAt(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !report.ClaimedElsewhere || !strings.Contains(report.Reason, "another replica") {
+		t.Errorf("report = %+v; want ClaimedElsewhere and a reason naming the other replica", report)
+	}
+	if len(report.Catalogs) != 0 || upstream.calls.Load() != 0 {
+		t.Errorf("built %d catalogs and made %d upstream calls; a stood-down run does no work",
+			len(report.Catalogs), upstream.calls.Load())
+	}
+	if len(runLog.recorded) != 0 {
+		t.Errorf("a stood-down run recorded %v", runLog.recorded)
+	}
+}
+
+// A failed run gives its claim back, restoring the previous marker, so the
+// next tick retries the firing rather than treating it as served.
+func TestRunReleasesTheClaimWhenTheRunFails(t *testing.T) {
+	runLog := newClaimingRunLog()
+	key := fixturePipeline().Path
+	previous := firedAt(t).Add(-24 * time.Hour)
+	runLog.last[key] = previous
+
+	if _, err := Run(context.Background(), RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: runLog,
+		Lookup: fixtureEnv("http://127.0.0.1:1"), Now: firedAt(t), OutDir: t.TempDir(),
+	}); err == nil {
+		t.Fatal("a run against an unreachable upstream reported success")
+	}
+	if got, ok := runLog.released[key]; !ok || !got.Equal(previous) {
+		t.Errorf("released %v, want %s restored to %v", runLog.released, key, previous)
+	}
+	if len(runLog.recorded) != 0 {
+		t.Errorf("a failed run was recorded: %v", runLog.recorded)
+	}
+}
+
+// LEGACY: before this change the row was keyed by capability. The first tick
+// after deploy must read it, or a firing already served is run -- and
+// published -- a second time.
+func TestRunReadsTheLegacyCapabilityKeyedRow(t *testing.T) {
+	upstream := newFixtureUpstream(t, twoGroupsOfThings)
+	runLog := newClaimingRunLog()
+	runLog.last[fixtureCapability] = firedAt(t) // served under the old key
+
+	report, err := Run(context.Background(), RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: runLog,
+		Lookup: fixtureEnv(upstream.URL), Now: firedAt(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Due {
+		t.Errorf("report = %+v; the legacy row says this firing was served", report)
+	}
+	if len(runLog.claimed) != 0 || upstream.calls.Load() != 0 {
+		t.Errorf("claimed %v and made %d calls for a served firing", runLog.claimed, upstream.calls.Load())
 	}
 }

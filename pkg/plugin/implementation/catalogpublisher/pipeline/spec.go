@@ -1,5 +1,5 @@
-// spec.go types and parses mandi-price-agmarket.yaml itself. The engine that
-// runs a CataloguePipeline doesn't exist yet (see the file's own header
+// spec.go types and parses agmarknet.yaml itself. The engine that
+// runs a CatalogPipeline doesn't exist yet (see the file's own header
 // comment), so this is deliberately just the YAML<->struct mapping the
 // polling layer will need to validate and read the file with -- not a
 // pipeline executor. Field names and shapes come straight from the file, not
@@ -72,8 +72,8 @@ type Input struct {
 	Secret  bool        `yaml:"secret,omitempty"`
 }
 
-// Upstream is the one service this pipeline calls, how it authenticates, how
-// its failures are classified, and the limits every call is held to.
+// Upstream is the one service this pipeline calls, how it authenticates, and
+// how its failures are classified.
 type Upstream struct {
 	BaseURL string `yaml:"baseUrl"`
 
@@ -91,7 +91,6 @@ type Upstream struct {
 	AllowCleartext bool        `yaml:"allowCleartext,omitempty"`
 	Auth           Auth        `yaml:"auth"`
 	Errors         []ErrorRule `yaml:"errors"`
-	Guards         Guards      `yaml:"guards"`
 }
 
 // ErrorRule classifies one upstream failure. Classification, not cosmetics:
@@ -113,18 +112,10 @@ type ErrorMatch struct {
 	BodyContains string `yaml:"bodyContains,omitempty"`
 }
 
-// Guards are the per-call limits. NeverQuoteBodyInErrors is not decoration:
-// this upstream echoes the request back in error bodies, and the request
-// carries the token in its query string.
-type Guards struct {
-	ResponseMustBe         string `yaml:"responseMustBe"`
-	NeverQuoteBodyInErrors bool   `yaml:"neverQuoteBodyInErrors"`
-	MaxResponseBytes       string `yaml:"maxResponseBytes"`
-}
-
-// Auth is the token-exchange upstream auth needs: no expiry in the response,
-// so a token is held for the run and re-exchanged only on the statuses in
-// Token.ReexchangeOn, never on a timer.
+// Auth is how the upstream is authenticated to. Kind selects the strategy
+// (auth.go): tokenExchange (the default when unset), none, or apiKey. A
+// token has no expiry in the response, so it is held for the run and
+// re-exchanged only on the statuses in Token.ReexchangeOn, never on a timer.
 type Auth struct {
 	Kind    string        `yaml:"kind"`
 	Request AuthRequest   `yaml:"request"`
@@ -141,10 +132,14 @@ type AuthRequest struct {
 // AuthTokenSpec is where the token comes from in the response and how it
 // rides on later requests.
 type AuthTokenSpec struct {
-	At           string `yaml:"at"`
+	At           string `yaml:"at,omitempty"`
 	CarriedAs    string `yaml:"carriedAs"`
 	Name         string `yaml:"name"`
 	ReexchangeOn []int  `yaml:"reexchangeOn"`
+
+	// Value is an apiKey's credential: an ${inputs.…} reference, never the
+	// key itself. Unused by tokenExchange, which reads the token from At.
+	Value string `yaml:"value,omitempty"`
 }
 
 // Step is one pipeline stage. Only With's fields a given step actually sets
@@ -223,7 +218,7 @@ type With struct {
 	Key string `yaml:"key,omitempty"`
 
 	// Records is a const step's output, written in the file. It is how a
-	// pipeline with no upstream -- a catalogue whose content is fixed --
+	// pipeline with no upstream -- a catalog whose content is fixed --
 	// still hands the catalog block a collection to group.
 	Records []map[string]any `yaml:"records,omitempty"`
 
@@ -295,8 +290,6 @@ type Render struct {
 // publish as though it were whole.
 type Publish struct {
 	URL            string    `yaml:"url"`
-	Concurrency    int       `yaml:"concurrency,omitempty"`
-	Timeout        string    `yaml:"timeout,omitempty"`
 	Accept         []string  `yaml:"accept"`
 	TreatAsFailure []string  `yaml:"treatAsFailure,omitempty"`
 	RefuseWhen     string    `yaml:"refuseWhen,omitempty"`
@@ -323,7 +316,7 @@ type RetireOld struct {
 
 // LoadSpec reads and parses the pipeline definition at path inside files.
 // It takes an embed.FS rather than a bare path so callers always read the
-// copy a binary was built with (see pkg/plugin/implementation/publishpipelines.go),
+// copy a binary was built with (see pkg/plugin/implementation/embedded.go),
 // never one edited on disk after the fact.
 func LoadSpec(files embed.FS, path string) (Spec, error) {
 	data, err := files.ReadFile(path)
@@ -357,7 +350,7 @@ type Files struct {
 
 	// RegistryPath is the repo-relative path the registry's publish action is
 	// expected to name, e.g.
-	// "pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/mandi-price-agmarket.yaml".
+	// "pkg/plugin/implementation/MandiPrice/catalogpublish-agmarknet/agmarknet.yaml".
 	//
 	// The gate compares the registry's answer against this rather than
 	// deriving it from the capability's name. Deriving it would mean guessing
@@ -365,11 +358,16 @@ type Files struct {
 	// sanctioned; comparing means a registry pointing somewhere else is
 	// refused rather than silently served by whatever this binary embeds.
 	RegistryPath string
+
+	// AliasOf is a deprecated registry path this file also answers to, so a
+	// registry record not yet updated after a rename still passes the gate.
+	// "" when there is none. RegistryPath stays the canonical path.
+	AliasOf string
 }
 
-// Catalogue is one rendered catalogue document and the identity it carries.
-type Catalogue struct {
-	// Slug names the file on disk and distinguishes catalogues within a run.
+// BuiltCatalog is one rendered catalog document and the identity it carries.
+type BuiltCatalog struct {
+	// Slug names the file on disk and distinguishes catalogs within a run.
 	Slug string
 
 	// CatalogID is the network-facing identity the document publishes under.
@@ -476,7 +474,7 @@ type SchemaRef struct {
 // field would mean guessing which rules a file is held to, and quietly holding
 // it to the wrong ones.
 var schemaFiles = map[string]string{
-	"publish.oan/CataloguePipeline/v1": "schema/pipeline.v1.schema.json",
+	"publish.oan/CatalogPipeline/v1": "schema/pipeline.v1.schema.json",
 }
 
 // APIVersionFor is the apiVersion that must accompany a contract.
@@ -486,7 +484,7 @@ var schemaFiles = map[string]string{
 // than one being preferred silently -- the same failure this whole file exists
 // to prevent, one level up.
 var apiVersionFor = map[string]string{
-	"publish.oan/CataloguePipeline/v1": "publish.oan/v1",
+	"publish.oan/CatalogPipeline/v1": "publish.oan/v1",
 }
 
 // compiled schemas, built once. Compiling is the expensive half and a process

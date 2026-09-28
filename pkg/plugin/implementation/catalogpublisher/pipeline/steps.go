@@ -45,6 +45,11 @@ const (
 	usesConst     = "const"
 )
 
+// maxReauthsPerRun caps re-exchanges in one run. Three covers a token that
+// expires mid-run, even more than once; an upstream rejecting every fresh
+// token is not going to accept the fourth.
+const maxReauthsPerRun = 3
+
 // stepRunner carries what every step needs.
 type stepRunner struct {
 	spec        Spec
@@ -59,6 +64,14 @@ type stepRunner struct {
 	// run reports. The file names them; this code only counts.
 	counters map[string]int
 
+	// auth re-obtains the credential when the upstream rejects it. nil for a
+	// pipeline with no upstream.
+	auth Authenticator
+
+	// reauths counts re-exchanges this run. Capped: an upstream that rejects
+	// every fresh token would otherwise be hammered once per call.
+	reauths int
+
 	// lastOutput is what the step just before this one produced, whether or
 	// not it named itself with `out:`.
 	//
@@ -71,7 +84,7 @@ type stepRunner struct {
 }
 
 // runSteps executes the declared steps in order and returns the output of the
-// last one, which is the collection the catalogue is built from.
+// last one, which is the collection the catalog is built from.
 func (r *stepRunner) runSteps(ctx context.Context) ([]map[string]any, error) {
 	if len(r.spec.Pipeline) == 0 {
 		return nil, fmt.Errorf("the pipeline declares no steps")
@@ -108,11 +121,16 @@ func (r *stepRunner) runSteps(ctx context.Context) ([]map[string]any, error) {
 			continue
 		}
 
-		produced, _ := asRecords(output)
-		r.log.InfoContext(ctx, "pipeline step: done",
-			"step", fmt.Sprintf("%d/%d", i+1, len(r.spec.Pipeline)),
-			"id", step.ID, "records", len(produced),
-			"took", time.Since(began).Round(time.Millisecond).String())
+		produced := recordsForLog(output)
+		fields := []any{"step", fmt.Sprintf("%d/%d", i+1, len(r.spec.Pipeline)),
+			"id", step.ID, "records", produced.count,
+			"took", time.Since(began).Round(time.Millisecond).String()}
+		if produced.rawType != "" {
+			// Not a collection. Said, rather than reported as zero records,
+			// which reads as "the upstream had nothing".
+			fields = append(fields, "type", produced.rawType)
+		}
+		r.log.InfoContext(ctx, "pipeline step: done", fields...)
 		if step.Out != "" {
 			r.rc.outputs[step.Out] = output
 		}
@@ -221,7 +239,7 @@ func (r *stepRunner) dispatch(ctx context.Context, step Step) (any, error) {
 		r.log.DebugContext(ctx, "pipeline step: iteration",
 			"id", step.ID, "item", fmt.Sprintf("%d/%d", i+1, len(items)), "as", step.As)
 
-		output, err := r.primitive(ctx, step, iteration)
+		output, err := r.primitive(withLogItem(ctx, itemLabel(item)), step, iteration)
 		if err != nil {
 			outcome, matched := r.outcomeFor(step, err)
 			if !matched {
@@ -256,9 +274,9 @@ func (r *stepRunner) dispatch(ctx context.Context, step Step) (any, error) {
 func (r *stepRunner) primitive(ctx context.Context, step Step, rc *runContext) (any, error) {
 	switch step.Uses {
 	case usesHTTPGet:
-		return r.httpGet(ctx, step, rc)
+		return r.withReauth(ctx, rc, func(rc *runContext) (any, error) { return r.httpGet(ctx, step, rc) })
 	case usesHTTPPost:
-		return r.httpPost(ctx, step, rc)
+		return r.withReauth(ctx, rc, func(rc *runContext) (any, error) { return r.httpPost(ctx, step, rc) })
 	case usesJoin:
 		return r.join(step, rc)
 	case usesDerive:
@@ -570,12 +588,62 @@ func (r *stepRunner) elseValue(step Step) (any, error) {
 // as data: an upstream saying "no rows" is a coverage fact, a transport
 // failure is an outage, and collapsing them loses the difference.
 func (r *stepRunner) outcomeFor(step Step, err error) (StepOutcome, bool) {
-	class := "transportError"
-	if errors.Is(err, ErrNoUpstreamData) {
-		class = "emptyResult"
+	class := classifyTransport
+	switch {
+	case errors.Is(err, ErrNoUpstreamData):
+		class = classifyEmpty
+	case errors.Is(err, ErrReauthRequired):
+		class = classifyReauth
 	}
 	outcome, ok := step.OnError[class]
 	return outcome, ok
+}
+
+// withReauth runs one HTTP call and, when the upstream rejected the credential
+// with a status the file lists in token.reexchangeOn, obtains a fresh one and
+// retries ONCE. A second rejection -- or a run that has spent its re-exchanges
+// -- falls through to the step's onError like any other failure.
+//
+// rc is refreshed in place and so is the runner's own context, so the next
+// iteration and the next step carry the new token rather than the dead one.
+func (r *stepRunner) withReauth(ctx context.Context, rc *runContext, call func(*runContext) (any, error)) (any, error) {
+	out, err := call(rc)
+	var rejected *ReauthError
+	if err == nil || r.auth == nil || !errors.As(err, &rejected) {
+		return out, err
+	}
+	if !statusListed(r.spec.Upstream.Auth.Token.ReexchangeOn, rejected.Status) {
+		return out, err
+	}
+	if r.reauths >= maxReauthsPerRun {
+		r.log.WarnContext(ctx, "pipeline: reauth budget spent; not re-exchanging",
+			"reauths", r.reauths, "status", rejected.Status)
+		return out, err
+	}
+	r.reauths++
+	r.counters["reauth"]++
+	r.log.InfoContext(ctx, "pipeline: credential rejected; re-exchanging",
+		"status", rejected.Status, "attempt", r.reauths)
+
+	cred, prepErr := r.auth.Prepare(ctx, r.client, r.rc)
+	if prepErr != nil {
+		return nil, fmt.Errorf("re-exchanging credentials: %w", prepErr)
+	}
+	r.client.WithCredential(cred)
+	r.rc.token = cred.Value
+	rc.token = cred.Value
+	return call(rc)
+}
+
+// statusListed reports whether status is one the file says means "the token
+// died".
+func statusListed(statuses []int, status int) bool {
+	for _, s := range statuses {
+		if s == status {
+			return true
+		}
+	}
+	return false
 }
 
 // record increments the counter a file named, and says what happened.
@@ -597,6 +665,30 @@ func (r *stepRunner) record(outcome StepOutcome, step Step, item any, cause erro
 		fields = append(fields, "cause", cause.Error())
 	}
 	r.log.Debug("pipeline: step outcome recorded", fields...)
+}
+
+// producedSummary is what a step's output looks like to its log line.
+type producedSummary struct {
+	count   int
+	rawType string // set only when the output is not a list of records
+}
+
+func recordsForLog(output any) producedSummary {
+	records, err := asRecords(output)
+	if err != nil {
+		return producedSummary{rawType: fmt.Sprintf("%T", output)}
+	}
+	return producedSummary{count: len(records)}
+}
+
+// itemLabel names a forEach item for a log line: its code when it has one.
+func itemLabel(item any) string {
+	if record, ok := item.(map[string]any); ok {
+		if code, present := record["code"]; present {
+			return renderScalar(code)
+		}
+	}
+	return ""
 }
 
 // asRecords normalises a decoded JSON value into a list of objects.
@@ -653,7 +745,7 @@ func toStrings(value any) []string {
 	}
 }
 
-// sortRecords is used by the catalogue builder's `order:` block.
+// sortRecords is used by the catalog builder's `order:` block.
 func sortRecords(records []map[string]any, by, direction string) {
 	descending := strings.EqualFold(direction, "desc")
 	sort.SliceStable(records, func(i, j int) bool {
@@ -840,7 +932,7 @@ func decodeMapped(raw []byte) ([]map[string]any, error) {
 // constRecords is the const primitive: the records the file declares, handed
 // on as the step's output.
 //
-// Each is a copy. Catalogue rendering writes resourceId into every record,
+// Each is a copy. Catalog rendering writes resourceId into every record,
 // and handing out the spec's own maps would write that back into the parsed
 // file -- harmless for one run, wrong the moment a Spec is reused.
 //

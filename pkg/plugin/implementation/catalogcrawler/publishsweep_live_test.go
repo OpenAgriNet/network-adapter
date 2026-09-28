@@ -1,6 +1,6 @@
 package catalogcrawler
 
-// publishpipelines_live_test.go watches the crawler's OWN publish sweep
+// publishsweep_live_test.go watches the crawler's OWN publish sweep
 // against the real registry.
 //
 // The pipeline package has its own tests; what this one shows is the half the
@@ -115,14 +115,25 @@ func sanctioned(ctx context.Context, t *testing.T, registry *sunbirdRegistry.Cli
 	return out
 }
 
-// clearRunLog gives every sanctioned capability a clean slate, so the first
+// clearRunLog gives every sanctioned pipeline a clean slate, so the first
 // sweep is genuinely the first of its cron firing rather than inheriting an
-// earlier experiment's row.
+// earlier experiment's row. Both keys are cleared: the pipeline's own, and the
+// legacy capability-keyed row the run still reads as a fallback.
 func clearRunLog(ctx context.Context, t *testing.T, runLog pipeline.RunLog, records []*model.ProviderRecord) {
 	t.Helper()
 	for _, record := range records {
-		if err := runLog.RecordPipelineRun(ctx, record.CapabilityCode, time.Time{}); err != nil {
-			t.Fatalf("clearing the run log for %s: %v", record.CapabilityCode, err)
+		path, err := pipeline.PipelinePathFor(record)
+		if err != nil {
+			t.Fatalf("%s: %v", record.BindingKey, err)
+		}
+		files, err := implementation.PublishPipeline(path)
+		if err != nil {
+			t.Fatalf("%s: %v", record.BindingKey, err)
+		}
+		for _, key := range []string{files.Path, record.CapabilityCode} {
+			if err := runLog.RecordPipelineRun(ctx, key, time.Time{}); err != nil {
+				t.Fatalf("clearing the run log for %s: %v", key, err)
+			}
 		}
 	}
 }
@@ -167,7 +178,7 @@ func logRun(t *testing.T, run liveRun) {
 		published = len(r.Published.Outcomes)
 	}
 	t.Logf("    %-45s due=%-5v built=%-3d published=%-3d %s",
-		run.bindingKey, r.Due, len(r.Catalogues), published, r.Reason)
+		run.bindingKey, r.Due, len(r.Catalogs), published, r.Reason)
 	if run.err != nil {
 		t.Logf("    %-45s ERROR %v", "", run.err)
 	}
@@ -251,8 +262,8 @@ func TestLive_CrawlerTick(t *testing.T) {
 		if run.report.PipelinePath == "" {
 			t.Errorf("%s reached no pipeline", run.bindingKey)
 		}
-		if len(run.report.Catalogues) != 0 {
-			t.Errorf("%s: a dry run produced %d catalogues", run.bindingKey, len(run.report.Catalogues))
+		if len(run.report.Catalogs) != 0 {
+			t.Errorf("%s: a dry run produced %d catalogs", run.bindingKey, len(run.report.Catalogs))
 		}
 	}
 	if len(runs) != len(expected) {
@@ -260,17 +271,17 @@ func TestLive_CrawlerTick(t *testing.T) {
 	}
 }
 
-// TestLive_CrawlerBuildsCatalogues is the same sweep, allowed to finish.
+// TestLive_CrawlerBuildsCatalogs is the same sweep, allowed to finish.
 //
 // Every sanctioned pipeline runs for real against its upstream (if it has
-// one) and writes its catalogues to disk. Publishing stays OFF, so nothing
+// one) and writes its catalogs to disk. Publishing stays OFF, so nothing
 // leaves this machine. Slow by nature: mandi's per-state calls are sequential.
 //
 //	MANDI_LIVE=1 SUNBIRD_REGISTRY_URL=http://localhost:8081/api/v1 \
 //	  MANDI_LIVE_OUT=/tmp/catalogs \
 //	  go test ./pkg/plugin/implementation/catalogcrawler/ \
-//	  -run TestLive_CrawlerBuildsCatalogues -count=1 -v -timeout 20m
-func TestLive_CrawlerBuildsCatalogues(t *testing.T) {
+//	  -run TestLive_CrawlerBuildsCatalogs -count=1 -v -timeout 20m
+func TestLive_CrawlerBuildsCatalogs(t *testing.T) {
 	if os.Getenv("MANDI_LIVE") != "1" {
 		t.Skip("live test: set MANDI_LIVE=1 to run against the real services")
 	}
@@ -350,8 +361,8 @@ func TestLive_CrawlerBuildsCatalogues(t *testing.T) {
 			t.Logf("      %-38s %d", name, r.Counters[name])
 		}
 		t.Logf("      written to %s", r.OutDir)
-		if len(r.Catalogues) == 0 {
-			t.Errorf("%s produced no catalogues at all", run.bindingKey)
+		if len(r.Catalogs) == 0 {
+			t.Errorf("%s produced no catalogs at all", run.bindingKey)
 		}
 		if r.Errors > 0 {
 			t.Errorf("%s: %d parts of the collection failed; a real run would refuse to publish", run.bindingKey, r.Errors)
@@ -479,8 +490,8 @@ func TestLive_CrawlerPublishesThenDeclines(t *testing.T) {
 		case r.Published == nil:
 			t.Errorf("sweep 1, %s: publishing was on, but no publish result came back", run.bindingKey)
 		case r.Published.HasFailures():
-			t.Errorf("sweep 1, %s: at least one catalogue did not reach the network intact "+
-				"(PARTIAL counts: the catalogue indexed with resources missing)", run.bindingKey)
+			t.Errorf("sweep 1, %s: at least one catalog did not reach the network intact "+
+				"(PARTIAL counts: the catalog indexed with resources missing)", run.bindingKey)
 		}
 	}
 	for _, run := range sweeps[1] {
@@ -653,7 +664,7 @@ func TestLive_CrawlerTicksOnItsOwnClock(t *testing.T) {
 	}
 
 	t.Logf("starting the scheduler: sweep every %s, watching for %d sweeps", cfg.tick, wantSweeps)
-	t.Logf("publishing is %s", map[bool]string{true: "ON — catalogues will reach the network", false: "OFF"}[publishing])
+	t.Logf("publishing is %s", map[bool]string{true: "ON — catalogs will reach the network", false: "OFF"}[publishing])
 	started := time.Now()
 	sched.Start(ctx)
 	defer sched.Stop()
@@ -691,7 +702,7 @@ func TestLive_CrawlerTicksOnItsOwnClock(t *testing.T) {
 		if !run.report.Due {
 			t.Errorf("sweep 1, %s was not due: %s", run.bindingKey, run.report.Reason)
 		}
-		if len(run.report.Catalogues) == 0 {
+		if len(run.report.Catalogs) == 0 {
 			t.Errorf("sweep 1, %s built nothing", run.bindingKey)
 		}
 	}
@@ -705,9 +716,9 @@ func TestLive_CrawlerTicksOnItsOwnClock(t *testing.T) {
 				t.Errorf("sweep %d, %s ran again; a restart would republish the whole day: %s",
 					i+2, run.bindingKey, run.report.Reason)
 			}
-			if len(run.report.Catalogues) != 0 {
-				t.Errorf("sweep %d, %s built %d catalogues; it should have fetched nothing",
-					i+2, run.bindingKey, len(run.report.Catalogues))
+			if len(run.report.Catalogs) != 0 {
+				t.Errorf("sweep %d, %s built %d catalogs; it should have fetched nothing",
+					i+2, run.bindingKey, len(run.report.Catalogs))
 			}
 		}
 	}

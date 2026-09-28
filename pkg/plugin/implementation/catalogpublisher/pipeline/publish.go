@@ -4,7 +4,7 @@ package pipeline
 // what safety rule, and what counts as success. It does NOT make the HTTP
 // call. That is a Publisher's -- in production the crawler's sink
 // (catalogcrawler/internal/sink), the one piece of code that posts to the
-// provider adapter's /publish, for crawled catalogues and pipelines alike.
+// provider adapter's /publish, for crawled catalogs and pipelines alike.
 // Keeping the call out of here is what lets this package stay free of the
 // crawler while the crawler owns the network.
 
@@ -16,22 +16,20 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
-	"time"
-
-	"github.com/google/uuid"
 )
 
-// Per-catalogue outcomes.
+// Per-catalog outcomes.
 const (
 	StatusPublished      = "published"
 	StatusRejected       = "rejected"
 	StatusTransportError = "transport-error"
 )
 
-// Outcome is what happened to one catalogue.
+// Outcome is what happened to one catalog.
 type Outcome struct {
-	StateCode string
+	Group     string
 	CatalogID string
 	Status    string
 	Reason    string
@@ -64,9 +62,13 @@ func (r Result) HasFailures() bool {
 // base address is baseURL, and judges the answer: ACCEPTED is
 // StatusPublished, anything else -- PARTIAL included -- is StatusRejected,
 // and a failure to reach it is StatusTransportError. A transport failure is
-// an Outcome, not an error, so one bad catalogue never hides the others.
+// an Outcome, not an error, so one bad catalog never hides the others.
 type Publisher interface {
 	Publish(ctx context.Context, baseURL string, body []byte) Outcome
+
+	// Retire deactivates a superseded catalog. The Publisher builds the
+	// body, so a retirement carries the same identity as every publish.
+	Retire(ctx context.Context, baseURL, catalogID, descriptorName string) Outcome
 }
 
 // publishAddressHint is the fallback when a caller has not said how THIS
@@ -93,35 +95,42 @@ func publishAddressHintFor(input Input) string {
 
 // refuseWhenShape is the one form of refusal this step understands:
 //
-//	collection.<counter> > 0
+//	collection.<counter> > <N>
 //
 // <counter> is a name the pipeline's own steps record into, so a second
-// pipeline refuses on its own terms without editing Go. Anything else is
-// REJECTED rather than ignored -- a safety rule that is quietly dropped is
-// worse than one never declared -- and a file needing a richer rule needs a
-// real expression evaluator here first.
-var refuseWhenShape = regexp.MustCompile(`^collection\.([A-Za-z][A-Za-z0-9_]*)\s*>\s*0$`)
+// pipeline refuses on its own terms without editing Go, and N is a
+// non-negative integer: `> 0` refuses on any failure, `> 3` tolerates three.
+// Anything else is REJECTED rather than ignored -- a safety rule that is
+// quietly dropped is worse than one never declared -- and a file needing a
+// richer rule needs a real expression evaluator here first.
+var refuseWhenShape = regexp.MustCompile(`^collection\.([A-Za-z][A-Za-z0-9_]*)\s*>\s*([0-9]+)$`)
 
-// refuseWhenCounter returns the counter a refuseWhen rule names.
-func refuseWhenCounter(rule string) (string, bool) {
+// refuseWhenRule returns the counter a refuseWhen rule names and the count it
+// tolerates.
+func refuseWhenRule(rule string) (string, int, bool) {
 	match := refuseWhenShape.FindStringSubmatch(strings.TrimSpace(rule))
 	if match == nil {
-		return "", false
+		return "", 0, false
 	}
-	return match[1], true
+	threshold, err := strconv.Atoi(match[2])
+	if err != nil {
+		return "", 0, false
+	}
+	return match[1], threshold, true
 }
 
-// PublishCatalogues posts every catalogue file in catalogDir through
+// PublishCatalogs posts every catalog file in catalogDir through
 // publisher, unless the declared safety rule forbids it.
 //
-// stateErrors is how many parts of the collection failed. A part that failed
-// to collect is not a part with nothing in it, so publishing then would
-// replace a whole group's catalogue with a partial one, or with nothing.
+// collected is every counter the run recorded; publish.refuseWhen names the
+// one it judges. A part that failed to collect is not a part with nothing in
+// it, so publishing past the file's tolerance would replace a whole group's
+// catalog with a partial one, or with nothing.
 //
-// Sequential and per-catalogue on purpose: one failed catalogue is one
-// retryable catalogue, and must not discard the outcomes of the others.
-func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]string,
-	catalogDir, filenamePrefix string, stateErrors int, publisher Publisher) (Result, error) {
+// Sequential and per-catalog on purpose: one failed catalog is one
+// retryable catalog, and must not discard the outcomes of the others.
+func PublishCatalogs(ctx context.Context, spec Publish, resolved map[string]string,
+	catalogDir, filenamePrefix string, collected map[string]int, publisher Publisher) (Result, error) {
 	var result Result
 
 	if publisher == nil {
@@ -132,17 +141,17 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 	}
 
 	if rule := strings.TrimSpace(spec.RefuseWhen); rule != "" {
-		counter, ok := refuseWhenCounter(rule)
+		counter, threshold, ok := refuseWhenRule(rule)
 		if !ok {
 			return result, fmt.Errorf(
-				"publish.refuseWhen is %q; this step understands only `collection.<counter> > 0` "+
+				"publish.refuseWhen is %q; this step understands only `collection.<counter> > <N>` "+
 					"and will not guess at another rule", rule)
 		}
-		if stateErrors > 0 {
+		if failed := collected[counter]; failed > threshold {
 			return result, fmt.Errorf(
-				"refusing to publish: %d of the collection failed (%s), and a partial collection "+
-					"will not be published as though it were whole (publish.refuseWhen: %s)",
-				stateErrors, counter, rule)
+				"refusing to publish: %d of the collection failed (%s), above the %d this pipeline "+
+					"tolerates, and a partial collection will not be published as though it were whole "+
+					"(publish.refuseWhen: %s)", failed, counter, threshold, rule)
 		}
 	}
 
@@ -168,31 +177,31 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 		return result, err
 	}
 
-	files, err := catalogueFiles(catalogDir, filenamePrefix)
+	files, err := catalogFiles(catalogDir, filenamePrefix)
 	if err != nil {
 		return result, err
 	}
 	// An empty directory must not look like a successful run: silently
 	// publishing nothing is indistinguishable from publishing everything.
 	if len(files) == 0 && retire == nil {
-		return result, fmt.Errorf("no catalogue files in %s", catalogDir)
+		return result, fmt.Errorf("no catalog files in %s", catalogDir)
 	}
 
 	for _, file := range files {
 		result.Outcomes = append(result.Outcomes, publishFile(ctx, publisher, publishURL, file))
 	}
-	// The tombstone goes out ONLY when everything that supersedes the old
-	// catalogue is actually on the network.
+	// The retirement goes out ONLY when everything that supersedes the old
+	// catalog is actually on the network.
 	//
 	// Retiring is not a tidy-up, it is a deletion: deactivating the old
-	// catalogue is how its resources leave. Sending it after a run whose
+	// catalog is how its resources leave. Sending it after a run whose
 	// replacements were rejected removes the old data and puts nothing in its
 	// place, leaving the network with neither -- and the next tick repeats it.
 	if retire != nil {
 		if published, why := allPublished(result.Outcomes); !published {
 			result.RetiredSkipped = why
 		} else {
-			outcome := publisher.Publish(ctx, publishURL, tombstone(retire.CatalogID, retire.DescriptorName))
+			outcome := publisher.Retire(ctx, publishURL, retire.CatalogID, retire.DescriptorName)
 			if outcome.CatalogID == "" {
 				outcome.CatalogID = retire.CatalogID
 			}
@@ -202,63 +211,63 @@ func PublishCatalogues(ctx context.Context, spec Publish, resolved map[string]st
 	return result, nil
 }
 
-// catalogueFile pairs a built catalogue with the group it belongs to.
+// catalogFile pairs a built catalog with the group it belongs to.
 //
-// slug and stateCode differ for a split group: <prefix>-TN-2.json has slug
+// slug and group differ for a split group: <prefix>-TN-2.json has slug
 // TN-2 and group TN.
-type catalogueFile struct {
-	slug      string
-	stateCode string
-	path      string
+type catalogFile struct {
+	slug  string
+	group string
+	path  string
 }
 
-// chunkSuffix matches the -N a split group's catalogue carries.
+// chunkSuffix matches the -N a split group's catalog carries.
 var chunkSuffix = regexp.MustCompile(`-[0-9]+$`)
 
-// catalogueFiles lists <prefix>-<slug>.json in dir, sorted, so a run reads the
-// same way twice. The match is the one WriteCatalogues and
-// RemoveStaleCatalogues make -- three places, one naming contract.
-func catalogueFiles(dir, prefix string) ([]catalogueFile, error) {
+// catalogFiles lists <prefix>-<slug>.json in dir, sorted, so a run reads the
+// same way twice. The match is the one WriteCatalogs and
+// RemoveStaleCatalogs make -- three places, one naming contract.
+func catalogFiles(dir, prefix string) ([]catalogFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read catalogue directory: %w", err)
+		return nil, fmt.Errorf("read catalog directory: %w", err)
 	}
 	namePrefix := prefix + "-"
-	var files []catalogueFile
+	var files []catalogFile
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasPrefix(name, namePrefix) || !strings.HasSuffix(name, ".json") {
 			continue
 		}
 		slug := strings.TrimSuffix(strings.TrimPrefix(name, namePrefix), ".json")
-		files = append(files, catalogueFile{
-			slug: slug, stateCode: chunkSuffix.ReplaceAllString(slug, ""), path: filepath.Join(dir, name),
+		files = append(files, catalogFile{
+			slug: slug, group: chunkSuffix.ReplaceAllString(slug, ""), path: filepath.Join(dir, name),
 		})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].slug < files[j].slug })
 	return files, nil
 }
 
-// publishFile reads one built catalogue and posts it VERBATIM: the file is
+// publishFile reads one built catalog and posts it VERBATIM: the file is
 // what a human reviewed, so re-encoding it would publish something nobody
 // read.
-func publishFile(ctx context.Context, publisher Publisher, publishURL string, file catalogueFile) Outcome {
+func publishFile(ctx context.Context, publisher Publisher, publishURL string, file catalogFile) Outcome {
 	body, err := os.ReadFile(file.path)
 	if err != nil {
-		return Outcome{StateCode: file.stateCode, Status: StatusTransportError,
+		return Outcome{Group: file.group, Status: StatusTransportError,
 			Reason: fmt.Sprintf("read %s: %v", file.path, err)}
 	}
 	outcome := publisher.Publish(ctx, publishURL, body)
-	outcome.StateCode = file.stateCode
+	outcome.Group = file.group
 	if outcome.CatalogID == "" {
-		outcome.CatalogID = catalogueIDOf(body)
+		outcome.CatalogID = catalogIDOf(body)
 	}
 	return outcome
 }
 
-// catalogueIDOf reads the catalogue's own id out of a publish body, so a
+// catalogIDOf reads the catalog's own id out of a publish body, so a
 // reported id is the one actually sent rather than one rebuilt from a name.
-func catalogueIDOf(body []byte) string {
+func catalogIDOf(body []byte) string {
 	var envelope struct {
 		Message struct {
 			Catalogs []struct {
@@ -270,38 +279,6 @@ func catalogueIDOf(body []byte) string {
 		return envelope.Message.Catalogs[0].ID
 	}
 	return ""
-}
-
-// tombstone is a publish body that deactivates a whole catalogue.
-//
-// Deactivating the catalogue is how its resources go away. updateMode FULL is
-// rejected as unsupported, and MERGE's removal semantics are documented
-// nowhere, so republishing the catalogue WITHOUT the unwanted resource cannot
-// be relied on to remove it.
-func tombstone(catalogID, retiredName string) []byte {
-	body, _ := json.Marshal(map[string]any{
-		"context": map[string]any{
-			"action":        "catalog/publish",
-			"version":       "2.0.0",
-			"transactionId": uuid.NewString(),
-			"messageId":     uuid.NewString(),
-			"timestamp":     time.Now().UTC().Format(time.RFC3339),
-		},
-		"message": map[string]any{
-			"catalogs": []any{map[string]any{
-				"id":         catalogID,
-				"isActive":   false,
-				"descriptor": map[string]any{"code": catalogID, "name": retiredName},
-				"resources":  []any{},
-			}},
-			"publishDirectives": []any{map[string]any{
-				"catalogId":   catalogID,
-				"catalogType": "REGULAR",
-				"updateMode":  "MERGE",
-			}},
-		},
-	})
-	return body
 }
 
 // expectedPublishURL is the only publish.url this step can honour, for the
@@ -397,19 +374,19 @@ func checkJudgement(spec Publish) error {
 	return nil
 }
 
-// allPublished reports whether every catalogue this run built actually
+// allPublished reports whether every catalog this run built actually
 // reached the network, and says what stopped it when one did not.
 //
 // A run that built NOTHING does not qualify either: an empty directory plus a
-// tombstone would deactivate the old catalogue and replace it with nothing at
+// retirement would deactivate the old catalog and replace it with nothing at
 // all, which is the same harm by a quieter route.
 func allPublished(outcomes []Outcome) (bool, string) {
 	if len(outcomes) == 0 {
-		return false, "no catalogues were built, so there is nothing to supersede the old one"
+		return false, "no catalogs were built, so there is nothing to supersede the old one"
 	}
 	for _, outcome := range outcomes {
 		if outcome.Status != StatusPublished {
-			return false, fmt.Sprintf("%s is %s, so the old catalogue still has to serve its resources",
+			return false, fmt.Sprintf("%s is %s, so the old catalog still has to serve its resources",
 				outcome.CatalogID, outcome.Status)
 		}
 	}

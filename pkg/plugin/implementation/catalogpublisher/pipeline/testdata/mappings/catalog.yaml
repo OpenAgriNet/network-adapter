@@ -1,7 +1,7 @@
-# The fixture's catalogue render.
+# The fixture's catalog render.
 #
 # The chunk's records arrive under `response` and the file's `render.local`
-# values under `_local` -- the same shape a real capability's catalogue mapping
+# values under `_local` -- the same shape a real capability's catalog mapping
 # receives, which is the part worth being faithful to.
 #
 # Deliberately small: what the frame must get right is that the records, the

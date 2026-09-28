@@ -1,7 +1,7 @@
-package agmarket
+package agmarknet
 
 // spec_conformance_test.go holds this pipeline's side of the YAML<->struct
-// contract: that mandi-price-agmarket.yaml really does parse into the values
+// contract: that agmarknet.yaml really does parse into the values
 // the code then relies on, and that the file is not saying anything the schema
 // cannot hear.
 //

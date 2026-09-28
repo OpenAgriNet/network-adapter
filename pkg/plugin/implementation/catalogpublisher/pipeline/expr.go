@@ -33,16 +33,19 @@ import (
 
 // evaluating serialises every JSONata evaluation in this package.
 //
-// It has to exist, and it has to be this wide, for the same reason
-// jsonmapper's own lock does: the library keeps its built-in functions in a
-// package-level frame, and applying one writes onto that shared state. Two
-// concurrent evaluations race even when they are different expressions.
+// The race it prevents is PER COMPILED EXPRESSION, not library-wide. Evaluate
+// binds the input onto the expression's own environment
+// (`execEnv.bind("$", input)` when there are no bindings) and writes through
+// its timestamp pointer, so two goroutines evaluating one cached expression
+// read each other's input. This cache hands the same *Expression to every
+// caller, so the lock is what makes that safe.
 //
-// This lock cannot protect against jsonmapper evaluating at the same time --
-// that is a different package with a different lock over the same library
-// state. Which is exactly why a step's concurrency is refused above 1: a
-// parallel forEach would run mapping transforms and these evaluations at once.
-// See runStep.
+// It does NOT need to cover jsonmapper. Measured, not assumed --
+// expr_race_test.go runs two independent instances concurrently under -race
+// and reports nothing, and reports a race the moment this lock is removed.
+// The library's one mutable global, staticFrame, is written by init() and by
+// RegisterGlobalFunction, which nothing here calls. Two subsystems evaluating
+// at the same time is safe; two goroutines sharing one expression is not.
 var evaluating sync.Mutex
 
 // exprCache holds compiled expressions. Compiling is the expensive half and a
@@ -154,7 +157,7 @@ type runContext struct {
 	outputs map[string]any
 
 	// locals are the current loop variable (`as: state` gives ${state.…}) and
-	// any per-group values the catalogue builder adds (${slug}, ${group.…}).
+	// any per-group values the catalog builder adds (${slug}, ${group.…}).
 	locals map[string]any
 }
 

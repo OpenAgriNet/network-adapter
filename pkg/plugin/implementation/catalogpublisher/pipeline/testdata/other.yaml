@@ -2,10 +2,10 @@
 # each other. Its capability, metadata.name and slugs all differ from
 # minimal.yaml, which is what makes its directory and filenames differ.
 schemaRef:
-  uses: publish.oan/CataloguePipeline/v1
+  uses: publish.oan/CatalogPipeline/v1
 
 apiVersion: publish.oan/v1
-kind: CataloguePipeline
+kind: CatalogPipeline
 
 metadata:
   name: other

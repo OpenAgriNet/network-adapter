@@ -66,7 +66,7 @@ func unreachableEnv(name string) (string, bool) {
 }
 
 // The whole reason the run log exists: a restart minutes after a run must not
-// publish the day's catalogues a second time.
+// publish the day's catalogs a second time.
 func TestRunSkipsWhenTheRunLogSaysItAlreadyRanThisFiring(t *testing.T) {
 	upstream := newFixtureUpstream(t, twoGroupsOfThings)
 	ist, err := time.LoadLocation("Asia/Kolkata")

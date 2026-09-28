@@ -26,18 +26,18 @@ func TestValidateRefusesAFileWithNoSchemaRef(t *testing.T) {
 	}
 	// The message has to say what to add, or an operator has to go reading Go
 	// to find out.
-	if !strings.Contains(err.Error(), "publish.oan/CataloguePipeline/v1") {
+	if !strings.Contains(err.Error(), "publish.oan/CatalogPipeline/v1") {
 		t.Errorf("error %q does not name a contract to use", err)
 	}
 }
 
 // A contract this binary does not carry must name the ones it does.
 func TestValidateRefusesAnUnknownContract(t *testing.T) {
-	_, err := schemaFor("publish.oan/CataloguePipeline/v99")
+	_, err := schemaFor("publish.oan/CatalogPipeline/v99")
 	if err == nil {
 		t.Fatal("an unknown contract was accepted")
 	}
-	if !strings.Contains(err.Error(), "publish.oan/CataloguePipeline/v1") {
+	if !strings.Contains(err.Error(), "publish.oan/CatalogPipeline/v1") {
 		t.Errorf("error %q does not say which contracts exist", err)
 	}
 }
@@ -48,9 +48,9 @@ func TestValidateRefusesAnUnknownContract(t *testing.T) {
 func TestValidateRefusesADisagreeingAPIVersion(t *testing.T) {
 	document := map[string]any{
 		"apiVersion": "publish.somebodyelse/v1",
-		"schemaRef":  map[string]any{"uses": "publish.oan/CataloguePipeline/v1"},
+		"schemaRef":  map[string]any{"uses": "publish.oan/CatalogPipeline/v1"},
 	}
-	err := checkAPIVersionAgrees(document, "publish.oan/CataloguePipeline/v1", "example.yaml")
+	err := checkAPIVersionAgrees(document, "publish.oan/CatalogPipeline/v1", "example.yaml")
 	if err == nil {
 		t.Fatal("a file whose apiVersion contradicts its schemaRef was accepted")
 	}
@@ -60,7 +60,7 @@ func TestValidateRefusesADisagreeingAPIVersion(t *testing.T) {
 
 	// And the agreeing case must pass, or the check is just noise.
 	document["apiVersion"] = "publish.oan/v1"
-	if err := checkAPIVersionAgrees(document, "publish.oan/CataloguePipeline/v1", "example.yaml"); err != nil {
+	if err := checkAPIVersionAgrees(document, "publish.oan/CatalogPipeline/v1", "example.yaml"); err != nil {
 		t.Errorf("an agreeing apiVersion was refused: %v", err)
 	}
 }
@@ -78,8 +78,8 @@ func TestValidateReportsTheOffendingPath(t *testing.T) {
 		expect string
 	}{
 		"a misspelled top-level block": {
-			break_: func(doc map[string]any) { doc["catalogue"] = doc["catalog"] },
-			expect: "catalogue",
+			break_: func(doc map[string]any) { doc["catalogs"] = doc["catalog"] },
+			expect: "catalogs",
 		},
 		"a misspelled key inside a block": {
 			break_: func(doc map[string]any) {
@@ -234,7 +234,7 @@ func upstreamless(t *testing.T) map[string]any {
 	return doc
 }
 
-// A pipeline with no upstream is a real shape -- a catalogue whose content is
+// A pipeline with no upstream is a real shape -- a catalog whose content is
 // fixed -- and must validate without inventing credentials it never uses.
 func TestAnUpstreamlessPipelineMatchesTheContract(t *testing.T) {
 	if err := validateDocument(t, upstreamless(t)); err != nil {
@@ -305,5 +305,160 @@ func TestHasUpstreamIsTheBlocksPresence(t *testing.T) {
 	}
 	if !hasUpstream(Spec{Upstream: Upstream{BaseURL: "${inputs.baseUrl}"}}) {
 		t.Error("a spec with an upstream block reported none")
+	}
+}
+
+// apiKeyDocument is the fixture with its token exchange swapped for an apiKey.
+func apiKeyDocument(t *testing.T) map[string]any {
+	t.Helper()
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	inputs := doc["inputs"].(map[string]any)
+	delete(inputs, "tokenUser")
+	delete(inputs, "tokenSecret")
+	inputs["apiKey"] = map[string]any{"env": "TEST_API_KEY", "secret": true}
+	doc["upstream"].(map[string]any)["auth"] = map[string]any{
+		"kind":  "apiKey",
+		"token": map[string]any{"value": "${inputs.apiKey}", "carriedAs": "header", "name": "x-api-key"},
+	}
+	return doc
+}
+
+// An apiKey needs no token endpoint and no tokenUser/tokenSecret.
+func TestAnAPIKeyPipelineMatchesTheContract(t *testing.T) {
+	if err := validateDocument(t, apiKeyDocument(t)); err != nil {
+		t.Fatalf("an apiKey pipeline was refused: %v", err)
+	}
+}
+
+// auth.kind may be omitted; it then reads as tokenExchange, and a token
+// exchange's requirements still bind.
+func TestAnUnsetAuthKindIsATokenExchange(t *testing.T) {
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	delete(doc["upstream"].(map[string]any)["auth"].(map[string]any), "kind")
+	if err := validateDocument(t, doc); err != nil {
+		t.Fatalf("an auth block with no kind was refused: %v", err)
+	}
+	delete(doc["inputs"].(map[string]any), "tokenSecret")
+	err := validateDocument(t, doc)
+	if err == nil || !strings.Contains(err.Error(), "tokenSecret") {
+		t.Fatalf("an unset kind with no tokenSecret: err = %v, want one naming tokenSecret", err)
+	}
+}
+
+func TestAuthKindAndAPIKeyRulesBind(t *testing.T) {
+	tests := map[string]struct {
+		doc    func(t *testing.T) map[string]any
+		expect string
+	}{
+		"an apiKey with no name": {
+			doc: func(t *testing.T) map[string]any {
+				doc := apiKeyDocument(t)
+				token := doc["upstream"].(map[string]any)["auth"].(map[string]any)["token"].(map[string]any)
+				delete(token, "name")
+				return doc
+			},
+			expect: "name",
+		},
+		"an apiKey whose value is a literal key": {
+			doc: func(t *testing.T) map[string]any {
+				doc := apiKeyDocument(t)
+				token := doc["upstream"].(map[string]any)["auth"].(map[string]any)["token"].(map[string]any)
+				token["value"] = "sk-live-literal"
+				return doc
+			},
+			expect: "value",
+		},
+		"an unknown kind": {
+			doc: func(t *testing.T) map[string]any {
+				doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+				doc["upstream"].(map[string]any)["auth"].(map[string]any)["kind"] = "basic"
+				return doc
+			},
+			expect: "kind",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := validateDocument(t, tc.doc(t))
+			if err == nil {
+				t.Fatal("the broken file was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.expect) {
+				t.Errorf("error %q does not name %q", err, tc.expect)
+			}
+		})
+	}
+}
+
+// A step may name what to do when the credential is rejected past the
+// re-exchange budget, the same way it names empty results and outages.
+func TestOnErrorMayNameReauth(t *testing.T) {
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	var found bool
+	for _, raw := range doc["pipeline"].([]any) {
+		step := raw.(map[string]any)
+		if step["uses"] == "http.get" {
+			step["onError"] = map[string]any{"reauth": map[string]any{"record": "authErrors", "continue": true}}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the fixture has no http.get step to give an onError")
+	}
+	if err := validateDocument(t, doc); err != nil {
+		t.Fatalf("onError.reauth was refused: %v", err)
+	}
+}
+
+// refuseWhen may tolerate a number of failures; the contract must allow what
+// the publish step understands, and nothing else.
+func TestRefuseWhenThresholdMatchesTheContract(t *testing.T) {
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	publish := doc["publish"].(map[string]any)
+	publish["refuseWhen"] = "collection.groupErrors > 3"
+	if err := validateDocument(t, doc); err != nil {
+		t.Fatalf("refuseWhen `> 3` was refused: %v", err)
+	}
+	publish["refuseWhen"] = "collection.groupErrors >= 3"
+	if err := validateDocument(t, doc); err == nil {
+		t.Fatal("refuseWhen `>= 3` was accepted; the publish step would refuse it at run time")
+	}
+}
+
+// Keys nothing reads are refused, not tolerated: a guard the file states and
+// no code enforces is a rule believed to be in force.
+func TestInertKeysAreRefused(t *testing.T) {
+	tests := map[string]struct {
+		mutate func(doc map[string]any)
+		expect string
+	}{
+		"upstream.guards": {
+			mutate: func(doc map[string]any) {
+				doc["upstream"].(map[string]any)["guards"] = map[string]any{"responseMustBe": "array"}
+			},
+			expect: "guards",
+		},
+		"publish.concurrency": {
+			mutate: func(doc map[string]any) { doc["publish"].(map[string]any)["concurrency"] = 1 },
+			expect: "concurrency",
+		},
+		"publish.timeout": {
+			mutate: func(doc map[string]any) { doc["publish"].(map[string]any)["timeout"] = "180s" },
+			expect: "timeout",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+			tc.mutate(doc)
+			err := validateDocument(t, doc)
+			if err == nil {
+				t.Fatalf("%s was accepted, but nothing reads it", name)
+			}
+			if !strings.Contains(err.Error(), tc.expect) {
+				t.Errorf("error %q does not name %q", err, tc.expect)
+			}
+		})
 	}
 }

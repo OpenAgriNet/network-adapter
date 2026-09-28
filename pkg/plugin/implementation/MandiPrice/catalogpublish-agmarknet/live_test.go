@@ -1,4 +1,4 @@
-package agmarket
+package agmarknet
 
 // live_test.go drives each pipeline step against the REAL services, one step
 // at a time, so a person can watch what each stage actually produces before
@@ -7,7 +7,7 @@ package agmarket
 // Every test here is skipped unless MANDI_LIVE=1, so `go test ./...` stays
 // hermetic. The publishing step needs a second opt-in of its own
 // (MANDI_LIVE_PUBLISH=1) because it is the only one with a side effect
-// somebody else can see: it puts catalogues onto the network.
+// somebody else can see: it puts catalogs onto the network.
 //
 // These live in the package rather than a cmd/ because everything they
 // exercise is unexported. That is also the reason this file exists at all --
@@ -229,20 +229,20 @@ func TestLive_9_BuildAgainstLiveUpstream(t *testing.T) {
 		t.Skipf("not due, so nothing ran: %s", report.Reason)
 	}
 
-	t.Logf("catalogues: %d in %s", len(report.Catalogues), report.OutDir)
+	t.Logf("catalogs: %d in %s", len(report.Catalogs), report.OutDir)
 	for name, count := range report.Counters {
 		t.Logf("  %-34s %d", name, count)
 	}
-	for i, catalogue := range report.Catalogues {
+	for i, catalog := range report.Catalogs {
 		if i == 5 {
-			t.Logf("  ... and %d more", len(report.Catalogues)-5)
+			t.Logf("  ... and %d more", len(report.Catalogs)-5)
 			break
 		}
-		t.Logf("  %-10s %s (%d bytes)", catalogue.Slug, catalogue.CatalogID, len(catalogue.Content))
+		t.Logf("  %-10s %s (%d bytes)", catalog.Slug, catalog.CatalogID, len(catalog.Content))
 	}
 
-	if len(report.Catalogues) == 0 {
-		t.Error("the live upstream produced no catalogues at all")
+	if len(report.Catalogs) == 0 {
+		t.Error("the live upstream produced no catalogs at all")
 	}
 	if report.Errors > 0 {
 		t.Errorf("%d parts of the collection failed; publishing would be refused", report.Errors)

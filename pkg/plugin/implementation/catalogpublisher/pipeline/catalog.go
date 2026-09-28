@@ -1,27 +1,27 @@
 package pipeline
 
-// build.go runs the `catalog:` block: the part of a pipeline file that turns
-// one flat collection of records into the catalogue documents a run publishes.
+// catalog.go runs the `catalog:` block: the part of a pipeline file that turns
+// one flat collection of records into the catalog documents a run publishes.
 //
 // It is the generalisation of MandiPrice's catalog.go, whose behaviour it
 // preserves rule for rule -- the geometry budget, the two exclusions, the
 // annotation, the refusal to publish an empty group -- with every one of them
 // read from the file instead of written in Go. Nothing here knows what a
-// mandi, a market or a state is: a second capability gets a catalogue by
+// mandi, a market or a state is: a second capability gets a catalog by
 // writing a `catalog:` block and no Go at all.
 //
 // The order is the order the file reads in, and it is not interchangeable:
 //
-//	groupBy    one catalogue per group
-//	exclude    drop a record, with a stated reason, from the catalogue entirely
+//	groupBy    one catalog per group
+//	exclude    drop a record, with a stated reason, from the catalog entirely
 //	annotate   label a record that still publishes
 //	order      make two runs of one collection read the same way
-//	chunk      split a group that carries more than a catalogue may hold
+//	chunk      split a group that carries more than a catalog may hold
 //	identity   the ids the document and its resources publish under
 //	render     the mapping that turns a chunk into the document
 //
-// `output:` is deliberately NOT read here. A built catalogue is a value; where
-// it lands on disk is run.go's business (see WriteCatalogues), and reading the
+// `output:` is deliberately NOT read here. A built catalog is a value; where
+// it lands on disk is run.go's business (see WriteCatalogs), and reading the
 // same block in two places is how the two drift apart.
 
 import (
@@ -42,11 +42,11 @@ import (
 // wording -- "excluded:coordinate missing" -- because a bare total tells an
 // operator that something was dropped but never which rule dropped it.
 const (
-	catalogCounterGroups     = "groups"
-	catalogCounterEmpty      = "emptyGroups"
-	catalogCounterCatalogues = "catalogues"
-	catalogCounterPublished  = "published"
-	catalogCounterExcluded   = "excluded"
+	catalogCounterGroups    = "groups"
+	catalogCounterEmpty     = "excludedGroups" // a group every member of which was excluded
+	catalogCounterCatalogs  = "catalogs"
+	catalogCounterPublished = "published"
+	catalogCounterExcluded  = "excluded"
 
 	catalogExcludedPrefix  = "excluded:"
 	catalogAnnotatedPrefix = "annotated:"
@@ -61,7 +61,7 @@ const (
 // ever reads.
 const catalogResourceField = "resourceId"
 
-// buildCatalogues applies a file's `catalog:` block to a collection.
+// buildCatalogs applies a file's `catalog:` block to a collection.
 //
 // rc supplies everything a `${...}` outside a record can name (the resolved
 // inputs, the built-ins); cache compiles and applies the JSONata that reaches
@@ -70,8 +70,8 @@ const catalogResourceField = "resourceId"
 //
 // The counters are the domain's own report numbers, handed back rather than
 // logged so a collector can put them in CollectResult.Counters.
-func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]any,
-	rc *runContext, cache *exprCache, mapper Mapper, mappingBase string) ([]Catalogue, map[string]int, error) {
+func buildCatalogs(ctx context.Context, catalog Catalog, records []map[string]any,
+	rc *runContext, cache *exprCache, mapper Mapper, mappingBase string) ([]BuiltCatalog, map[string]int, error) {
 
 	counters := map[string]int{}
 
@@ -82,7 +82,7 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 		return nil, counters, fmt.Errorf("the catalog block names no render mapping")
 	}
 	if catalog.Identity.CatalogID == "" {
-		return nil, counters, fmt.Errorf("the catalog block names no identity.catalogId: a catalogue with no id cannot be published")
+		return nil, counters, fmt.Errorf("the catalog block names no identity.catalogId: a catalog with no id cannot be published")
 	}
 	if err := catalogCheckDirection(catalog.Order.Direction); err != nil {
 		return nil, counters, err
@@ -94,7 +94,7 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 	}
 	counters[catalogCounterGroups] = len(keys)
 
-	var built []Catalogue
+	var built []BuiltCatalog
 	named := map[string]string{}
 
 	for _, key := range keys {
@@ -111,8 +111,8 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 			return nil, counters, fmt.Errorf("group %q: %w", key, err)
 		}
 
-		// A group left with nothing publishable produces NO catalogue, not an
-		// empty one. An empty catalogue is not "no news": publishing it
+		// A group left with nothing publishable produces NO catalog, not an
+		// empty one. An empty catalog is not "no news": publishing it
 		// retires that group's resources from the network on the next MERGE.
 		if len(publishable) == 0 {
 			counters[catalogCounterEmpty]++
@@ -129,38 +129,38 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 		}
 
 		for index, chunk := range chunks {
-			catalogue, err := catalogRender(ctx, catalog, chunk, index+1, key, scope, cache, mapper, mappingBase)
+			catalog, err := catalogRender(ctx, catalog, chunk, index+1, key, scope, cache, mapper, mappingBase)
 			if err != nil {
 				return nil, counters, fmt.Errorf("group %q: %w", key, err)
 			}
-			// Two catalogues under one slug are two catalogues under one
+			// Two catalogs under one slug are two catalogs under one
 			// catalogId: the second MERGE would replace the first one's
 			// resources instead of adding to them, and the second file would
 			// overwrite the first on disk.
 			// Compared case-FOLDED, because the filesystem may be: on macOS
 			// and Windows "mh" and "MH" are one file, so two groups whose
 			// names differ only in case would silently overwrite each other
-			// and publish one catalogue under two ids.
-			folded := strings.ToLower(catalogue.Slug)
+			// and publish one catalog under two ids.
+			folded := strings.ToLower(catalog.Slug)
 			if previous, taken := named[folded]; taken {
 				// The two mistakes look identical from here and are fixed in
 				// different places, so the message has to say which one it is:
 				// an exact repeat is a chunk template that ignores the chunk
 				// index, while a folded one is two group names.
-				if previous == catalogue.Slug {
+				if previous == catalog.Slug {
 					return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q again; "+
 						"catalog.chunk.slug must include the chunk index, or every chunk of a split "+
 						"group is one catalogId and one file",
-						key, index+1, catalogue.Slug)
+						key, index+1, catalog.Slug)
 				}
 				return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q, which collides with %q; "+
 					"they differ only in case and are one file on a case-insensitive filesystem",
-					key, index+1, catalogue.Slug, previous)
+					key, index+1, catalog.Slug, previous)
 			}
-			named[folded] = catalogue.Slug
+			named[folded] = catalog.Slug
 
-			built = append(built, catalogue)
-			counters[catalogCounterCatalogues]++
+			built = append(built, catalog)
+			counters[catalogCounterCatalogs]++
 			counters[catalogCounterPublished] += len(chunk)
 		}
 	}
@@ -172,8 +172,8 @@ func buildCatalogues(ctx context.Context, catalog Catalog, records []map[string]
 // sorted order so a run partitions the same way twice.
 //
 // A record that does not carry the field is an ERROR. Grouped under the empty
-// key it would publish as a catalogue named after nothing, and a mistyped
-// groupBy would collapse an entire collection into one such catalogue.
+// key it would publish as a catalog named after nothing, and a mistyped
+// groupBy would collapse an entire collection into one such catalog.
 func catalogGroup(records []map[string]any, by string) ([]string, map[string][]map[string]any, error) {
 	groups := map[string][]map[string]any{}
 	var keys []string
@@ -221,7 +221,7 @@ func catalogBlank(value any) bool {
 }
 
 // catalogSelect applies the exclusions and then the annotations, in that
-// order: a record kept out of the catalogue is not a record to label.
+// order: a record kept out of the catalog is not a record to label.
 //
 // The records it returns are COPIES. An annotation writing onto the caller's
 // collection would leave the previous run's labels on a reused record.
@@ -345,11 +345,11 @@ func catalogCheckDirection(direction string) error {
 //
 // A record costing nothing never forces a split; a run is cut only when adding
 // the NEXT record would exceed the budget, so exactly budget-many costing
-// records still make one catalogue. Order is preserved, so the partition is
+// records still make one catalog. Order is preserved, so the partition is
 // deterministic and a record lands in exactly one chunk.
 //
-// A budget of zero or less means the group is not split at all -- a catalogue
-// with no declared limit is one catalogue, not an unbounded number of them.
+// A budget of zero or less means the group is not split at all -- a catalog
+// with no declared limit is one catalog, not an unbounded number of them.
 func catalogChunk(records []map[string]any, spec Chunk, cache *exprCache) ([][]map[string]any, error) {
 	if spec.Budget <= 0 {
 		return [][]map[string]any{records}, nil
@@ -403,25 +403,25 @@ func catalogCost(expr string, record map[string]any, cache *exprCache) (int, err
 // catalogRender names one chunk and turns it into a document.
 func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 	index int, key string, scope *runContext, cache *exprCache,
-	mapper Mapper, mappingBase string) (Catalogue, error) {
+	mapper Mapper, mappingBase string) (BuiltCatalog, error) {
 
 	slug, err := catalogSlug(catalog, index, key, scope, cache)
 	if err != nil {
-		return Catalogue{}, err
+		return BuiltCatalog{}, err
 	}
 
 	chunkScope := scope.with("slug", slug).with("chunkIndex", index)
 
 	catalogID, err := chunkScope.interpolate(catalog.Identity.CatalogID)
 	if err != nil {
-		return Catalogue{}, fmt.Errorf("identity.catalogId: %w", err)
+		return BuiltCatalog{}, fmt.Errorf("identity.catalogId: %w", err)
 	}
 
 	if catalog.Identity.ResourceID != "" {
 		for _, record := range chunk {
 			resourceID, err := catalogRecordScope(chunkScope, record).interpolate(catalog.Identity.ResourceID)
 			if err != nil {
-				return Catalogue{}, fmt.Errorf("identity.resourceId: %w", err)
+				return BuiltCatalog{}, fmt.Errorf("identity.resourceId: %w", err)
 			}
 			record[catalogResourceField] = resourceID
 		}
@@ -431,7 +431,7 @@ func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 	for name, template := range catalog.Render.Local {
 		value, err := chunkScope.interpolate(template)
 		if err != nil {
-			return Catalogue{}, fmt.Errorf("render local %q: %w", name, err)
+			return BuiltCatalog{}, fmt.Errorf("render local %q: %w", name, err)
 		}
 		local[name] = value
 	}
@@ -447,10 +447,10 @@ func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 
 	content, err := mapper.Transform(ctx, ref, definition.DirectionResponse, input)
 	if err != nil {
-		return Catalogue{}, fmt.Errorf("rendering %s: %w", slug, err)
+		return BuiltCatalog{}, fmt.Errorf("rendering %s: %w", slug, err)
 	}
 
-	return Catalogue{Slug: slug, CatalogID: catalogID, Content: content}, nil
+	return BuiltCatalog{Slug: slug, CatalogID: catalogID, Content: content}, nil
 }
 
 // catalogSlug renders the chunk's name.
@@ -514,7 +514,7 @@ func catalogSlug(catalog Catalog, index int, key string, scope *runContext, cach
 		return "", failed
 	}
 	if strings.TrimSpace(out) == "" {
-		return "", fmt.Errorf("chunk slug %q rendered empty: a catalogue with no name cannot be written or published", catalog.Chunk.Slug)
+		return "", fmt.Errorf("chunk slug %q rendered empty: a catalog with no name cannot be written or published", catalog.Chunk.Slug)
 	}
 	if err := safeSlug(out, fmt.Sprintf("chunk slug %q", catalog.Chunk.Slug)); err != nil {
 		return "", err
@@ -522,7 +522,7 @@ func catalogSlug(catalog Catalog, index int, key string, scope *runContext, cach
 	return out, nil
 }
 
-// WriteCatalogues writes each built catalog to <dir>/<filenamePrefix>-<slug>.json,
+// WriteCatalogs writes each built catalog to <dir>/<filenamePrefix>-<slug>.json,
 // after clearing any catalog this run did not produce.
 //
 // Indented, because these files exist to be read: somebody reviews what is
@@ -539,19 +539,19 @@ func catalogSlug(catalog Catalog, index int, key string, scope *runContext, cach
 // running this by hand could see the directory and notice; the daily
 // unattended loop this package exists for cannot, and the bug is invisible on
 // the first run and wrong on every one after it.
-func WriteCatalogues(built []Catalogue, dir, filenamePrefix string) error {
+func WriteCatalogs(built []BuiltCatalog, dir, filenamePrefix string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create catalog output directory: %w", err)
 	}
 
-	if err := RemoveStaleCatalogues(dir, filenamePrefix); err != nil {
+	if err := RemoveStaleCatalogs(dir, filenamePrefix); err != nil {
 		return err
 	}
 
 	for _, catalog := range built {
 		var indented bytes.Buffer
 		if err := json.Indent(&indented, catalog.Content, "", "  "); err != nil {
-			return fmt.Errorf("indent JSON for catalogue %s: %w", catalog.Slug, err)
+			return fmt.Errorf("indent JSON for catalog %s: %w", catalog.Slug, err)
 		}
 
 		path := filepath.Join(dir, fmt.Sprintf("%s-%s.json", filenamePrefix, catalog.Slug))
@@ -562,10 +562,10 @@ func WriteCatalogues(built []Catalogue, dir, filenamePrefix string) error {
 	return nil
 }
 
-// RemoveStaleCatalogues deletes the catalogs already in dir, so only this run's
+// RemoveStaleCatalogs deletes the catalogs already in dir, so only this run's
 // output is left for the publish step to find.
 //
-// The match is deliberately the SAME one catalogueFiles (publish.go) makes --
+// The match is deliberately the SAME one catalogFiles (publish.go) makes --
 // a non-directory entry whose name starts with "<filenamePrefix>-" and ends
 // in ".json" -- because the set this removes has to be exactly the set that
 // would otherwise be published. Matching more broadly would delete a file
@@ -575,7 +575,7 @@ func WriteCatalogues(built []Catalogue, dir, filenamePrefix string) error {
 // Nothing else is touched: no recursion, no directories, and no file outside
 // that pattern. This directory is an operator's to point wherever they like,
 // and it may hold things that are not ours.
-func RemoveStaleCatalogues(dir, filenamePrefix string) error {
+func RemoveStaleCatalogs(dir, filenamePrefix string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read catalog output directory: %w", err)
@@ -594,7 +594,7 @@ func RemoveStaleCatalogues(dir, filenamePrefix string) error {
 	return nil
 }
 
-// slugShape is what a catalogue name may contain.
+// slugShape is what a catalog name may contain.
 //
 // Deliberately narrow, because a slug is UPSTREAM DATA that becomes a
 // filename, and three separate things go wrong when it is not:
@@ -605,13 +605,13 @@ func RemoveStaleCatalogues(dir, filenamePrefix string) error {
 //     this; a bare ".." is harmless, since it only ever lands inside the single
 //     filename "<prefix>-...json".
 //   - "J/K" writes into a subdirectory, where the publisher's
-//     "<prefix>-*.json" glob never finds it. The catalogue is built, reported
+//     "<prefix>-*.json" glob never finds it. The catalog is built, reported
 //     as built, and silently never published.
 //   - "mh" and "MH" are the same file on a case-insensitive filesystem, so
-//     one group's catalogue quietly overwrites another's.
+//     one group's catalog quietly overwrites another's.
 //
 // Refused rather than sanitised: rewriting two different upstream values into
-// one safe name would merge two groups' catalogues, which is worse than
+// one safe name would merge two groups' catalogs, which is worse than
 // stopping.
 var slugShape = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
@@ -620,9 +620,9 @@ func safeSlug(slug, source string) error {
 	if slugShape.MatchString(slug) {
 		return nil
 	}
-	return fmt.Errorf("%s produced %q, which cannot be used as a catalogue name: "+
+	return fmt.Errorf("%s produced %q, which cannot be used as a catalog name: "+
 		"a name becomes a filename and must match %s. A slash is the danger -- it both "+
-		"writes outside the directory the publisher globs (so the catalogue is built and "+
+		"writes outside the directory the publisher globs (so the catalog is built and "+
 		"never published) and, with enough ../ segments, outside the output directory "+
 		"entirely", source, slug, slugShape)
 }

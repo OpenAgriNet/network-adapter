@@ -1,6 +1,6 @@
 package catalogcrawler
 
-// publishpipelines.go is the crawler's side of the scheduled publish
+// publishsweep.go is the crawler's side of the scheduled publish
 // pipelines: once per tick it asks discovery which capabilities publish, and
 // hands each one's record to the pipeline the registry names.
 //
@@ -12,8 +12,8 @@ package catalogcrawler
 //
 // NOTHING HERE LISTS CAPABILITIES. The registry's publish action names a
 // pipeline YAML by its repo-relative path; the binary embeds every
-// */cataloguepublish-*/ folder under pkg/plugin/implementation (see that
-// package's publishpipelines.go); a capability publishes by having both. No
+// */catalogpublish-*/ folder under pkg/plugin/implementation (see that
+// package's embedded.go); a capability publishes by having both. No
 // config list, no import per capability, no Go per capability.
 //
 // The crawler deliberately owns as little of this as possible. It owns WHEN to
@@ -38,6 +38,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
@@ -65,22 +66,28 @@ const (
 	// due -- not how often one runs.
 	cfgPublishTickIntervalSec = "publishTickIntervalSeconds"
 
-	// cfgPublishCatalogOutputDir keeps built catalogues for inspection. Each
+	// cfgPublishCatalogOutputDir keeps built catalogs for inspection. Each
 	// pipeline gets its own subdirectory beneath it. Empty means a temporary
 	// directory each run removes.
 	cfgPublishCatalogOutputDir = "publishCatalogOutputDir"
 )
 
+// The crawler's store is the run log every pipeline claims its firing in.
+// Asserted here, not assumed: pipeline.Run finds the claim by a type
+// assertion, so a store whose method drifted would compile, run, and silently
+// let every replica publish.
+var _ pipeline.RunClaimer = (*store.Store)(nil)
+
 // defaultPublishTickInterval is how often the due-ness check runs.
 //
 // Five minutes, not one: the check consults the registry, and the cost of a
 // late start is bounded by this interval -- a pipeline due at midnight starts
-// by 00:05 at the latest, which for a daily catalogue is indistinguishable
+// by 00:05 at the latest, which for a daily catalog is indistinguishable
 // from on time.
 const defaultPublishTickInterval = 5 * time.Minute
 
-// pipelinePublishTimeout bounds each pipeline catalogue's post. Generous, and
-// longer than a crawled catalogue's: a state catalogue runs to hundreds of KB
+// pipelinePublishTimeout bounds each pipeline catalog's post. Generous, and
+// longer than a crawled catalog's: a state catalog runs to hundreds of KB
 // and the adapter signs, forwards and indexes it before answering.
 const pipelinePublishTimeout = 180 * time.Second
 
@@ -93,8 +100,14 @@ type publishConfig struct {
 
 	// publishURL is the provider adapter's base address, derived from
 	// discoveryPushUrl (its /publish endpoint) and handed to every pipeline,
-	// so crawled catalogues and pipelines all reach the same /publish.
+	// so crawled catalogs and pipelines all reach the same /publish.
 	publishURL string
+
+	// participantID and bppURI are this deployment's identity, the same keys
+	// the crawl sink reads. The sweep's sink stamps them onto every pipeline
+	// body as context.bppId/bppUri: the pipeline does not know who it runs as.
+	participantID string
+	bppURI        string
 }
 
 // publishConfigFrom reads the publish keys.
@@ -115,6 +128,9 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 		outDir:  strings.TrimSpace(config[cfgPublishCatalogOutputDir]),
 
 		publishURL: publishBase(config[cfgDiscoveryURL]),
+
+		participantID: strings.TrimSpace(config[cfgParticipantID]),
+		bppURI:        strings.TrimSpace(config[cfgBppURI]),
 	}, nil
 }
 
@@ -145,7 +161,7 @@ type publishSweep struct {
 	log    *slog.Logger
 
 	// publisher is the sink every pipeline publishes through -- the same
-	// Client.Push the crawl path publishes crawled catalogues with.
+	// Client.Push the crawl path publishes crawled catalogs with.
 	publisher pipeline.Publisher
 
 	// run is the pipeline call, injectable so this file's tick logic can be
@@ -184,7 +200,7 @@ type attemptBudget struct {
 // A failed run is deliberately not recorded, so the next tick retries -- right
 // for a transient outage at midnight, wrong for a failure that will not clear.
 // Without a cap the whole pipeline re-fetches and re-publishes every five
-// minutes: about 288 full runs a day, each re-sending catalogues the network
+// minutes: about 288 full runs a day, each re-sending catalogs the network
 // has already accepted.
 //
 // Three, because the failures worth retrying (a restarting upstream, a
@@ -243,19 +259,23 @@ func (p *publishSweep) release() {
 // firing as already handled and waits for the next scheduled one. The mark
 // goes to the database, so a restart does not resume the storm.
 //
-// The counter itself is in memory, so a restart does grant a fresh budget.
-// That is the deliberate trade: it needs no migration, and a crash-looping
-// process has a louder problem than three extra attempts.
+// Both the budget and the served mark are keyed on the PIPELINE (its
+// embedded path), the same key pipeline.Run reads, so the give-up lands on
+// the row the next tick checks and two pipelines of one capability keep
+// separate budgets.
+//
+// The counter itself is in memory, so a restart -- or another replica --
+// grants a fresh budget. That is the deliberate trade: it needs no
+// migration, and a crash-looping process has a louder problem than three
+// extra attempts.
 //
 // KNOWN LIMITATION: the run log has one column, the timestamp, so a firing
 // marked served here is indistinguishable from one that published. Anyone
-// reading the table to answer "did today's catalogue go out?" gets yes for a
+// reading the table to answer "did today's catalog go out?" gets yes for a
 // day that failed three times. The WARN below is the only record of the
-// difference. Giving the log a status column is the fix, and it needs a
-// migration -- which is exactly what this design was chosen to avoid, so it
-// belongs to whoever next changes that schema for another reason.
-func (p *publishSweep) afterRun(ctx context.Context, capability string, runErr error) error {
-	if capability == "" {
+// difference. A status column is the fix, and it needs a migration.
+func (p *publishSweep) afterRun(ctx context.Context, pipelineKey string, runErr error) error {
+	if pipelineKey == "" {
 		return runErr // nothing to key the budget on; report and move on
 	}
 	if p.failures == nil {
@@ -263,15 +283,15 @@ func (p *publishSweep) afterRun(ctx context.Context, capability string, runErr e
 	}
 
 	if runErr == nil {
-		delete(p.failures, capability)
+		delete(p.failures, pipelineKey)
 		return nil
 	}
 
-	budget := p.failures[capability]
+	budget := p.failures[pipelineKey]
 	switch {
 	case budget == nil:
 		budget = &attemptBudget{}
-		p.failures[capability] = budget
+		p.failures[pipelineKey] = budget
 	case budget.gaveUp:
 		// A failure after a give-up means the schedule has come round again.
 		*budget = attemptBudget{}
@@ -283,19 +303,19 @@ func (p *publishSweep) afterRun(ctx context.Context, capability string, runErr e
 	}
 
 	if p.runLog != nil {
-		if err := p.runLog.RecordPipelineRun(ctx, capability, time.Now()); err != nil {
+		if err := p.runLog.RecordPipelineRun(ctx, pipelineKey, time.Now()); err != nil {
 			// Not fatal: the cost is that the retrying continues, which is
 			// the situation we were already in. Leaving gaveUp unset means
 			// the next failure tries to mark it served again.
 			p.log.ErrorContext(ctx, "catalogcrawler: could not mark the firing as served; "+
-				"this pipeline will keep retrying", "capability", capability, "error", err)
+				"this pipeline will keep retrying", "pipeline", pipelineKey, "error", err)
 			return runErr
 		}
 	}
 	budget.gaveUp = true
 	p.log.WarnContext(ctx, "catalogcrawler: giving up on this firing after repeated failures; "+
 		"waiting for the next scheduled one",
-		"capability", capability, "attempts", budget.count)
+		"pipeline", pipelineKey, "attempts", budget.count)
 	return runErr
 }
 
@@ -313,16 +333,17 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 		Publisher:  p.publisher,
 	})
 	if err != nil {
-		return p.afterRun(ctx, capabilityOf(report, record), err)
+		return p.afterRun(ctx, files.Path, err)
 	}
-	if !report.Due {
-		// Not a success and not a failure: nothing ran, so the attempt
-		// budget is left exactly as it was.
-		p.log.DebugContext(ctx, "catalogcrawler: publish pipeline not due",
-			"capability", report.Capability, "reason", report.Reason)
+	if !report.Due || report.ClaimedElsewhere {
+		// Not a success and not a failure: nothing ran here -- not due, or
+		// another replica owns this firing -- so the attempt budget is left
+		// exactly as it was.
+		p.log.DebugContext(ctx, "catalogcrawler: publish pipeline did not run here",
+			"pipeline", files.Path, "reason", report.Reason)
 		return nil
 	}
-	_ = p.afterRun(ctx, capabilityOf(report, record), nil)
+	_ = p.afterRun(ctx, files.Path, nil)
 
 	published := 0
 	if report.Published != nil {
@@ -330,13 +351,15 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 	}
 	p.log.InfoContext(ctx, "catalogcrawler: publish pipeline ran",
 		"capability", report.Capability, "pipeline", report.PipelinePath,
-		"catalogs", len(report.Catalogues), "collectionErrors", report.Errors,
+		"catalogs", len(report.Catalogs), "collectionErrors", report.Errors,
 		"counters", report.Counters, "published", published, "publishEnabled", p.cfg.publish)
 	return nil
 }
 
 // newPublishSweep wires the sweep over a discovery source.
 func newPublishSweep(cfg publishConfig, source publishSource, runLog pipeline.RunLog, log *slog.Logger) *publishSweep {
+	publisher := sink.NewDiscoverySink("", cfg.participantID, cfg.bppURI, 0, pipelinePublishTimeout)
+	publisher.Client.Log = log
 	sweep := &publishSweep{
 		cfg:    cfg,
 		source: source,
@@ -344,9 +367,9 @@ func newPublishSweep(cfg publishConfig, source publishSource, runLog pipeline.Ru
 		log:    log,
 
 		// Publish posts to the base it is given (cfg.publishURL, via
-		// RunOptions.PublishURL), so the sink's own endpoint and identity are
-		// unused on this path: pipeline bodies are complete envelopes.
-		publisher: sink.NewDiscoverySink("", "", "", 0, pipelinePublishTimeout),
+		// RunOptions.PublishURL), so the sink's own endpoint is unused on this
+		// path. Its identity is not: the sink stamps it onto every body.
+		publisher: publisher,
 	}
 	sweep.run = sweep.runPipeline
 	return sweep
@@ -360,19 +383,4 @@ func servedActions(record *model.ProviderRecord) string {
 	}
 	sort.Strings(served)
 	return strings.Join(served, ",")
-}
-
-// capabilityOf names the pipeline a run belongs to, falling back to the
-// binding key when a run failed before it could read the file.
-func capabilityOf(report pipeline.RunReport, record *model.ProviderRecord) string {
-	if report.Capability != "" {
-		return report.Capability
-	}
-	if record == nil {
-		return ""
-	}
-	if _, capability, found := strings.Cut(record.BindingKey, "|"); found {
-		return capability
-	}
-	return record.BindingKey
 }
