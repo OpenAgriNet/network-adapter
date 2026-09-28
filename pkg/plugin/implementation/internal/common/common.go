@@ -87,7 +87,7 @@ type Step struct {
 
 	// One per provider, built at startup so a request only looks one up. Each
 	// holds its own token, so two oauth2 providers cannot share one.
-	auth map[string]*authenticator
+	auth map[string]*Authenticator
 }
 
 // New creates the step.
@@ -119,10 +119,10 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		mapper:        mapper,
 		// The timeout is per request, from the registry's budget.
 		httpClient: &http.Client{},
-		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
+		auth:       make(map[string]*Authenticator, len(cfg.AuthByProvider)),
 	}
 	for provider, profile := range cfg.AuthByProvider {
-		step.auth[provider] = &authenticator{cfg: *profile}
+		step.auth[provider] = NewAuthenticator(*profile)
 	}
 
 	closer := func() error {

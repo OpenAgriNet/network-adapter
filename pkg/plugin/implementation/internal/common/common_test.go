@@ -79,7 +79,7 @@ func stepWithProviderAuth(a AuthProfile) *Step {
 	a.Provider = testProvider
 	return &Step{
 		config: &Config{BindingKeys: []string{testBindingKey}, AuthByProvider: authForTestProvider(a)},
-		auth:   map[string]*authenticator{testProvider: {cfg: a}},
+		auth:   map[string]*Authenticator{testProvider: {cfg: a}},
 	}
 }
 
