@@ -927,7 +927,8 @@
           "description": "Makes a run read the same way twice, and fixes which records land in which chunk.",
           "properties": {
             "by": {
-              "type": "string"
+              "type": "string",
+              "description": "The order a group is SPLIT in: it decides which records land in which chunk. Use a key new records sort to the end of (an id), so adding a record never moves others between catalogIds -- under MERGE the old copy would never be removed."
             },
             "direction": {
               "type": "string",
@@ -935,6 +936,15 @@
                 "asc",
                 "desc"
               ]
+            },
+            "renderBy": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Optional. The order a reader sees inside each catalog, applied after the split: keys in turn, text case-insensitively, numbers numerically."
             }
           }
         },

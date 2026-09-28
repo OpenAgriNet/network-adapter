@@ -156,6 +156,69 @@
             "resources": [
               {
                 "descriptor": {
+                  "code": "102",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Nashik. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Nashik",
+                  "shortDesc": "Mandi prices at Nashik, Nashik, Maharashtra"
+                },
+                "id": "resource:mandi-price:market:102",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "areaCode": "502",
+                      "areaLevel": "District",
+                      "areaName": "Nashik",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "historicalDataAvailable": true,
+                  "historyPeriod": "P1Y",
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "502",
+                    "marketCode": "102",
+                    "marketName": "Nashik",
+                    "state": "MH"
+                  },
+                  "source": {
+                    "sourceId": "agmarknet",
+                    "sourceName": "Agmarknet Vistaar",
+                    "sourceUri": "https://agmarknet.gov.in/"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ],
+                  "updateFrequency": "P1D",
+                  "validity": {
+                    "endsAt": "2026-09-21T23:59:59Z",
+                    "startsAt": "2026-09-21T00:00:00Z"
+                  }
+                }
+              },
+              {
+                "descriptor": {
                   "code": "101",
                   "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Pune. The result uses the same MandiPrice type in Direct information mode.",
                   "name": "Pune",
@@ -214,69 +277,6 @@
                     {
                       "code": "24",
                       "name": "Potato"
-                    }
-                  ],
-                  "supportedPriceFields": [
-                    "Minimum",
-                    "Maximum",
-                    "Modal"
-                  ],
-                  "updateFrequency": "P1D",
-                  "validity": {
-                    "endsAt": "2026-09-21T23:59:59Z",
-                    "startsAt": "2026-09-21T00:00:00Z"
-                  }
-                }
-              },
-              {
-                "descriptor": {
-                  "code": "102",
-                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Nashik. The result uses the same MandiPrice type in Direct information mode.",
-                  "name": "Nashik",
-                  "shortDesc": "Mandi prices at Nashik, Nashik, Maharashtra"
-                },
-                "id": "resource:mandi-price:market:102",
-                "resourceAttributes": {
-                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
-                  "@type": "openagrinet:MandiPrice",
-                  "coverageAreas": [
-                    {
-                      "areaCode": "502",
-                      "areaLevel": "District",
-                      "areaName": "Nashik",
-                      "codeScheme": "AGMARKNET-DISTRICT"
-                    },
-                    {
-                      "areaCode": "IN-MH",
-                      "areaLevel": "State",
-                      "areaName": "Maharashtra",
-                      "codeScheme": "ISO-3166-2"
-                    }
-                  ],
-                  "historicalDataAvailable": true,
-                  "historyPeriod": "P1Y",
-                  "informationMode": "OnDemand",
-                  "languages": [
-                    "en"
-                  ],
-                  "market": {
-                    "district": "502",
-                    "marketCode": "102",
-                    "marketName": "Nashik",
-                    "state": "MH"
-                  },
-                  "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
-                  },
-                  "subjectCategories": [
-                    "Market"
-                  ],
-                  "supportedCommodities": [
-                    {
-                      "code": "23",
-                      "name": "Onion"
                     }
                   ],
                   "supportedPriceFields": [

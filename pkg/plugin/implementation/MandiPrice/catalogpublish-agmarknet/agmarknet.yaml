@@ -119,10 +119,6 @@ inputs:
   catalogOut:
     flag: catalog-out
     default: catalog
-  withoutGeometry:
-    flag: without-geometry
-    enum: [publish, skip]
-    default: publish
   # SHARED by every publish pipeline: all of them post to the same provider
   # adapter's /publish, so one address is set once for the whole crawler.
   publishUrl:
@@ -311,10 +307,15 @@ catalog:
     # the catalog's own minItems check at the far end.
     - when: "$number($count(commodities)) = 0"
       reason: "upstream reported no commodities trading in this window"
-    - when: "${inputs.withoutGeometry} = 'skip' and $not(hasUsableCoordinate)"
-      reason: "no usable coordinate, and withoutGeometry is skip"
+    # A market with no usable coordinate is NOT excluded: it publishes with no
+    # point, findable by state and district but by no proximity search.
 
-  order: { by: marketId, direction: asc }
+  # `by` is the order a state is SPLIT in when it exceeds the geometry budget
+  # (MH, MH-2). It is the numeric marketId on purpose: a new market gets a new,
+  # higher id and lands in the last chunk, so no market ever moves between
+  # catalogIds -- under MERGE the old copy would never be removed.
+  # `renderBy` is the order a reader sees inside each catalog.
+  order: { by: marketId, direction: asc, renderBy: [marketName, marketId] }
 
   chunk:
     budget: 256
@@ -341,7 +342,6 @@ catalog:
       generatedAt: ${now.rfc3339}
       transactionId: ${uuid}
       messageId: ${uuid}
-      publishWithoutGeometry: ${inputs.withoutGeometry}
 
 # ---------------------------------------------------------------------------
 # publish — catalog files to the provider adapter's /publish endpoint.

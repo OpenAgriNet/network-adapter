@@ -767,6 +767,31 @@ func sortRecords(records []map[string]any, by, direction string) {
 	})
 }
 
+// sortRecordsBy orders records by each key in turn, ascending: numbers
+// numerically, anything else as text compared case-insensitively, so
+// "chandrapur" sits beside "Chandrapur" rather than after "Zirakpur". It is
+// the catalog builder's `order.renderBy`, the order a reader sees.
+func sortRecordsBy(records []map[string]any, keys []string) {
+	sort.SliceStable(records, func(i, j int) bool {
+		for _, key := range keys {
+			if li, lok := numeric(records[i][key]); lok {
+				if ri, rok := numeric(records[j][key]); rok {
+					if li != ri {
+						return li < ri
+					}
+					continue
+				}
+			}
+			left := strings.ToLower(strings.TrimSpace(renderScalar(records[i][key])))
+			right := strings.ToLower(strings.TrimSpace(renderScalar(records[j][key])))
+			if left != right {
+				return left < right
+			}
+		}
+		return false
+	})
+}
+
 func numeric(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:

@@ -257,9 +257,19 @@ type AnnotateRule struct {
 }
 
 // Order makes a run read the same way twice.
+//
+// By is the order a group is SPLIT in: it decides which records land in which
+// chunk, so it should be a key new records sort to the end of (an id). A key
+// that shifts the split as records are added moves records between catalogIds,
+// and under MERGE the old copy is never removed.
+//
+// RenderBy, optional, is the order a reader sees inside each catalog, applied
+// to each chunk after the split: keys in turn, text compared
+// case-insensitively, numbers numerically. Absent, a chunk keeps By's order.
 type Order struct {
-	By        string `yaml:"by"`
-	Direction string `yaml:"direction"`
+	By        string   `yaml:"by"`
+	Direction string   `yaml:"direction"`
+	RenderBy  []string `yaml:"renderBy,omitempty"`
 }
 
 // Identity is the id templates a rendered catalog and its resources carry.

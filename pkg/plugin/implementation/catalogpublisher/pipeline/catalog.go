@@ -129,6 +129,11 @@ func buildCatalogs(ctx context.Context, catalog Catalog, records []map[string]an
 		}
 
 		for index, chunk := range chunks {
+			// The split is settled; now the order a reader sees. Sorting a
+			// chunk cannot move a record between chunks.
+			if len(catalog.Order.RenderBy) > 0 {
+				sortRecordsBy(chunk, catalog.Order.RenderBy)
+			}
 			catalog, err := catalogRender(ctx, catalog, chunk, index+1, key, scope, cache, mapper, mappingBase)
 			if err != nil {
 				return nil, counters, fmt.Errorf("group %q: %w", key, err)
@@ -435,6 +440,12 @@ func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 		}
 		local[name] = value
 	}
+
+	// The catalog's id is the engine's, rendered once from identity.catalogId.
+	// Handing it to the mapping means the document and the file cannot
+	// disagree on it, and the id format is written in one place, the
+	// pipeline file. A render local of the same name is overwritten.
+	local["catalogId"] = catalogID
 
 	// The same input shape the mapping half of every other call receives: the
 	// records under `response`, everything the payload does not carry under

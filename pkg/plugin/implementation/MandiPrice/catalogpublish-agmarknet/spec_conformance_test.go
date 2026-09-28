@@ -12,6 +12,8 @@ package agmarknet
 // and this is mandi's.
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
@@ -99,11 +101,6 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 		"catalogOut": {
 			Flag:    "catalog-out",
 			Default: "catalog",
-		},
-		"withoutGeometry": {
-			Flag:    "without-geometry",
-			Enum:    []string{"publish", "skip"},
-			Default: "publish",
 		},
 		// A one-time migration switch. It must be DECLARED, because the
 		// publish step refuses an enable flag it cannot resolve rather than
@@ -343,7 +340,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 
 	for _, key := range []string{
 		"registryUrl", "baseUrl", "states", "fromDate", "toDate",
-		"participantId", "networkId", "catalogOut", "withoutGeometry",
+		"participantId", "networkId", "catalogOut",
 		"publishUrl", "tokenUser", "tokenSecret",
 	} {
 		if _, ok := got[key]; !ok {
@@ -359,12 +356,39 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 		// registryUrl has NO default on purpose -- see the file's own comment.
 		// It must resolve to empty here, so a deployment that forgot to set it
 		// is told that rather than sent to a hostname that resolves nowhere.
-		"registryUrl":     "",
-		"withoutGeometry": "publish", // enum default
-		"states":          "",        // `default: []` means all states
+		"registryUrl": "",
+		"states":      "", // `default: []` means all states
 	} {
 		if got[key] != want {
 			t.Errorf("%s = %q, want %q", key, got[key], want)
 		}
+	}
+}
+
+// The catalog block's rules, pinned. A market is dropped for ONE reason --
+// it trades nothing in the window -- and a market with no usable coordinate
+// is still published (it simply carries no point). Groups are split by
+// numeric marketId, so a new market never moves another between catalogIds,
+// and each catalog lists its markets by name, then id.
+func TestCatalogRulesAreTheFilesOnly(t *testing.T) {
+	spec, err := pipeline.LoadSpec(pipelineFiles.FS, pipelineFiles.Path)
+	if err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	catalog := spec.Catalog
+	if len(catalog.Exclude) != 1 || !strings.Contains(catalog.Exclude[0].When, "$count(commodities)") {
+		t.Errorf("exclude = %+v; want exactly the no-commodities rule", catalog.Exclude)
+	}
+	wantOrder := pipeline.Order{By: "marketId", Direction: "asc", RenderBy: []string{"marketName", "marketId"}}
+	if fmt.Sprint(catalog.Order) != fmt.Sprint(wantOrder) {
+		t.Errorf("order = %+v, want %+v", catalog.Order, wantOrder)
+	}
+	if catalog.Identity.CatalogID != "catalog:mandi-price:${slug}" ||
+		catalog.Identity.ResourceID != "resource:mandi-price:market:${marketId}" {
+		t.Errorf("identity = %+v; want catalog:mandi-price:<slug> and resource:mandi-price:market:<marketId>",
+			catalog.Identity)
+	}
+	if _, declared := spec.Inputs["withoutGeometry"]; declared {
+		t.Error("withoutGeometry is still declared, but nothing reads it any more")
 	}
 }

@@ -875,3 +875,68 @@ func TestAnExactSlugCollisionIsNotReportedAsACaseCollision(t *testing.T) {
 		t.Errorf("error %q does not point at the chunk template that caused it", err)
 	}
 }
+
+// order.by decides where a big group is SPLIT; order.renderBy decides the
+// order a reader sees inside each catalog. Splitting by id keeps the chunk
+// boundaries stable as markets are added (new ids land in the last chunk), so
+// no market moves between catalogIds -- which, under MERGE, would leave it
+// published twice.
+func TestRenderByOrdersWithinEachChunkWithoutMovingTheSplit(t *testing.T) {
+	records := []map[string]any{
+		{"stateCode": "MH", "marketId": 1.0, "marketName": "Erandol"},
+		{"stateCode": "MH", "marketId": 2.0, "marketName": "Dhule"},
+		{"stateCode": "MH", "marketId": 3.0, "marketName": "chandrapur"},
+		{"stateCode": "MH", "marketId": 4.0, "marketName": "Beed"},
+		{"stateCode": "MH", "marketId": 5.0, "marketName": "Akola"},
+	}
+	rc, cache := testBuildContext(t, nil)
+	catalog := simpleCatalog()
+	catalog.Chunk = Chunk{Budget: 3, Cost: "1", Slug: "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}"}
+	catalog.Order = Order{By: "marketId", Direction: "asc", RenderBy: []string{"marketName", "marketId"}}
+
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	if err != nil {
+		t.Fatalf("buildCatalogs: %v", err)
+	}
+	if len(built) != 2 {
+		t.Fatalf("built %d catalogs, want 2", len(built))
+	}
+	// Chunk membership follows ids (1,2,3 | 4,5); display order follows names,
+	// case-insensitively ("chandrapur" before "Dhule").
+	want := [][]float64{{3, 2, 1}, {5, 4}}
+	for i, ids := range want {
+		response, _ := decodeEcho(t, built[i].Content)
+		if len(response) != len(ids) {
+			t.Fatalf("chunk %d carries %d records, want %d", i, len(response), len(ids))
+		}
+		for j, id := range ids {
+			if got := response[j].(map[string]any)["marketId"]; got != id {
+				t.Errorf("chunk %d position %d is market %v, want %v", i, j, got, id)
+			}
+		}
+	}
+}
+
+// Two markets with one name are ordered by the next key, numerically.
+func TestRenderByBreaksTiesOnTheNextKey(t *testing.T) {
+	records := []map[string]any{
+		{"stateCode": "KA", "marketId": 305.0, "marketName": "Hubli"},
+		{"stateCode": "KA", "marketId": 201.0, "marketName": "Hubli"},
+		{"stateCode": "KA", "marketId": 9.0, "marketName": "Akola"},
+		{"stateCode": "KA", "marketId": 10.0, "marketName": "Hubli"},
+	}
+	rc, cache := testBuildContext(t, nil)
+	catalog := simpleCatalog()
+	catalog.Order = Order{By: "marketId", RenderBy: []string{"marketName", "marketId"}}
+
+	built, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, &echoMapper{}, "http://mappings")
+	if err != nil {
+		t.Fatalf("buildCatalogs: %v", err)
+	}
+	response, _ := decodeEcho(t, built[0].Content)
+	for i, want := range []float64{9, 10, 201, 305} {
+		if got := response[i].(map[string]any)["marketId"]; got != want {
+			t.Errorf("position %d is market %v, want %v", i, got, want)
+		}
+	}
+}

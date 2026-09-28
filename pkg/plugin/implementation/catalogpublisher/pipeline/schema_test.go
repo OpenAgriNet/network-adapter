@@ -462,3 +462,18 @@ func TestInertKeysAreRefused(t *testing.T) {
 		})
 	}
 }
+
+// order.renderBy is a list of field names; the contract allows it and nothing
+// else in its place.
+func TestOrderRenderByMatchesTheContract(t *testing.T) {
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	order := doc["catalog"].(map[string]any)["order"].(map[string]any)
+	order["renderBy"] = []any{"name", "id"}
+	if err := validateDocument(t, doc); err != nil {
+		t.Fatalf("order.renderBy was refused: %v", err)
+	}
+	order["renderBy"] = "name"
+	if err := validateDocument(t, doc); err == nil {
+		t.Fatal("order.renderBy as a bare string was accepted; it is a list of keys")
+	}
+}

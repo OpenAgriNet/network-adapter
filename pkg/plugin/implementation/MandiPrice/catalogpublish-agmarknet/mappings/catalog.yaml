@@ -22,15 +22,10 @@ response: |
     $startDate := $toRFC3339Start(_local.windowFrom);
     $endDate := $toRFC3339End(_local.windowTo);
 
-    $isPublishable := function($m) {
-      $number($count($m.commodities)) > 0 and
-      (_local.publishWithoutGeometry = "skip" ? $m.hasUsableCoordinate : true)
-    };
-
-    $validMarkets := response[$isPublishable($)];
-    $sortedMarkets := [ $sort($validMarkets, function($a, $b) {
-      $a.marketId > $b.marketId
-    }) ];
+    /* No filtering and no sorting here. Which markets publish, and in what
+       order, is the pipeline file's catalog block (exclude, order), applied
+       by the engine before this runs; a second copy of either rule would
+       drift from the first. This mapping only renders what it is given. */
 
     $makeResource := function($row) {
       (
@@ -84,7 +79,7 @@ response: |
         }) ];
 
         {
-          "id": "resource:mandi-price:market:" & $string($row.marketId),
+          "id": $row.resourceId,
           "descriptor": {
             "code": $string($row.marketId),
             "name": $trim($row.marketName),
@@ -126,7 +121,7 @@ response: |
       )
     };
 
-    $resources := [ $map($sortedMarkets, $makeResource) ];
+    $resources := [ $map(response, $makeResource) ];
 
     {
       "context": {
@@ -139,7 +134,7 @@ response: |
       "message": {
         "catalogs": [
           {
-            "id": "catalog:mandi-price:" & _local.catalogSlug,
+            "id": _local.catalogId,
             "isActive": true,
             "descriptor": {
               "code": "AGMARKNET-" & _local.catalogSlug,
@@ -164,7 +159,7 @@ response: |
         ],
         "publishDirectives": [
           {
-            "catalogId": "catalog:mandi-price:" & _local.catalogSlug,
+            "catalogId": _local.catalogId,
             "catalogType": "REGULAR",
             "updateMode": "MERGE",
             "visibleTo": [

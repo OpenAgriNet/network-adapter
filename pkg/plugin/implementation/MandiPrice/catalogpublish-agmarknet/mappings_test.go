@@ -13,6 +13,7 @@ package agmarknet
 
 import (
 	"path"
+	"strings"
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation"
@@ -68,5 +69,32 @@ func TestFilesEmbedsThePipelineAndItsMappings(t *testing.T) {
 				t.Errorf("Files.ReadFile(%q) returned no content", file)
 			}
 		})
+	}
+}
+
+// The catalog mapping RENDERS; it does not decide. Which markets publish and
+// in what order is the pipeline file's catalog block, applied by the engine
+// before the mapping runs, and the ids are the engine's too. A second copy of
+// either rule here drifts from the first -- and drops markets silently, where
+// the file's exclude names every drop.
+func TestCatalogMappingNeitherFiltersSortsNorBuildsIds(t *testing.T) {
+	raw, err := Files.ReadFile(path.Join(mappingsDir, "catalog.yaml"))
+	if err != nil {
+		t.Fatalf("reading the mapping: %v", err)
+	}
+	mapping := string(raw)
+	for _, banned := range []string{
+		"$isPublishable", "publishWithoutGeometry", // a second exclude rule
+		"$sortedMarkets", "$a.marketId", // a second order rule
+		`"catalog:mandi-price:" &`, `"resource:mandi-price:market:" &`, // ids built by hand
+	} {
+		if strings.Contains(mapping, banned) {
+			t.Errorf("mappings/catalog.yaml still contains %q", banned)
+		}
+	}
+	for _, want := range []string{"_local.catalogId", "$row.resourceId"} {
+		if !strings.Contains(mapping, want) {
+			t.Errorf("mappings/catalog.yaml does not use the engine-supplied %s", want)
+		}
 	}
 }
