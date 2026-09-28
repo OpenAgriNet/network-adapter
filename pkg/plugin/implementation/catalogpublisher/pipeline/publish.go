@@ -67,8 +67,20 @@ type Publisher interface {
 	Publish(ctx context.Context, baseURL string, body []byte) Outcome
 
 	// Retire deactivates a superseded catalog. The Publisher builds the
-	// body, so a retirement carries the same identity as every publish.
-	Retire(ctx context.Context, baseURL, catalogID, descriptorName string) Outcome
+	// body -- with the same builder as every publish -- so a retirement
+	// carries the same identity, and every field the file's retireOld states.
+	Retire(ctx context.Context, baseURL string, retirement Retirement) Outcome
+}
+
+// Retirement is a resolved retireOld block: what to deactivate, and the
+// directive it goes out under.
+type Retirement struct {
+	CatalogID      string
+	DescriptorName string
+	CatalogType    string   // REGULAR unless the file says otherwise
+	UpdateMode     string   // MERGE or FULL
+	VisibleTo      []string // the networks the retired catalog was visible to
+	SchemaTypes    []string // the retired catalog's JSON-LD schema contexts
 }
 
 // publishAddressHint is the fallback when a caller has not said how THIS
@@ -198,7 +210,7 @@ func PublishCatalogs(ctx context.Context, spec Publish, resolved map[string]stri
 		if published, why := allPublished(result.Outcomes); !published {
 			result.RetiredSkipped = why
 		} else {
-			outcome := publisher.Retire(ctx, publishURL, retire.CatalogID, retire.DescriptorName)
+			outcome := publisher.Retire(ctx, publishURL, *retire)
 			if outcome.CatalogID == "" {
 				outcome.CatalogID = retire.CatalogID
 			}
@@ -309,7 +321,7 @@ func checkPublishURL(spec Publish) error {
 // declare is refused rather than read as false: treating an unresolvable
 // enable flag as "off" would silently skip the retirement, which is the
 // outcome an operator who wrote the block was trying to avoid.
-func retirement(spec RetireOld, resolved map[string]string) (*RetireOld, error) {
+func retirement(spec RetireOld, resolved map[string]string) (*Retirement, error) {
 	enabled := strings.TrimSpace(spec.Enabled)
 	if enabled == "" {
 		return nil, nil // no retireOld block
@@ -327,7 +339,59 @@ func retirement(spec RetireOld, resolved map[string]string) (*RetireOld, error) 
 	if strings.TrimSpace(spec.CatalogID) == "" {
 		return nil, fmt.Errorf("publish.retireOld is enabled but names no catalogId to retire")
 	}
-	return &spec, nil
+	if spec.IsActive != nil && *spec.IsActive {
+		return nil, fmt.Errorf("publish.retireOld.isActive is true, but a retirement deactivates the catalog; " +
+			"remove it or set it to false")
+	}
+
+	out := Retirement{
+		CatalogID:      strings.TrimSpace(spec.CatalogID),
+		DescriptorName: spec.DescriptorName,
+		CatalogType:    orDefault(spec.CatalogType, "REGULAR"),
+		UpdateMode:     strings.ToUpper(orDefault(spec.UpdateMode, "MERGE")),
+	}
+	if out.UpdateMode != "MERGE" && out.UpdateMode != "FULL" {
+		return nil, fmt.Errorf("publish.retireOld.updateMode is %q; use MERGE or FULL", spec.UpdateMode)
+	}
+	var err error
+	if out.VisibleTo, err = resolveInputList("visibleTo", spec.VisibleTo, resolved); err != nil {
+		return nil, err
+	}
+	if out.SchemaTypes, err = resolveInputList("schemaTypes", spec.SchemaTypes, resolved); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// resolveInputList resolves each entry: a whole-entry ${inputs.name} becomes
+// that input's value, anything else is taken as written. An entry naming an
+// input that is not declared, or that resolves to empty, is refused -- a
+// visibility list with a hole in it scopes the deactivation to nobody.
+func resolveInputList(field string, entries []string, resolved map[string]string) ([]string, error) {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if name, isRef := strings.CutPrefix(entry, "${inputs."); isRef && strings.HasSuffix(name, "}") {
+			name = strings.TrimSuffix(name, "}")
+			value, declared := resolved[name]
+			if !declared || strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("publish.retireOld.%s names %s, which is not declared or resolved to empty",
+					field, entry)
+			}
+			entry = value
+		}
+		if entry != "" {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
+}
+
+func orDefault(value, fallback string) string {
+	if v := strings.TrimSpace(value); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // allPublished reports whether every catalog this run built actually

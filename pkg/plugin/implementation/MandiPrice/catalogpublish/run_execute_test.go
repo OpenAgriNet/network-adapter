@@ -445,9 +445,9 @@ func (p *acceptingPublisher) Publish(context.Context, string, []byte) pipeline.O
 	return pipeline.Outcome{Status: pipeline.StatusPublished}
 }
 
-func (p *acceptingPublisher) Retire(_ context.Context, _, catalogID, _ string) pipeline.Outcome {
+func (p *acceptingPublisher) Retire(_ context.Context, _ string, r pipeline.Retirement) pipeline.Outcome {
 	p.retired++
-	return pipeline.Outcome{CatalogID: catalogID, Status: pipeline.StatusPublished}
+	return pipeline.Outcome{CatalogID: r.CatalogID, Status: pipeline.StatusPublished}
 }
 
 // One failed state is within the tolerance: the healthy states still reach
@@ -612,9 +612,9 @@ func (p refusingPublisher) Publish(context.Context, string, []byte) pipeline.Out
 	return pipeline.Outcome{Status: pipeline.StatusPublished}
 }
 
-func (p refusingPublisher) Retire(_ context.Context, _, catalogID, _ string) pipeline.Outcome {
+func (p refusingPublisher) Retire(_ context.Context, _ string, r pipeline.Retirement) pipeline.Outcome {
 	p.t.Error("a catalog was retired although the run should have refused")
-	return pipeline.Outcome{CatalogID: catalogID, Status: pipeline.StatusPublished}
+	return pipeline.Outcome{CatalogID: r.CatalogID, Status: pipeline.StatusPublished}
 }
 
 // The rendered catalog's contract, from a real run:

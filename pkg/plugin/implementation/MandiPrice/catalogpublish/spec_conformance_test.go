@@ -386,3 +386,23 @@ func TestPublishToleranceAndStatesStep(t *testing.T) {
 		t.Errorf("states step = %+v; want it unconditional, with no else", states)
 	}
 }
+
+// The migration retirement goes out to the same audience, under the same
+// schema, as the per-state catalogs that replace the monolith.
+func TestRetireOldStatesTheWholeRetirement(t *testing.T) {
+	spec, err := pipeline.LoadSpec(Files, PipelinePath)
+	if err != nil {
+		t.Fatalf("LoadSpec: %v", err)
+	}
+	r := spec.Publish.RetireOld
+	if r.CatalogID != "cat-agmarknet-mandi-prices" || r.UpdateMode != "MERGE" || r.CatalogType != "REGULAR" {
+		t.Errorf("retireOld = %+v", r)
+	}
+	if fmt.Sprint(r.VisibleTo) != "[${inputs.networkId}]" {
+		t.Errorf("retireOld.visibleTo = %v, want [${inputs.networkId}] -- the catalogs' own audience", r.VisibleTo)
+	}
+	want := "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
+	if len(r.SchemaTypes) != 1 || r.SchemaTypes[0] != want {
+		t.Errorf("retireOld.schemaTypes = %v, want [%s]", r.SchemaTypes, want)
+	}
+}

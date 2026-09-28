@@ -330,3 +330,9 @@ publish:
     isActive: false
     updateMode: MERGE
     catalogType: REGULAR
+    # The same audience and schema as the per-state catalogs that replace it
+    # (see mappings/catalog.yaml's publishDirectives), so the deactivation
+    # reaches everyone who could see the old one.
+    visibleTo: [ "${inputs.networkId}" ]
+    schemaTypes:
+      - https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld

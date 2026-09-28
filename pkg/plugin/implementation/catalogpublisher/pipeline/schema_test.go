@@ -499,3 +499,23 @@ func TestInputRequiredMatchesTheContract(t *testing.T) {
 		t.Fatalf("inputs.*.required was refused: %v", err)
 	}
 }
+
+// retireOld can state everything the retirement envelope carries, and may not
+// claim to leave the catalog active.
+func TestRetireOldMatchesTheContract(t *testing.T) {
+	doc := deepCopy(mustLoadYAML(t, fixtureFS, fixturePipelinePath)).(map[string]any)
+	block := map[string]any{
+		"enabled": "${inputs.publishUrl}", "catalogId": "cat-old", "descriptorName": "Retired",
+		"isActive": false, "updateMode": "FULL", "catalogType": "REGULAR",
+		"visibleTo":   []any{"${inputs.publishUrl}"},
+		"schemaTypes": []any{"https://schema.example/ctx.jsonld"},
+	}
+	doc["publish"].(map[string]any)["retireOld"] = block
+	if err := validateDocument(t, doc); err != nil {
+		t.Fatalf("a full retireOld block was refused: %v", err)
+	}
+	block["isActive"] = true
+	if err := validateDocument(t, doc); err == nil {
+		t.Fatal("retireOld.isActive: true was accepted; a retirement deactivates")
+	}
+}

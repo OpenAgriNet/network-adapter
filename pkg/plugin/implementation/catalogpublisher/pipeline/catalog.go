@@ -69,8 +69,8 @@ const catalogResourceField = "resourceId"
 // reference resolves against, as
 // steps.go's mappingRef uses it.
 //
-// The counters are the domain's own report numbers, handed back rather than
-// logged so a collector can put them in CollectResult.Counters.
+// The counters are the run's own report numbers, handed back rather than
+// logged so RunReport.Counters carries them.
 func buildCatalogs(ctx context.Context, catalog Catalog, records []map[string]any,
 	rc *runContext, cache *exprCache, mapper Mapper, mappingBase string) ([]BuiltCatalog, map[string]int, error) {
 

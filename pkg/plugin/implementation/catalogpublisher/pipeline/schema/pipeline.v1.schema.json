@@ -1048,7 +1048,7 @@
       "required": [
         "enabled"
       ],
-      "description": "Deactivates a superseded catalog, by posting a tombstone. Typically a ONE-TIME migration, so `enabled` points at an input that defaults to false.",
+      "description": "Deactivates a superseded catalog: an isActive:false catalog with no resources, built by the Publisher with the same envelope builder as every publish, carrying this deployment's identity. Typically a ONE-TIME migration, so `enabled` points at an input that defaults to false.",
       "properties": {
         "enabled": {
           "type": "string",
@@ -1061,17 +1061,36 @@
           "type": "string"
         },
         "isActive": {
-          "type": "boolean"
+          "const": false,
+          "description": "A retirement deactivates; only false is meaningful, and true is refused."
         },
         "updateMode": {
           "type": "string",
           "enum": [
             "MERGE",
             "FULL"
-          ]
+          ],
+          "description": "MERGE (default) or FULL, passed to the directive as written. Note: /publish currently rejects FULL."
         },
         "catalogType": {
-          "type": "string"
+          "type": "string",
+          "description": "The directive's catalogType; REGULAR when omitted."
+        },
+        "visibleTo": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "The networks the retirement is visible to -- match the catalogs that supersede it, e.g. [${inputs.networkId}]. Entries may be ${inputs.*} references."
+        },
+        "schemaTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "The retired catalog's JSON-LD schema contexts, sent as the directive's schemaTypes and context.schemaContext. Entries may be ${inputs.*} references."
         }
       }
     }

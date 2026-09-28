@@ -51,7 +51,7 @@ type Metadata struct {
 }
 
 // Schedule is when the polling layer should run this pipeline, as a standard
-// five-field cron expression resolved in Timezone (see cron.go).
+// five-field cron expression resolved in Timezone (see schedule.go).
 type Schedule struct {
 	Cron     string `yaml:"cron"`
 	Timezone string `yaml:"timezone"`
@@ -149,7 +149,7 @@ type AuthTokenSpec struct {
 //
 // The fields beyond id/uses/with/out are not decoration, and leaving them out
 // of this struct is how the file can state a rule that nothing enforces: each
-// one carries a decision the reference tool paid for in production.
+// one carries a decision paid for against the live upstream.
 type Step struct {
 	ID   string `yaml:"id"`
 	Uses string `yaml:"uses"`
@@ -317,16 +317,28 @@ type Publish struct {
 }
 
 // RetireOld deactivates a superseded catalog. Deactivating it is how its
-// resources go away: updateMode FULL is rejected as unsupported, and MERGE's
-// removal semantics are documented nowhere, so republishing without the
-// unwanted resource cannot be relied on to remove it.
+// resources go away: MERGE's removal semantics are documented nowhere, so
+// republishing without the unwanted resource cannot be relied on to remove it.
+// UpdateMode FULL is passed through as written, though /publish rejects it
+// today.
+//
+// Every field reaches the retirement envelope, which the Publisher builds with
+// the same builder as every publish. VisibleTo and SchemaTypes should match the
+// catalogs that supersede the retired one, so the deactivation reaches the
+// same audience; their entries may be ${inputs.*} references.
 type RetireOld struct {
 	Enabled        string `yaml:"enabled"`
 	CatalogID      string `yaml:"catalogId"`
 	DescriptorName string `yaml:"descriptorName"`
-	IsActive       bool   `yaml:"isActive"`
-	UpdateMode     string `yaml:"updateMode"`
-	CatalogType    string `yaml:"catalogType"`
+
+	// IsActive may only be false: a retirement is a deactivation. A pointer so
+	// "not stated" and "false" read differently in a round trip.
+	IsActive *bool `yaml:"isActive,omitempty"`
+
+	UpdateMode  string   `yaml:"updateMode,omitempty"`  // MERGE (default) or FULL
+	CatalogType string   `yaml:"catalogType,omitempty"` // default REGULAR
+	VisibleTo   []string `yaml:"visibleTo,omitempty"`
+	SchemaTypes []string `yaml:"schemaTypes,omitempty"`
 }
 
 // LoadSpec reads and parses the pipeline definition at path inside files.

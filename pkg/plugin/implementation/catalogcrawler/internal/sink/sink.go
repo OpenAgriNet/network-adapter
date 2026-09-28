@@ -131,15 +131,16 @@ func (d *DiscoverySink) stampIdentity(body []byte) ([]byte, error) {
 	return json.Marshal(envelope)
 }
 
-// Retire implements pipeline.Publisher: it deactivates catalogID, which is how
-// its resources leave the network (FULL is rejected, MERGE removal is
-// undocumented). Built with BuildPushBody, so it carries the same identity as
-// every other publish.
-func (d *DiscoverySink) Retire(ctx context.Context, baseURL, catalogID, descriptorName string) pipeline.Outcome {
+// Retire implements pipeline.Publisher: it deactivates the retirement's
+// catalog, which is how its resources leave the network. Built with
+// BuildPushBody -- the one builder every publish goes through -- with every
+// field the pipeline's retireOld resolved: identity from this sink, and the
+// catalogType, updateMode, visibleTo and schemaTypes the file states.
+func (d *DiscoverySink) Retire(ctx context.Context, baseURL string, retirement pipeline.Retirement) pipeline.Outcome {
 	doc, err := json.Marshal(map[string]any{
-		"id":         catalogID,
+		"id":         retirement.CatalogID,
 		"isActive":   false,
-		"descriptor": map[string]any{"code": catalogID, "name": descriptorName},
+		"descriptor": map[string]any{"code": retirement.CatalogID, "name": retirement.DescriptorName},
 		"resources":  []any{},
 	})
 	if err == nil {
@@ -150,16 +151,18 @@ func (d *DiscoverySink) Retire(ctx context.Context, baseURL, catalogID, descript
 			MessageID:     uuid.NewString(),
 			TransactionID: uuid.NewString(),
 			Timestamp:     d.now().UTC().Format(time.RFC3339),
-			UpdateMode:    UpdateModeMerge,
-			CatalogType:   "REGULAR",
+			UpdateMode:    retirement.UpdateMode,
+			CatalogType:   retirement.CatalogType,
+			VisibleTo:     retirement.VisibleTo,
+			SchemaContext: retirement.SchemaTypes,
 		}, doc)
 		if err == nil {
 			out := d.post(ctx, baseURL, body)
-			out.CatalogID = catalogID
+			out.CatalogID = retirement.CatalogID
 			return out
 		}
 	}
-	return pipeline.Outcome{CatalogID: catalogID, Status: pipeline.StatusTransportError, Reason: err.Error()}
+	return pipeline.Outcome{CatalogID: retirement.CatalogID, Status: pipeline.StatusTransportError, Reason: err.Error()}
 }
 
 // post sends one body to baseURL's /publish and maps the batch outcome onto

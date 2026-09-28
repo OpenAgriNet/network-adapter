@@ -1,8 +1,9 @@
 // Package pipeline is the shared frame for scheduled publish pipelines: the
 // registry gate, the cron schedule, the run log, input resolution, the
 // upstream client, and the publish step. Everything in it is the same for
-// every pipeline; what differs is a Collector, which a capability package
-// implements (see collector.go).
+// every pipeline; what differs -- what to fetch, how to shape it, what a
+// catalog of it contains -- is declared in the pipeline's own YAML (steps.go,
+// catalog.go interpret it), and this package never hardcodes a capability.
 //
 // It must NOT be moved under an internal/ directory: the crawler that ticks a
 // pipeline imports it, and so do the capability folders' tests.
@@ -23,10 +24,6 @@ package pipeline
 // run.go is the frame: the one exported entry point that turns "the registry
 // says this capability publishes, and the clock says it is due" into a day's
 // catalogs on the network.
-//
-// Everything here is the same for every pipeline. What differs -- what to
-// fetch, how to shape it, what a catalog of it contains -- is the
-// Collector's, and this file never inspects it.
 
 import (
 	"context"
@@ -157,9 +154,10 @@ type RunReport struct {
 	// had already claimed it, so this one did no work. Not a failure.
 	ClaimedElsewhere bool
 
-	// Catalogs, Errors and Counters are the collector's own result. Errors
-	// counts parts of the collection that failed for a real reason; Counters
-	// are the domain's numbers, printed but not interpreted.
+	// Catalogs, Errors and Counters are the run's own result. Errors counts
+	// parts of the collection that failed for a real reason; Counters are
+	// the file's own numbers (its steps and catalog block record into them),
+	// printed but not interpreted.
 	Catalogs []BuiltCatalog
 	Errors   int
 	Counters map[string]int
@@ -247,10 +245,11 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 			return report, fmt.Errorf("reading the run log for %s: %w", key, err)
 		}
 		lastRun = previous
-		// LEGACY, one release: rows used to be keyed by capability. Read the
-		// old row when the pipeline has none, so the first tick after deploy
-		// does not run -- and publish -- a firing already served. Removed
-		// together with the registry-path alias.
+		// LEGACY, one release: rows used to be keyed by capability, before
+		// this run log moved to keying by URL. Read the old row when the
+		// pipeline has none, so the first tick after deploy does not run --
+		// and publish -- a firing already served. Delete this fallback once
+		// production rows have migrated (a database concern, not a code one).
 		if lastRun.IsZero() {
 			if lastRun, err = opts.RunLog.LastPipelineRun(ctx, capability); err != nil {
 				return report, fmt.Errorf("reading the run log for %s: %w", capability, err)
@@ -320,8 +319,8 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	return report, nil
 }
 
-// execute prepares everything the collector needs, hands off, then writes and
-// publishes what comes back.
+// execute prepares everything the pipeline's steps need, runs them, then
+// writes and publishes the catalogs that come back.
 func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	opts RunOptions, report *RunReport, log *slog.Logger, now time.Time) error {
 	resolved, err := resolveRunInputs(spec, lookup, opts, now)

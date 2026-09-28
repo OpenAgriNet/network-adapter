@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,11 +56,11 @@ func (f *fakePublisher) Publish(_ context.Context, baseURL string, body []byte) 
 	return Outcome{Status: f.status, Reason: "fake"}
 }
 
-func (f *fakePublisher) Retire(_ context.Context, baseURL, catalogID, descriptorName string) Outcome {
+func (f *fakePublisher) Retire(_ context.Context, baseURL string, r Retirement) Outcome {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.retires = append(f.retires, retireCall{baseURL, catalogID, descriptorName})
-	return Outcome{CatalogID: catalogID, Status: f.status, Reason: "fake"}
+	f.retires = append(f.retires, retireCall{baseURL, r.CatalogID, r.DescriptorName})
+	return Outcome{CatalogID: r.CatalogID, Status: f.status, Reason: "fake"}
 }
 
 func (f *fakePublisher) retired() []retireCall {
@@ -406,5 +407,56 @@ func TestPublishRefusesOnlyAboveTheThreshold(t *testing.T) {
 	}
 	if pub.calls() != 0 {
 		t.Errorf("a refused collection still posted %d times", pub.calls())
+	}
+}
+
+// The retireOld block is resolved into everything the retirement envelope
+// carries: its defaults where the file is silent, its ${inputs.*} references
+// resolved, so the deactivation reaches the same audience, under the same
+// schema, as the catalogs that supersede it.
+func TestRetirementResolvesTheWholeBlock(t *testing.T) {
+	resolved := map[string]string{"retireOld": "true", "networkId": "oan-prod"}
+	got, err := retirement(RetireOld{
+		Enabled:        "${inputs.retireOld}",
+		CatalogID:      "cat-old",
+		DescriptorName: "Retired",
+		VisibleTo:      []string{"${inputs.networkId}"},
+		SchemaTypes:    []string{"https://schema.example/MandiPrice/context.jsonld"},
+	}, resolved)
+	if err != nil {
+		t.Fatalf("retirement: %v", err)
+	}
+	want := Retirement{
+		CatalogID: "cat-old", DescriptorName: "Retired",
+		CatalogType: "REGULAR", UpdateMode: "MERGE",
+		VisibleTo:   []string{"oan-prod"},
+		SchemaTypes: []string{"https://schema.example/MandiPrice/context.jsonld"},
+	}
+	if got == nil || fmt.Sprint(*got) != fmt.Sprint(want) {
+		t.Fatalf("retirement = %+v, want %+v", got, want)
+	}
+
+	full, err := retirement(RetireOld{Enabled: "${inputs.retireOld}", CatalogID: "cat-old",
+		UpdateMode: "FULL", CatalogType: "MASTER"}, resolved)
+	if err != nil || full.UpdateMode != "FULL" || full.CatalogType != "MASTER" {
+		t.Fatalf("declared updateMode/catalogType: %+v, %v; want them passed through", full, err)
+	}
+}
+
+// A retirement is a deactivation; a block saying isActive: true, or naming an
+// input that does not resolve, is refused rather than quietly ignored.
+func TestRetirementRefusesWhatItCannotHonour(t *testing.T) {
+	resolved := map[string]string{"retireOld": "true"}
+	yes := true
+	for name, block := range map[string]RetireOld{
+		"isActive true":         {Enabled: "${inputs.retireOld}", CatalogID: "c", IsActive: &yes},
+		"an unresolved input":   {Enabled: "${inputs.retireOld}", CatalogID: "c", VisibleTo: []string{"${inputs.nope}"}},
+		"an unknown updateMode": {Enabled: "${inputs.retireOld}", CatalogID: "c", UpdateMode: "REPLACE"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := retirement(block, resolved); err == nil {
+				t.Fatalf("%s was accepted", name)
+			}
+		})
 	}
 }

@@ -37,12 +37,11 @@ type Mapper interface {
 	Verify(ctx context.Context, ref string, in any) error
 }
 
-// pipelineClient talks to the upstream service.
+// Client talks to the upstream service.
 //
 // One struct for every call because they share a host, a token and a
 // response-size ceiling, and nothing else about them differs enough to earn a
-// type each. This is the package-private counterpart of the reference tool's
-// Client.
+// type each.
 type Client struct {
 	baseURL    string
 	http       *http.Client
@@ -80,9 +79,9 @@ func (c *Client) WithCleartextAllowed(allowed bool) *Client {
 	return c
 }
 
-// newPipelineClient builds a pipelineClient with a timeout that suits the
-// largest call: master data option 6 is roughly 600 KB and takes seconds,
-// not milliseconds.
+// NewClient builds a Client with a timeout that suits the largest call:
+// master data option 6 is roughly 600 KB and takes seconds, not
+// milliseconds.
 func NewClient(baseURL string) *Client {
 	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 120 * time.Second}}
 }

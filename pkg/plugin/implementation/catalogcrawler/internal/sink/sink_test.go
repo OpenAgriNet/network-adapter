@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -390,7 +391,9 @@ func TestRetireSendsAnInactiveCatalogWithIdentity(t *testing.T) {
 	defer server.Close()
 
 	d := NewDiscoverySink("", "bpp.example", "https://bpp.example/bpp", 0, 5*time.Second)
-	out := d.Retire(context.Background(), server.URL, "cat-old", "Retired")
+	out := d.Retire(context.Background(), server.URL, pipeline.Retirement{
+		CatalogID: "cat-old", DescriptorName: "Retired", CatalogType: "REGULAR", UpdateMode: "MERGE",
+	})
 	if out.Status != pipeline.StatusPublished || out.CatalogID != "cat-old" {
 		t.Fatalf("outcome = %+v", out)
 	}
@@ -448,5 +451,35 @@ func TestPushJudgesEveryResult(t *testing.T) {
 	}
 	if out.Acked || !strings.Contains(out.Reason, "PARTIAL") || !strings.Contains(out.Reason, "geometry cap") {
 		t.Fatalf("outcome = %+v; want not acked, PARTIAL: geometry cap", out)
+	}
+}
+
+// The retirement goes through BuildPushBody with every field the pipeline
+// resolved -- the one builder, used fully.
+func TestRetireCarriesTheWholeRetirement(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"}]}}`))
+	}))
+	defer server.Close()
+
+	d := NewDiscoverySink("", "bpp.example", "https://bpp.example/bpp", 0, 5*time.Second)
+	out := d.Retire(context.Background(), server.URL, pipeline.Retirement{
+		CatalogID: "cat-old", DescriptorName: "Retired", CatalogType: "MASTER", UpdateMode: "FULL",
+		VisibleTo: []string{"oan-prod"}, SchemaTypes: []string{"https://schema.example/ctx.jsonld"},
+	})
+	if out.Status != pipeline.StatusPublished {
+		t.Fatalf("outcome = %+v", out)
+	}
+	directive := got["message"].(map[string]any)["publishDirectives"].([]any)[0].(map[string]any)
+	if directive["catalogType"] != "MASTER" || directive["updateMode"] != "FULL" ||
+		fmt.Sprint(directive["visibleTo"]) != "[oan-prod]" ||
+		fmt.Sprint(directive["schemaTypes"]) != "[https://schema.example/ctx.jsonld]" {
+		t.Fatalf("directive = %v; want the retirement's catalogType, updateMode, visibleTo, schemaTypes", directive)
+	}
+	ctx := got["context"].(map[string]any)
+	if fmt.Sprint(ctx["schemaContext"]) != "[https://schema.example/ctx.jsonld]" || ctx["bppId"] != "bpp.example" {
+		t.Fatalf("context = %v; want schemaContext and identity", ctx)
 	}
 }
