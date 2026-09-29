@@ -462,6 +462,70 @@ func TestRunReportsACancelDuringBackoffAsTheContextsError(t *testing.T) {
 	}
 }
 
+// The provider did answer before the caller left: the 504 must still say what
+// it answered, not claim it never did.
+func TestRunKeepsTheProvidersAnswerWhenTheCallerLeavesDuringBackoff(t *testing.T) {
+	t.Parallel()
+
+	// The caller leaves as the answer arrives: Err reports it, but the
+	// response is still read.
+	ctx := &flipCtx{Context: context.Background()}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.ended.Store(true)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 3,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error %v does not carry context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("error %q drops the provider's 503", err)
+	}
+	if strings.Contains(err.Error(), "before the provider answered") {
+		t.Errorf("error %q claims the provider never answered; it answered 503", err)
+	}
+}
+
+// A 4xx is the provider's final word, retried or not. A caller leaving at the
+// same moment does not turn it into a 504.
+func TestRunReportsAPermanentAnswerThatArrivesAsTheCallerLeaves(t *testing.T) {
+	t.Parallel()
+
+	// The caller leaves as the answer arrives: Err reports it, but the
+	// response is still read.
+	ctx := &flipCtx{Context: context.Background()}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.ended.Store(true)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 3,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadGateway {
+		t.Errorf("status for a 400 answer = %v, want 502", err)
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("error %q drops the provider's 400", err)
+	}
+}
+
 // flipCtx reports itself ended once flipped, but never closes Done -- the shape
 // of a deadline that lands after a backoff finished and before the next
 // attempt starts.
