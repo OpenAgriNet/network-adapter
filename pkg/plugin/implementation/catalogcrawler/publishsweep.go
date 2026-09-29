@@ -28,7 +28,6 @@ package catalogcrawler
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -213,6 +212,9 @@ type attemptBudget struct {
 	// served the pipeline reports not due, and a not-due run never gets
 	// here -- so it starts a fresh budget rather than being refused one.
 	gaveUp bool
+	// reported is the permanent fault last said at WARN, so one that recurs
+	// every tick is said once.
+	reported string
 }
 
 // maxAttemptsPerFiring is how many times one scheduled firing is attempted
@@ -306,11 +308,12 @@ func (p *publishSweep) afterRun(ctx context.Context, pipelineKey string, runErr 
 	if pipelineKey == "" {
 		return runErr // nothing to key the budget on; report and move on
 	}
-	if runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
-		// A shutdown or a deadline, not a failure this pipeline caused.
-		// Counting it would burn the attempt budget on noise outside the
-		// pipeline's control, and could give up on a firing that never got a
-		// real try.
+	if ctx.Err() != nil {
+		// The sweep itself is shutting down or out of time: not a failure this
+		// pipeline caused, so it costs no budget. Judged on the sweep's own
+		// context, not on runErr: http.Client's Timeout also satisfies
+		// errors.Is(err, context.DeadlineExceeded), and a slow upstream is a
+		// real failure that must use the budget up.
 		return runErr
 	}
 	if p.failures == nil {
@@ -332,12 +335,23 @@ func (p *publishSweep) afterRun(ctx context.Context, pipelineKey string, runErr 
 		*budget = attemptBudget{}
 	}
 
+	if crawler.IsPermanent(runErr) {
+		// The pipeline file itself is broken (bad YAML, a non-https URL, an
+		// unsupported input type). Most of these are refused before the due
+		// check, so they recur on every tick whatever the budget says. Said
+		// once per distinct fault, and the firing is NOT marked served:
+		// marking it would move last_run_at forward every tick, and once the
+		// file is fixed today's firing would read as already handled.
+		if budget.reported != runErr.Error() {
+			budget.reported = runErr.Error()
+			p.log.WarnContext(ctx, "catalogcrawler: publish pipeline is broken and will not run until it is fixed",
+				"pipeline", pipelineKey, "error", runErr)
+		}
+		return runErr
+	}
+
 	budget.count++
-	// A permanent fault (bad YAML, an unsupported input type, a non-https
-	// URL) will not clear on the next tick or the one after: the pipeline
-	// file itself is broken, not the network. Retrying it 3 times before
-	// giving up is 3 wasted fetches for an answer the first one already gave.
-	if budget.count < maxAttemptsPerFiring && !crawler.IsPermanent(runErr) {
+	if budget.count < maxAttemptsPerFiring {
 		return runErr
 	}
 

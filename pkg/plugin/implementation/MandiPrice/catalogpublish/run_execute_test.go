@@ -620,7 +620,11 @@ func (p refusingPublisher) Retire(_ context.Context, _ string, r pipeline.Retire
 // The rendered catalog's contract, from a real run:
 //   - an ISO 3166-2 area only for a state the table knows (Review Focus 2);
 //     an unknown state gets none, never a guessed "IN-<code>";
-//   - market.districtName and market.districtId, no bare `district`;
+//   - market.district carries the district's NAME, and neither districtId nor
+//     districtName appears: market's properties are a closed set in the
+//     MandiPrice schema, and the publish endpoint rejects the whole catalog
+//     over a property outside it (measured: "property \"districtId\" is
+//     unsupported", every catalog 400);
 //   - validity carries the schedule's offset (+05:30), not Z.
 func TestRunRendersTheCatalogContract(t *testing.T) {
 	states := append(twoGoodStates(), upstreamState{code: "ZZ", name: "Nowhere", rows: `[
@@ -649,8 +653,11 @@ func TestRunRendersTheCatalogContract(t *testing.T) {
 		for _, raw := range entry["resources"].([]any) {
 			attrs := raw.(map[string]any)["resourceAttributes"].(map[string]any)
 			market := attrs["market"].(map[string]any)
-			if _, bare := market["district"]; bare || market["districtName"] == nil || market["districtId"] == nil {
-				t.Errorf("%s: market = %v; want districtName and districtId, no district", catalog.Slug, market)
+			_, hasID := market["districtId"]
+			_, hasName := market["districtName"]
+			if market["district"] == nil || hasID || hasName {
+				t.Errorf("%s: market = %v; want district (the name), and no districtId/districtName -- "+
+					"the schema's market is a closed set and /publish 400s on anything else", catalog.Slug, market)
 			}
 			iso := ""
 			for _, area := range attrs["coverageAreas"].([]any) {

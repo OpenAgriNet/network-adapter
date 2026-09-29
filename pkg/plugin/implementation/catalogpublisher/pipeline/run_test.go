@@ -596,6 +596,45 @@ func TestRunReleasesTheClaimEvenWhenItsContextWasCancelledMidFlight(t *testing.T
 	}
 }
 
+// A cancelled run must leave the last good catalogs on disk. Clearing them
+// before the steps run means a shutdown mid-fetch deletes yesterday's output
+// and writes nothing in its place.
+func TestACancelledRunKeepsTheLastGoodCatalogs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The token exchange succeeds; the cancel lands on the data call, after
+	// the run has got past credentials and into its steps.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			_, _ = w.Write([]byte(`{"token":"tok-fixture"}`))
+			return
+		}
+		cancel()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	outDir := t.TempDir()
+	previous := filepath.Join(outDir, "example-Thing", "example-AA.json")
+	if err := os.MkdirAll(filepath.Dir(previous), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previous, []byte(`{"from":"the last good run"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(ctx, RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: &fakeRunLog{},
+		Lookup: fixtureEnv(server.URL), Now: firedAt(t), OutDir: outDir,
+	}); err == nil {
+		t.Fatal("Run succeeded despite its context being cancelled mid-flight")
+	}
+
+	if _, err := os.Stat(previous); err != nil {
+		t.Errorf("the last good catalog is gone after a cancelled run: %v", err)
+	}
+}
+
 // Another replica already claimed this firing: this one stands down before
 // fetching anything, and says why.
 func TestRunStandsDownWhenAnotherReplicaClaimedTheFiring(t *testing.T) {

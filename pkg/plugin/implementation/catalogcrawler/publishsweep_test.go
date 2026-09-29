@@ -7,6 +7,7 @@ package catalogcrawler
 // is tested in catalogpublisher/pipeline and pkg/plugin.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -489,11 +490,28 @@ func TestASuccessfulRunClearsTheFailureCount(t *testing.T) {
 func TestAfterRunDoesNotBurnTheBudgetOnCancellation(t *testing.T) {
 	sweep := &publishSweep{log: slog.New(slog.DiscardHandler), runLog: &countingRunLog{}}
 
-	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
-		_ = sweep.afterRun(context.Background(), "example:Thing", fmt.Errorf("upstream call: %w", cause))
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = sweep.afterRun(ctx, "example:Thing", fmt.Errorf("upstream call: %w", context.Canceled))
 	if budget, held := sweep.failures["example:Thing"]; held {
-		t.Errorf("failures[%q] = %+v, want no budget entry for a cancelled/timed-out run", "example:Thing", budget)
+		t.Errorf("failures[%q] = %+v, want no budget entry when the sweep's own context ended", "example:Thing", budget)
+	}
+}
+
+// An upstream that is merely slow is a real failure. http.Client's own
+// Timeout satisfies errors.Is(err, context.DeadlineExceeded), so judging by
+// the error's shape would treat it as a shutdown, never count it, and retry
+// on every tick forever. Only the sweep's own context says "shutting down".
+func TestAnUpstreamTimeoutCountsAgainstTheBudget(t *testing.T) {
+	runLog := &countingRunLog{}
+	sweep := &publishSweep{log: slog.New(slog.DiscardHandler), runLog: runLog}
+
+	timedOut := fmt.Errorf("states: %w (Client.Timeout exceeded while awaiting headers)", context.DeadlineExceeded)
+	for i := 0; i < maxAttemptsPerFiring; i++ {
+		_ = sweep.afterRun(context.Background(), "example:Thing", timedOut)
+	}
+	if runLog.recorded != 1 {
+		t.Errorf("recorded %d time(s), want 1 -- a slow upstream must use up the budget like any failure", runLog.recorded)
 	}
 }
 
@@ -524,22 +542,37 @@ func TestTickStopsCallingTargetsOnceItsContextEnds(t *testing.T) {
 	}
 }
 
-// A permanent fault -- a pipeline file that will never load, an input type
-// this pipeline does not implement, a non-https URL -- will not clear on
-// retry. Spending the full attempt budget on it is 3 wasted fetches for an
-// answer the first one already gave; it should give up on the first attempt.
-func TestAPermanentFaultGivesUpOnTheFirstAttempt(t *testing.T) {
+// A permanent fault is refused before the due check, so it recurs on every
+// tick. It is said once per distinct fault, and never marks the firing served:
+// marking it would move last_run_at forward every tick, and once the file is
+// fixed today's firing would read as already handled.
+func TestAPermanentFaultIsReportedOnceAndNeverMarksTheFiringServed(t *testing.T) {
+	var logs bytes.Buffer
 	runLog := &countingRunLog{}
-	sweep := &publishSweep{log: slog.New(slog.DiscardHandler), runLog: runLog}
+	sweep := &publishSweep{log: slog.New(slog.NewTextHandler(&logs, nil)), runLog: runLog}
 
-	permanentErr := crawler.PermanentFaultf(crawler.FaultClass("pipeline_spec"), "the pipeline file is not valid YAML")
-	_ = sweep.afterRun(context.Background(), "example:Thing", permanentErr)
-
-	if runLog.recorded != 1 {
-		t.Fatalf("recorded %d time(s), want 1 (given up after the first attempt)", runLog.recorded)
+	broken := crawler.PermanentFaultf(crawler.FaultClass("pipeline_spec"), "the pipeline file is not valid YAML")
+	for i := 0; i < 5; i++ {
+		_ = sweep.afterRun(context.Background(), "example:Thing", broken)
 	}
-	if budget := sweep.failures["example:Thing"]; budget == nil || budget.count != 1 {
-		t.Errorf("failures[%q] = %+v, want count 1", "example:Thing", budget)
+	if runLog.recorded != 0 {
+		t.Errorf("recorded %d time(s), want 0 -- a broken file is not a served firing", runLog.recorded)
+	}
+	if got := strings.Count(logs.String(), "level=WARN"); got != 1 {
+		t.Errorf("WARN lines over 5 ticks = %d, want 1:\n%s", got, logs.String())
+	}
+
+	other := crawler.PermanentFaultf(crawler.FaultClass("pipeline_spec"), "a different mistake")
+	_ = sweep.afterRun(context.Background(), "example:Thing", other)
+	if got := strings.Count(logs.String(), "level=WARN"); got != 2 {
+		t.Errorf("a new fault was not reported: %d WARN lines", got)
+	}
+
+	// Fixed: the next success clears it, so a later break is reported again.
+	_ = sweep.afterRun(context.Background(), "example:Thing", nil)
+	_ = sweep.afterRun(context.Background(), "example:Thing", other)
+	if got := strings.Count(logs.String(), "level=WARN"); got != 3 {
+		t.Errorf("a fault after a success was not reported: %d WARN lines", got)
 	}
 }
 
@@ -632,6 +665,41 @@ func TestPublishDiscovererResolvesOnlyPublishingBindings(t *testing.T) {
 	}
 	if fmt.Sprint(stub.lookups) != "[b|x:B]" {
 		t.Errorf("resolved %v, want only the publishing binding", stub.lookups)
+	}
+}
+
+// A registry record naming something that is not a pipeline URL is refused in
+// discovery, on every tick, before any retry budget sees it. Said at ERROR
+// once, not 288 times a day: again only when the record changes.
+func TestDiscoverReportsABadPipelineURLOncePerValue(t *testing.T) {
+	var logs bytes.Buffer
+	stub := &stubRegistry{
+		keys: []string{"b|x:B"},
+		records: map[string]*model.ProviderRecord{
+			"b|x:B": publishingRecord("b|x:B", "pkg/plugin/implementation/X/y.yaml"),
+		},
+	}
+	d := &publishDiscoverer{
+		lookup:  stub,
+		resolve: pipeline.RemotePipeline,
+		log:     slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := d.Discover(context.Background()); err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+	}
+	if got := strings.Count(logs.String(), "level=ERROR"); got != 1 {
+		t.Errorf("ERROR lines over 3 ticks = %d, want 1:\n%s", got, logs.String())
+	}
+
+	stub.records["b|x:B"] = publishingRecord("b|x:B", "http://example.test/y.yaml")
+	if _, err := d.Discover(context.Background()); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if got := strings.Count(logs.String(), "level=ERROR"); got != 2 {
+		t.Errorf("a changed record was not reported again: %d ERROR lines", got)
 	}
 }
 

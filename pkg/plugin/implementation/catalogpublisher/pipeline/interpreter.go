@@ -247,12 +247,20 @@ func (r *stepRunner) dispatch(ctx context.Context, step Step) (any, error) {
 
 	var gathered []map[string]any
 	for i, item := range items {
+		// Per item, not only per step: after a cancel every remaining item
+		// fails fast, and onError would record each as a failed group.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		iteration := r.rc.with(step.As, item)
 		r.log.DebugContext(ctx, "pipeline step: iteration",
 			"id", step.ID, "item", fmt.Sprintf("%d/%d", i+1, len(items)), "as", step.As)
 
 		output, err := r.primitive(withLogItem(ctx, itemLabel(item)), step, iteration)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			outcome, matched := r.outcomeFor(step, err)
 			if !matched {
 				return nil, err

@@ -28,6 +28,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/beckn/catalog-core/pkg/catalog/crawler"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // Fault classes for the ways a pipeline itself is unusable -- as opposed to
@@ -42,6 +44,14 @@ const (
 	faultPipelineInput crawler.FaultClass = "pipeline_input"
 )
 
+// permanent marks cause as a permanent fault of class without losing it.
+// crawler.PermanentError keeps only a Sprintf'd message and has no Unwrap, so
+// the cause is joined beside it: IsPermanent still finds the marker, errors.Is
+// and errors.As still reach the cause, and the message is the cause's own.
+func permanent(class crawler.FaultClass, cause error) error {
+	return fmt.Errorf("%w%w", crawler.PermanentFaultf(class, ""), cause)
+}
+
 // maxPipelineBytes caps a fetched pipeline file. The Mandi pipeline is about
 // 15 KB; a megabyte is room to grow without an unbounded read.
 const maxPipelineBytes = 1 << 20
@@ -53,7 +63,7 @@ const pipelineFetchTimeout = 30 * time.Second
 // same host: the URL was the registry's to choose, a redirect target is not.
 var pipelineHTTP = &http.Client{
 	Timeout:       pipelineFetchTimeout,
-	CheckRedirect: refuseOffHostRedirect,
+	CheckRedirect: util.RefuseOffHostRedirect,
 }
 
 // lastGood keeps the last copy of each pipeline URL that fetched AND
@@ -168,11 +178,11 @@ func fetchPipeline(ctx context.Context, rawURL string) ([]byte, error) {
 // the mistake this is here to catch.
 func parsePipeline(raw []byte, name string) (Spec, error) {
 	if err := validateBytes(raw, name); err != nil {
-		return Spec{}, crawler.PermanentFaultf(faultPipelineSpec, "%s", err)
+		return Spec{}, permanent(faultPipelineSpec, err)
 	}
 	var spec Spec
 	if err := yaml.Unmarshal(raw, &spec); err != nil {
-		return Spec{}, crawler.PermanentFaultf(faultPipelineSpec, "parse %s: %v", name, err)
+		return Spec{}, permanent(faultPipelineSpec, fmt.Errorf("parse %s: %w", name, err))
 	}
 	return spec, nil
 }

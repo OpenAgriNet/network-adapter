@@ -420,12 +420,6 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 
 	prefix := filenamePrefix(spec)
 
-	// Yesterday's files in a reused directory would be published again today
-	// as though they were fresh.
-	if err := RemoveStaleCatalogs(outDir, prefix); err != nil {
-		return fmt.Errorf("clearing previous catalogs: %w", err)
-	}
-
 	cache, err := newExprCache()
 	if err != nil {
 		return err
@@ -461,6 +455,12 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	report.Counters = counters
 	report.Errors = collectionErrors(spec.Publish, counters)
 
+	// WriteCatalogs clears the previous run's files before writing, so the
+	// last good catalogs survive until there is a complete set to replace
+	// them -- and are never cleared by a run that was cancelled.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("building catalogs: %w", err)
+	}
 	if err := WriteCatalogs(catalogs, outDir, prefix); err != nil {
 		return fmt.Errorf("writing catalogs: %w", err)
 	}

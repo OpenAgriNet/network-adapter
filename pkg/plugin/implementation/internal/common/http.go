@@ -32,14 +32,14 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 	attempts := retries + 1
 
 	var lastErr error
+	var made int
 	for attempt := 1; attempt <= attempts; attempt++ {
-		// Checked before the call, so a cancelled request costs nothing.
-		if err := ctx.Err(); err != nil {
-			if lastErr == nil {
-				lastErr = err
-			}
+		// Checked before the call, so a cancelled request costs nothing -- and
+		// before counting it, so an attempt that never ran is not reported.
+		if ctx.Err() != nil {
 			break
 		}
+		made = attempt
 
 		body, err := s.attempt(ctx, auth, call, endpoint, mapped, timeout)
 		if err == nil {
@@ -61,8 +61,19 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 			}
 		}
 	}
+	word := "attempts"
+	if made == 1 {
+		word = "attempt"
+	}
+	// The request ended (a caller that left, or a deadline) before the
+	// provider answered. That is not the provider failing, so it is not a 502,
+	// and the context's own error stays classifiable.
+	if ended := ctx.Err(); ended != nil {
+		return nil, model.NewCodedErr(http.StatusGatewayTimeout, util.CodeUpstreamUnavailable,
+			fmt.Errorf("request ended after %d %s, before the provider answered: %w", made, word, ended))
+	}
 	return nil, model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable,
-		fmt.Errorf("provider did not answer after %d attempts: %w", attempts, lastErr))
+		fmt.Errorf("provider did not answer after %d %s: %w", made, word, lastErr))
 }
 
 // attempt makes one upstream request.
@@ -115,7 +126,7 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		// Redacted on the way to the log too: a rejected request is often
 		// quoted back, credential and all.
 		log.Warnf(ctx, "provider returned %s for %s %s: %s",
-			resp.Status, method, requested, s.redactString(util.Explain(body)))
+			resp.Status, method, requested, s.explainRedacted(body))
 
 		// A held token the provider has stopped accepting is dropped, so the
 		// next call exchanges a fresh one.

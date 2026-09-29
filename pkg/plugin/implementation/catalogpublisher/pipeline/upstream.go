@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // maxResponseBytes caps what is read from the upstream. The largest observed
@@ -122,7 +123,7 @@ func withLogItem(ctx context.Context, item string) context.Context {
 func (c *Client) do(req *http.Request, carryCredential bool) (*http.Response, []byte, error) {
 	c.policyOnce.Do(func() {
 		if c.http.CheckRedirect == nil {
-			c.http.CheckRedirect = refuseOffHostRedirect
+			c.http.CheckRedirect = util.RefuseOffHostRedirect
 		}
 	})
 	if carryCredential {
@@ -149,39 +150,10 @@ func (c *Client) do(req *http.Request, carryCredential bool) (*http.Response, []
 	return resp, body, readErr
 }
 
-// refuseOffHostRedirect stops a redirect from carrying a credential to a host
-// the pipeline file never named.
-//
-// EVERY request this client makes carries one. The token exchange POSTs the
-// username and password in its body, and a 307 or 308 preserves method and
-// body, so Go would re-send both to the redirect target. Every later call
-// carries the token, and for this class of upstream it rides in the QUERY
-// STRING -- which Go does not strip on a cross-host redirect the way it strips
-// sensitive headers.
-//
-// A redirect that stays on the same host is ordinary (a trailing slash, a
-// moved path) and is followed, bounded by the stdlib's own chain limit.
-func refuseOffHostRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) == 0 {
-		return nil
-	}
-	from := via[len(via)-1].URL
-	if strings.EqualFold(req.URL.Host, from.Host) && !isSchemeDowngrade(from.Scheme, req.URL.Scheme) {
-		return nil
-	}
-	// The host and scheme are named, the URL is not: a redirect target on the
-	// data path would carry the token in its query string.
-	return fmt.Errorf("%w to %s://%s", ErrRedirectRefused, req.URL.Scheme, req.URL.Host)
-}
-
 // ErrRedirectRefused is the reason a call failed when the upstream redirected
-// somewhere this client will not carry a credential.
-//
-// It is a sentinel so the reason survives the deliberately opaque wrapping
-// below: without it a refused redirect reads as "could not be reached", and an
-// operator chases a network fault that is not there.
-var ErrRedirectRefused = errors.New("the upstream redirected off-host and was not followed, " +
-	"because every request here carries a credential")
+// somewhere this client will not carry a credential. The guard is shared with
+// the domain plugins' client (util.RefuseOffHostRedirect), and so is this.
+var ErrRedirectRefused = util.ErrRedirectRefused
 
 // unreachable is the error a failed round trip becomes.
 //
@@ -212,11 +184,6 @@ func unreachable(call string, err error) error {
 		return fmt.Errorf("%s: %w", call, context.DeadlineExceeded)
 	}
 	return fmt.Errorf("%s could not be reached", call)
-}
-
-// isSchemeDowngrade reports an https request being redirected to cleartext.
-func isSchemeDowngrade(from, to string) bool {
-	return strings.EqualFold(from, "https") && !strings.EqualFold(to, "https")
 }
 
 // exchangeToken performs the token exchange the pipeline file DECLARES,

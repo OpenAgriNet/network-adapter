@@ -363,6 +363,10 @@ type publishDiscoverer struct {
 	// Injectable so discovery is testable without a registry.
 	resolve func(registryPath string) (pipeline.Files, error)
 	log     *slog.Logger
+	// refused is the pipeline value each binding was last refused for. A bad
+	// value is refused on every tick and never reaches a retry budget, so it
+	// is said at ERROR once per value, and at Debug after that.
+	refused map[string]string
 }
 
 // Discover lists every binding and returns the ones with a publish action
@@ -407,11 +411,22 @@ func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, erro
 		files, err := d.resolve(pipelinePath)
 		if err != nil {
 			// The record's publish mappings is not a pipeline URL (a repo path
-			// from before pipelines were hosted, say). A registry fix, said loudly.
-			d.log.ErrorContext(ctx, "catalogcrawler: the registry's publish mappings is not a pipeline URL",
+			// from before pipelines were hosted, say). A registry fix, said
+			// loudly -- once, since it will be refused again every tick.
+			level := slog.LevelError
+			if d.refused[key] == pipelinePath {
+				level = slog.LevelDebug
+			} else {
+				if d.refused == nil {
+					d.refused = map[string]string{}
+				}
+				d.refused[key] = pipelinePath
+			}
+			d.log.Log(ctx, level, "catalogcrawler: the registry's publish mappings is not a pipeline URL",
 				"bindingKey", key, "pipeline", pipelinePath, "error", err)
 			continue
 		}
+		delete(d.refused, key)
 
 		d.log.InfoContext(ctx, "catalogcrawler: registry sanctions publishing",
 			"bindingKey", key, "actions", servedActions(record), "pipeline", pipelinePath)

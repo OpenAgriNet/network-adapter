@@ -2,11 +2,14 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 )
 
 // A pipeline is fetched from the URL the registry names, validated against
@@ -167,5 +170,37 @@ func TestRemotePipelineChecksTheRegistryValue(t *testing.T) {
 	}
 	if _, err := RemotePipeline("pkg/plugin/implementation/MandiPrice/catalogpublish/agmarknet.yaml"); err == nil {
 		t.Fatal("a repo path was accepted as a pipeline URL")
+	}
+}
+
+// A permanent fault must keep its cause reachable. crawler.PermanentError
+// flattens its message with Sprintf and has no Unwrap, so formatting the cause
+// into it loses errors.Is/As on the YAML or schema error underneath.
+func TestPermanentKeepsTheCauseReachable(t *testing.T) {
+	cause := errors.New("x.yaml does not match publish.oan/CatalogPipeline/v1")
+	err := permanent(faultPipelineSpec, cause)
+
+	if !crawler.IsPermanent(err) {
+		t.Errorf("%v is not classified permanent", err)
+	}
+	if got := crawler.PermanentClass(err); got != faultPipelineSpec {
+		t.Errorf("class = %q, want %q", got, faultPipelineSpec)
+	}
+	if !errors.Is(err, cause) {
+		t.Error("the cause is not reachable through errors.Is")
+	}
+	if err.Error() != cause.Error() {
+		t.Errorf("message = %q, want the cause's own %q", err.Error(), cause.Error())
+	}
+}
+
+// parsePipeline's refusal is permanent and still says what was wrong.
+func TestParsePipelineRefusalIsPermanentAndReadable(t *testing.T) {
+	_, err := parsePipeline([]byte("key: [unclosed"), "x.yaml")
+	if !crawler.IsPermanent(err) {
+		t.Fatalf("%v is not classified permanent", err)
+	}
+	if !strings.Contains(err.Error(), "parse x.yaml") {
+		t.Errorf("message %q lost the file name", err)
 	}
 }

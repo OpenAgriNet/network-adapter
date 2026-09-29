@@ -69,8 +69,7 @@
                     "en"
                   ],
                   "market": {
-                    "districtId": "601",
-                    "districtName": "Dharwad",
+                    "district": "Dharwad",
                     "marketCode": "201",
                     "marketName": "Hubli",
                     "state": "KA"
@@ -187,8 +186,7 @@
                     "en"
                   ],
                   "market": {
-                    "districtId": "502",
-                    "districtName": "Nashik",
+                    "district": "Nashik",
                     "marketCode": "102",
                     "marketName": "Nashik",
                     "state": "MH"
@@ -258,8 +256,7 @@
                     "en"
                   ],
                   "market": {
-                    "districtId": "501",
-                    "districtName": "Pune",
+                    "district": "Pune",
                     "marketCode": "101",
                     "marketName": "Pune",
                     "state": "MH"

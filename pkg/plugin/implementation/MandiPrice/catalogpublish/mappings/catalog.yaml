@@ -51,11 +51,17 @@ response: |
 
         $isoStateCode := $lookup($isoByAgmarknet, $row.stateCode);
 
+        /* market's properties are a CLOSED set in the MandiPrice schema
+           (additionalProperties: false): marketCode, marketName, district,
+           state, location. districtId/districtName are not among them, and
+           the publish endpoint rejects the whole catalog over either one --
+           so the district's NAME goes in "district", which the schema
+           documents as "District name or governed code". The id is still
+           carried, as the district-level areaCode below. */
         $marketObj := {
           "marketCode": $string($row.marketId),
           "marketName": $trim($row.marketName),
-          "districtId": $string($row.districtId),
-          "districtName": $trim($row.districtName),
+          "district": $trim($row.districtName),
           "state": $row.stateCode
         };
 

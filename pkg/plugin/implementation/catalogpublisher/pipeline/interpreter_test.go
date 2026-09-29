@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -226,6 +227,56 @@ func TestForEachClassifiesEmptyResultSeparatelyFromTransportError(t *testing.T) 
 	if runner.counters["groupErrors"] != 1 {
 		t.Errorf("groupErrors = %d, want 1 -- a 500 is an outage, not a quiet state",
 			runner.counters["groupErrors"])
+	}
+}
+
+// A cancel mid-forEach must stop the loop and surface as the context's error.
+// Otherwise every remaining item fails fast into groupErrors, and a forEach
+// that is the last step hands PublishCatalogs a run that reads as "too many
+// failed groups" rather than as the shutdown it was.
+func TestForEachStopsOnCancelInsteadOfRecordingEachRemainingItem(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		cancel() // the shutdown lands while the first item is in flight
+		_, _ = w.Write([]byte(`[{"marketId":1}]`))
+	}))
+	defer upstream.Close()
+
+	cache, _ := newExprCache()
+	client := NewClient(upstream.URL).WithErrorRules(testErrorRules())
+	client.http = upstream.Client()
+
+	spec := Spec{Pipeline: []Step{{
+		ID: "rows", Uses: usesHTTPGet, Out: "rows",
+		ForEach: "${states}", As: "state", Concurrency: 1,
+		With: With{Path: "/rows", Mapping: "mappings/rows.yaml",
+			Local: map[string]string{"stateCode": "${state.code}"}},
+		OnError: map[string]StepOutcome{
+			"transportError": {Record: "groupErrors", Continue: true},
+		},
+	}}}
+	runner := &stepRunner{
+		spec: spec, cache: cache, client: client, mapper: passthroughMapper{},
+		log: slog.New(slog.DiscardHandler), counters: map[string]int{},
+		rc: newRunContext(map[string]string{}, "tok"),
+	}
+	runner.rc.outputs["states"] = []any{
+		map[string]any{"code": "A"}, map[string]any{"code": "B"}, map[string]any{"code": "C"},
+	}
+
+	_, err := runner.runSteps(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runSteps error = %v, want it to wrap context.Canceled", err)
+	}
+	if got := runner.counters["groupErrors"]; got != 0 {
+		t.Errorf("groupErrors = %d, want 0 -- a cancel is not a failed group", got)
+	}
+	if got := calls.Load(); got > 1 {
+		t.Errorf("upstream called %d times, want at most 1 -- items after the cancel must not run", got)
 	}
 }
 
