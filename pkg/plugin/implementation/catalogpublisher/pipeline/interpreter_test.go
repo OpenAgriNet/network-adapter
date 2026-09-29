@@ -272,6 +272,9 @@ func TestForEachStopsOnCancelInsteadOfRecordingEachRemainingItem(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("runSteps error = %v, want it to wrap context.Canceled", err)
 	}
+	if !strings.Contains(err.Error(), `step "rows"`) || strings.Count(err.Error(), "step ") != 1 {
+		t.Errorf("error %q should name the step exactly once", err)
+	}
 	if got := runner.counters["groupErrors"]; got != 0 {
 		t.Errorf("groupErrors = %d, want 0 -- a cancel is not a failed group", got)
 	}

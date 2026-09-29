@@ -784,3 +784,31 @@ func TestPublishSweepPassesPipelineOverridesFromPluginConfig(t *testing.T) {
 		t.Fatalf("err = %v; want the pipeline to see (and refuse) the configured override", err)
 	}
 }
+
+// afterRun says a permanent fault once; tick must not then say it again at
+// ERROR on every tick, or a broken file is still one ERROR per binding every
+// five minutes.
+func TestTickDoesNotRelogAPermanentFault(t *testing.T) {
+	var logs bytes.Buffer
+	sweep := &publishSweep{
+		log:    slog.New(slog.NewTextHandler(&logs, nil)),
+		runLog: &countingRunLog{},
+		source: staticSource{targets: []publishTarget{
+			{record: &model.ProviderRecord{BindingKey: "a|example:Thing"}, files: pipeline.Files{URL: "https://host/a.yaml"}},
+		}},
+	}
+	broken := crawler.PermanentFaultf(crawler.FaultClass("pipeline_spec"), "the pipeline file is not valid YAML")
+	sweep.run = func(ctx context.Context, _ *model.ProviderRecord, files pipeline.Files) error {
+		return sweep.afterRun(ctx, files.URL, broken)
+	}
+
+	for i := 0; i < 3; i++ {
+		sweep.tick(context.Background())
+	}
+	if got := strings.Count(logs.String(), "level=ERROR"); got != 0 {
+		t.Errorf("ERROR lines = %d, want 0 -- afterRun already reported it:\n%s", got, logs.String())
+	}
+	if got := strings.Count(logs.String(), "level=WARN"); got != 1 {
+		t.Errorf("WARN lines = %d, want 1", got)
+	}
+}

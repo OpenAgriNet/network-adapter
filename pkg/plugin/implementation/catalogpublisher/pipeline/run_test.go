@@ -23,6 +23,8 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+
+	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 )
 
 // publishingRecord is the live registry's answer, in the shape the gate reads.
@@ -855,6 +857,28 @@ func TestAMistypedOverrideFailsBeforeTheDueCheck(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "publishURL") {
 		t.Fatalf("err = %v; want the mistyped key refused even though the pipeline is not due", err)
+	}
+}
+
+// Config faults found before the due check recur on every tick. They are
+// permanent, so the sweep says them once instead of spending its budget on
+// them and marking the firing served every third tick.
+func TestConfigFaultsBeforeTheDueCheckArePermanent(t *testing.T) {
+	ist, _ := time.LoadLocation("Asia/Kolkata")
+	for name, config := range map[string]map[string]string{
+		"a mistyped override":  {"publish.example.publishURL": "https://x"},
+		"an unusable schedule": {"publish.example.schedule": "every day"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Run(context.Background(), RunOptions{
+				Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: &fakeRunLog{},
+				Lookup: unreachableEnv, Now: time.Date(2026, 9, 21, 4, 0, 0, 0, ist), DryRun: true,
+				Config: config,
+			})
+			if err == nil || !crawler.IsPermanent(err) {
+				t.Errorf("err = %v, want a permanent fault", err)
+			}
+		})
 	}
 }
 

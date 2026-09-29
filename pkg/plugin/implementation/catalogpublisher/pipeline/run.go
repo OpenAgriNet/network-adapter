@@ -219,7 +219,7 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	// so nothing in Go can disagree with it.
 	capability := strings.TrimSpace(spec.Metadata.Capability)
 	if capability == "" {
-		return RunReport{}, fmt.Errorf("%s declares no metadata.capability", pipelinePath)
+		return RunReport{}, permanent(faultPipelineSpec, fmt.Errorf("%s declares no metadata.capability", pipelinePath))
 	}
 	report := RunReport{
 		Capability:   capability,
@@ -238,7 +238,7 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	// Checked every tick, not only when due, so a mistyped key is reported
 	// now rather than at the next firing.
 	if _, err := inputOverrides(spec, opts.Config); err != nil {
-		return report, err
+		return report, permanent(faultPipelineSpec, err)
 	}
 
 	// The run log's key is the PIPELINE -- its URL -- not the capability.
@@ -271,7 +271,9 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	// 3. Is it due.
 	due, firing, reason, err := dueNow(spec.Schedule, now, lastRun)
 	if err != nil {
-		return report, err
+		// An unparseable cron or offset, from the file or plugin config. It
+		// fails the same way every tick, whatever the run log says.
+		return report, permanent(faultPipelineSpec, err)
 	}
 	report.Due, report.Reason = due, reason
 	if !due {

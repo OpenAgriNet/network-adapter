@@ -258,6 +258,10 @@ func (p *publishSweep) tick(ctx context.Context) {
 					"bindingKey", target.record.BindingKey, "error", err)
 				return
 			}
+			if crawler.IsPermanent(err) {
+				// afterRun has already said it, once; it recurs every tick.
+				continue
+			}
 			p.log.ErrorContext(ctx, "catalogcrawler: publish pipeline run failed",
 				"bindingKey", target.record.BindingKey, "error", err)
 		}
@@ -342,6 +346,12 @@ func (p *publishSweep) afterRun(ctx context.Context, pipelineKey string, runErr 
 		// once per distinct fault, and the firing is NOT marked served:
 		// marking it would move last_run_at forward every tick, and once the
 		// file is fixed today's firing would read as already handled.
+		//
+		// The cost, accepted: a fault raised after the claim (an input type
+		// applyType does not implement) is never marked served either, so
+		// each tick claims, fails and releases -- two run-log writes and one
+		// pipeline fetch every tick until the file is fixed. Cheap, and it
+		// means the firing runs on the first tick after the fix.
 		if budget.reported != runErr.Error() {
 			budget.reported = runErr.Error()
 			p.log.WarnContext(ctx, "catalogcrawler: publish pipeline is broken and will not run until it is fixed",
