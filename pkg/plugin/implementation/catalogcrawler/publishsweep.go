@@ -28,6 +28,7 @@ package catalogcrawler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -39,6 +40,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
+
+	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 )
 
 // Config keys for the scheduled publish pipelines, in the same camelCase style
@@ -246,6 +249,13 @@ func (p *publishSweep) tick(ctx context.Context) {
 	}
 	for _, target := range targets {
 		if err := p.run(ctx, target.record, target.files); err != nil {
+			if ctx.Err() != nil {
+				// Shutdown or a deadline landed mid-sweep. Expected noise on
+				// the way out, not a failure worth an operator's attention.
+				p.log.InfoContext(ctx, "catalogcrawler: publish sweep stopping; the tick's context ended",
+					"bindingKey", target.record.BindingKey, "error", err)
+				return
+			}
 			p.log.ErrorContext(ctx, "catalogcrawler: publish pipeline run failed",
 				"bindingKey", target.record.BindingKey, "error", err)
 		}
@@ -296,6 +306,13 @@ func (p *publishSweep) afterRun(ctx context.Context, pipelineKey string, runErr 
 	if pipelineKey == "" {
 		return runErr // nothing to key the budget on; report and move on
 	}
+	if runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
+		// A shutdown or a deadline, not a failure this pipeline caused.
+		// Counting it would burn the attempt budget on noise outside the
+		// pipeline's control, and could give up on a firing that never got a
+		// real try.
+		return runErr
+	}
 	if p.failures == nil {
 		p.failures = map[string]*attemptBudget{}
 	}
@@ -316,7 +333,11 @@ func (p *publishSweep) afterRun(ctx context.Context, pipelineKey string, runErr 
 	}
 
 	budget.count++
-	if budget.count < maxAttemptsPerFiring {
+	// A permanent fault (bad YAML, an unsupported input type, a non-https
+	// URL) will not clear on the next tick or the one after: the pipeline
+	// file itself is broken, not the network. Retrying it 3 times before
+	// giving up is 3 wasted fetches for an answer the first one already gave.
+	if budget.count < maxAttemptsPerFiring && !crawler.IsPermanent(runErr) {
 		return runErr
 	}
 

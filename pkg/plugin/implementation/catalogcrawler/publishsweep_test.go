@@ -21,6 +21,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
+
+	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 )
 
 func TestPublishConfigIsOffUnlessAskedFor(t *testing.T) {
@@ -477,6 +479,67 @@ func TestASuccessfulRunClearsTheFailureCount(t *testing.T) {
 
 	if budget, held := sweep.failures["example:Thing"]; held {
 		t.Errorf("a success left %d failed attempts on the books", budget.count)
+	}
+}
+
+// A cancelled or timed-out run is not a failure the pipeline caused -- it is
+// this process shutting down, or a deadline this tick itself imposed.
+// Counting it against the attempt budget can give up on a firing that never
+// got a real try, and mark it served for the rest of the schedule window.
+func TestAfterRunDoesNotBurnTheBudgetOnCancellation(t *testing.T) {
+	sweep := &publishSweep{log: slog.New(slog.DiscardHandler), runLog: &countingRunLog{}}
+
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		_ = sweep.afterRun(context.Background(), "example:Thing", fmt.Errorf("upstream call: %w", cause))
+	}
+	if budget, held := sweep.failures["example:Thing"]; held {
+		t.Errorf("failures[%q] = %+v, want no budget entry for a cancelled/timed-out run", "example:Thing", budget)
+	}
+}
+
+// Once the tick's own context has ended, running the rest of the targets is
+// wasted work racing a process that is already shutting down -- and each of
+// those calls would itself fail on the same dead context, adding more of the
+// noise this same fix is removing from the log.
+func TestTickStopsCallingTargetsOnceItsContextEnds(t *testing.T) {
+	calls := 0
+	sweep := &publishSweep{
+		log: slog.New(slog.DiscardHandler),
+		source: staticSource{targets: []publishTarget{
+			{record: &model.ProviderRecord{BindingKey: "a|example:Thing"}, files: pipeline.Files{URL: "https://host/a.yaml"}},
+			{record: &model.ProviderRecord{BindingKey: "b|example:Thing"}, files: pipeline.Files{URL: "https://host/b.yaml"}},
+		}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	sweep.run = func(context.Context, *model.ProviderRecord, pipeline.Files) error {
+		calls++
+		cancel()
+		return fmt.Errorf("upstream call: %w", context.Canceled)
+	}
+
+	sweep.tick(ctx)
+
+	if calls != 1 {
+		t.Errorf("the run was called %d time(s) after its context ended, want 1 (stop, don't keep going)", calls)
+	}
+}
+
+// A permanent fault -- a pipeline file that will never load, an input type
+// this pipeline does not implement, a non-https URL -- will not clear on
+// retry. Spending the full attempt budget on it is 3 wasted fetches for an
+// answer the first one already gave; it should give up on the first attempt.
+func TestAPermanentFaultGivesUpOnTheFirstAttempt(t *testing.T) {
+	runLog := &countingRunLog{}
+	sweep := &publishSweep{log: slog.New(slog.DiscardHandler), runLog: runLog}
+
+	permanentErr := crawler.PermanentFaultf(crawler.FaultClass("pipeline_spec"), "the pipeline file is not valid YAML")
+	_ = sweep.afterRun(context.Background(), "example:Thing", permanentErr)
+
+	if runLog.recorded != 1 {
+		t.Fatalf("recorded %d time(s), want 1 (given up after the first attempt)", runLog.recorded)
+	}
+	if budget := sweep.failures["example:Thing"]; budget == nil || budget.count != 1 {
+		t.Errorf("failures[%q] = %+v, want count 1", "example:Thing", budget)
 	}
 }
 

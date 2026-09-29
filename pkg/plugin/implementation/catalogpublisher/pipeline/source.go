@@ -26,6 +26,20 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/beckn/catalog-core/pkg/catalog/crawler"
+)
+
+// Fault classes for the ways a pipeline itself is unusable -- as opposed to
+// its upstream being unreachable, which is transient and worth retrying.
+// Wrapped with crawler.PermanentFaultf so a caller with a retry budget (the
+// crawler's publish sweep) can tell "this pipeline will never load" from "the
+// network hiccuped", via the same crawler.IsPermanent it already uses for the
+// crawl path's own signature failures -- one vocabulary, not two.
+const (
+	faultPipelineURL   crawler.FaultClass = "pipeline_url"
+	faultPipelineSpec  crawler.FaultClass = "pipeline_spec"
+	faultPipelineInput crawler.FaultClass = "pipeline_input"
 )
 
 // maxPipelineBytes caps a fetched pipeline file. The Mandi pipeline is about
@@ -57,11 +71,12 @@ func checkPipelineURL(raw string) error {
 	trimmed := strings.TrimSpace(raw)
 	parsed, err := url.Parse(trimmed)
 	if err != nil || trimmed == "" || parsed.Scheme == "" {
-		return fmt.Errorf("the registry's publish mappings is %q; it must be the https URL of the pipeline "+
-			"file (e.g. https://raw.githubusercontent.com/<org>/<repo>/<ref>/.../catalogpublish/agmarknet.yaml)", raw)
+		return crawler.PermanentFaultf(faultPipelineURL,
+			"the registry's publish mappings is %q; it must be the https URL of the pipeline "+
+				"file (e.g. https://raw.githubusercontent.com/<org>/<repo>/<ref>/.../catalogpublish/agmarknet.yaml)", raw)
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("pipeline URL %q names no host", raw)
+		return crawler.PermanentFaultf(faultPipelineURL, "pipeline URL %q names no host", raw)
 	}
 	switch {
 	case parsed.Scheme == "https":
@@ -69,8 +84,9 @@ func checkPipelineURL(raw string) error {
 	case parsed.Scheme == "http" && isLoopback(parsed.Hostname()):
 		return nil
 	default:
-		return fmt.Errorf("pipeline URL %q uses %s; a pipeline decides where upstream credentials go, "+
-			"so it is fetched only over https", raw, parsed.Scheme)
+		return crawler.PermanentFaultf(faultPipelineURL,
+			"pipeline URL %q uses %s; a pipeline decides where upstream credentials go, "+
+				"so it is fetched only over https", raw, parsed.Scheme)
 	}
 }
 
@@ -152,11 +168,11 @@ func fetchPipeline(ctx context.Context, rawURL string) ([]byte, error) {
 // the mistake this is here to catch.
 func parsePipeline(raw []byte, name string) (Spec, error) {
 	if err := validateBytes(raw, name); err != nil {
-		return Spec{}, err
+		return Spec{}, crawler.PermanentFaultf(faultPipelineSpec, "%s", err)
 	}
 	var spec Spec
 	if err := yaml.Unmarshal(raw, &spec); err != nil {
-		return Spec{}, fmt.Errorf("parse %s: %w", name, err)
+		return Spec{}, crawler.PermanentFaultf(faultPipelineSpec, "parse %s: %v", name, err)
 	}
 	return spec, nil
 }
@@ -173,8 +189,9 @@ func checkUpstreamIsAnInput(spec Spec) error {
 	if base == "" || base == upstreamInputRef {
 		return nil
 	}
-	return fmt.Errorf("upstream.baseUrl is %q; it must be %s, so the address credentials are sent to "+
-		"comes from the deployment (env or plugin config), not from the pipeline file", base, upstreamInputRef)
+	return crawler.PermanentFaultf(faultPipelineSpec,
+		"upstream.baseUrl is %q; it must be %s, so the address credentials are sent to "+
+			"comes from the deployment (env or plugin config), not from the pipeline file", base, upstreamInputRef)
 }
 
 // resolveMappingRef resolves a file's mapping reference against the file's

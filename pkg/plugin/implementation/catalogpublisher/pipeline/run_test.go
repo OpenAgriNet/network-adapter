@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"gopkg.in/yaml.v3"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -517,7 +519,12 @@ func (f *claimingRunLog) ClaimPipelineRun(_ context.Context, key string, now, fi
 	return true, nil
 }
 
-func (f *claimingRunLog) ReleasePipelineRun(_ context.Context, key string, previous time.Time) error {
+func (f *claimingRunLog) ReleasePipelineRun(ctx context.Context, key string, previous time.Time) error {
+	// A real store's release is a database write: on an already-cancelled or
+	// timed-out context it fails immediately, the same as any other query.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.released[key] = previous
 	f.last[key] = previous
 	return nil
@@ -550,6 +557,42 @@ func TestRunKeysTheRunLogOnThePipeline(t *testing.T) {
 	}
 	if _, ok := runLog.recorded[fixtureCapability]; ok {
 		t.Errorf("a row was written under the capability %s", fixtureCapability)
+	}
+}
+
+// A run whose context is cancelled MID-FLIGHT -- after it already won the
+// claim -- still must give that claim back. Otherwise the claim marker stays
+// set to "now", and the firing looks already handled for the rest of the
+// schedule window: dueNow would not fire it again until the NEXT scheduled
+// time, silently losing this one to what was only a shutdown.
+func TestRunReleasesTheClaimEvenWhenItsContextWasCancelledMidFlight(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // held open until the test cancels ctx
+	}))
+	t.Cleanup(server.Close)
+
+	runLog := newClaimingRunLog()
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+		close(release)
+	}()
+
+	if _, err := Run(ctx, RunOptions{
+		Pipeline: fixturePipeline(), Record: publishingRecord(), RunLog: runLog,
+		Lookup: fixtureEnv(server.URL), Now: firedAt(t), OutDir: t.TempDir(),
+	}); err == nil {
+		t.Fatal("Run succeeded despite its context being cancelled mid-flight")
+	}
+
+	key := fixturePipeline().URL
+	if len(runLog.claimed) != 1 {
+		t.Fatalf("claimed %v, want the claim to have been won before the cancellation landed", runLog.claimed)
+	}
+	if _, released := runLog.released[key]; !released {
+		t.Error("the claim was not released after a mid-flight cancellation")
 	}
 }
 

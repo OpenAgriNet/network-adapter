@@ -29,6 +29,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jsonata-go/jsonata"
+
+	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 )
 
 // evaluating serialises every JSONata evaluation in this package.
@@ -559,7 +561,8 @@ func applyType(name, value string, input Input, now time.Time, utcOffset string)
 		return day.Format(layout), nil
 
 	default:
-		return "", fmt.Errorf("input %q declares type %q, which this pipeline does not implement", name, input.Type)
+		return "", crawler.PermanentFaultf(faultPipelineInput,
+			"input %q declares type %q, which this pipeline does not implement", name, input.Type)
 	}
 }
 

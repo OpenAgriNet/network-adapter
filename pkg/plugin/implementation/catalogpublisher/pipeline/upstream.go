@@ -199,6 +199,18 @@ func unreachable(call string, err error) error {
 	if errors.Is(err, ErrRedirectRefused) {
 		return fmt.Errorf("%s: %w", call, ErrRedirectRefused)
 	}
+	// Neither carries the URL -- "context canceled"/"context deadline
+	// exceeded" are fixed, credential-free strings -- so both are safe to
+	// keep classifiable with %w. Losing them here is how a shutdown or a
+	// timeout used to read as an ordinary upstream failure: it burned a
+	// sweep's attempt budget on its own way out, and could give up on a
+	// firing that never got a real try.
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%s: %w", call, context.Canceled)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", call, context.DeadlineExceeded)
+	}
 	return fmt.Errorf("%s could not be reached", call)
 }
 

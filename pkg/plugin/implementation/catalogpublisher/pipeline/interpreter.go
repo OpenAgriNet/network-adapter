@@ -96,6 +96,14 @@ func (r *stepRunner) runSteps(ctx context.Context) ([]map[string]any, error) {
 
 	var last any
 	for i, step := range r.spec.Pipeline {
+		// Checked between steps, not only inside the HTTP ones: a step with
+		// no upstream call (derive, dedupe, filter, join) would otherwise run
+		// to completion after a shutdown or a deadline, and a catalog built
+		// entirely from steps like that would still reach Publish.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("step %q: %w", step.ID, err)
+		}
+
 		// Logged per step, at INFO, because a run is minutes long and mostly
 		// silent: without this the only signals are "started" and "finished",
 		// and a pipeline stuck on state 19 of 36 looks exactly like one that

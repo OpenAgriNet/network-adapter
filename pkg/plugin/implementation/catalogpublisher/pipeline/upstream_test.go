@@ -314,6 +314,26 @@ func TestTokenDoesNotQuoteTheURLWhenUnreachable(t *testing.T) {
 	}
 }
 
+// A cancelled or timed-out run must be classifiable as such by its caller --
+// the sweep's attempt budget must not burn on a shutdown, and a give-up mark
+// must not follow one either. unreachable() used to launder every transport
+// failure into an opaque "could not be reached", which made errors.Is blind
+// to the one cause every other cause is not: our own context ending.
+func TestUnreachablePreservesContextCancellation(t *testing.T) {
+	for name, cause := range map[string]error{
+		"cancelled": context.Canceled,
+		"timed out": context.DeadlineExceeded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wrapped := &url.Error{Op: "Get", URL: "http://upstream.invalid/x", Err: cause}
+			err := unreachable("GET /x", wrapped)
+			if !errors.Is(err, cause) {
+				t.Errorf("unreachable(%v) = %v, want errors.Is to still see %v", wrapped, err, cause)
+			}
+		})
+	}
+}
+
 func readAll(r *http.Request) string {
 	body, _ := io.ReadAll(r.Body)
 	return string(body)

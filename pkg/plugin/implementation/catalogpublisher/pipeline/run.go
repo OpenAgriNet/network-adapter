@@ -54,6 +54,12 @@ const (
 	inputTokenSecret = "tokenSecret"
 )
 
+// releaseTimeout bounds the claim-release call a failed run makes on its way
+// out. Short and decoupled from the run's own context on purpose: this call
+// runs BECAUSE something -- often the context itself -- already went wrong,
+// and it is one small database write, not a network call to an upstream.
+const releaseTimeout = 5 * time.Second
+
 // RunLog is where a run's timestamp outlives the process.
 //
 // Without it, a restart at 00:05 re-runs a pipeline that already ran at 00:01
@@ -302,7 +308,16 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	// rather than costing the whole day.
 	if err := execute(ctx, spec, lookup, opts, &report, log, now); err != nil {
 		if claims {
-			if relErr := claimer.ReleasePipelineRun(ctx, key, previous); relErr != nil {
+			// Decoupled from ctx and given its own short budget: ctx is very
+			// often the reason execute failed (a shutdown, a deadline), and
+			// reusing it here would fail the release the same way, leaving
+			// the claim marker set to "now" -- so dueNow reads this firing as
+			// already handled until the NEXT scheduled one, silently losing
+			// it for the rest of the window.
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+			relErr := claimer.ReleasePipelineRun(releaseCtx, key, previous)
+			cancel()
+			if relErr != nil {
 				log.ErrorContext(ctx, "publish pipeline: run failed and its claim could not be released; "+
 					"this firing will not be retried", "pipeline", key, "error", relErr)
 			}

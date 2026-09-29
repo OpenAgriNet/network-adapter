@@ -89,6 +89,28 @@ func TestRunStepsExecutesInOrderAndNamesOutputs(t *testing.T) {
 	}
 }
 
+// A cancelled context must refuse to run ANY further step, including one
+// with no upstream call (const, derive, dedupe...): those have no way of
+// their own to notice a shutdown or a deadline, and would otherwise run to
+// completion and still reach Publish with a context that already ended.
+func TestRunStepsRefusesToRunOnAnAlreadyCancelledContext(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "seed", Uses: usesConst, Out: "rows", With: With{Records: []map[string]any{{"id": 1}}}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := runner.runSteps(ctx)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("runSteps error = %v, want it to wrap context.Canceled", err)
+	}
+	if _, ran := runner.rc.outputs["rows"]; ran {
+		t.Error("a step ran after the context was already cancelled")
+	}
+}
+
 // `when:` false must skip the call entirely and take `else: const:`. This is
 // how the real file avoids fetching a state list it was handed.
 func TestStepWhenFalseTakesElseAndDoesNotCall(t *testing.T) {
