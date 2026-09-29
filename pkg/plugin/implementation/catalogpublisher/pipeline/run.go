@@ -355,7 +355,7 @@ func execute(ctx context.Context, spec Spec, lookup func(string) (string, bool),
 	// to call: no token, no client. Its steps are const/derive/filter and the
 	// like; an HTTP step among them is refused by the schema at load, and by
 	// the runner as a backstop.
-	offset := offsetIn(spec.Schedule.Timezone, now)
+	offset := offsetIn(spec.Schedule.UTCOffset, now)
 	rc := newRunContext(resolved, "")
 	rc.utcOffset = offset
 	var client *Client
@@ -570,13 +570,13 @@ func resolveRunInputs(spec Spec, lookup func(string) (string, bool), opts RunOpt
 	return resolved, nil
 }
 
-// offsetIn renders the schedule zone's UTC offset at now, as +05:30. A
+// offsetIn renders schedule.utcOffset in the canonical "+05:30" form. A
 // timestamp published without it reads as UTC and shifts the day for every
 // consumer east or west of Greenwich.
-func offsetIn(timezone string, now time.Time) string {
-	location, err := time.LoadLocation(timezone)
+func offsetIn(utcOffset string, now time.Time) string {
+	location, err := parseUTCOffset(utcOffset)
 	if err != nil {
-		return "" // resolveInputsAt has already refused an unloadable zone
+		return "" // resolveInputsAt has already refused an unparseable offset
 	}
 	return now.In(location).Format("-07:00")
 }

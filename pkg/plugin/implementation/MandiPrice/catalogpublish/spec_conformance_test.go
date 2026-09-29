@@ -51,8 +51,8 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 	if got, want := spec.Schedule.Cron, "0 0 * * *"; got != want {
 		t.Errorf("Schedule.Cron = %q, want %q", got, want)
 	}
-	if got, want := spec.Schedule.Timezone, "Asia/Kolkata"; got != want {
-		t.Errorf("Schedule.Timezone = %q, want %q", got, want)
+	if got, want := spec.Schedule.UTCOffset, "+05:30"; got != want {
+		t.Errorf("Schedule.UTCOffset = %q, want %q", got, want)
 	}
 
 	wantInputs := map[string]pipeline.Input{

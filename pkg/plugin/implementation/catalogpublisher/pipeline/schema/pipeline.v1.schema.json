@@ -204,7 +204,7 @@
       "additionalProperties": false,
       "required": [
         "cron",
-        "timezone"
+        "utcOffset"
       ],
       "properties": {
         "cron": {
@@ -212,10 +212,10 @@
           "pattern": "^\\s*\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s+\\S+\\s*$",
           "description": "Standard FIVE-field cron: minute hour day-of-month month day-of-week. The six-field seconds variant is refused, because the two are indistinguishable by shape and a pasted six-field expression would run hourly while looking daily."
         },
-        "timezone": {
+        "utcOffset": {
           "type": "string",
-          "minLength": 1,
-          "description": "An IANA zone, e.g. Asia/Kolkata. The cron is resolved HERE, not on the host's clock: a UTC host reading a midnight-IST schedule off its own clock fires on the wrong calendar day and asks the upstream for yesterday."
+          "pattern": "^(Z|[+-]\\d{2}:\\d{2})$",
+          "description": "A fixed offset from UTC, e.g. +05:30, or Z for UTC itself. The cron is resolved HERE, not on the host's clock: a UTC host reading a midnight-IST schedule off its own clock fires on the wrong calendar day and asks the upstream for yesterday. A fixed offset rather than an IANA zone name, because this engine never needs a zoneinfo database: every network it serves has one offset, year round, with no daylight saving to track."
         }
       }
     },

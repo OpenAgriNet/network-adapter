@@ -245,7 +245,7 @@ func TestRunPublishesToTheCallersPublishURL(t *testing.T) {
 // morning -- which is exactly what happened.
 func TestExecuteResolvesDatesFromTheRunClock(t *testing.T) {
 	spec := Spec{
-		Schedule: Schedule{Cron: "0 0 * * *", Timezone: "Asia/Kolkata"},
+		Schedule: Schedule{Cron: "0 0 * * *", UTCOffset: "+05:30"},
 		Inputs: map[string]Input{
 			"fromDate": {Type: "date", Format: "dd-MM-yyyy", Default: "today"},
 		},
@@ -268,7 +268,7 @@ func TestExecuteResolvesDatesFromTheRunClock(t *testing.T) {
 // The caller's publish address wins over the pipeline's own input.
 func TestResolveRunInputsAppliesThePublishURL(t *testing.T) {
 	spec := Spec{
-		Schedule: Schedule{Timezone: "Asia/Kolkata"},
+		Schedule: Schedule{UTCOffset: "+05:30"},
 		Inputs:   map[string]Input{"publishUrl": {Env: "X_PUBLISH_URL", Default: "http://file.invalid"}},
 	}
 	resolved, err := resolveRunInputs(spec, func(string) (string, bool) { return "", false },
@@ -430,7 +430,7 @@ func TestRunReadsTheLegacyCapabilityKeyedRow(t *testing.T) {
 // empty provider id.
 func TestResolveRunInputsRefusesAnEmptyRequiredInput(t *testing.T) {
 	spec := Spec{
-		Schedule: Schedule{Timezone: "Asia/Kolkata"},
+		Schedule: Schedule{UTCOffset: "+05:30"},
 		Inputs: map[string]Input{
 			"participantId": {Env: "MANDI_PARTICIPANT_ID", Required: true},
 			"optional":      {Env: "X_OPTIONAL"},
@@ -461,7 +461,7 @@ func TestScheduleUTCOffsetIsTheZonesOffset(t *testing.T) {
 	if _, err := rc.lookup("schedule.utcOffset"); err == nil {
 		t.Fatal("${schedule.utcOffset} resolved before the run set it")
 	}
-	rc.utcOffset = offsetIn("Asia/Kolkata", time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC))
+	rc.utcOffset = offsetIn("+05:30", time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC))
 	got, err := rc.with("state", map[string]any{}).lookup("schedule.utcOffset")
 	if err != nil || got != "+05:30" {
 		t.Fatalf("${schedule.utcOffset} = %v, %v; want +05:30 (and carried into a loop scope)", got, err)
@@ -473,7 +473,7 @@ func TestScheduleUTCOffsetIsTheZonesOffset(t *testing.T) {
 func overrideSpec() Spec {
 	return Spec{
 		Metadata: Metadata{Name: "x"},
-		Schedule: Schedule{Cron: "0 0 * * *", Timezone: "Asia/Kolkata"},
+		Schedule: Schedule{Cron: "0 0 * * *", UTCOffset: "+05:30"},
 		Inputs: map[string]Input{
 			"participantId": {Env: "X_PARTICIPANT_ID", Default: "from-file"},
 			"fromDate":      {Type: "date", Format: "dd-MM-yyyy", Default: "today"},

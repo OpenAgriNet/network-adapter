@@ -86,19 +86,19 @@ func loadRegistryPipeline(ctx context.Context, files Files, registryPath string)
 // cron expression can state -- daily, hourly, weekdays only -- without this
 // function knowing which one it is looking at.
 //
-// The expression is resolved in the pipeline's OWN timezone, not the host's.
-// This one fires at midnight Asia/Kolkata; a host running UTC reading its own
-// clock would fire on the wrong calendar day and ask the upstream for
-// yesterday.
+// The expression is resolved against the pipeline's OWN utcOffset, not the
+// host's clock. This one fires at midnight IST (+05:30); a host running UTC
+// reading its own clock would fire on the wrong calendar day and ask the
+// upstream for yesterday.
 //
 // lastRun is passed in rather than read here so this stays a pure decision.
 // It must outlive the process -- a restart at 00:05 must not re-fire a run
 // that already happened at 00:01 -- which is what the RunLog in run.go is
 // for. A zero lastRun means "never ran".
 func dueNow(schedule Schedule, now, lastRun time.Time) (bool, time.Time, string, error) {
-	location, err := time.LoadLocation(schedule.Timezone)
+	location, err := parseUTCOffset(schedule.UTCOffset)
 	if err != nil {
-		return false, time.Time{}, "", fmt.Errorf("schedule.timezone %q: %w", schedule.Timezone, err)
+		return false, time.Time{}, "", fmt.Errorf("schedule.utcOffset %q: %w", schedule.UTCOffset, err)
 	}
 	expr, err := parseCron(schedule.Cron)
 	if err != nil {
@@ -298,6 +298,34 @@ func (c cronSchedule) matches(at time.Time) bool {
 	}
 }
 
+// parseUTCOffset reads a fixed offset -- "+05:30", "-04:00", or "Z" for UTC
+// itself -- into a *time.Location built with time.FixedZone.
+//
+// Not time.LoadLocation: that reads an IANA zone by name out of a zoneinfo
+// database the OS may not ship (this engine's base image does not), and an
+// IANA zone can also carry daylight saving, which a fixed offset cannot. This
+// network's zone is one offset, year round, so a literal is both sufficient
+// and the only thing that cannot go stale for want of an installed package.
+func parseUTCOffset(raw string) (*time.Location, error) {
+	s := strings.TrimSpace(raw)
+	if s == "Z" {
+		return time.UTC, nil
+	}
+	if len(s) != 6 || (s[0] != '+' && s[0] != '-') || s[3] != ':' {
+		return nil, fmt.Errorf("%q is not a fixed offset like \"+05:30\" or \"Z\"", raw)
+	}
+	hh, errH := strconv.Atoi(s[1:3])
+	mm, errM := strconv.Atoi(s[4:6])
+	if errH != nil || errM != nil || hh > 23 || mm > 59 {
+		return nil, fmt.Errorf("%q is not a fixed offset like \"+05:30\" or \"Z\"", raw)
+	}
+	seconds := hh*3600 + mm*60
+	if s[0] == '-' {
+		seconds = -seconds
+	}
+	return time.FixedZone(s, seconds), nil
+}
+
 // cronLookBack bounds the backwards search. Four years covers the longest gap
 // a valid expression can have -- February 29th, which recurs every four years
 // and can be up to eight years apart around a skipped century leap year, so
@@ -316,16 +344,17 @@ const cronLookBack = 8 * 366 * 24 * time.Hour
 // It walks back a day at a time, skipping non-matching days in one step, and
 // on a matching day tries the permitted hours and minutes latest first -- so a
 // yearly expression costs a few thousand iterations at most.
+//
+// loc is always a fixed offset (see parseUTCOffset), never an IANA zone, so
+// every wall time exists exactly once: no gap a spring-forward skips, no hour
+// a fall-back repeats. wallTime can therefore build a candidate directly from
+// time.Date with no ambiguity to resolve.
 func (c cronSchedule) prevFiring(now time.Time, loc *time.Location) (time.Time, error) {
 	local := now.In(loc)
 	floor := local.Add(-cronLookBack)
 	hours, minutes := descending(c.hours), descending(c.minutes)
 
 	// Day by day, newest first, and within a day the latest wall time first.
-	// Each candidate is built from the WALL CLOCK (see wallTime) rather than
-	// reached by stepping back a minute at a time, because stepping the
-	// absolute clock walks straight past a wall time that daylight saving
-	// removes, and meets one it repeats twice.
 	for day := time.Date(local.Year(), local.Month(), local.Day(), 12, 0, 0, 0, loc); !day.Before(floor); day = day.AddDate(0, 0, -1) {
 		if !c.dayMatches(day) {
 			continue
@@ -342,24 +371,9 @@ func (c cronSchedule) prevFiring(now time.Time, loc *time.Location) (time.Time, 
 		c.expr, int(cronLookBack.Hours()/24))
 }
 
-// wallTime is the instant the clock in loc first reads hour:minute on day.
-//
-// A repeated wall time (the hour daylight saving gives back) is its FIRST
-// occurrence, so the repeat is not a second firing and a daily pipeline does
-// not run twice. A wall time that never happens (the hour daylight saving
-// skips) fires at the first instant after the gap, so the day's run still
-// happens rather than the day being skipped.
+// wallTime is the instant the clock in loc reads hour:minute on day.
 func wallTime(day time.Time, hour, minute int, loc *time.Location) time.Time {
-	at := time.Date(day.Year(), day.Month(), day.Day(), hour, minute, 0, 0, loc)
-	if at.Hour() == hour && at.Minute() == minute {
-		return at // exists; for an ambiguous time Go gives the first occurrence
-	}
-	for next := hour + 1; next < 24; next++ {
-		if end := time.Date(day.Year(), day.Month(), day.Day(), next, 0, 0, 0, loc); end.Hour() == next {
-			return end
-		}
-	}
-	return at
+	return time.Date(day.Year(), day.Month(), day.Day(), hour, minute, 0, 0, loc)
 }
 
 // descending lists a cron field's permitted values, largest first.

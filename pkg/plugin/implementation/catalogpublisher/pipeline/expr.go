@@ -156,8 +156,8 @@ type runContext struct {
 	// outputs are each completed step's result, keyed by its `out:` name.
 	outputs map[string]any
 
-	// utcOffset is schedule.timezone's offset at the run's clock, as +05:30,
-	// reachable as ${schedule.utcOffset}. Empty until the run sets it.
+	// utcOffset is schedule.utcOffset, as +05:30, reachable as
+	// ${schedule.utcOffset}. Empty until the run sets it.
 	utcOffset string
 
 	// locals are the current loop variable (`as: state` gives ${state.…}) and
@@ -396,11 +396,11 @@ func exprLiteral(value any) (string, error) {
 	return string(encoded), nil
 }
 
-// The zone "today" is resolved in comes from the pipeline's own
-// schedule.timezone, and is NOT a display preference. A pipeline scheduled at
-// 00:00 Asia/Kolkata fires while UTC is still on the previous day; resolving
-// "today" in UTC would ask the upstream for yesterday's data, every night, and
-// the result would look like a successful run.
+// The offset "today" is resolved against comes from the pipeline's own
+// schedule.utcOffset, and is NOT a display preference. A pipeline scheduled at
+// 00:00 +05:30 fires while UTC is still on the previous day; resolving "today"
+// in UTC would ask the upstream for yesterday's data, every night, and the
+// result would look like a successful run.
 //
 // It is read from the Spec rather than passed separately so the schedule and
 // the date window cannot drift apart -- there is only one place to state it.
@@ -467,12 +467,13 @@ func resolveInputsWith(spec Spec, lookup func(string) (string, bool), overrides 
 	now time.Time) (map[string]string, error) {
 	inputs := spec.Inputs
 
-	// An empty zone would be read by time.LoadLocation as UTC, which is the
-	// one wrong answer that looks like a working one.
-	timezone := strings.TrimSpace(spec.Schedule.Timezone)
-	if timezone == "" {
-		return nil, fmt.Errorf("the pipeline states no schedule.timezone, so \"today\" cannot be resolved; " +
-			"a date resolved in the wrong zone asks the upstream for the wrong day and still looks successful")
+	// An empty offset would leave "today"/"yesterday" undefined rather than
+	// silently reading as UTC, which is the one wrong answer that looks like
+	// a working one.
+	utcOffset := strings.TrimSpace(spec.Schedule.UTCOffset)
+	if utcOffset == "" {
+		return nil, fmt.Errorf("the pipeline states no schedule.utcOffset, so \"today\" cannot be resolved; " +
+			"a date resolved in the wrong offset asks the upstream for the wrong day and still looks successful")
 	}
 
 	resolved := make(map[string]string, len(inputs))
@@ -502,7 +503,7 @@ func resolveInputsWith(spec Spec, lookup func(string) (string, bool), overrides 
 	for _, name := range names {
 		input := inputs[name]
 
-		value, err := applyType(name, resolved[name], input, now, timezone)
+		value, err := applyType(name, resolved[name], input, now, utcOffset)
 		if err != nil {
 			return nil, err
 		}
@@ -519,7 +520,7 @@ func resolveInputsWith(spec Spec, lookup func(string) (string, bool), overrides 
 // applyType turns a resolved string into what the input's declared type says
 // it is. Only the types the file actually uses are understood; anything else
 // is refused, because a type nobody implemented is a value nobody validated.
-func applyType(name, value string, input Input, now time.Time, timezone string) (string, error) {
+func applyType(name, value string, input Input, now time.Time, utcOffset string) (string, error) {
 	switch input.Type {
 	case "":
 		return value, nil
@@ -545,9 +546,9 @@ func applyType(name, value string, input Input, now time.Time, timezone string) 
 			return value, nil
 		}
 
-		location, err := time.LoadLocation(timezone)
+		location, err := parseUTCOffset(utcOffset)
 		if err != nil {
-			return "", fmt.Errorf("input %q: loading %s: %w", name, timezone, err)
+			return "", fmt.Errorf("input %q: %w", name, err)
 		}
 		day := now.In(location)
 		if value == "yesterday" {

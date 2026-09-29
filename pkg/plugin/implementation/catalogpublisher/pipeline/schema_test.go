@@ -84,8 +84,8 @@ func TestValidateReportsTheOffendingPath(t *testing.T) {
 		"a misspelled key inside a block": {
 			break_: func(doc map[string]any) {
 				schedule := doc["schedule"].(map[string]any)
-				schedule["timezon"] = schedule["timezone"]
-				delete(schedule, "timezone")
+				schedule["utcOffst"] = schedule["utcOffset"]
+				delete(schedule, "utcOffset")
 			},
 			expect: "schedule",
 		},

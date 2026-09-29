@@ -3,8 +3,8 @@ package pipeline
 // schedule_test.go pins the two decisions a tick makes before doing any work.
 // Both are cheap to get subtly wrong and expensive to notice: a gate that
 // passes when the registry never sanctioned the capability publishes
-// something nobody asked for, and a schedule resolved in the wrong timezone
-// fires on the wrong calendar day, every day, while looking healthy.
+// something nobody asked for, and a schedule resolved against the wrong UTC
+// offset fires on the wrong calendar day, every day, while looking healthy.
 
 import (
 	"context"
@@ -72,10 +72,10 @@ func TestPipelinePathForRefusesAnUnconfirmedCapability(t *testing.T) {
 }
 
 func TestDueNow(t *testing.T) {
-	schedule := Schedule{Cron: "0 0 * * *", Timezone: "Asia/Kolkata"}
-	ist, err := time.LoadLocation("Asia/Kolkata")
+	schedule := Schedule{Cron: "0 0 * * *", UTCOffset: "+05:30"}
+	ist, err := parseUTCOffset("+05:30")
 	if err != nil {
-		t.Fatalf("LoadLocation: %v", err)
+		t.Fatalf("parseUTCOffset: %v", err)
 	}
 
 	tests := map[string]struct {
@@ -89,7 +89,7 @@ func TestDueNow(t *testing.T) {
 		// pipeline already ran at -- so nothing is due. A host reading the
 		// clock in UTC lands on a different day's firing entirely.
 		"before the next firing, in IST": {
-			schedule: Schedule{Cron: "0 6 * * *", Timezone: "Asia/Kolkata"},
+			schedule: Schedule{Cron: "0 6 * * *", UTCOffset: "+05:30"},
 			now:      time.Date(2026, 9, 21, 19, 0, 0, 0, time.UTC),
 			lastRun:  time.Date(2026, 9, 21, 6, 0, 0, 0, ist),
 			want:     false,
@@ -135,13 +135,13 @@ func TestDueNow(t *testing.T) {
 
 func TestDueNowRejectsAnUnusableSchedule(t *testing.T) {
 	for name, schedule := range map[string]Schedule{
-		"bad timezone":      {Cron: "0 0 * * *", Timezone: "Mars/Olympus"},
-		"not cron at all":   {Cron: "midnight", Timezone: "Asia/Kolkata"},
-		"hour out of range": {Cron: "0 26 * * *", Timezone: "Asia/Kolkata"},
-		"no schedule":       {Timezone: "Asia/Kolkata"},
+		"bad utcOffset":     {Cron: "0 0 * * *", UTCOffset: "Asia/Kolkata"},
+		"not cron at all":   {Cron: "midnight", UTCOffset: "+05:30"},
+		"hour out of range": {Cron: "0 26 * * *", UTCOffset: "+05:30"},
+		"no schedule":       {UTCOffset: "+05:30"},
 		// A date that never occurs parses fine and then never fires. Silence
 		// is the failure mode, so it has to be an error at decision time.
-		"a date that never occurs": {Cron: "0 0 30 2 *", Timezone: "Asia/Kolkata"},
+		"a date that never occurs": {Cron: "0 0 30 2 *", UTCOffset: "+05:30"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, _, err := dueNow(schedule, time.Now(), time.Time{}); err == nil {
@@ -323,9 +323,9 @@ func TestParseCronRejectsUnusableExpressions(t *testing.T) {
 }
 
 func TestPrevFiring(t *testing.T) {
-	ist, err := time.LoadLocation("Asia/Kolkata")
+	ist, err := parseUTCOffset("+05:30")
 	if err != nil {
-		t.Fatalf("LoadLocation: %v", err)
+		t.Fatalf("parseUTCOffset: %v", err)
 	}
 
 	tests := map[string]struct {
@@ -423,69 +423,45 @@ func TestPrevFiringRefusesAnImpossibleDate(t *testing.T) {
 	}
 }
 
-// A schedule in a zone with daylight saving meets two days a year that the
-// minute-by-minute clock does not: one where a wall time never happens, one
-// where it happens twice. Mandi's Asia/Kolkata has neither; the next
-// capability's zone may.
-func TestPrevFiringAcrossDST(t *testing.T) {
-	ny, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		t.Fatalf("LoadLocation: %v", err)
-	}
+// parseUTCOffset accepts the fixed forms a schedule can use and refuses
+// everything else, including an IANA zone name -- this engine has no
+// zoneinfo database to resolve one against.
+func TestParseUTCOffsetAcceptsFixedOffsetsAndZ(t *testing.T) {
 	tests := map[string]struct {
-		expr string
-		now  time.Time
-		want time.Time
+		raw             string
+		wantSecondsEast int
 	}{
-		// 2026-03-08 02:00 EST jumps to 03:00 EDT, so 02:30 never happens.
-		// The day's run must still happen -- as soon as the gap ends --
-		// rather than the day being skipped.
-		"spring forward: a firing inside the gap runs when it ends": {
-			expr: "30 2 * * *",
-			now:  time.Date(2026, 3, 8, 12, 0, 0, 0, ny),
-			want: time.Date(2026, 3, 8, 3, 0, 0, 0, ny),
-		},
-		// 2026-11-01 01:30 happens twice (EDT, then EST). The firing is the
-		// FIRST, so the second is not a new firing.
-		"fall back: a repeated wall time fires at its first occurrence": {
-			expr: "30 1 * * *",
-			now:  time.Date(2026, 11, 1, 12, 0, 0, 0, ny),
-			want: time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC), // 01:30 EDT
-		},
-		"an ordinary day in the same zone": {
-			expr: "30 2 * * *",
-			now:  time.Date(2026, 3, 9, 12, 0, 0, 0, ny),
-			want: time.Date(2026, 3, 9, 2, 30, 0, 0, ny),
-		},
+		"IST":               {raw: "+05:30", wantSecondsEast: 5*3600 + 30*60},
+		"a negative offset": {raw: "-04:00", wantSecondsEast: -4 * 3600},
+		"Z means UTC":       {raw: "Z", wantSecondsEast: 0},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			schedule, err := parseCron(tc.expr)
+			loc, err := parseUTCOffset(tc.raw)
 			if err != nil {
-				t.Fatalf("parseCron: %v", err)
+				t.Fatalf("parseUTCOffset(%q): %v", tc.raw, err)
 			}
-			got, err := schedule.prevFiring(tc.now, ny)
-			if err != nil {
-				t.Fatalf("prevFiring: %v", err)
-			}
-			if !got.Equal(tc.want) {
-				t.Errorf("prevFiring = %s, want %s", got.Format(time.RFC3339), tc.want.Format(time.RFC3339))
+			_, gotSeconds := time.Date(2026, 1, 1, 0, 0, 0, 0, loc).Zone()
+			if gotSeconds != tc.wantSecondsEast {
+				t.Errorf("parseUTCOffset(%q) offset = %ds, want %ds", tc.raw, gotSeconds, tc.wantSecondsEast)
 			}
 		})
 	}
 }
 
-// The hour that repeats at fall-back must not run a daily pipeline twice: a
-// run at the first 01:30 serves the day, and the second 01:30 is not due.
-func TestDueNowDoesNotRunTwiceInTheRepeatedHour(t *testing.T) {
-	schedule := Schedule{Cron: "30 1 * * *", Timezone: "America/New_York"}
-	lastRun := time.Date(2026, 11, 1, 5, 31, 0, 0, time.UTC) // 01:31 EDT, the first pass
-	now := time.Date(2026, 11, 1, 6, 40, 0, 0, time.UTC)     // 01:40 EST, the second pass
-	due, _, reason, err := dueNow(schedule, now, lastRun)
-	if err != nil {
-		t.Fatalf("dueNow: %v", err)
-	}
-	if due {
-		t.Fatalf("due in the repeated hour after already running: %s", reason)
+func TestParseUTCOffsetRejectsAnythingElse(t *testing.T) {
+	for name, raw := range map[string]string{
+		"an IANA zone name":   "Asia/Kolkata",
+		"no sign":             "05:30",
+		"missing the colon":   "+0530",
+		"hour out of range":   "+24:00",
+		"minute out of range": "+05:60",
+		"empty":               "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseUTCOffset(raw); err == nil {
+				t.Errorf("parseUTCOffset(%q) was accepted", raw)
+			}
+		})
 	}
 }

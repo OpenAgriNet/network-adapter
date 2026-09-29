@@ -6,7 +6,7 @@ metadata:
 
 schedule:
   cron: "0 0 * * *"
-  timezone: Asia/Kolkata
+  utcOffset: "+05:30"
 
 thisBlockIsNotInTheSchema:
   someRule: refuse everything

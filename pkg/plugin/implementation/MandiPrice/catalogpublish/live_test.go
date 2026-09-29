@@ -153,7 +153,7 @@ func TestLive_8_Tick(t *testing.T) {
 	}
 	t.Logf("pipeline: %s (capability %s, provider %s)",
 		spec.Metadata.Name, spec.Metadata.Capability, spec.Metadata.Provider)
-	t.Logf("schedule: cron %q %s", spec.Schedule.Cron, spec.Schedule.Timezone)
+	t.Logf("schedule: cron %q %s", spec.Schedule.Cron, spec.Schedule.UTCOffset)
 
 	// DryRun is the real entry point, stopped before it fetches: it runs the
 	// gate, the run log and the schedule exactly as a scheduled tick would.

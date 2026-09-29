@@ -51,10 +51,11 @@ type Metadata struct {
 }
 
 // Schedule is when the polling layer should run this pipeline, as a standard
-// five-field cron expression resolved in Timezone (see schedule.go).
+// five-field cron expression resolved against a fixed UTCOffset (see
+// schedule.go).
 type Schedule struct {
-	Cron     string `yaml:"cron"`
-	Timezone string `yaml:"timezone"`
+	Cron      string `yaml:"cron"`
+	UTCOffset string `yaml:"utcOffset"`
 }
 
 // Input is one entry of the env surface, resolved env > default. Secret marks

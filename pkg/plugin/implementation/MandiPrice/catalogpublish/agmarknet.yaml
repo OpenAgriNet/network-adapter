@@ -5,7 +5,7 @@
 # no Go that duplicates it and no Go to edit instead.
 #
 #   metadata.capability   checked against the registry's publish action
-#   schedule              cron + timezone decide when a run is due
+#   schedule              cron + utcOffset decide when a run is due
 #   inputs                resolved flag > env > default
 #   upstream              base URL, auth exchange, error classification
 #   pipeline              the steps, in order, run by the interpreter
@@ -46,13 +46,16 @@ metadata:
 # ---------------------------------------------------------------------------
 schedule:
   # Standard five-field cron: minute hour day-of-month month day-of-week.
-  # "0 0 * * *" is every day at midnight. The expression is resolved in
-  # `timezone`, NOT the host's clock -- a UTC host reading this off its own
+  # "0 0 * * *" is every day at midnight. The expression is resolved against
+  # `utcOffset`, NOT the host's clock -- a UTC host reading this off its own
   # clock would fire on the wrong calendar day. At midnight "today" is seconds
   # old and has no rows, so the date window below defaults to `yesterday`: the
   # day that just closed.
+  #
+  # +05:30 is IST, a fixed offset: this network has no daylight saving to
+  # track, so there is no IANA zone name here and no zoneinfo database to load.
   cron: "0 0 * * *"
-  timezone: Asia/Kolkata
+  utcOffset: "+05:30"
 
 # ---------------------------------------------------------------------------
 # inputs — the environment surface, resolved env > default. A flag is for a

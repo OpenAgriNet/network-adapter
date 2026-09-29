@@ -28,7 +28,7 @@ func resolveInputsAtFixture(inputs map[string]Input, lookup func(string) (string
 }
 
 func specWith(inputs map[string]Input) Spec {
-	return Spec{Inputs: inputs, Schedule: Schedule{Cron: "0 0 * * *", Timezone: "Asia/Kolkata"}}
+	return Spec{Inputs: inputs, Schedule: Schedule{Cron: "0 0 * * *", UTCOffset: "+05:30"}}
 }
 
 // lookupFrom makes an os.LookupEnv-shaped function out of a map, so a test
@@ -325,7 +325,7 @@ func TestRedactedInputsHidesSecrets(t *testing.T) {
 // the day that is seconds old.
 func TestYesterdayResolvesInTheScheduleZone(t *testing.T) {
 	spec := Spec{
-		Schedule: Schedule{Timezone: "Asia/Kolkata"},
+		Schedule: Schedule{UTCOffset: "+05:30"},
 		Inputs:   map[string]Input{"fromDate": {Type: "date", Format: "dd-MM-yyyy", Default: "yesterday"}},
 	}
 	// 00:05 IST on the 21st is 18:35 UTC on the 20th; yesterday in IST is the 20th.
