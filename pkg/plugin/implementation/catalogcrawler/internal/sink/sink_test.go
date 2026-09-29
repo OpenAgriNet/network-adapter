@@ -16,7 +16,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"github.com/beckn/catalog-core/pkg/catalog"
-	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func TestBuildPushBody_CarriesEntryMetadata(t *testing.T) {
@@ -470,7 +470,7 @@ func TestPushEmitsAnAuditRecord(t *testing.T) {
 
 	got := map[string]string{}
 	var statusCode int64
-	records[0].WalkAttributes(func(kv otellog.KeyValue) bool {
+	records[0].WalkAttributes(func(kv attribute.KeyValue) bool {
 		if kv.Key == "http.response.status_code" {
 			statusCode = kv.Value.AsInt64()
 			return true

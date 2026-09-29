@@ -17,7 +17,7 @@ import (
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
-	auditlog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // BatchOutcome is the result of pushing one batch of a catalog.
@@ -130,11 +130,11 @@ func (c *Client) emitAudit(ctx context.Context, endpoint string, body []byte, st
 	auditCtx = context.WithValue(auditCtx, model.ContextKeyMsgID, pc.Context.MessageID)
 
 	telemetry.EmitAuditLogs(auditCtx, body, nil,
-		auditlog.String("audit.direction", "publish"),
-		auditlog.Int("http.response.status_code", status),
-		auditlog.String("http.request.error", errString(pushErr)),
-		auditlog.String("sender.id", pc.Context.BppID),
-		auditlog.String("receiver.id", endpoint),
+		attribute.String("audit.direction", "publish"),
+		attribute.Int("http.response.status_code", status),
+		attribute.String("http.request.error", errString(pushErr)),
+		attribute.String("sender.id", pc.Context.BppID),
+		attribute.String("receiver.id", endpoint),
 	)
 }
 
