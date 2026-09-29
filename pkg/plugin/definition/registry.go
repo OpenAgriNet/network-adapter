@@ -80,27 +80,3 @@ type ProviderRecordLookup interface {
 	// consulted, which is not the same as it answering "no".
 	ProviderRecord(ctx context.Context, bindingKey string) (*model.ProviderRecord, error)
 }
-
-// ProviderBindingLister enumerates the capability bindings a registry holds.
-//
-// It is what lets a publish sweep ask "which capabilities publish" without a
-// deployment having to list them: each key is then resolved through
-// ProviderRecordLookup, so every gate a single lookup applies still applies.
-// Optional, like the other lookups: callers type-assert for it.
-type ProviderBindingLister interface {
-	// ProviderBindingKeys returns every binding key the registry holds, in the
-	// registry's order. A registry that could not be consulted returns an
-	// error, never an empty list: an empty list reads as "nothing publishes".
-	ProviderBindingKeys(ctx context.Context) ([]string, error)
-}
-
-// ProviderActionBindingLister narrows the listing to bindings serving one
-// action, from the listing itself. A publish sweep uses it so it resolves only
-// the handful of bindings that publish, instead of every capability the
-// registry holds. Optional: callers fall back to ProviderBindingKeys.
-type ProviderActionBindingLister interface {
-	// ProviderBindingKeysServing returns the keys whose listed binding carries
-	// an active entry for action. Like ProviderBindingKeys, a registry that
-	// could not be consulted returns an error, never an empty list.
-	ProviderBindingKeysServing(ctx context.Context, action string) ([]string, error)
-}

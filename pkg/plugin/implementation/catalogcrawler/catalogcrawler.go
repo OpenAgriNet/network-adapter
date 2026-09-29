@@ -318,9 +318,33 @@ func buildPublishSource(registry definition.RegistryLookup, log *slog.Logger) (*
 }
 
 // publishRegistry is what publish discovery needs from the registry plugin.
+//
+// ProviderBindingKeys is declared here, not in definition/, because this is
+// its only consumer: a shared package should not grow a concept that only one
+// feature uses. sunbirdRegistry satisfies it structurally, with no import of
+// this package and no declared conformance -- Go only needs the method to
+// exist with this signature.
 type publishRegistry interface {
-	definition.ProviderBindingLister
+	// ProviderBindingKeys returns every binding key the registry holds, in the
+	// registry's order. A registry that could not be consulted returns an
+	// error, never an empty list: an empty list reads as "nothing publishes".
+	ProviderBindingKeys(ctx context.Context) ([]string, error)
 	definition.ProviderRecordLookup
+}
+
+// bindingLister narrows publishRegistry's listing to bindings serving one
+// action, from the listing itself, so Discover resolves only the handful of
+// bindings that publish instead of every capability the registry holds.
+//
+// Same reasoning as publishRegistry: this is the only place that wants the
+// narrower listing, so it is declared here rather than in definition/, and
+// callers fall back to publishRegistry.ProviderBindingKeys when a registry
+// plugin does not implement it.
+type bindingLister interface {
+	// ProviderBindingKeysServing returns the keys whose listed binding carries
+	// an active entry for action. Like ProviderBindingKeys, a registry that
+	// could not be consulted returns an error, never an empty list.
+	ProviderBindingKeysServing(ctx context.Context, action string) ([]string, error)
 }
 
 // publishTarget is one pipeline the registry sanctions, by URL.
@@ -399,7 +423,7 @@ func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, erro
 // bindingKeys lists the bindings worth resolving: only those serving publish
 // when the registry can say so from its listing, every binding otherwise.
 func (d *publishDiscoverer) bindingKeys(ctx context.Context) ([]string, error) {
-	if narrowed, ok := d.lookup.(definition.ProviderActionBindingLister); ok {
+	if narrowed, ok := d.lookup.(bindingLister); ok {
 		return narrowed.ProviderBindingKeysServing(ctx, publishActionName)
 	}
 	return d.lookup.ProviderBindingKeys(ctx)

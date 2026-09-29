@@ -75,10 +75,8 @@ type actionPlan struct {
 }
 
 var (
-	_ definition.RegistryLookup              = (*Client)(nil)
-	_ definition.ProviderRecordLookup        = (*Client)(nil)
-	_ definition.ProviderBindingLister       = (*Client)(nil)
-	_ definition.ProviderActionBindingLister = (*Client)(nil)
+	_ definition.RegistryLookup       = (*Client)(nil)
+	_ definition.ProviderRecordLookup = (*Client)(nil)
 )
 
 // searchURLFor builds the search endpoint for one registry entity.
