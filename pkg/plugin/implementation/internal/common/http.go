@@ -15,7 +15,7 @@ import (
 )
 
 // call makes the upstream request the plan describes, retrying within util.Budget.
-func (s *Step) call(ctx context.Context, auth *Authenticator, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
+func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
 	endpoint, err := util.BuildEndpoint(baseURL, call, mapped)
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func (s *Step) call(ctx context.Context, auth *Authenticator, baseURL string, ca
 }
 
 // attempt makes one upstream request.
-func (s *Step) attempt(ctx context.Context, auth *Authenticator, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration) ([]byte, error) {
+func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration) ([]byte, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

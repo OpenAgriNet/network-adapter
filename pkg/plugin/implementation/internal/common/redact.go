@@ -64,7 +64,7 @@ func (s *Step) redactString(text string) string {
 func (s *Step) secretForms() []string {
 	var forms []string
 	for _, auth := range s.auth {
-		forms = append(forms, auth.SecretForms()...)
+		forms = append(forms, auth.secretForms()...)
 	}
 	return longestFirst(forms)
 }
@@ -81,20 +81,7 @@ func (s *Step) secretForms() []string {
 //
 // The raw form is kept too, for an error built from config rather than from the
 // request.
-// SecretForms returns every form this authenticator's credential can appear
-// in, for redaction.
-//
-// Per scheme, because redacting only the value we hold is not enough:
-//
-//   - basic: the wire form is base64(user:pass), so the password alone never
-//     appears in an echoed header.
-//   - query: Encode escapes, so a token with "+" or "=" appears as "%2B", "%3D".
-//     Escaping what we hold uses the same function, so the two always agree.
-//   - header: sent as-is.
-//
-// The raw form is kept too, for an error built from config rather than from
-// the request.
-func (a *Authenticator) SecretForms() []string {
+func (a *authenticator) secretForms() []string {
 	switch a.cfg.Scheme {
 	case util.AuthSchemeBasic:
 		username, password := os.Getenv(a.cfg.UsernameEnv), os.Getenv(a.cfg.PasswordEnv)

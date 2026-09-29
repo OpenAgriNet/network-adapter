@@ -4,7 +4,6 @@ package common
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -75,32 +74,20 @@ type AuthProfile struct {
 	TokenTTL    time.Duration
 }
 
-// Authenticator is one provider's profile plus the token it holds, and
-// presents that provider's credential on a request. It needs no *Step: an
-// http.Client and a byte limit are enough, so a caller outside this
-// package's request/response handler -- a scheduled job, not just an inbound
-// action -- gets the same schemes, the same token cache and retry, and the
-// same redaction, rather than a second implementation of any of them.
+// authenticator is one provider's profile plus the token it holds.
 //
-// The token cache lives HERE rather than on a shared owner, which is why this
-// type exists: a step-wide cache would hand the first oauth2 provider's token
-// to the second, authenticating as somebody else.
-type Authenticator struct {
+// The token cache lives HERE rather than on the Step, which is why this type
+// exists: a step-wide cache would hand the first oauth2 provider's token to the
+// second, authenticating as somebody else.
+type authenticator struct {
 	cfg AuthProfile
 
 	// Two mechanisms, two jobs. tokenMu serialises the EXCHANGE so a cold
 	// start sends one request to the issuer. token is atomic so READERS never
-	// take that mutex -- SecretForms is one, reached from inside the exchange,
+	// take that mutex -- secretForms is one, reached from inside the exchange,
 	// and guarding the value with tokenMu deadlocks.
 	tokenMu sync.Mutex
 	token   atomic.Pointer[cachedToken]
-}
-
-// NewAuthenticator builds an Authenticator from a profile. The profile should
-// already have passed validate (ParseProviderAuth does this for Step; a
-// standalone caller building one by hand should call it too).
-func NewAuthenticator(cfg AuthProfile) *Authenticator {
-	return &Authenticator{cfg: cfg}
 }
 
 // validate refuses a profile whose scheme and fields disagree. Every message
@@ -285,50 +272,28 @@ func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames
 	return util.DoNotRetry(err)
 }
 
-// authenticate presents this provider's credentials on req.
-func (s *Step) authenticate(auth *Authenticator, req *http.Request) error {
-	err := auth.Apply(req.Context(), s.httpClient, s.config.MaxResponseBytes, req)
-	if err != nil {
-		var missing *missingCredentialErr
-		if errors.As(err, &missing) {
-			return s.missingCredential(req.Context(), missing.provider, missing.scheme, missing.envNames)
-		}
-		var perm *tokenExchangeErr
-		if errors.As(err, &perm) {
-			if perm.permanent {
-				return s.permanentTokenErr(perm.cause)
-			}
-			return s.tokenErr(perm.cause)
-		}
-	}
-	return err
-}
-
-// Apply presents this authenticator's credential on req, read from the
-// environment at call time so a rotated secret takes effect without a
-// restart. client and maxResponseBytes are the caller's own: a token
-// exchange, when the scheme needs one, is bounded and timed out exactly like
-// any other call the caller makes.
-func (a *Authenticator) Apply(ctx context.Context, client *http.Client, maxResponseBytes int64, req *http.Request) error {
-	cfg := a.cfg
+// authenticate presents this provider's credentials, read from the environment
+// at call time so a rotated secret takes effect without a restart.
+func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
+	cfg := auth.cfg
 	switch cfg.Scheme {
 	case util.AuthSchemeBasic:
 		username, password := os.Getenv(cfg.UsernameEnv), os.Getenv(cfg.PasswordEnv)
 		if username == "" || password == "" {
-			return &missingCredentialErr{provider: cfg.Provider, scheme: "basic",
-				envNames: cfg.UsernameEnv + " and " + cfg.PasswordEnv}
+			return s.missingCredential(req.Context(), cfg.Provider, "basic",
+				cfg.UsernameEnv+" and "+cfg.PasswordEnv)
 		}
 		req.SetBasicAuth(username, password)
 	case util.AuthSchemeHeader:
 		value := os.Getenv(cfg.HeaderValueEnv)
 		if value == "" {
-			return &missingCredentialErr{provider: cfg.Provider, scheme: "header", envNames: cfg.HeaderValueEnv}
+			return s.missingCredential(req.Context(), cfg.Provider, "header", cfg.HeaderValueEnv)
 		}
 		req.Header.Set(cfg.HeaderName, value)
 	case util.AuthSchemeQuery:
 		value := os.Getenv(cfg.QueryValueEnv)
 		if value == "" {
-			return &missingCredentialErr{provider: cfg.Provider, scheme: "query", envNames: cfg.QueryValueEnv}
+			return s.missingCredential(req.Context(), cfg.Provider, "query", cfg.QueryValueEnv)
 		}
 		// Set, not Add: a second copy of the parameter is an ambiguity, and
 		// which one an upstream reads is its own business.
@@ -336,7 +301,7 @@ func (a *Authenticator) Apply(ctx context.Context, client *http.Client, maxRespo
 		query.Set(cfg.QueryName, value)
 		req.URL.RawQuery = query.Encode()
 	case util.AuthSchemeOAuth2:
-		token, err := a.Token(ctx, client, maxResponseBytes)
+		token, err := s.providerToken(req.Context(), auth)
 		if err != nil {
 			return err
 		}
@@ -345,7 +310,7 @@ func (a *Authenticator) Apply(ctx context.Context, client *http.Client, maxRespo
 	case util.AuthSchemeTokenQuery:
 		// Exchanged like oauth2, placed like query: the same held token, put
 		// where this provider reads it from.
-		token, err := a.Token(ctx, client, maxResponseBytes)
+		token, err := s.providerToken(req.Context(), auth)
 		if err != nil {
 			return err
 		}
@@ -355,27 +320,3 @@ func (a *Authenticator) Apply(ctx context.Context, client *http.Client, maxRespo
 	}
 	return nil
 }
-
-// missingCredentialErr reports an unset credential without naming the
-// variable on the wire -- the caller decides how loudly to say so (Step signs
-// it into a peer-facing error and logs the variable name; a caller with no
-// peer to answer can just say which provider and scheme failed).
-type missingCredentialErr struct {
-	provider, scheme, envNames string
-}
-
-func (e *missingCredentialErr) Error() string {
-	return fmt.Sprintf("the %s credential for %s is not configured", e.scheme, e.provider)
-}
-
-// tokenExchangeErr reports a failed token exchange, classified so a caller
-// that retries whole calls (Step) can decide whether this one is worth
-// repeating; a caller that does not (a scheduled run, retried by its own
-// clock) can treat it as a plain error.
-type tokenExchangeErr struct {
-	cause     error
-	permanent bool
-}
-
-func (e *tokenExchangeErr) Error() string { return e.cause.Error() }
-func (e *tokenExchangeErr) Unwrap() error { return e.cause }

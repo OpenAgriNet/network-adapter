@@ -322,7 +322,7 @@ func TestTokenQueryRedactsTheSecretAndTheToken(t *testing.T) {
 	// passing request produces no error text to inspect.
 	var forms []string
 	for _, auth := range step.auth {
-		forms = append(forms, auth.SecretForms()...)
+		forms = append(forms, auth.secretForms()...)
 	}
 	joined := strings.Join(forms, "|")
 
