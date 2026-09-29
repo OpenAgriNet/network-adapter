@@ -1,6 +1,6 @@
 package pipeline
 
-// remote.go loads a pipeline from the URL the registry names -- the same way
+// source.go loads a pipeline from the URL the registry names -- the same way
 // the adapter already loads every other mapping: the registry's `mappings`
 // field is an https URL, and jsonmapper fetches it.
 //

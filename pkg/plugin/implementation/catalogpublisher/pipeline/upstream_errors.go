@@ -1,6 +1,6 @@
 package pipeline
 
-// classify.go turns a provider's `upstream.errors` block into a decision about
+// upstream_errors.go turns a provider's `upstream.errors` block into a decision about
 // one failed call.
 //
 // This used to be a constant. The engine recognised "this region has no rows"

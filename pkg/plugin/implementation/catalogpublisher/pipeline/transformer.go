@@ -1,6 +1,6 @@
 package pipeline
 
-// mapper.go serves a pipeline's embedded mappings and builds the JSONata
+// transformer.go serves a pipeline's mappings and builds the JSONata
 // mapper that reads them -- the two things every run needs before its first
 // step.
 

@@ -1,6 +1,6 @@
 package pipeline
 
-// classify_test.go pins the error classification a pipeline file DECLARES.
+// upstream_errors_test.go pins the error classification a pipeline file DECLARES.
 //
 // Until this existed, "no rows for this region" was recognised by matching one
 // upstream's literal string in Go. That made the engine unusable by a second

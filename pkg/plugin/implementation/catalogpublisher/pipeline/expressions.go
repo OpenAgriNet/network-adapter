@@ -1,6 +1,6 @@
 package pipeline
 
-// expr.go evaluates the two kinds of expression a pipeline file contains.
+// expressions.go evaluates the two kinds of expression a pipeline file contains.
 //
 //  1. `${...}` interpolation -- "${inputs.fromDate}", "${state.code}",
 //     "catalog:mandi-price:${slug}". Resolved against a run context: the
@@ -41,7 +41,7 @@ import (
 // caller, so the lock is what makes that safe.
 //
 // It does NOT need to cover jsonmapper. Measured, not assumed --
-// expr_race_test.go runs two independent instances concurrently under -race
+// expressions_race_test.go runs two independent instances concurrently under -race
 // and reports nothing, and reports a race the moment this lock is removed.
 // The library's one mutable global, staticFrame, is written by init() and by
 // RegisterGlobalFunction, which nothing here calls. Two subsystems evaluating

@@ -282,7 +282,7 @@ type Identity struct {
 }
 
 // Chunk is the geometry-budget split described in CatalogGeometryBudget's
-// comment in steps.go -- Budget here is that same cap, read from the file
+// comment in interpreter.go -- Budget here is that same cap, read from the file
 // rather than duplicated as a second constant.
 type Chunk struct {
 	Budget int    `yaml:"budget"`
