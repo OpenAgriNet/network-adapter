@@ -19,8 +19,18 @@ response: |
     $toRFC3339End := function($w) {
       $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T23:59:59' & _local.utcOffset
     };
+    /* Validity is the LISTING's, not the price window's. The window is the
+       day that just closed, so validity copied from it has already ended
+       when the catalog is published, and discovery hides an expired catalog
+       -- the whole listing would be invisible from the moment it arrives.
+       It starts with the window and runs two days past its end: past the
+       next daily run (which republishes and extends it) and one missed run. */
     $startDate := $toRFC3339Start(_local.windowFrom);
-    $endDate := $toRFC3339End(_local.windowTo);
+    $endDate := $fromMillis(
+      $toMillis($toRFC3339End(_local.windowTo)) + 2 * 86400000,
+      "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01][Z01:01]",
+      $replace(_local.utcOffset, ":", "")
+    );
 
     /* Agmarknet state code -> ISO 3166-2:IN. Agmarknet's codes are its own
        (measured: KK is Karnataka, MG is Meghalaya), so "IN-" & code would

@@ -677,3 +677,47 @@ func TestRunRendersTheCatalogContract(t *testing.T) {
 		t.Errorf("built %d catalogs, want 3 (MH, KA, ZZ)", len(report.Catalogs))
 	}
 }
+
+// A published market listing must be valid WHEN it is published, and stay
+// valid until the next daily run lands. Discovery hides a catalog whose
+// validity has ended, and the price window this pipeline queries is
+// yesterday -- so a validity copied from that window is already over at
+// publish, and the whole listing is invisible from the moment it arrives
+// (measured: catalog:mandi-price:UP, published 2026-09-30, valid to
+// 2026-09-29, discover returned nothing).
+func TestPublishedListingIsValidFromTheRunUntilAfterTheNextOne(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	now := firingTime(t)
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: fakeUpstreamEnv(upstream.URL), Now: now, OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	check := func(where, from, to string) {
+		t.Helper()
+		start, err1 := time.Parse(time.RFC3339, from)
+		end, err2 := time.Parse(time.RFC3339, to)
+		if err1 != nil || err2 != nil {
+			t.Fatalf("%s: validity %q..%q is not RFC 3339", where, from, to)
+		}
+		if start.After(now) || !end.After(now.Add(24*time.Hour)) {
+			t.Errorf("%s: validity %s..%s; want it to start by the run (%s) and last beyond the next daily run",
+				where, from, to, now.Format(time.RFC3339))
+		}
+	}
+	for _, catalog := range report.Catalogs {
+		var doc map[string]any
+		if err := json.Unmarshal(catalog.Content, &doc); err != nil {
+			t.Fatalf("%s: %v", catalog.Slug, err)
+		}
+		entry := doc["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)
+		v := entry["validity"].(map[string]any)
+		check(catalog.Slug+" catalog", v["startDate"].(string), v["endDate"].(string))
+		for _, raw := range entry["resources"].([]any) {
+			rv := raw.(map[string]any)["resourceAttributes"].(map[string]any)["validity"].(map[string]any)
+			check(catalog.Slug+" resource", rv["startsAt"].(string), rv["endsAt"].(string))
+		}
+	}
+}
