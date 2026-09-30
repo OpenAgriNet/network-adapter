@@ -1,4 +1,4 @@
-package catalogpublish
+package publish
 
 // run_execute_test.go covers the half of a run that run_test.go deliberately
 // stops short of: everything after the schedule says "go". It drives Run ->

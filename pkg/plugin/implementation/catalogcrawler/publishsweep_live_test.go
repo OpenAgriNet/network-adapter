@@ -216,7 +216,7 @@ func TestLive_CrawlerTick(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config refused: %v", err)
 	}
-	t.Logf("  enabled=%v tick=%s publish=%v filter=%q", cfg.enabled, cfg.tick, cfg.publish, liveFilter())
+	t.Logf("  enabled=%v publish=%v filter=%q", cfg.enabled, cfg.publish, liveFilter())
 
 	t.Log("STEP 2 — connect to the registry and see what it sanctions")
 	registry := liveRegistry(ctx, t, registryURL)
@@ -585,7 +585,6 @@ func TestLive_CrawlerTicksOnItsOwnClock(t *testing.T) {
 		cfgPublishPipelines:        "true",
 		cfgPublishEnabled:          map[bool]string{true: "true", false: "false"}[publishing],
 		cfgPublishCatalogOutputDir: outDir,
-		cfgPublishTickIntervalSec:  strconv.Itoa(int(interval.Seconds())),
 	})
 	if err != nil {
 		t.Fatalf("config refused: %v", err)
@@ -648,20 +647,20 @@ func TestLive_CrawlerTicksOnItsOwnClock(t *testing.T) {
 		}
 	}
 
-	// The real Scheduler, with the crawl loops it always carries. Their
-	// cadences are pushed out of the way so the output is the publish sweep's;
-	// they still run once at startup, as they do in production.
+	// The real Scheduler, with the crawl loops it always carries. The sweep
+	// rides the catalog-sync ticker, as it does in production, so that is the
+	// cadence under test; the others are pushed out of the way.
 	sched := NewScheduler(crawlmanager.Params{Store: st, Source: idleSource{}, Log: log},
 		SchedulerConfig{
 			IndexInterval:     24 * time.Hour,
-			CatalogInterval:   24 * time.Hour,
+			CatalogInterval:   interval,
 			ParkSweepInterval: 24 * time.Hour,
 		}, log)
-	if err := sched.AddPeriodic(cfg.tick, sweep); err != nil {
-		t.Fatalf("AddPeriodic: %v", err)
+	if err := sched.AfterCatalogSync(sweep); err != nil {
+		t.Fatalf("AfterCatalogSync: %v", err)
 	}
 
-	t.Logf("starting the scheduler: sweep every %s, watching for %d sweeps", cfg.tick, wantSweeps)
+	t.Logf("starting the scheduler: sweep every %s, watching for %d sweeps", interval, wantSweeps)
 	t.Logf("publishing is %s", map[bool]string{true: "ON — catalogs will reach the network", false: "OFF"}[publishing])
 	started := time.Now()
 	sched.Start(ctx)

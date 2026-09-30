@@ -63,8 +63,10 @@ const (
 	// publishing is neither.
 	cfgPublishEnabled = "publishEnabled"
 
-	// cfgPublishTickIntervalSec is how often to CHECK whether a pipeline is
-	// due -- not how often one runs.
+	// cfgPublishTickIntervalSec is RETIRED. The sweep now checks due-ness on
+	// every catalog-sync tick (catalogIntervalSeconds) rather than on a ticker
+	// of its own. A config still setting it is refused rather than ignored, so
+	// a deployment relying on it for its cadence finds out at startup.
 	cfgPublishTickIntervalSec = "publishTickIntervalSeconds"
 
 	// cfgPublishCatalogOutputDir keeps built catalogs for inspection. Each
@@ -79,14 +81,6 @@ const (
 // let every replica publish.
 var _ pipeline.RunClaimer = (*store.Store)(nil)
 
-// defaultPublishTickInterval is how often the due-ness check runs.
-//
-// Five minutes, not one: the check consults the registry, and the cost of a
-// late start is bounded by this interval -- a pipeline due at midnight starts
-// by 00:05 at the latest, which for a daily catalog is indistinguishable
-// from on time.
-const defaultPublishTickInterval = 5 * time.Minute
-
 // pipelinePublishTimeout bounds each pipeline catalog's post. Generous, and
 // longer than a crawled catalog's: a state catalog runs to hundreds of KB
 // and the adapter signs, forwards and indexes it before answering.
@@ -96,7 +90,6 @@ const pipelinePublishTimeout = 180 * time.Second
 type publishConfig struct {
 	enabled bool
 	publish bool
-	tick    time.Duration
 	outDir  string
 
 	// publishURL is the provider adapter's base address, derived from
@@ -124,13 +117,18 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 				"Remove it and set %q: \"true\" to sweep the registry",
 			cfgPublishBindingKeys, cfgPublishPipelines)
 	}
+	if strings.TrimSpace(config[cfgPublishTickIntervalSec]) != "" {
+		return publishConfig{}, fmt.Errorf(
+			"catalogcrawler: config %q is retired; the publish sweep now runs on every catalog-sync tick. "+
+				"Remove it and set %q for the cadence",
+			cfgPublishTickIntervalSec, cfgCatalogIntervalSec)
+	}
 	if config[cfgPublishPipelines] != "true" {
 		return publishConfig{}, nil
 	}
 	return publishConfig{
 		enabled: true,
 		publish: config[cfgPublishEnabled] == "true",
-		tick:    durationSecondsOr(config[cfgPublishTickIntervalSec], defaultPublishTickInterval),
 		outDir:  strings.TrimSpace(config[cfgPublishCatalogOutputDir]),
 
 		publishURL: publishBase(config[cfgDiscoveryURL]),

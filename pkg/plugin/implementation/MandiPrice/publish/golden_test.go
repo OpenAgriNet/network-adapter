@@ -1,4 +1,4 @@
-package catalogpublish
+package publish
 
 // golden_test.go pins the EXACT bytes this pipeline produces.
 //
@@ -13,7 +13,7 @@ package catalogpublish
 //
 // Regenerate deliberately, never reflexively:
 //
-//	go test ./pkg/plugin/implementation/MandiPrice/catalogpublish/ -run Golden -update
+//	go test ./pkg/plugin/implementation/MandiPrice/publish/ -run Golden -update
 //
 // and READ the diff. A golden file updated without reading it is worse than
 // no golden file, because it reads as review.

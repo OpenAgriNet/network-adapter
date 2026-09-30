@@ -83,7 +83,7 @@ func checkPipelineURL(raw string) error {
 	if err != nil || trimmed == "" || parsed.Scheme == "" {
 		return crawler.PermanentFaultf(faultPipelineURL,
 			"the registry's publish mappings is %q; it must be the https URL of the pipeline "+
-				"file (e.g. https://raw.githubusercontent.com/<org>/<repo>/<ref>/.../catalogpublish/agmarknet.yaml)", raw)
+				"file (e.g. https://raw.githubusercontent.com/<org>/<repo>/<ref>/.../publish/agmarknet.yaml)", raw)
 	}
 	if parsed.Host == "" {
 		return crawler.PermanentFaultf(faultPipelineURL, "pipeline URL %q names no host", raw)

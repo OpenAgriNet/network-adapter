@@ -57,10 +57,10 @@ Supported config keys:
 - `maxParkCount`: optional, default `0`, meaning derived from `parkSweepIntervalSeconds` and a 12-hour total retry budget (e.g. the default 15-minute sweep interval yields 48). How many times a parked catalog is revived before being abandoned instead.
 - `publishPipelines`: optional, default `false`. `"true"` sweeps the registry each tick for bindings serving a `publish` action and runs the pipeline each one names. The action's `mappings` is the pipeline file's **https URL**, fetched every run, exactly like a select mapping. Requires a registry plugin that can list and resolve provider bindings (e.g. `sunbirdRegistry`).
 - `publishEnabled`: optional, default `false`. `"true"` lets a due pipeline run post to `discoveryPushUrl`. Off, runs still build their catalogs (observable and reversible), but nothing reaches the network.
-- `publishTickIntervalSeconds`: optional, default `300` (5 min). How often to CHECK whether a pipeline is due; each pipeline's own `schedule.cron` decides when it actually runs.
+- `publishTickIntervalSeconds`: retired, and refused at startup. The sweep has no ticker of its own: it checks whether each pipeline is due on every catalog-sync tick (`catalogIntervalSeconds`, default 30 s), in its own goroutine so a long run never holds up the sync. Each pipeline's own `schedule.cron` still decides when it actually runs; the sync interval only bounds how late that can start.
 - `publishCatalogOutputDir`: optional, default empty (a temporary directory each run removes). Keeps built catalogs for inspection, one subdirectory per pipeline.
 - `publish.<pipeline>.<input>`: optional, one line per value. Overrides that pipeline input without a rebuild (`<pipeline>` is the file's `metadata.name`, e.g. `publish.mandi-price.participantId: "bpp.example.org"`). Precedence: plugin config > environment > the file's default. The value is still held to the input's declared type and enum (`publish.mandi-price.fromDate: "yesterday"` works). A key naming no input is refused at every tick. **Secret inputs (credentials) cannot be set here**; they come from the environment only.
-- `publish.<pipeline>.schedule`: optional. Replaces the file's `schedule.cron` (five-field cron, in the file's `schedule.timezone`). A schedule change is then a config edit, not a rebuild.
+- `publish.<pipeline>.schedule`: optional. Replaces the file's `schedule.cron` (five-field cron, resolved against the file's `schedule.utcOffset`). A schedule change is then a config edit, not a rebuild.
 - `publishBindingKeys`: retired. The registry now decides which capabilities publish; a config still setting it is refused at startup.
 
 ### Hosting a publish pipeline
@@ -70,8 +70,8 @@ A pipeline is a hosted file, like a select mapping. The registry record's
 fetches it. Its own mapping references (`mapping: mappings/catalog.yaml`)
 resolve **relative to that URL**, so the pipeline file and its `mappings/`
 folder are hosted side by side. In this repo they live in
-`pkg/plugin/implementation/<Capability>/catalogpublish/`: one `<provider>.yaml`
-per provider (Mandi: `MandiPrice/catalogpublish/agmarknet.yaml`), next to
+`pkg/plugin/implementation/<Capability>/publish/`: one `<provider>.yaml`
+per provider (Mandi: `MandiPrice/publish/agmarknet.yaml`), next to
 `mappings/`.
 
 - **Only https** (plain http only on loopback, for local runs). A repo path
@@ -86,9 +86,25 @@ per provider (Mandi: `MandiPrice/catalogpublish/agmarknet.yaml`), next to
   same as select mappings. The run log is keyed by the URL, so moving a file
   to a new URL starts a fresh schedule for it.
 
-**On deploy:** the Mandi record's `publish` `mappings` must be changed from
-the old repo path to the hosted URL of `MandiPrice/catalogpublish/agmarknet.yaml`
-(e.g. in the helmcharts repo, beside `mandi-price.select.yaml`).
+**On deploy:** the Mandi record's `publish` `mappings` must name the hosted
+URL of `MandiPrice/publish/agmarknet.yaml`.
+
+**Pin the URL to a commit, not a branch.** A raw URL at a commit SHA
+(`https://raw.githubusercontent.com/<org>/<repo>/<sha>/.../publish/agmarknet.yaml`)
+never changes and never disappears; a branch URL changes on every push and
+404s the moment the file moves. Pinning is also what makes a pipeline change a
+deliberate registry edit rather than a side effect of a merge.
+
+**Moving or renaming a hosted pipeline,** in this order:
+
+1. Pin the record to the CURRENT file at a commit SHA (skip if already pinned).
+   The old URL now keeps serving whatever happens to the branch.
+2. Move the file in the repo and push.
+3. Repoint the record's `publish` `mappings` to the new path at the new commit
+   SHA, for every affected binding.
+
+The run log is keyed by URL, so step 3 starts a fresh schedule: the pipeline
+is due on the next tick.
 
 ## Signature verification
 

@@ -64,7 +64,6 @@ plugins:
   #     participantId: "bpp.example.org"
   #     bppUri: "https://bpp.example.org"
 
-  # --- Mandi variant of the block above (see dev_docs/plan-crawler-mandi/) ---
   #
   # Differs from the generic example in two ways, both load-bearing:
   #
@@ -94,16 +93,15 @@ plugins:
   #    The REGISTRY is now the only list. Each tick the crawler asks
   #    discovery which binding keys it knows, looks each one up in SunbirdRC,
   #    and publishes the ones whose record carries an action == "publish".
-  #    That action's `mappings` field names the pipeline YAML by its
-  #    repo-relative path. A capability with no publish action has no
-  #    pipeline, which is a fact rather than a misconfiguration -- every
-  #    other capability on this network is select-only.
+  #    That action's `mappings` field names the pipeline YAML by its https
+  #    URL. A capability with no publish action has no pipeline, which is a
+  #    fact rather than a misconfiguration -- every other capability on this
+  #    network is select-only.
   #
-  #    So adding capability #2 is a registry edit plus a folder: give its
-  #    ProviderSchema record a publish action naming its own pipeline YAML,
-  #    and put that YAML in a */cataloguepublish-*/ folder under
-  #    pkg/plugin/implementation. The binary embeds every such folder. No
-  #    config list, no import per capability, no Go per capability.
+  #    So adding capability #2 is a registry edit plus a hosted file: give its
+  #    ProviderSchema record a publish action naming its own pipeline YAML's
+  #    https URL. No config list, no import per capability, no Go per
+  #    capability.
   #
   #    Deriving the path from the capability's name instead would mean
   #    guessing a filesystem layout and running a pipeline the registry
@@ -144,8 +142,8 @@ plugins:
   #
   #     # How often to CHECK whether a pipeline is due -- not how often one
   #     # runs. The cadence itself lives in each pipeline's YAML as a standard
-  #     # cron expression ("0 0 * * *", Asia/Kolkata), because it belongs to
-  #     # the pipeline rather than to this deployment. Default 300s.
+  #     # cron expression ("0 0 * * *", utcOffset: "+05:30"), because it
+  #     # belongs to the pipeline rather than to this deployment. Default 300s.
   #     publishTickIntervalSeconds: "300"
   #
   #     # Reaching the network is a SEPARATE decision from turning the
@@ -167,11 +165,11 @@ plugins:
   #     # crawler refuses to start rather than publishing unsanctioned.
   #
   #     # The pipeline also needs its own inputs from the environment:
-  #     # SUNBIRD_REGISTRY_URL, MANDI_API_URI, MANDI_TOKEN_USER,
-  #     # MANDI_TOKEN_SECRET, MANDI_PARTICIPANT_ID. (MANDI_PUBLISH_URL is
-  #     # gone: the crawler's own publish address is used.)
-  #     # See pkg/plugin/implementation/MandiPrice/cataloguepublish-agmarket/
-  #     # mandi-price-agmarket.yaml for the full list.
+  #     # MANDI_API_URI, MANDI_TOKEN_USER, MANDI_TOKEN_SECRET,
+  #     # MANDI_PARTICIPANT_ID, APP_NETWORK_ID. (MANDI_PUBLISH_URL is gone:
+  #     # the crawler's own publish address is used.)
+  #     # See pkg/plugin/implementation/MandiPrice/publish/agmarknet.yaml
+  #     # for the full list.
 modules:
   - name: bppTxnReceiver
     path: /bpp/receiver/

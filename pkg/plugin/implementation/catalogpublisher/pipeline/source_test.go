@@ -29,12 +29,12 @@ func TestLoadPipelineFetchesAndValidates(t *testing.T) {
 // clear or come from a file scheme a registry record could point anywhere.
 func TestCheckPipelineURL(t *testing.T) {
 	for raw, ok := range map[string]bool{
-		"https://raw.githubusercontent.com/org/repo/main/agmarknet.yaml":     true,
-		"http://127.0.0.1:8080/agmarknet.yaml":                               true,
-		"http://localhost/agmarknet.yaml":                                    true,
-		"http://example.org/agmarknet.yaml":                                  false,
-		"file:///etc/passwd":                                                 false,
-		"pkg/plugin/implementation/MandiPrice/catalogpublish/agmarknet.yaml": false,
+		"https://raw.githubusercontent.com/org/repo/main/agmarknet.yaml": true,
+		"http://127.0.0.1:8080/agmarknet.yaml":                           true,
+		"http://localhost/agmarknet.yaml":                                true,
+		"http://example.org/agmarknet.yaml":                              false,
+		"file:///etc/passwd":                                             false,
+		"pkg/plugin/implementation/MandiPrice/publish/agmarknet.yaml":    false,
 		"":                      false,
 		"https:///no-host.yaml": false,
 	} {
@@ -51,7 +51,7 @@ func TestCheckPipelineURL(t *testing.T) {
 // A repo path in the registry -- what records held before -- is refused with
 // a message that says what to put there instead.
 func TestARepoPathSaysAURLIsNeeded(t *testing.T) {
-	err := checkPipelineURL("pkg/plugin/implementation/MandiPrice/catalogpublish/agmarknet.yaml")
+	err := checkPipelineURL("pkg/plugin/implementation/MandiPrice/publish/agmarknet.yaml")
 	if err == nil || !strings.Contains(err.Error(), "https") {
 		t.Fatalf("err = %v; want it to say the registry must name an https URL", err)
 	}
@@ -108,10 +108,10 @@ func TestLoadPipelineRefusesAnInvalidFile(t *testing.T) {
 // A file's mapping references resolve relative to the file's own URL, the
 // way a browser resolves a link.
 func TestResolveMappingRef(t *testing.T) {
-	base := "https://host/org/repo/main/MandiPrice/catalogpublish/agmarknet.yaml"
+	base := "https://host/org/repo/main/MandiPrice/publish/agmarknet.yaml"
 	for ref, want := range map[string]string{
-		"mappings/catalog.yaml":    "https://host/org/repo/main/MandiPrice/catalogpublish/mappings/catalog.yaml",
-		"./mappings/catalog.yaml":  "https://host/org/repo/main/MandiPrice/catalogpublish/mappings/catalog.yaml",
+		"mappings/catalog.yaml":    "https://host/org/repo/main/MandiPrice/publish/mappings/catalog.yaml",
+		"./mappings/catalog.yaml":  "https://host/org/repo/main/MandiPrice/publish/mappings/catalog.yaml",
 		"../shared/catalog.yaml":   "https://host/org/repo/main/MandiPrice/shared/catalog.yaml",
 		"https://other/x/map.yaml": "https://other/x/map.yaml",
 	} {
@@ -164,11 +164,11 @@ func TestAPathThatWouldChangeTheHostIsRefused(t *testing.T) {
 // RemotePipeline is the crawler's resolver: the registry's value, checked,
 // becomes the Files a run is given. Nothing is fetched until the run.
 func TestRemotePipelineChecksTheRegistryValue(t *testing.T) {
-	files, err := RemotePipeline(" https://host/MandiPrice/catalogpublish/agmarknet.yaml ")
-	if err != nil || files.URL != "https://host/MandiPrice/catalogpublish/agmarknet.yaml" {
+	files, err := RemotePipeline(" https://host/MandiPrice/publish/agmarknet.yaml ")
+	if err != nil || files.URL != "https://host/MandiPrice/publish/agmarknet.yaml" {
 		t.Fatalf("RemotePipeline = %+v, %v", files, err)
 	}
-	if _, err := RemotePipeline("pkg/plugin/implementation/MandiPrice/catalogpublish/agmarknet.yaml"); err == nil {
+	if _, err := RemotePipeline("pkg/plugin/implementation/MandiPrice/publish/agmarknet.yaml"); err == nil {
 		t.Fatal("a repo path was accepted as a pipeline URL")
 	}
 }

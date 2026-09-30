@@ -1,4 +1,4 @@
-package catalogpublish
+package publish
 
 // mappings_test.go gives this package's tests the pipeline they exercise.
 //

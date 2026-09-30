@@ -1,4 +1,4 @@
-package catalogpublish
+package publish
 
 // spec_conformance_test.go holds this pipeline's side of the YAML<->struct
 // contract: that agmarknet.yaml really does parse into the values

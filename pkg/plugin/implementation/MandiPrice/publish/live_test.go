@@ -1,4 +1,4 @@
-package catalogpublish
+package publish
 
 // live_test.go drives each pipeline step against the REAL services, one step
 // at a time, so a person can watch what each stage actually produces before
@@ -10,8 +10,7 @@ package catalogpublish
 // somebody else can see: it puts catalogs onto the network.
 //
 // These live in the package rather than a cmd/ because everything they
-// exercise is unexported. That is also the reason this file exists at all --
-// see dev_docs/plan-crawler-mandi/live-testing-guide.md.
+// exercise is unexported.
 
 import (
 	"context"

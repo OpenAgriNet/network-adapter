@@ -30,25 +30,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/jsonata-go/jsonata"
 
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 )
 
-// evaluating serialises every JSONata evaluation in this package.
-//
-// The race it prevents is PER COMPILED EXPRESSION, not library-wide. Evaluate
-// binds the input onto the expression's own environment
-// (`execEnv.bind("$", input)` when there are no bindings) and writes through
-// its timestamp pointer, so two goroutines evaluating one cached expression
-// read each other's input. This cache hands the same *Expression to every
-// caller, so the lock is what makes that safe.
-//
-// It does NOT need to cover jsonmapper. Measured, not assumed --
-// expressions_race_test.go runs two independent instances concurrently under -race
-// and reports nothing, and reports a race the moment this lock is removed.
-// The library's one mutable global, staticFrame, is written by init() and by
-// RegisterGlobalFunction, which nothing here calls. Two subsystems evaluating
-// at the same time is safe; two goroutines sharing one expression is not.
-var evaluating sync.Mutex
+// This package's own evaluations serialise through jsonmapper.Evaluating,
+// not a lock declared here -- this package already imports jsonmapper (see
+// transformer.go), so reusing its lock costs nothing new and means there is
+// exactly one mutex over the library's shared state, not two. See
+// jsonmapper.Evaluating for why it has to be one lock, not one per package:
+// applying a built-in writes onto that built-in's own *Function value
+// (token, position, for error reporting), which is not per-instance and not
+// per-expression -- a lock scoped to this package's own cache is not
+// sufficient once anything else in the process evaluates JSONata
+// concurrently, which the publish sweep does, alongside reqmapper on live
+// traffic.
 
 // exprCache holds compiled expressions. Compiling is the expensive half and a
 // pipeline evaluates the same handful of expressions once per record.
@@ -96,8 +92,8 @@ func (c *exprCache) evaluate(expr string, record any) (result any, err error) {
 		return nil, fmt.Errorf("encoding the record for %q: %w", expr, err)
 	}
 
-	evaluating.Lock()
-	defer evaluating.Unlock()
+	jsonmapper.Evaluating.Lock()
+	defer jsonmapper.Evaluating.Unlock()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result, err = nil, fmt.Errorf("jsonata evaluation of %q panicked: %v", expr, recovered)

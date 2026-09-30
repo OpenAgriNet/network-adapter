@@ -177,10 +177,11 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 
 	sched := NewScheduler(params, schedCfg, log)
 
-	// The scheduled publish sweep, if this deployment asked for one. They
-	// ride the same Scheduler as the crawl loops so they share its context and
-	// shutdown; see publishsweep.go for why the crawler owns so little of
-	// them. Registered before Start, which AddPeriodic requires.
+	// The scheduled publish sweep, if this deployment asked for one. It rides
+	// the catalog-sync ticker -- one cadence, catalogIntervalSeconds -- and
+	// shares the Scheduler's context and shutdown; see publishsweep.go for why
+	// the crawler owns so little of it. Registered before Start, which
+	// AfterCatalogSync requires.
 	publishCfg, err := publishConfigFrom(config)
 	if err != nil {
 		db.Close()
@@ -193,12 +194,12 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 			return nil, nil, err
 		}
 		sweep := newPublishSweep(publishCfg, publishSrc, st, log)
-		if err := sched.AddPeriodic(publishCfg.tick, sweep.tick); err != nil {
+		if err := sched.AfterCatalogSync(sweep.tick); err != nil {
 			db.Close()
 			return nil, nil, err
 		}
 		log.Info("catalogcrawler: publish sweep enabled",
-			"tickInterval", publishCfg.tick, "publish", publishCfg.publish)
+			"tickInterval", schedCfg.catalogInterval(), "publish", publishCfg.publish)
 	}
 
 	c := &crawlerImpl{

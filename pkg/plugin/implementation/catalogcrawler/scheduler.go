@@ -79,40 +79,31 @@ type Scheduler struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	// extra are additional loops on their own cadences, registered before
-	// Start. They exist because a deployment can carry work that is neither
-	// an index poll nor a catalog sync -- a scheduled publish pipeline, say --
-	// and such work wants this Scheduler's lifecycle (one context, one
-	// WaitGroup, Stop drains it) rather than a second, differently-shutdown
-	// goroutine of its own.
-	extra []periodicTask
+	// afterSync is work that rides the catalog-sync ticker instead of a ticker
+	// of its own -- a scheduled publish sweep, say. Each runs after every sync
+	// tick in its own goroutine, so a job minutes long never holds up the next
+	// sync, and under this Scheduler's lifecycle (one context, one WaitGroup,
+	// Stop drains it). A job guards its own overlap: a tick that lands while
+	// the previous run is still going starts it again.
+	afterSync []func(context.Context)
 }
 
-// periodicTask is one registered extra loop.
-type periodicTask struct {
-	interval time.Duration
-	fn       func(context.Context)
-}
-
-// AddPeriodic registers fn to run immediately on Start and then every
-// interval, under the Scheduler's own lifecycle.
+// AfterCatalogSync registers fn to run after every catalog-sync tick,
+// starting with the one Start runs immediately.
 //
-// It must be called BEFORE Start -- a task registered afterwards would never
+// It must be called BEFORE Start -- a job registered afterwards would never
 // be launched, and silently doing nothing is the worst way for a scheduled
 // publish to fail, so this reports that rather than accepting it.
-func (s *Scheduler) AddPeriodic(interval time.Duration, fn func(context.Context)) error {
-	if interval <= 0 {
-		return fmt.Errorf("catalogcrawler: a periodic task needs a positive interval, got %s", interval)
-	}
+func (s *Scheduler) AfterCatalogSync(fn func(context.Context)) error {
 	if fn == nil {
-		return fmt.Errorf("catalogcrawler: a periodic task needs a function")
+		return fmt.Errorf("catalogcrawler: an after-sync job needs a function")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ctx != nil {
-		return fmt.Errorf("catalogcrawler: periodic tasks must be registered before Start")
+		return fmt.Errorf("catalogcrawler: after-sync jobs must be registered before Start")
 	}
-	s.extra = append(s.extra, periodicTask{interval: interval, fn: fn})
+	s.afterSync = append(s.afterSync, fn)
 	return nil
 }
 
@@ -134,10 +125,26 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.cancel = cancel
 	s.mu.Unlock()
 	s.loop(ctx, s.cfg.indexInterval(), s.pollTick)
-	s.loop(ctx, s.cfg.catalogInterval(), s.syncTick)
+	s.loop(ctx, s.cfg.catalogInterval(), func(ctx context.Context) {
+		s.syncTick(ctx)
+		s.startAfterSync(ctx)
+	})
 	s.loop(ctx, s.cfg.parkSweepInterval(), s.parkSweepTick)
-	for _, task := range s.extra {
-		s.loop(ctx, task.interval, task.fn)
+}
+
+// startAfterSync launches each after-sync job without waiting for it. Called
+// from the sync loop's own goroutine, whose count keeps the WaitGroup above
+// zero, so the Add cannot race a Stop already in Wait.
+func (s *Scheduler) startAfterSync(ctx context.Context) {
+	for _, fn := range s.afterSync {
+		if ctx.Err() != nil {
+			return
+		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			fn(ctx)
+		}()
 	}
 }
 

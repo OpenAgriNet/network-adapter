@@ -40,7 +40,6 @@ func TestPublishConfigReadsItsSettings(t *testing.T) {
 	cfg, err := publishConfigFrom(map[string]string{
 		cfgPublishPipelines:        "true",
 		cfgPublishEnabled:          "true",
-		cfgPublishTickIntervalSec:  "60",
 		cfgPublishCatalogOutputDir: "/tmp/catalogs",
 		cfgDiscoveryURL:            "http://provider-adapter:9200/publish",
 	})
@@ -52,9 +51,6 @@ func TestPublishConfigReadsItsSettings(t *testing.T) {
 	}
 	if !cfg.publish {
 		t.Error("publish was configured true but read as false")
-	}
-	if cfg.tick != time.Minute {
-		t.Errorf("tick = %s, want 1m", cfg.tick)
 	}
 	if cfg.outDir != "/tmp/catalogs" {
 		t.Errorf("outDir = %q", cfg.outDir)
@@ -81,8 +77,18 @@ func TestPublishConfigPublishDefaultsToOff(t *testing.T) {
 	if cfg.publish {
 		t.Error("publishing is on by default")
 	}
-	if cfg.tick != defaultPublishTickInterval {
-		t.Errorf("tick = %s, want the default %s", cfg.tick, defaultPublishTickInterval)
+}
+
+// The sweep has no ticker of its own any more: it runs on every catalog-sync
+// tick. A config still naming its own interval is refused, so a deployment
+// relying on that cadence learns it has changed at startup, not from a late run.
+func TestPublishConfigRefusesTheRetiredTickInterval(t *testing.T) {
+	_, err := publishConfigFrom(map[string]string{
+		cfgPublishPipelines:       "true",
+		cfgPublishTickIntervalSec: "300",
+	})
+	if err == nil || !strings.Contains(err.Error(), "catalogIntervalSeconds") {
+		t.Fatalf("err = %v, want the retired key refused, naming catalogIntervalSeconds", err)
 	}
 }
 
@@ -342,7 +348,7 @@ func (r ranAt) RecordPipelineRun(context.Context, string, time.Time) error { ret
 // mandiPipelinePath is the Mandi pipeline's URL: its folder hosted on a
 // loopback server, as production hosts it on https.
 var mandiPipelinePath = func() string {
-	base, _, err := pipeline.ServeMappings(os.DirFS("../MandiPrice/catalogpublish"), ".")
+	base, _, err := pipeline.ServeMappings(os.DirFS("../MandiPrice/publish"), ".")
 	if err != nil {
 		panic(err)
 	}
@@ -380,7 +386,7 @@ func TestRunPipelineReportsTheFramesRefusal(t *testing.T) {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
 	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, nil, slog.New(slog.DiscardHandler))
-	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/catalogpublish-x/p.yaml")
+	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/publish-x/p.yaml")
 
 	if err := sweep.runPipeline(context.Background(), record, files); err == nil {
 		t.Fatal("a record naming another pipeline was run")
@@ -648,7 +654,7 @@ func TestPublishDiscovererResolvesOnlyPublishingBindings(t *testing.T) {
 	stub := &stubRegistry{
 		keys: []string{"a|x:A", "b|x:B", "c|x:C"},
 		records: map[string]*model.ProviderRecord{
-			"b|x:B": publishingRecord("b|x:B", "pkg/plugin/implementation/X/catalogpublish-y/y.yaml"),
+			"b|x:B": publishingRecord("b|x:B", "pkg/plugin/implementation/X/publish-y/y.yaml"),
 		},
 	}
 	d := &publishDiscoverer{
@@ -715,7 +721,7 @@ func TestGivingUpMarksThePipelineServed(t *testing.T) {
 	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, runLog, slog.New(slog.DiscardHandler))
 	// A record naming some other pipeline: the frame's gate refuses it every
 	// time, which is a failure that will not clear.
-	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/catalogpublish-x/p.yaml")
+	record := publishingRecord("x|openagrinet:MandiPrice", "pkg/plugin/implementation/Other/publish-x/p.yaml")
 
 	for i := 0; i < maxAttemptsPerFiring; i++ {
 		if err := sweep.runPipeline(context.Background(), record, files); err == nil {

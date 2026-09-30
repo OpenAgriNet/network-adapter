@@ -169,7 +169,7 @@ func TestLoadRegistryPipelineAcceptsItsOwnURL(t *testing.T) {
 func TestLoadRegistryPipelineRefusesAnotherPipeline(t *testing.T) {
 	for name, named := range map[string]string{
 		"another pipeline": fixtureHost + "/testdata/other.yaml",
-		"a repo path":      "pkg/plugin/implementation/Example/catalogpublish/minimal.yaml",
+		"a repo path":      "pkg/plugin/implementation/Example/publish/minimal.yaml",
 		"empty":            "  ",
 	} {
 		t.Run(name, func(t *testing.T) {

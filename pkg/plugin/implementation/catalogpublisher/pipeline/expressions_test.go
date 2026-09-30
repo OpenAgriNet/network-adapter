@@ -1,14 +1,15 @@
 package pipeline
 
-// expressions_race_test.go pins a load-bearing fact about the JSONata library:
+// expressions_test.go pins a load-bearing fact about the JSONata library:
 // whether two INDEPENDENT evaluators, each with its own instance and its own
 // compiled expressions, share mutable state.
 //
-// The answer decides how wide the lock in expressions.go has to be. If the library
-// keeps evaluation state in package-level variables, then this package's lock
-// and jsonmapper's lock are two locks over one resource and neither is
-// sufficient -- the publish sweep runs in the adapter process beside
-// reqmapper on live traffic, so the two would evaluate concurrently.
+// The answer decides how wide the lock guarding evaluation has to be -- see
+// jsonmapper.Evaluating, which this package's evaluate() takes. If the
+// library keeps evaluation state in package-level variables, then a lock
+// scoped to this package alone is not sufficient -- the publish sweep runs
+// in the adapter process beside reqmapper on live traffic, so the two would
+// evaluate concurrently.
 //
 // Run it with -race. Without -race it proves almost nothing.
 
@@ -112,13 +113,81 @@ func (w *wrongAnswer) Error() string {
 	return w.expr + " produced a value from another goroutine's input"
 }
 
+// TestLambdaCallingABuiltinRacesATopLevelCallOfIt is the shape the first two
+// tests miss. Neither $sum/$count/arithmetic at top level, nor one compiled
+// expression evaluated twice, exercises applyFunction's write onto a
+// built-in's shared *Function value (token, position -- v206/jsonata.go) --
+// that write only happens through function APPLICATION, and a top-level
+// `$count(items)` never applies $count as a value, it calls it directly.
+// Wrapping the same call in a lambda does apply it, and that is enough to
+// race a concurrent top-level call of the SAME builtin, from a completely
+// separate instance and expression -- unlocked, this reproduces reliably
+// under -race.
+//
+// Locked through TWO SEPARATE exprCaches -- standing in for two different
+// packages (this one, and jsonmapper) evaluating concurrently, each holding
+// only its own cache's compile lock -- it must not race, because both now
+// take jsonmapper.Evaluating for the Evaluate call itself. This is the
+// exact scenario that lock exists to close: a lock scoped to one cache's
+// compile step is not the same as a lock scoped to evaluation.
+func TestLambdaCallingABuiltinRacesATopLevelCallOfIt(t *testing.T) {
+	cacheA, err := newExprCache()
+	if err != nil {
+		t.Fatalf("newExprCache: %v", err)
+	}
+	cacheB, err := newExprCache()
+	if err != nil {
+		t.Fatalf("newExprCache: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 16*300)
+
+	for g := 0; g < 16; g++ {
+		g := g
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				var got any
+				var err error
+				if g%2 == 0 {
+					got, err = cacheA.evaluate(`( $f := function($x){ $count($x) }; $f(items) )`,
+						map[string]any{"items": []any{1, 2, 3, 4, 5}})
+				} else {
+					got, err = cacheB.evaluate(`$count(c)`, map[string]any{"c": []any{1, 2}})
+				}
+				if err != nil {
+					errs <- err
+					return
+				}
+				want := float64(5)
+				if g%2 != 0 {
+					want = 2
+				}
+				if number, ok := got.(float64); !ok || number != want {
+					errs <- fmt.Errorf("got %v, want %v -- the shared lock did not cover this call shape", got, want)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("%v", err)
+	}
+}
+
 // The other half of the question: ONE compiled expression evaluated
 // concurrently. The library binds the input onto the expression's own
 // environment (`execEnv.bind("$", input)` when there are no bindings) and
 // writes through the expression's timestamp pointer, so this IS a race.
 //
-// It is what each package's lock exists to prevent, and it is per-expression
-// -- which is why one lock per package is the right width.
+// It is what jsonmapper.Evaluating exists to prevent, and it is
+// per-expression -- which is why one process-wide lock, not one per package,
+// is the right width.
 func TestOneCompiledExpressionNeedsALock(t *testing.T) {
 	cache, err := newExprCache()
 	if err != nil {
