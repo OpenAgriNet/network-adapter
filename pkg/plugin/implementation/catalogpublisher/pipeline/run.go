@@ -190,6 +190,14 @@ type RunReport struct {
 // A failed run is deliberately NOT recorded, so a transient upstream outage at
 // midnight is retried on the next tick rather than costing the whole day.
 func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
+	report, err := run(ctx, opts)
+	// Every tick is counted, whatever it came to (telemetry.go).
+	recordTick(ctx, report, opts.DryRun, err)
+	return report, err
+}
+
+// run is Run without the tick counter.
+func run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	if strings.TrimSpace(opts.Pipeline.URL) == "" {
 		return RunReport{}, fmt.Errorf("no pipeline: RunOptions.Pipeline names no URL to run")
 	}
@@ -210,7 +218,7 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	if err != nil {
 		return RunReport{}, err
 	}
-	spec, err := loadRegistryPipeline(ctx, opts.Pipeline, pipelinePath)
+	spec, err := loadRegistryPipeline(ctx, opts.Pipeline, pipelinePath, log)
 	if err != nil {
 		return RunReport{}, err
 	}
@@ -231,7 +239,8 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	// file's -- a schedule change is then a config edit, not a rebuild. It is
 	// parsed by the same due-check below, so a bad one fails loudly here.
 	if cron, set := pipelineOverrides(opts.Config, spec.Metadata.Name)[overrideSchedule]; set && strings.TrimSpace(cron) != "" {
-		log.InfoContext(ctx, "publish pipeline: schedule from plugin config",
+		// Every tick, before the due check, so DEBUG.
+		log.DebugContext(ctx, "publish pipeline: schedule from plugin config",
 			"pipeline", spec.Metadata.Name, "file", spec.Schedule.Cron, "config", cron)
 		spec.Schedule.Cron = strings.TrimSpace(cron)
 	}
@@ -277,7 +286,9 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	}
 	report.Due, report.Reason = due, reason
 	if !due {
-		log.InfoContext(ctx, "publish pipeline: not due", "pipeline", key, "reason", reason)
+		// The answer on almost every tick, so DEBUG; a run that IS due logs
+		// at INFO from here on.
+		log.DebugContext(ctx, "publish pipeline: not due", "pipeline", key, "reason", reason)
 		return report, nil
 	}
 	if opts.DryRun {
@@ -308,7 +319,14 @@ func Run(ctx context.Context, opts RunOptions) (RunReport, error) {
 	// 5. Do the work. A failed run gives the claim back, so a transient
 	// outage at midnight is retried on the next tick -- on any replica --
 	// rather than costing the whole day.
-	if err := execute(ctx, spec, lookup, opts, &report, log, now); err != nil {
+	// The one span a run gets, around the work and nothing else: the ticks
+	// that stop short of here are counted but not traced.
+	ctx, span := startRunSpan(ctx, capability)
+	defer span.End()
+	began := time.Now()
+	err = execute(ctx, spec, lookup, opts, &report, log, now)
+	finishRunSpan(ctx, span, report, err, time.Since(began))
+	if err != nil {
 		if claims {
 			// Decoupled from ctx and given its own short budget: ctx is very
 			// often the reason execute failed (a shutdown, a deadline), and

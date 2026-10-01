@@ -7,10 +7,13 @@
 # price call's marketcode parameter takes. Reading the wrong one produces a
 # catalog whose codes look plausible and return nothing.
 request: |
-  {
-    "option": "6",
-    "token": _local.token
-  }
+  (
+    /* No token: the engine adds it to the query itself (upstream.token in
+       the pipeline file), so this mapping never sees it. */
+    {
+      "option": "6"
+    }
+  )
 
 # Coordinates arrive as STRINGS, and as JSON null where the upstream has none,
 # and occasionally as a non-numeric string such as "N/A". Each expression first

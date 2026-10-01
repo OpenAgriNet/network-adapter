@@ -168,7 +168,10 @@ upstream:
         password: ${inputs.tokenSecret}
     token:
       at: $.token
-      carriedAs: query      # the token rides in the query string, not a header
+      # Rides in the query string, not a header, and is added to every call
+      # by the engine -- no mapping is given the token, so no JSONata error
+      # can quote it.
+      carriedAs: query
       name: token
       # The response carries NO expiry field. One token is held for the run
       # and re-exchanged on a 401/403 rather than refreshed on a timer.
@@ -196,7 +199,6 @@ pipeline:
     with:
       path: /v1/fetch-agmarknet-master-data
       mapping: mappings/master-states.yaml
-      local: { token: "${auth.token}" }
     out: states
     failWhenEmpty: "state list resolved to zero states"
 
@@ -205,7 +207,6 @@ pipeline:
     with:
       path: /v1/fetch-agmarknet-master-data
       mapping: mappings/master-markets.yaml
-      local: { token: "${auth.token}" }
     out: masterMarkets
 
   - id: stateRows
@@ -217,7 +218,6 @@ pipeline:
       path: /v1/fetch-agmarknet-market-commodity-mapping
       mapping: mappings/market-commodity.yaml
       local:
-        token: ${auth.token}
         stateCode: ${state.code}
         fromDate: ${inputs.fromDate}
         toDate: ${inputs.toDate}
@@ -315,7 +315,6 @@ pipeline:
       path: /v1/fetch-agmarknet-vistaar
       mapping: mappings/market-price.yaml
       local:
-        token: ${auth.token}
         stateCode: ${pair.stateCode}
         stateName: ${pair.stateName}
         marketId: ${pair.marketId}

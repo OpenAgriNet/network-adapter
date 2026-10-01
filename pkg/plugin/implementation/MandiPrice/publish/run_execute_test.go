@@ -186,6 +186,11 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every data call carries the exchanged token, put there by the
+		// engine: no mapping is given it any more.
+		if r.Method == http.MethodGet && r.URL.Query().Get("token") != "tok-fake" {
+			t.Errorf("GET %s carried token %q, want the exchanged tok-fake", r.URL.Path, r.URL.Query().Get("token"))
+		}
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/generate-dynamic-token-agmarknet":
 			_, _ = w.Write([]byte(`{"token":"tok-fake"}`))

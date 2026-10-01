@@ -264,6 +264,11 @@ func TestPricePairsDropsRecordsMissingACode(t *testing.T) {
 			}
 		}
 	}
+	// `code` is what the engine names a loop item by in its log lines, so a
+	// stalled price call says which market and commodity it was for.
+	if pairs[0]["code"] != "101/23" {
+		t.Errorf("pair code = %v, want 101/23", pairs[0]["code"])
+	}
 	if pairs[1]["marketName"] != "" || pairs[1]["commodityCode"] != "24" {
 		t.Errorf("pair for 103 = %v, want blank names and code 24", pairs[1])
 	}

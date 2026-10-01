@@ -3,6 +3,8 @@ package sink
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -503,6 +505,83 @@ func TestPushEmitsAnAuditRecord(t *testing.T) {
 	}
 	if got["checkSum"] == "" {
 		t.Error("audit record missing checkSum -- this is the same helper stdHandler uses, it should always set one")
+	}
+}
+
+// The audit record says WHAT was published -- ids, counts, size and a hash of
+// the exact bytes -- not the catalog itself. A day's catalogs are tens of MB,
+// and the record exists to prove a publish happened, which the hash does.
+// The receiver is named without its query or credentials.
+func TestPushAuditCarriesASummaryNotTheCatalog(t *testing.T) {
+	ctx := context.Background()
+	provider, exporter, err := telemetry.NewTestProviderWithLogs(ctx)
+	if err != nil {
+		t.Fatalf("NewTestProviderWithLogs: %v", err)
+	}
+	defer provider.Shutdown(ctx)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"results":[{"status":"ACCEPTED"}]}}`))
+	}))
+	defer server.Close()
+
+	body := []byte(`{"context":{"transactionId":"t1","messageId":"m1"},"message":{"catalogs":[
+		{"id":"catalog:a","resources":[{"id":"r1","descriptor":{"name":"SECRET-MARKET-NAME"}},{"id":"r2"}]}]}}`)
+	endpoint := strings.Replace(server.URL, "http://", "http://user:pw@", 1) + "/publish?sig=abc"
+	if _, err := NewClient(5*time.Second).Push(ctx, endpoint, body); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	records := exporter.Records()
+	if len(records) != 1 {
+		t.Fatalf("want 1 audit record, got %d", len(records))
+	}
+	auditBody := records[0].Body().AsString()
+	if strings.Contains(auditBody, "SECRET-MARKET-NAME") {
+		t.Errorf("the audit record carries the catalog content: %s", auditBody)
+	}
+	var summary struct {
+		CatalogIDs []string `json:"catalogIds"`
+		Resources  int      `json:"resources"`
+		Bytes      int      `json:"bytes"`
+		SHA256     string   `json:"bodySha256"`
+	}
+	if err := json.Unmarshal([]byte(auditBody), &summary); err != nil {
+		t.Fatalf("audit body is not the summary JSON: %v (%s)", err, auditBody)
+	}
+	sum := sha256.Sum256(body)
+	if fmt.Sprint(summary.CatalogIDs) != "[catalog:a]" || summary.Resources != 2 ||
+		summary.Bytes != len(body) || summary.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("summary = %+v; want catalog:a, 2 resources, %d bytes and the body's sha256", summary, len(body))
+	}
+
+	var receiver string
+	records[0].WalkAttributes(func(kv attribute.KeyValue) bool {
+		if kv.Key == "receiver.id" {
+			receiver = kv.Value.AsString()
+		}
+		return true
+	})
+	if want := server.URL + "/publish"; receiver != want {
+		t.Errorf("receiver.id = %q, want %q (no query, no credentials)", receiver, want)
+	}
+}
+
+// A rejection's reason is its first line, not the whole answer: it is logged
+// once per catalog, and an adapter's error page can be a megabyte.
+func TestPushRejectionReasonIsTheFirstLine(t *testing.T) {
+	long := "schema invalid: " + strings.Repeat("x", 5000) + "\nsecond line\nthird line"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, long, http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	out, err := NewClient(5*time.Second).Push(context.Background(), server.URL, []byte(`{}`))
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if !strings.HasPrefix(out.Reason, "schema invalid: ") || strings.Contains(out.Reason, "second line") || len(out.Reason) > 210 {
+		t.Errorf("Reason = %d bytes (%.80q...), want the first line, bounded", len(out.Reason), out.Reason)
 	}
 }
 

@@ -23,6 +23,9 @@ response: |
     [response[$exists(stateCode) and $exists(marketId) and $exists(districtId)].(
       $m := $;
       $m.commodities[$exists(code)].({
+        /* What the engine labels a loop item by in its log lines, so each
+           price call's line names its market and commodity. */
+        "code":          $string($m.marketId) & "/" & $string(code),
         "stateCode":     $string($m.stateCode),
         "stateName":     $text($m.stateName),
         "marketId":      $string($m.marketId),

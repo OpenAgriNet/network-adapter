@@ -382,7 +382,8 @@ func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, erro
 	if err != nil {
 		return nil, fmt.Errorf("listing the registry's capabilities: %w", err)
 	}
-	d.log.InfoContext(ctx, "catalogcrawler: publish sweep", "capabilities", len(keys))
+	// Per tick, so DEBUG: it fires whether or not anything is due.
+	d.log.DebugContext(ctx, "catalogcrawler: publish sweep", "capabilities", len(keys))
 
 	var targets []publishTarget
 	for _, key := range keys {
@@ -430,7 +431,7 @@ func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, erro
 		}
 		delete(d.refused, key)
 
-		d.log.InfoContext(ctx, "catalogcrawler: registry sanctions publishing",
+		d.log.DebugContext(ctx, "catalogcrawler: registry sanctions publishing",
 			"bindingKey", key, "actions", servedActions(record), "pipeline", pipelinePath)
 		targets = append(targets, publishTarget{record: record, files: files})
 	}

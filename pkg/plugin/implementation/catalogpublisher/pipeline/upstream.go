@@ -137,14 +137,26 @@ func (c *Client) do(req *http.Request, carryCredential bool) (*http.Response, []
 		fields = append(fields, "item", item)
 	}
 	if err != nil {
-		c.logger().InfoContext(req.Context(), "upstream call", append(fields,
+		recordUpstreamCall(req.Context(), req.URL.Path, callError)
+		c.logger().WarnContext(req.Context(), "upstream call", append(fields,
 			"status", 0, "duration", time.Since(began).Round(time.Millisecond).String(), "bytes", 0)...)
 		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	c.logger().InfoContext(req.Context(), "upstream call", append(fields,
+	// A run makes thousands of these calls, so the line is DEBUG unless the
+	// call went wrong. "Nothing here" is not wrong: the file classifies it
+	// as an empty result, and a Sunday says it for every state.
+	level, outcome := slog.LevelDebug, callOK
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		outcome = callEmpty
+		if classify(c.errorRules, resp.StatusCode, body) != classifyEmpty {
+			level, outcome = slog.LevelWarn, callError
+		}
+	}
+	recordUpstreamCall(req.Context(), req.URL.Path, outcome)
+	c.logger().Log(req.Context(), level, "upstream call", append(fields,
 		"status", resp.StatusCode, "duration", time.Since(began).Round(time.Millisecond).String(),
 		"bytes", len(body))...)
 	return resp, body, readErr
@@ -363,8 +375,8 @@ func (c *Client) fetchGet(ctx context.Context, urlPath, query string) ([]byte, e
 	if err := checkCallPath("GET", urlPath); err != nil {
 		return nil, err
 	}
-	// The query is the mapping's, whole: on the query-carried path the
-	// mapping is what puts the token in it, under the file's own name.
+	// The query is the mapping's; a query-carried credential is added to it
+	// by applyCredential, not by the mapping.
 	endpoint := c.baseURL + urlPath
 	if query != "" {
 		endpoint += "?" + query

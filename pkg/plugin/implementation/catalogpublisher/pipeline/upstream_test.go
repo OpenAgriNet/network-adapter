@@ -134,7 +134,7 @@ func TestClientLogsEachCallWithoutTheToken(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := NewClient(server.URL).
-		WithLogger(slog.New(slog.NewTextHandler(&buf, nil))).
+		WithLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))).
 		WithCredential(Credential{Value: "s3cret-token", CarriedAs: "query", Name: "token"})
 	ctx := withLogItem(context.Background(), "MH")
 	if _, err := client.fetchGet(ctx, "/v1/data", "token=s3cret-token&x=1"); err != nil {
@@ -155,6 +155,35 @@ func TestClientLogsEachCallWithoutTheToken(t *testing.T) {
 	}
 	if strings.Contains(out, "s3cret-token") {
 		t.Fatalf("the token reached the log:\n%s", out)
+	}
+}
+
+// A run makes thousands of calls, so a call that went well is DEBUG and a
+// call that did not is WARN: at the shipped INFO level only the failures show.
+func TestClientLogsSuccessAtDebugAndFailureAtWarn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bad" {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	client := NewClient(server.URL).WithLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	_, _ = client.fetchGet(context.Background(), "/good", "")
+	_, _ = client.fetchGet(context.Background(), "/bad", "")
+
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if !strings.Contains(line, "upstream call") {
+			continue
+		}
+		switch {
+		case strings.Contains(line, "path=/good") && !strings.Contains(line, "level=DEBUG"):
+			t.Errorf("a successful call is not DEBUG: %s", line)
+		case strings.Contains(line, "path=/bad") && !strings.Contains(line, "level=WARN"):
+			t.Errorf("a failed call is not WARN: %s", line)
+		}
 	}
 }
 

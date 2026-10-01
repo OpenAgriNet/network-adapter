@@ -152,10 +152,12 @@ func (c *Client) WithCredential(cred Credential) *Client {
 
 // applyCredential places the credential on one request.
 //
-// Header credentials go on every request. A query credential goes on POST
-// only: on GET the MAPPING builds the whole query and places the token under
-// the file's own name (today's behaviour), and adding it here too would send
-// it twice.
+// Header and query credentials both go on every request, placed HERE rather
+// than by a mapping, so a mapping never needs the token and JSONata never
+// sees it: an expression that fails on a value quotes the value in its error
+// ("unable to cast value to a number: <token>"), and that error is logged.
+// Set, not added: a mapping that still writes the key under the same name
+// has it replaced, so it is never sent twice.
 func (c *Client) applyCredential(req *http.Request) {
 	cred := c.credential
 	if cred.Value == "" {
@@ -165,9 +167,6 @@ func (c *Client) applyCredential(req *http.Request) {
 	case carriedAsHeader:
 		req.Header.Set(cred.Name, cred.Prefix+cred.Value)
 	case carriedAsQuery:
-		if req.Method == http.MethodGet {
-			return
-		}
 		q := req.URL.Query()
 		q.Set(cred.Name, cred.Value)
 		req.URL.RawQuery = q.Encode()

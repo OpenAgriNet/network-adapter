@@ -8,10 +8,13 @@ package sink
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -77,7 +80,9 @@ func (c *Client) Push(ctx context.Context, endpoint string, body []byte) (BatchO
 	c.emitAudit(ctx, endpoint, body, resp.StatusCode, nil)
 	out := BatchOutcome{Acked: resp.StatusCode == http.StatusOK, HTTPStatus: resp.StatusCode}
 	if !out.Acked {
-		out.Reason = strings.TrimSpace(string(respBody))
+		// The first line, bounded: the reason is logged once per catalog,
+		// and an adapter's error page can run to the read limit.
+		out.Reason = firstLine(respBody)
 		return out, nil
 	}
 	status, reason, readable := verdict(respBody)
@@ -107,15 +112,59 @@ type pushContext struct {
 		MessageID     string `json:"messageId"`
 		SenderID      string `json:"senderId"`
 	} `json:"context"`
+	Message struct {
+		Catalogs []struct {
+			ID        string            `json:"id"`
+			Resources []json.RawMessage `json:"resources"`
+		} `json:"catalogs"`
+	} `json:"message"`
+}
+
+// pushSummary is what the audit record carries in place of the body.
+type pushSummary struct {
+	CatalogIDs []string `json:"catalogIds"`
+	Resources  int      `json:"resources"`
+	Bytes      int      `json:"bytes"`
+	BodySHA256 string   `json:"bodySha256"`
+}
+
+// summarise describes a push body without carrying it: which catalogs, how
+// many resources, how many bytes, and the sha256 of the exact bytes sent --
+// enough to prove what went out and to match it against the file on disk.
+func summarise(pc pushContext, body []byte) []byte {
+	sum := sha256.Sum256(body)
+	summary := pushSummary{CatalogIDs: []string{}, Bytes: len(body), BodySHA256: hex.EncodeToString(sum[:])}
+	for _, catalog := range pc.Message.Catalogs {
+		summary.CatalogIDs = append(summary.CatalogIDs, catalog.ID)
+		summary.Resources += len(catalog.Resources)
+	}
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return []byte(`{}`)
+	}
+	return encoded
+}
+
+// receiverOf names the endpoint without its query or credentials, which are
+// not the receiver's identity and must not reach the audit stream.
+func receiverOf(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	parsed.User, parsed.RawQuery, parsed.Fragment = nil, "", ""
+	return parsed.String()
 }
 
 // emitAudit routes this push through the SAME audit pipeline every inbound
-// Beckn action goes through (core/module/handler we /stdHandler.go ->
-// telemetry.EmitAuditLogs): masked per config/audit-fields.yaml, checksummed,
-// tagged with the transaction/message id, and shipped to the same OTel
-// backend. No new masking or redaction logic here on purpose -- reusing the
-// one place that already has it, rather than a second copy of "never log
-// the token" for this client to maintain.
+// Beckn action goes through (core/module/handler/stdHandler.go ->
+// telemetry.EmitAuditLogs): checksummed, tagged with the transaction/message
+// id, and shipped to the same OTel backend.
+//
+// The record carries a SUMMARY of the body, not the body (see summarise). A
+// catalog is neither secret nor masked by audit-fields.yaml, so the whole
+// document would go out -- tens of MB a day, and again on every retry --
+// to prove something the body's hash proves as well.
 //
 // header is always nil: unlike an inbound Beckn request, this client's own
 // headers (Content-Type only, at present) are not a signature to preserve,
@@ -129,12 +178,12 @@ func (c *Client) emitAudit(ctx context.Context, endpoint string, body []byte, st
 	auditCtx := context.WithValue(ctx, model.ContextKeyTxnID, pc.Context.TransactionID)
 	auditCtx = context.WithValue(auditCtx, model.ContextKeyMsgID, pc.Context.MessageID)
 
-	telemetry.EmitAuditLogs(auditCtx, body, nil,
+	telemetry.EmitAuditLogs(auditCtx, summarise(pc, body), nil,
 		attribute.String("audit.direction", "publish"),
 		attribute.Int("http.response.status_code", status),
 		attribute.String("http.request.error", errString(pushErr)),
 		attribute.String("sender.id", pc.Context.SenderID),
-		attribute.String("receiver.id", endpoint),
+		attribute.String("receiver.id", receiverOf(endpoint)),
 	)
 }
 

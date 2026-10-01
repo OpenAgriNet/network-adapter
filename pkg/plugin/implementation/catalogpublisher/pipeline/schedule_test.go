@@ -156,7 +156,7 @@ func TestDueNowRejectsAnUnusableSchedule(t *testing.T) {
 // record naming some other URL must not silently run this one.
 func TestLoadRegistryPipelineAcceptsItsOwnURL(t *testing.T) {
 	for _, named := range []string{fixtureRegistryPath, "  " + fixtureRegistryPath + " "} {
-		spec, err := loadRegistryPipeline(context.Background(), fixturePipeline(), named)
+		spec, err := loadRegistryPipeline(context.Background(), fixturePipeline(), named, nil)
 		if err != nil {
 			t.Fatalf("loadRegistryPipeline(%q): %v", named, err)
 		}
@@ -173,7 +173,7 @@ func TestLoadRegistryPipelineRefusesAnotherPipeline(t *testing.T) {
 		"empty":            "  ",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := loadRegistryPipeline(context.Background(), fixturePipeline(), named); err == nil {
+			if _, err := loadRegistryPipeline(context.Background(), fixturePipeline(), named, nil); err == nil {
 				t.Errorf("loadRegistryPipeline(%q) ran this pipeline anyway", named)
 			}
 		})

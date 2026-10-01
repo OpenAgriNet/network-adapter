@@ -114,7 +114,10 @@ func RemotePipeline(registryValue string) (Files, error) {
 // loadPipeline fetches the pipeline at files.URL, validates it against the
 // contract it names, and parses it. On a fetch failure it falls back to the
 // last good copy of the same URL, if there is one.
-func loadPipeline(ctx context.Context, files Files) (Spec, error) {
+func loadPipeline(ctx context.Context, files Files, log *slog.Logger) (Spec, error) {
+	if log == nil {
+		log = slog.Default()
+	}
 	if err := checkPipelineURL(files.URL); err != nil {
 		return Spec{}, err
 	}
@@ -126,7 +129,9 @@ func loadPipeline(ctx context.Context, files Files) (Spec, error) {
 		if !ok {
 			return Spec{}, fetchErr
 		}
-		slog.WarnContext(ctx, "publish pipeline: could not fetch the pipeline; running the last good copy",
+		// Through the run's logger, so it obeys the configured level and
+		// destination like every other line of the run.
+		log.WarnContext(ctx, "publish pipeline: could not fetch the pipeline; running the last good copy",
 			"url", files.URL, "error", fetchErr)
 		raw = cached
 	}

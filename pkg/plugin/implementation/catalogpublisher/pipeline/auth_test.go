@@ -71,9 +71,13 @@ func TestAPIKeyWithoutPlacementIsRefused(t *testing.T) {
 	}
 }
 
-// Review Focus 4: a query-carried key on GET is the mapping's to place; the
-// client adds it only on POST, so it is never sent twice.
-func TestApplyCredentialPlacesQueryKeysOnlyOnPost(t *testing.T) {
+// A query-carried key goes on EVERY request, GET included, placed by the
+// client -- so a mapping never needs the token, and JSONata never sees it: an
+// expression that fails on a value quotes that value in its error ("unable to
+// cast value to a number: <token>"), and the error is logged. A mapping that
+// still writes the key gets it replaced, not duplicated (Review Focus 4: never
+// sent twice).
+func TestApplyCredentialPlacesQueryKeysOnEveryRequestOnce(t *testing.T) {
 	var seen []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Method+" "+r.URL.RawQuery+" h="+r.Header.Get("x-api-key"))
@@ -82,20 +86,18 @@ func TestApplyCredentialPlacesQueryKeysOnlyOnPost(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL).WithCredential(Credential{Value: "k", CarriedAs: "query", Name: "key"})
-	if _, err := client.fetchGet(context.Background(), "/g", "key=k"); err != nil {
+	if _, err := client.fetchGet(context.Background(), "/g", "option=6"); err != nil {
 		t.Fatalf("GET: %v", err)
+	}
+	if _, err := client.fetchGet(context.Background(), "/g", "key=k"); err != nil {
+		t.Fatalf("GET with the key already in the query: %v", err)
 	}
 	if _, err := client.fetchPost(context.Background(), "/p", []byte(`{}`)); err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	if len(seen) != 2 {
-		t.Fatalf("server saw %d calls, want 2", len(seen))
-	}
-	if seen[0] != "GET key=k h=" {
-		t.Errorf("GET sent %q; the mapping's query must be sent once, untouched", seen[0])
-	}
-	if seen[1] != "POST key=k h=" {
-		t.Errorf("POST sent %q; want the key added to the query", seen[1])
+	want := []string{"GET key=k&option=6 h=", "GET key=k h=", "POST key=k h="}
+	if strings.Join(seen, " | ") != strings.Join(want, " | ") {
+		t.Errorf("server saw %q, want %q", seen, want)
 	}
 }
 

@@ -32,7 +32,6 @@ required:
 
 request: |
   {
-    "token":     _local.token,
     "statecode": _local.stateCode,
     "option":    "6",
     "from_date": _local.fromDate,

@@ -33,7 +33,6 @@ required:
 
 request: |
   {
-    "token":         _local.token,
     "statecode":     _local.stateCode,
     "from_date":     _local.fromDate,
     "to_date":       _local.toDate,

@@ -23,6 +23,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"github.com/hashicorp/go-retryablehttp"
 	"go.opentelemetry.io/otel"
@@ -393,8 +394,11 @@ func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, u
 	}
 	if resp.StatusCode != http.StatusOK {
 		// The body can carry registry internals, so it is logged but never
-		// returned in the error.
-		log.Errorf(ctx, nil, "OAN registry search failed with status: %s, response: %s", resp.Status, string(respBody))
+		// returned in the error -- and only its opening, because this runs on
+		// every lookup while the registry is failing, and a whole error page
+		// on every tick is noise that buries the status. A WARN, not an
+		// ERROR: it is the registry's fault, and the caller reports its own.
+		log.Warnf(ctx, "OAN registry search failed with status: %s, response: %s", resp.Status, util.Explain(respBody))
 		return nil, fmt.Errorf("%w: %s", errRegistryStatus, resp.Status)
 	}
 	return decodeRecords[T](respBody)

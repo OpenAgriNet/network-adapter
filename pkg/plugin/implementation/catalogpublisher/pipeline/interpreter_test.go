@@ -1208,7 +1208,8 @@ func TestHTTPStepStopsReexchangingAfterTheCap(t *testing.T) {
 // run stuck on one state says which.
 func TestForEachCallsNameTheirItemInTheLog(t *testing.T) {
 	var buf strings.Builder
-	log := slog.New(slog.NewTextHandler(&buf, nil))
+	// DEBUG: a call that went well is logged at DEBUG (upstream.go).
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	runner, _ := reauthRunner(t, func(string) bool { return true }, 2, nil, log)
 	runner.client.WithLogger(log)
 

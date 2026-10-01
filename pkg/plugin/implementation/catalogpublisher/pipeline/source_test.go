@@ -15,7 +15,7 @@ import (
 // A pipeline is fetched from the URL the registry names, validated against
 // the contract it declares, and parsed.
 func TestLoadPipelineFetchesAndValidates(t *testing.T) {
-	spec, err := loadPipeline(context.Background(), fixturePipeline())
+	spec, err := loadPipeline(context.Background(), fixturePipeline(), nil)
 	if err != nil {
 		t.Fatalf("loadPipeline: %v", err)
 	}
@@ -76,15 +76,15 @@ func TestLoadPipelineFallsBackToTheLastGoodCopy(t *testing.T) {
 	files := Files{URL: server.URL + "/fallback-" + t.Name() + ".yaml"}
 
 	down.Store(true)
-	if _, err := loadPipeline(context.Background(), files); err == nil {
+	if _, err := loadPipeline(context.Background(), files, nil); err == nil {
 		t.Fatal("a first load from a host that is down succeeded")
 	}
 	down.Store(false)
-	if _, err := loadPipeline(context.Background(), files); err != nil {
+	if _, err := loadPipeline(context.Background(), files, nil); err != nil {
 		t.Fatalf("load while up: %v", err)
 	}
 	down.Store(true)
-	spec, err := loadPipeline(context.Background(), files)
+	spec, err := loadPipeline(context.Background(), files, nil)
 	if err != nil {
 		t.Fatalf("load while down after a good load: %v; want the last good copy", err)
 	}
@@ -100,7 +100,7 @@ func TestLoadPipelineRefusesAnInvalidFile(t *testing.T) {
 		_, _ = w.Write([]byte("schemaRef: {uses: publish.oan/CatalogPipeline/v1}\nnot_a_key: 1\n"))
 	}))
 	defer server.Close()
-	if _, err := loadPipeline(context.Background(), Files{URL: server.URL + "/bad.yaml"}); err == nil {
+	if _, err := loadPipeline(context.Background(), Files{URL: server.URL + "/bad.yaml"}, nil); err == nil {
 		t.Fatal("an invalid pipeline file was accepted")
 	}
 }

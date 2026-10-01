@@ -8,10 +8,13 @@
 # reaches the request half under _local, exactly as prerequisites reach a
 # mapping in the adapter.
 request: |
-  {
-    "option": "4",
-    "token": _local.token
-  }
+  (
+    /* No token: the engine adds it to the query itself (upstream.token in
+       the pipeline file), so this mapping never sees it. */
+    {
+      "option": "4"
+    }
+  )
 
 # WRAPPED IN [...] DELIBERATELY. JSONata collapses a one-element sequence to a
 # bare value, so a deployment with one state would return an object where every

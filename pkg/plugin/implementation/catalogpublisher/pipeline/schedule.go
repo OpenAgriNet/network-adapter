@@ -11,6 +11,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,7 +69,7 @@ func servedActions(record *model.ProviderRecord) string {
 // loadRegistryPipeline loads the pipeline the registry named, refusing one
 // that is not the pipeline this run was given: a record naming another URL
 // must read as "that is not mine to run", never quietly run this one.
-func loadRegistryPipeline(ctx context.Context, files Files, registryPath string) (Spec, error) {
+func loadRegistryPipeline(ctx context.Context, files Files, registryPath string, log *slog.Logger) (Spec, error) {
 	named := strings.TrimSpace(registryPath)
 	if named == "" {
 		return Spec{}, fmt.Errorf("the registry names no pipeline")
@@ -76,7 +77,7 @@ func loadRegistryPipeline(ctx context.Context, files Files, registryPath string)
 	if named != strings.TrimSpace(files.URL) {
 		return Spec{}, fmt.Errorf("the registry names pipeline %q, which is not this run's %s", named, files.URL)
 	}
-	return loadPipeline(ctx, files)
+	return loadPipeline(ctx, files, log)
 }
 
 // dueNow decides whether a pipeline should run, given when it last ran.
