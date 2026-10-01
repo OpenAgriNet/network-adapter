@@ -256,7 +256,7 @@ has no case identifier" is wrong and the whole date-matching read is
 unnecessary. This must be settled with PM-KISAN before the pack leaves v0.1.
 
 **`identity-no` is echoed back.** The gateway returns the registration number
-or Aadhaar token it was given. That must not be carried into v2: `applicantId`
+or Aadhaar token it was given. That must not be carried into v2: `registrationNo`
 is `writeOnly` and is not echoed.
 
 ## Grievance categories

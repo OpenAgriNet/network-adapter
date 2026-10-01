@@ -177,16 +177,17 @@ POST /support
 against which support is required", which is an ask-side meaning, and nothing about a reply
 changes what the complaint is against — so the application number is echoed rather than
 overwritten. The ticket the portal just issued is a different thing and goes in a different
-place: `ticketNo` on the channel, with `ticketId` beside it. The spec says the provider
+place: `ticketNo` on the channel. The spec says the provider
 "returns it with populated channel details and, when a ticket has been created, the ticket
 reference" but never names the field that holds the reference; the channel is where the
 scheme's own fields live, so that is where it goes. `challenge` and `applicantPhone` are
 dropped by the response allow-list.
 
 The portal's lodge reply carries four things: a success flag, `ticket-no`, `ticket-id` and a
-message. Only the two ticket fields become values you can read — `ticketNo` is what the
-farmer quotes back, `ticketId` is the portal's own row id. The success flag decides whether
-this is an ACK at all. The message is never returned; it may hold a stack trace or an
+message. Only `ticket-no` becomes a value you can read, as `ticketNo` — the number the
+farmer quotes back. `ticket-id` is the portal's own row id and is dropped: nothing sends it
+and no later call needs it, which is the same reason `TicketStatusID` is not mapped. The
+success flag decides whether this is an ACK at all. The message is never returned; it may hold a stack trace or an
 internal hostname. `caseStatus`, `filedOn` and `source` are **not in the reply** — the
 adapter asserts them, and `descriptor` is the caller's own words echoed back.
 
@@ -207,8 +208,7 @@ adapter asserts them, and `descriptor` is the caller's own words echoed back.
         "informationMode": "Direct",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "ticketNo": "100626000099001",
-        "ticketId": "8842317",
-        "caseStatus": { "code": "REGISTERED", "name": "Registered" },
+        "caseStatus": { "code": "Registered" },
         "filedOn": "2026-09-28",
         "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
       }]
@@ -265,8 +265,10 @@ POST /status
 ```
 
 **`on_status`** — `contract.descriptor` carries the complaint as the portal holds it, and
-the attributes carry the case record. `officerReply` is the officer's words about the case,
-not the complaint, so it stays in attributes; it is absent while no reply exists.
+the attributes carry the case record. `caseRemark` is what has been written about the
+case, not the complaint, so it stays in attributes; it is absent while nothing has been
+recorded. `caseStatus.code` is the network's own word for the state; the portal's phrase,
+when there is one, rides alongside in `caseStatus.name`.
 
 ```json
 {
@@ -295,9 +297,9 @@ not the complaint, so it stays in attributes; it is absent while no reply exists
         "applicationNo": "KA2026KH00123456",
         "cropYear": "2026",
         "season": "Kharif",
-        "caseStatus": { "code": "UNDER_REVIEW", "name": "Under Review" },
+        "caseStatus": { "code": "UnderReview", "name": "Under Review" },
         "filedOn": "2026-09-28",
-        "officerReply": "Claim file reopened, awaiting surveyor report.",
+        "caseRemark": "Claim file reopened, awaiting surveyor report.",
         "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
       }
     }]
@@ -305,8 +307,8 @@ not the complaint, so it stays in attributes; it is absent while no reply exists
 }
 ```
 
-**Next:** repeat `status` on demand. No `officerReply` means nobody has answered yet —
-PMFBY publishes the remark but no date against it, so there is no "replied on" to show.
+**Next:** repeat `status` on demand. No `caseRemark` means nothing has been recorded yet —
+PMFBY publishes the remark but no date against it, so there is no `remarkedOn` to show.
 
 The portal returns a great deal more than this: the farmer's name, mobile number, email,
 full address down to the village, the insurance policy number and the insurer. The adapter
@@ -418,7 +420,7 @@ configuration. The reply confirms receipt and nothing more.
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "caseStatus": { "code": "REGISTERED", "name": "Registered" },
+        "caseStatus": { "code": "Registered" },
         "filedOn": "2026-09-28",
         "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
       }]
@@ -429,7 +431,7 @@ configuration. The reply confirms receipt and nothing more.
 
 **Next:** there is no ticket number to keep. Keep **`contract.id`, the registration number
 and `filedOn`** — those three are what `status` needs, where the registration number rides in
-`commitmentAttributes.applicantId` rather than `orderId`, because a `Contract` has no
+`commitmentAttributes.registrationNo` rather than `orderId`, because a `Contract` has no
 `orderId`.
 
 ### Step 2 — `status`: read the replies
@@ -464,7 +466,7 @@ POST /status
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicantId": "UP12345678A",
+        "registrationNo": "UP12345678A",
         "filedOn": "2026-09-28"
       }
     }]
@@ -473,7 +475,7 @@ POST /status
 ```
 
 **`on_status`** — one commitment: the grievance this contract is about. The farmer's other
-grievances are filtered out; each has its own contract. `applicantId` is not echoed. The
+grievances are filtered out; each has its own contract. `registrationNo` is not echoed. The
 farmer's name, father's name, gender, mobile number and address are dropped by the
 allow-list, and `Reg_No` with them: five of the record's fourteen fields survive. The record
 carries no category, so `descriptor` comes back with `longDesc` only — the description the
@@ -500,10 +502,10 @@ portal stored — and no `code` or `name`.
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "caseStatus": { "code": "REPLIED", "name": "Replied" },
+        "caseStatus": { "code": "Replied" },
         "filedOn": "2026-09-28",
-        "repliedOn": "2026-10-01",
-        "officerReply": "Instalment released on 2026-10-01, credited to the linked account.",
+        "remarkedOn": "2026-10-01",
+        "caseRemark": "Instalment released on 2026-10-01, credited to the linked account.",
         "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
       }
     }]
@@ -522,7 +524,7 @@ portal stored — and no `code` or `name`.
 - **Secrets go one way; identifiers do not.** `challenge` is `writeOnly` as a whole object —
   send it, never expect it back, never log it, and `challenge.value` never reaches the lodge
   call. `challengeIssued` is the `readOnly` other half: returned, never sent, never secret. `applicationNo` and
-  `applicantId` are identifiers rather than secrets and do come back: both are echoed in
+  `registrationNo` are identifiers rather than secrets and do come back: both are echoed in
   `orderId` on `on_support`, and PMFBY's comes back again in `commitmentAttributes` on
   `on_status`, because the portal sends it. Both are `no-log` and `no-trace` without
   exception either way. Every

@@ -81,10 +81,10 @@ was blocking turned out not to be a change at all.
 2. ~~**`x-beckn-container-by-action`.**~~ `confirm` is dropped from both packs. The map is
    now `init`/`status`/`support` on PMFBY and `status`/`support` on PM-KISAN.
 3. ~~**Re-path the fields that leave the pack.**~~ `applicationNo` on PMFBY and
-   `applicantId` on PM-KISAN → `orderId`; `grievanceCategory` → `descriptor.code`/`.name`;
+   `registrationNo` on PM-KISAN → `orderId`; `grievanceCategory` → `descriptor.code`/`.name`;
    `grievanceDescription` → `descriptor.longDesc`, each recorded in that field's
    `x-beckn-path`. Their `x-oan-pii` and `no-log`/`no-trace` markings stayed with them, and
-   `applicantId` lost the `writeOnly`/`no-echo` it carried while it had nowhere to land.
+   `registrationNo` lost the `writeOnly`/`no-echo` it carried while it had nowhere to land.
 4. ~~**Adapter**~~ — none needed. Pathing `providerId` through the channel uses the
    both-halves-pathed case `BindingPaths` already accepts, so this flow requires no code
    change and nothing blocks the registry row below.
@@ -219,14 +219,15 @@ POST /support
 support is required", an ask-side meaning, and a reply does not change what the complaint is
 against, so the application number is echoed rather than overwritten. The spec says the
 provider returns "the ticket reference" but never names the field that holds it; the ticket
-goes in `ticketNo` on the channel, with `ticketId` beside it, because the channel is where
+goes in `ticketNo` on the channel, because the channel is where
 the scheme's own fields live and a ticket is not what the complaint is against. `channels`
 holds one object, the case record; address it by `@type`, not by index.
 `challenge` and `applicantPhone` are dropped by the response allow-list.
 
 The portal's lodge reply carries four things: a success flag, `ticket-no`, `ticket-id` and
-a message. Only the two ticket fields become values you can read — `ticketNo` and
-`ticketId`. The success flag decides whether this is an ACK at all; it is not a case status.
+a message. Only `ticket-no` becomes a value you can read, as `ticketNo` — the number the
+farmer quotes back. `ticket-id` is the portal's own row id and is dropped. The success flag
+decides whether this is an ACK at all; it is not a case status.
 The message is the portal's own and is never returned — it may hold a stack trace or an
 internal hostname. `caseStatus`, `filedOn` and `source` are **not in the reply**; the adapter
 asserts them, and the pack README says so. The `descriptor` is the caller's own words echoed
@@ -250,8 +251,7 @@ back, not portal data.
           "informationMode": "Direct",
           "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
           "ticketNo": "100626000099001",
-          "ticketId": "8842317",
-          "caseStatus": { "code": "REGISTERED", "name": "Registered" },
+          "caseStatus": { "code": "Registered" },
           "filedOn": "2026-09-28",
           "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
         }
@@ -266,8 +266,8 @@ sourced number for either scheme, so there is nothing to put there. If one is co
 later it becomes a second member of `channels` — which is why a consumer must select by
 `@type` rather than by position.
 
-**Keep `contract.id` and `ticketNo`.** `ticketId` is the portal's own row id; no later
-call is known to need it.
+**Keep `contract.id` and `ticketNo`.** `ticket-id` is the portal's own row id and is not
+mapped; no later call is known to need it.
 
 ## 3 — `status`: read the case
 
@@ -309,8 +309,8 @@ POST /status
 ```
 
 `on_status` — `contract.descriptor` carries the complaint as the portal holds it, and the
-attributes carry the case record. `officerReply` is the officer's words about the case, not
-the complaint, so it stays in attributes; it is absent while no reply exists.
+attributes carry the case record. `caseRemark` is what has been written about the case, not
+the complaint, so it stays in attributes; it is absent while nothing has been recorded.
 
 ```json
 {
@@ -339,9 +339,9 @@ the complaint, so it stays in attributes; it is absent while no reply exists.
         "applicationNo": "KA2026KH00123456",
         "cropYear": "2026",
         "season": "Kharif",
-        "caseStatus": { "code": "UNDER_REVIEW", "name": "Under Review" },
+        "caseStatus": { "code": "UnderReview", "name": "Under Review" },
         "filedOn": "2026-09-28",
-        "officerReply": "Claim file reopened, awaiting surveyor report.",
+        "caseRemark": "Claim file reopened, awaiting surveyor report.",
         "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
       }
     }]
@@ -367,7 +367,7 @@ it goes there: the same slot PMFBY fills with `applicationNo`. Like PMFBY's, it 
 unchanged on the reply — a reply does not change what the complaint is against. That echo is
 deliberate and scoped —
 handing the caller their own registration number over the same signed exchange it arrived on
-discloses nothing — which is why `applicantId` is neither `writeOnly` nor `no-echo`. `no-log`
+discloses nothing — which is why `registrationNo` is neither `writeOnly` nor `no-echo`. `no-log`
 and `no-trace` still apply without exception.
 
 The AES-GCM envelope is applied by the adapter after the request mapping and removed before
@@ -430,7 +430,7 @@ are the adapter's assertions, `source` is configuration.
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "caseStatus": { "code": "REGISTERED", "name": "Registered" },
+        "caseStatus": { "code": "Registered" },
         "filedOn": "2026-09-28",
         "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
       }]
@@ -444,7 +444,7 @@ ever added it becomes a second object in `channels`, which is why a consumer mus
 the case record by `@type` rather than by position.
 
 **Keep the registration number and `filedOn`** — together they are what the read needs. On
-`status` the registration number rides in `commitmentAttributes.applicantId`, not `orderId`:
+`status` the registration number rides in `commitmentAttributes.registrationNo`, not `orderId`:
 a `Contract` has no `orderId`. `filedOn` collides for two grievances filed on the same
 identity the same day; that is unchanged from the current design.
 
@@ -477,7 +477,7 @@ POST /status
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicantId": "UP12345678A",
+        "registrationNo": "UP12345678A",
         "filedOn": "2026-09-28"
       }
     }]
@@ -485,7 +485,7 @@ POST /status
 }
 ```
 
-`on_status` — `applicantId` is not echoed. The portal's farmer name, father's name, gender,
+`on_status` — `registrationNo` is not echoed. The portal's farmer name, father's name, gender,
 mobile number and address are dropped by the response allow-list, and `Reg_No` with them:
 five of the record's fourteen fields survive. The record carries no category, so
 `descriptor` comes back with `longDesc` only — the description the portal stored — and no
@@ -512,10 +512,10 @@ five of the record's fourteen fields survive. The record carries no category, so
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "caseStatus": { "code": "REPLIED", "name": "Replied" },
+        "caseStatus": { "code": "Replied" },
         "filedOn": "2026-09-28",
-        "repliedOn": "2026-10-01",
-        "officerReply": "Instalment released on 2026-10-01, credited to the linked account.",
+        "remarkedOn": "2026-10-01",
+        "caseRemark": "Instalment released on 2026-10-01, credited to the linked account.",
         "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
       }
     }]
@@ -569,7 +569,7 @@ UUID the provider has never seen in any prior call. The current design already d
 go to the network's spec authority together.
 
 **Three fields leave the pack and their markings go with them.** `applicationNo` on PMFBY
-and `applicantId` on PM-KISAN (both `x-oan-pii: identifier`, `no-log, no-trace`) move to
+and `registrationNo` on PM-KISAN (both `x-oan-pii: identifier`, `no-log, no-trace`) move to
 `orderId`; `grievanceCategory` and
 `grievanceDescription` (`x-oan-pii: freetext`, `no-log, no-trace`) move to `descriptor`. The
 pack should keep describing them at their new paths rather than dropping them silently — see
@@ -598,10 +598,11 @@ adapter assertion. That is defensible, but it is true of the contract flow too. 
 now carry an `Upstream response coverage` table saying, field by field, what the portal
 sent, what we keep and what we drop; read that before trusting any value in an example.
 
-**`ticketId` is modelled but unused.** PMFBY's lodge reply carries `ticket-no` *and*
-`ticket-id`; the pack now has both, so the reply is fully accounted for. No later call is
-known to need `ticketId` — confirm with PMFBY whether the case read keys on it, and drop it
-if nothing does.
+**`ticket-id` is dropped.** PMFBY's lodge reply carries `ticket-no` *and* `ticket-id`; the
+pack maps only the first. The second is the portal's own row id, and publishing an internal
+key no caller reads is a cost with no benefit — the same judgement the case read already
+makes about `TicketStatusID`. Confirm with PMFBY whether the case read keys on it; if it
+does, the field comes back, which is cheaper than retiring a published one.
 
 **No helpline is published by either scheme.** PMFBY's 14447 comes from the legacy voice
 prompts, not from a PMFBY page; PM-KISAN has none on file. No contact channel ships until
