@@ -339,7 +339,7 @@ the complaint, so it stays in attributes; it is absent while nothing has been re
         "applicationNo": "KA2026KH00123456",
         "cropYear": "2026",
         "season": "Kharif",
-        "caseStatus": { "code": "UnderReview", "name": "Under Review" },
+        "caseStatus": { "code": "UnderReview", "name": "Open" },
         "filedOn": "2026-09-28",
         "caseRemark": "Claim file reopened, awaiting surveyor report.",
         "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
