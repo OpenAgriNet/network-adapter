@@ -185,3 +185,4 @@ test_request.json
 # config/local-*.yaml use shared sample keys and are safe; anything else is not.
 config/network.yaml
 config/*-secrets.yaml
+.playwright-mcp/

@@ -38,7 +38,7 @@ import (
 // shape the frame's gate reads.
 func publishingRecord() *model.ProviderRecord {
 	return &model.ProviderRecord{
-		BindingKey: "agmarknet-live|" + Capability,
+		BindingKey: "agmarknet|" + Capability,
 		Actions: map[string]model.ActionPlan{
 			"select":  {Method: "GET", Path: "/v1/fetch"},
 			"publish": {Mappings: RegistryPipelinePath},

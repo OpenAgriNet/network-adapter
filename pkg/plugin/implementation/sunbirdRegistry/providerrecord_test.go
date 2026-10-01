@@ -670,7 +670,7 @@ func TestProviderBindingKeysListsEveryBinding(t *testing.T) {
 		sawBody = string(body)
 
 		second := bindingRecord()
-		second.BindingKey = "agmarknet-live|openagrinet:MandiPrice"
+		second.BindingKey = "agmarknet|openagrinet:MandiPrice"
 		blank := bindingRecord()
 		blank.BindingKey = ""
 		fmt.Fprint(w, envelopeJSON(t, bindingRecord(), second, blank))
@@ -681,7 +681,7 @@ func TestProviderBindingKeysListsEveryBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProviderBindingKeys: %v", err)
 	}
-	want := []string{testBindingKey, "agmarknet-live|openagrinet:MandiPrice"}
+	want := []string{testBindingKey, "agmarknet|openagrinet:MandiPrice"}
 	if fmt.Sprint(keys) != fmt.Sprint(want) {
 		t.Errorf("keys = %v, want %v", keys, want)
 	}
@@ -712,7 +712,7 @@ func TestProviderBindingKeysServingListsOnlyBindingsWithTheAction(t *testing.T) 
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publishes := bindingRecord()
-		publishes.BindingKey = "agmarknet-live|openagrinet:MandiPrice"
+		publishes.BindingKey = "agmarknet|openagrinet:MandiPrice"
 		publishes.Actions = append(publishes.Actions, actionPlan{Action: "publish", Mappings: "p.yaml", Status: "active"})
 		retired := bindingRecord()
 		retired.BindingKey = "old|openagrinet:MandiPrice"
@@ -725,7 +725,7 @@ func TestProviderBindingKeysServingListsOnlyBindingsWithTheAction(t *testing.T) 
 	if err != nil {
 		t.Fatalf("ProviderBindingKeysServing: %v", err)
 	}
-	if want := []string{"agmarknet-live|openagrinet:MandiPrice"}; fmt.Sprint(keys) != fmt.Sprint(want) {
+	if want := []string{"agmarknet|openagrinet:MandiPrice"}; fmt.Sprint(keys) != fmt.Sprint(want) {
 		t.Errorf("keys = %v, want %v (select-only and inactive-publish bindings excluded)", keys, want)
 	}
 }

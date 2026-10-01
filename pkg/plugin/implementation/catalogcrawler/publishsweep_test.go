@@ -97,7 +97,7 @@ func TestPublishConfigRefusesTheRetiredTickInterval(t *testing.T) {
 // sanctions, and find out from the network.
 func TestPublishConfigRefusesTheRetiredBindingKeyList(t *testing.T) {
 	_, err := publishConfigFrom(map[string]string{
-		cfgPublishBindingKeys: "agmarknet-live|openagrinet:MandiPrice",
+		cfgPublishBindingKeys: "agmarknet|openagrinet:MandiPrice",
 		cfgPublishPipelines:   "true",
 	})
 	if err == nil {
@@ -181,7 +181,7 @@ func ranSweep(reg *stubRegistry, resolveErr map[string]error) (*publishSweep, *[
 // capability's failure does not stop the next.
 func TestPublishSweepRunsEveryPipelineTheRegistrySanctions(t *testing.T) {
 	const (
-		mandi   = "agmarknet-live|openagrinet:MandiPrice"
+		mandi   = "agmarknet|openagrinet:MandiPrice"
 		weather = "mausamgram|openagrinet:WeatherObservation"
 		advice  = "bharat-vistaar|openagrinet:KnowledgeAdvisory"
 		broken  = "down|example:Broken"
@@ -371,7 +371,7 @@ func TestRunPipelineStandsDownWhenNotDue(t *testing.T) {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
 	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, ranAt{last: time.Now()}, slog.New(slog.DiscardHandler))
-	record := publishingRecord("agmarknet-live|openagrinet:MandiPrice", mandiPipelinePath)
+	record := publishingRecord("agmarknet|openagrinet:MandiPrice", mandiPipelinePath)
 
 	if err := sweep.runPipeline(context.Background(), record, files); err != nil {
 		t.Fatalf("runPipeline: %v", err)
@@ -763,7 +763,7 @@ func TestRunPipelineLeavesTheBudgetWhenAnotherReplicaClaimed(t *testing.T) {
 	sweep := newPublishSweep(publishConfig{enabled: true}, &fixedTargets{}, runLog, slog.New(slog.DiscardHandler))
 	// Seeded under both keys, so the test holds whichever one the sweep uses.
 	sweep.failures = map[string]*attemptBudget{files.URL: {count: 2}, "openagrinet:MandiPrice": {count: 2}}
-	record := publishingRecord("agmarknet-live|openagrinet:MandiPrice", mandiPipelinePath)
+	record := publishingRecord("agmarknet|openagrinet:MandiPrice", mandiPipelinePath)
 
 	if err := sweep.runPipeline(context.Background(), record, files); err != nil {
 		t.Fatalf("runPipeline: %v", err)
@@ -794,7 +794,7 @@ func TestPublishSweepPassesPipelineOverridesFromPluginConfig(t *testing.T) {
 		t.Fatalf("PublishPipeline: %v", err)
 	}
 	sweep := newPublishSweep(cfg, &fixedTargets{}, nil, slog.New(slog.DiscardHandler))
-	record := publishingRecord("agmarknet-live|openagrinet:MandiPrice", mandiPipelinePath)
+	record := publishingRecord("agmarknet|openagrinet:MandiPrice", mandiPipelinePath)
 	err = sweep.runPipeline(context.Background(), record, files)
 	if err == nil || !strings.Contains(err.Error(), "typoKey") {
 		t.Fatalf("err = %v; want the pipeline to see (and refuse) the configured override", err)
