@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 )
 
@@ -220,5 +221,50 @@ func mandiErrorRules() []pipeline.ErrorRule {
 	return []pipeline.ErrorRule{
 		{When: &pipeline.ErrorMatch{Status: 400, BodyContains: "No data available."}, Classify: "emptyResult"},
 		{Default: "transportError"},
+	}
+}
+
+// A market or commodity missing a code the price call needs is dropped from
+// the pairs, rather than reaching the call and failing it. Names that are
+// missing default to "", so a loop field is never absent.
+func TestPricePairsDropsRecordsMissingACode(t *testing.T) {
+	mapper, mappingBase := testMapper(t)
+
+	markets := []any{
+		map[string]any{"marketId": 101.0, "marketName": "Pune", "stateCode": "MH", "stateName": "Maharashtra",
+			"districtId": 501.0, "districtName": "Pune", "latitude": 18.5, "longitude": 73.8,
+			"commodities": []any{
+				map[string]any{"code": 23.0, "name": "Onion"},
+				map[string]any{"name": "No code"},
+			}},
+		// No district: the price call cannot be made for any of its commodities.
+		map[string]any{"marketId": 102.0, "marketName": "Nashik", "stateCode": "MH",
+			"commodities": []any{map[string]any{"code": 23.0, "name": "Onion"}}},
+		// No names at all, but every code: kept, names blank.
+		map[string]any{"marketId": 103.0, "stateCode": "MH", "districtId": 503.0,
+			"commodities": []any{map[string]any{"code": 24.0}}},
+	}
+	out, err := mapper.Transform(context.Background(), mappingBase+"/price-pairs.yaml",
+		definition.DirectionResponse, map[string]any{"response": markets})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	var pairs []map[string]any
+	if err := json.Unmarshal(out, &pairs); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, out)
+	}
+	if len(pairs) != 2 {
+		t.Fatalf("pairs = %v, want Pune/23 and 103/24 only", pairs)
+	}
+	for _, pair := range pairs {
+		for _, field := range []string{"stateCode", "stateName", "marketId", "marketName", "districtId",
+			"districtName", "latitude", "longitude", "commodityCode", "commodityName"} {
+			if _, ok := pair[field].(string); !ok {
+				t.Errorf("pair %v: %s is %T, want a string (a loop field must always be present)", pair, field, pair[field])
+			}
+		}
+	}
+	if pairs[1]["marketName"] != "" || pairs[1]["commodityCode"] != "24" {
+		t.Errorf("pair for 103 = %v, want blank names and code 24", pairs[1])
 	}
 }

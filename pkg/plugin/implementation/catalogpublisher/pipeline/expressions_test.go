@@ -526,6 +526,52 @@ func TestRedactedInputsHidesSecrets(t *testing.T) {
 // yesterday is resolved in the schedule's zone from the run's clock: a
 // midnight IST firing asks for the day that just closed, not UTC's, and not
 // the day that is seconds old.
+// "N days ago" is a rolling window edge, resolved in the schedule zone the
+// same way yesterday is.
+func TestDaysAgoResolvesInTheScheduleZone(t *testing.T) {
+	spec := Spec{
+		Schedule: Schedule{UTCOffset: "+05:30"},
+		Inputs: map[string]Input{
+			"weekAgo": {Type: "date", Format: "dd-MM-yyyy", Default: "7 days ago"},
+			"dayAgo":  {Type: "date", Format: "dd-MM-yyyy", Default: "1 day ago"},
+		},
+	}
+	// 00:05 IST on the 21st; seven days before the 21st is the 14th.
+	now := time.Date(2026, 9, 20, 18, 35, 0, 0, time.UTC)
+	resolved, err := resolveInputsAt(spec, func(string) (string, bool) { return "", false }, now)
+	if err != nil {
+		t.Fatalf("resolveInputsAt: %v", err)
+	}
+	if got := resolved["weekAgo"]; got != "14-09-2026" {
+		t.Errorf("weekAgo = %q, want 14-09-2026", got)
+	}
+	if got := resolved["dayAgo"]; got != "20-09-2026" {
+		t.Errorf("dayAgo = %q, want 20-09-2026 (the same day yesterday names)", got)
+	}
+}
+
+// An env override may use the same relative form.
+func TestDaysAgoIsAcceptedFromTheEnvironment(t *testing.T) {
+	spec := Spec{
+		Schedule: Schedule{UTCOffset: "+05:30"},
+		Inputs:   map[string]Input{"from": {Env: "FROM", Type: "date", Format: "dd-MM-yyyy", Default: "yesterday"}},
+	}
+	now := time.Date(2026, 9, 20, 18, 35, 0, 0, time.UTC)
+	lookup := func(name string) (string, bool) {
+		if name == "FROM" {
+			return "30 days ago", true
+		}
+		return "", false
+	}
+	resolved, err := resolveInputsAt(spec, lookup, now)
+	if err != nil {
+		t.Fatalf("resolveInputsAt: %v", err)
+	}
+	if got := resolved["from"]; got != "22-08-2026" {
+		t.Fatalf("from = %q, want 22-08-2026", got)
+	}
+}
+
 func TestYesterdayResolvesInTheScheduleZone(t *testing.T) {
 	spec := Spec{
 		Schedule: Schedule{UTCOffset: "+05:30"},

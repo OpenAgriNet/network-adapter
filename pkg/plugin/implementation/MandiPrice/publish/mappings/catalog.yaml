@@ -1,7 +1,15 @@
 # Agmarknet Vistaar per-state catalog publisher mapping.
 #
-# Turns one state's CollectedMarket rows into a complete Beckn catalog/publish
-# payload for that state.
+# Turns one chunk of a state's records into a complete Beckn catalog/publish
+# payload. A chunk is one of two kinds, and this one file renders both:
+#
+#   onDemand  one resource per market, advertising what it can be asked
+#             (catalog:mandi-price:MH)
+#   direct    one resource per market and commodity, carrying its latest
+#             price (catalog:mandi-price:MH-current)
+#
+# The kind is the records' own `kind` field, set by market-tag.yaml or
+# market-price.yaml. The envelope and publish directive are shared.
 #
 # Two vocabularies for validity:
 #   catalog-level validity: startDate / endDate (Beckn envelope)
@@ -153,7 +161,151 @@ response: |
       )
     };
 
-    $resources := [ $map(response, $makeResource) ];
+    /* ---------------------------------------------------------------------
+       DIRECT: one resource per (market, commodity), carrying its latest
+       price. The records come from mappings/market-price.yaml. A chunk is
+       always one kind -- the catalog block groups by catalogGroup, and the
+       two kinds never share a group -- so the first record decides.
+       --------------------------------------------------------------------- */
+    $isDirect := response[0].kind = "direct";
+
+    /* The units Agmarknet reports, in the pack's words. Anything else is
+       passed through as reported rather than guessed: Rs./Qtl and Rs./Kg
+       differ by a factor of a hundred. */
+    $unitOf := function($u) {
+      $u = "Rs./Qtl" ? "quintal" : ($u = "Rs./Kg" ? "kg" : $u)
+    };
+
+    /* Two days from when it was published, for the same reason as the
+       OnDemand listing above: the next daily run republishes it in place,
+       but only after its price calls finish, which takes a long time -- so
+       a validity of exactly one day would leave every price expired, and
+       hidden from discovery, for that whole gap every day. Two days covers
+       that and one missed run. */
+    $validUntil := $fromMillis($toMillis(_local.generatedAt) + 2 * 86400000,
+      "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
+
+    $makePriceResource := function($row) {
+      (
+        $hasCoords := $exists($row.latitude) and $exists($row.longitude);
+        $market := $trim($row.marketName);
+        $commodity := $trim($row.commodityName);
+
+        {
+          "id": $row.resourceId,
+          "descriptor": {
+            "code": "MANDI_PRICE_OBSERVATION",
+            "name": $commodity & " prices at " & $market & " on " & $row.arrivalDate,
+            "shortDesc": "Minimum, maximum, and modal " & $lowercase($commodity) & " prices reported by " & $market & " for " & $row.arrivalDate & "."
+          },
+          "resourceAttributes": {
+            "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+            "@type": "openagrinet:MandiPrice",
+            "informationMode": "Direct",
+            "subjectCategories": [
+              "Market"
+            ],
+            "source": {
+              "sourceId": "agmarknet",
+              "sourceName": "Agmarknet Vistaar",
+              "sourceUri": "https://agmarknet.gov.in/"
+            },
+            "supportedCommodities": [
+              {
+                "code": $string($row.commodityCode),
+                "name": $commodity
+              }
+            ],
+            "commodityGroup": $row.commodityGroup,
+            "grade": $row.grade,
+            "variety": $row.variety,
+            /* Same closed set as the OnDemand market: marketCode,
+               marketName, district, state, location. The state is its NAME
+               here, as a Direct observation reads to a person. */
+            "market": $merge([
+              {
+                "marketName": $market,
+                "district": $trim($row.districtName),
+                "state": $trim($row.stateName),
+                "marketCode": $string($row.marketId)
+              },
+              $hasCoords ? {
+                "location": {
+                  "geo": {
+                    "type": "Point",
+                    "coordinates": [$row.longitude, $row.latitude]
+                  }
+                }
+              } : {}
+            ]),
+            "arrivalDate": $row.arrivalDate,
+            "prices": {
+              "minimum": $row.minPrice,
+              "maximum": $row.maxPrice,
+              "modal": $row.modalPrice,
+              "currency": "INR",
+              "unit": $unitOf($row.priceUnit)
+            },
+            "generatedAt": _local.generatedAt,
+            "validity": {
+              "startsAt": _local.generatedAt,
+              "endsAt": $validUntil
+            }
+          }
+        }
+      )
+    };
+
+    $provider := {
+      "id": _local.participantId,
+      "descriptor": {
+        "code": "AGMARKNET-01",
+        "name": "Agmarknet Vistaar",
+        "shortDesc": "Provider of live agricultural market price information."
+      }
+    };
+
+    $resources := $isDirect
+      ? [ $map(response, $makePriceResource) ]
+      : [ $map(response, $makeResource) ];
+
+    /* MH-current-05 is MANDI_PRICE_CURRENT_MH_05; a split bucket's
+       MH-current-05-2 is MANDI_PRICE_CURRENT_MH_05_2. */
+    $directCode := "MANDI_PRICE_CURRENT_" & $replace($replace(_local.catalogSlug, "-current", ""), "-", "_");
+
+    $catalog := $isDirect ? {
+      "id": _local.catalogId,
+      "isActive": true,
+      "descriptor": {
+        "code": $directCode,
+        "name": _local.stateName & " current mandi prices",
+        "shortDesc": $string($count($resources)) & " Direct price Resources for " & _local.stateName & ", one per market and commodity, each carrying its latest price.",
+        "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation."
+      },
+      "provider": $provider,
+      /* The catalog's own window, matching its resources': discovery hides
+         an expired catalog whatever its resources say. */
+      "validity": {
+        "startDate": _local.generatedAt,
+        "endDate": $validUntil
+      },
+      "resources": $resources
+    } : {
+      "id": _local.catalogId,
+      "isActive": true,
+      "descriptor": {
+        "code": "AGMARKNET-" & _local.catalogSlug,
+        "name": "Agmarknet mandi markets — " & _local.stateName,
+        "shortDesc": "Markets in " & _local.stateName & ", their locations, and what each trades",
+        "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery."
+      },
+      "provider": $provider,
+      "validity": {
+        "startDate": $startDate,
+        "endDate": $endDate
+      },
+      "resources": $resources
+    };
 
     {
       "context": {
@@ -165,29 +317,7 @@ response: |
       },
       "message": {
         "catalogs": [
-          {
-            "id": _local.catalogId,
-            "isActive": true,
-            "descriptor": {
-              "code": "AGMARKNET-" & _local.catalogSlug,
-              "name": "Agmarknet mandi markets — " & _local.stateName,
-              "shortDesc": "Markets in " & _local.stateName & ", their locations, and what each trades",
-              "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery."
-            },
-            "provider": {
-              "id": _local.participantId,
-              "descriptor": {
-                "code": "AGMARKNET-01",
-                "name": "Agmarknet Vistaar",
-                "shortDesc": "Provider of live agricultural market price information."
-              }
-            },
-            "validity": {
-              "startDate": $startDate,
-              "endDate": $endDate
-            },
-            "resources": $resources
-          }
+          $catalog
         ],
         "publishDirectives": [
           {

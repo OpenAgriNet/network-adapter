@@ -533,7 +533,8 @@
             "dedupe",
             "filter",
             "transform",
-            "const"
+            "const",
+            "concat"
           ],
           "description": "The primitive. A name the engine does not implement is REFUSED rather than skipped -- a step that silently does nothing is a rule the file states and nothing performs."
         },
@@ -635,6 +636,30 @@
               "with"
             ],
             "description": "An HTTP step needs somewhere to call and a mapping to shape the call with."
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "uses": {
+                "const": "concat"
+              }
+            },
+            "required": [
+              "uses"
+            ]
+          },
+          "then": {
+            "properties": {
+              "with": {
+                "required": [
+                  "of"
+                ]
+              }
+            },
+            "required": [
+              "with"
+            ]
           }
         },
         {
@@ -864,6 +889,14 @@
             "type": "object"
           },
           "description": "A const step's output, written in the file. How a pipeline with no upstream -- a catalog whose content is fixed -- still hands the catalog block a collection."
+        },
+        "of": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "string"
+          },
+          "description": "A concat step's inputs: ${...} references to collections, appended in the order listed."
         }
       }
     },

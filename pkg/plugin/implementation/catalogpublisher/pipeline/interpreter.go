@@ -47,6 +47,7 @@ const (
 	usesFilter    = "filter"
 	usesTransform = "transform"
 	usesConst     = "const"
+	usesConcat    = "concat"
 )
 
 // maxReauthsPerRun caps re-exchanges in one run. Three covers a token that
@@ -309,9 +310,11 @@ func (r *stepRunner) primitive(ctx context.Context, step Step, rc *runContext) (
 		return r.transform(ctx, step, rc)
 	case usesConst:
 		return r.constRecords(step)
+	case usesConcat:
+		return r.concat(step)
 	default:
 		return nil, fmt.Errorf("uses: %q is not a primitive this runner implements (%s)",
-			step.Uses, strings.Join([]string{usesHTTPGet, usesHTTPPost, usesJoin, usesDerive, usesDedupe, usesFilter, usesTransform, usesConst}, ", "))
+			step.Uses, strings.Join([]string{usesHTTPGet, usesHTTPPost, usesJoin, usesDerive, usesDedupe, usesFilter, usesTransform, usesConst, usesConcat}, ", "))
 	}
 }
 
@@ -995,6 +998,35 @@ func (r *stepRunner) constRecords(step Step) (any, error) {
 	out := make([]map[string]any, 0, len(step.With.Records))
 	for _, record := range step.With.Records {
 		out = append(out, cloneRecord(record))
+	}
+	return out, nil
+}
+
+// concat is the concat primitive: the collections `with.of` names, appended
+// in the order listed.
+//
+// Each record is a copy, for the reason constRecords gives: catalog
+// rendering writes resourceId into every record, and that must not reach
+// back into the step outputs a later step may still read.
+//
+// Fewer than two collections is refused: a concat of one is a rename, and
+// usually a sign the second reference was forgotten.
+func (r *stepRunner) concat(step Step) (any, error) {
+	if len(step.With.Of) < 2 {
+		return nil, fmt.Errorf("concat needs at least two collections in `with.of:`, got %d", len(step.With.Of))
+	}
+	var out []map[string]any
+	for _, reference := range step.With.Of {
+		records, err := r.collection(reference)
+		if err != nil {
+			return nil, fmt.Errorf("concat of %s: %w", reference, err)
+		}
+		for _, record := range records {
+			out = append(out, cloneRecord(record))
+		}
+	}
+	if out == nil {
+		out = []map[string]any{}
 	}
 	return out, nil
 }

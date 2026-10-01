@@ -225,6 +225,11 @@ type With struct {
 	// still hands the catalog block a collection to group.
 	Records []map[string]any `yaml:"records,omitempty"`
 
+	// Of is a concat step's inputs: ${...} references to collections,
+	// appended in the order listed. It is how one run hands the catalog block
+	// two kinds of record -- one catalog block, two kinds of catalog.
+	Of []string `yaml:"of,omitempty"`
+
 	Method      string `yaml:"method,omitempty"`
 	ContentType string `yaml:"contentType,omitempty"`
 	Body        string `yaml:"body,omitempty"`

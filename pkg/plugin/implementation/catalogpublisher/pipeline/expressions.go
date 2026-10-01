@@ -534,7 +534,8 @@ func applyType(name, value string, input Input, now time.Time, utcOffset string)
 			return "", fmt.Errorf("input %q declares date format %q, which this pipeline cannot translate "+
 				"(known: %s)", name, input.Format, strings.Join(knownDateFormats(), ", "))
 		}
-		if value != "today" && value != "yesterday" {
+		back, relative := daysBack(value)
+		if !relative {
 			// Already a date, from an env var or a literal default. Checked
 			// against the declared format rather than trusted, so a
 			// wrong-format override fails here and not at the upstream.
@@ -548,18 +549,39 @@ func applyType(name, value string, input Input, now time.Time, utcOffset string)
 		if err != nil {
 			return "", fmt.Errorf("input %q: %w", name, err)
 		}
-		day := now.In(location)
-		if value == "yesterday" {
-			// A pipeline firing at midnight wants the day that just closed:
-			// "today" is seconds old and has no rows yet.
-			day = day.AddDate(0, 0, -1)
-		}
-		return day.Format(layout), nil
+		// A pipeline firing at midnight wants the day that just closed:
+		// "today" is seconds old and has no rows yet, so a window usually
+		// ends at yesterday and starts N days ago.
+		return now.In(location).AddDate(0, 0, -back).Format(layout), nil
 
 	default:
 		return "", crawler.PermanentFaultf(faultPipelineInput,
 			"input %q declares type %q, which this pipeline does not implement", name, input.Type)
 	}
+}
+
+// daysAgo is the relative form a date input accepts besides today and
+// yesterday: "7 days ago", "1 day ago".
+var daysAgo = regexp.MustCompile(`^([0-9]+) days? ago$`)
+
+// daysBack reports how many days before the run's own day a relative date
+// names, and whether value is relative at all.
+func daysBack(value string) (int, bool) {
+	switch value {
+	case "today":
+		return 0, true
+	case "yesterday":
+		return 1, true
+	}
+	match := daysAgo.FindStringSubmatch(strings.TrimSpace(value))
+	if match == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // knownDateFormats lists the translatable formats for an error message.

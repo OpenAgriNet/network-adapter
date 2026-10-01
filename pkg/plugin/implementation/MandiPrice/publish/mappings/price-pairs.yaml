@@ -1,0 +1,38 @@
+# One record per (market, commodity) a market traded in the window: the list
+# the price step loops over, one upstream call each.
+#
+# The price call needs a market, its district and one commodity; it has no
+# state-wide form. The market-commodity rows already carry all three codes,
+# so the pairs come from them rather than from a second lookup.
+#
+# A PAIR MISSING A CODE IS DROPPED HERE. The state, market, district and
+# commodity codes are what the call is made with; without one there is no
+# call to make, and letting the pair reach the step would only fail it there.
+#
+# EVERY FIELD IS A STRING, AND ALWAYS PRESENT. The loop hands each field to
+# the call as ${pair.<field>}, and a field that is missing is an error there,
+# not an empty value -- so a missing name is "", and a market whose
+# coordinate was cleared carries "", which the price mapping turns back into
+# "no point".
+#
+# The path form (response[...].( ... ).( ... )) flattens the nested lists
+# into one, which $map would not: $map of $map is a list of lists.
+response: |
+  (
+    $text := function($v) { $exists($v) ? $string($v) : "" };
+    [response[$exists(stateCode) and $exists(marketId) and $exists(districtId)].(
+      $m := $;
+      $m.commodities[$exists(code)].({
+        "stateCode":     $string($m.stateCode),
+        "stateName":     $text($m.stateName),
+        "marketId":      $string($m.marketId),
+        "marketName":    $text($m.marketName),
+        "districtId":    $string($m.districtId),
+        "districtName":  $text($m.districtName),
+        "latitude":      $text($m.latitude),
+        "longitude":     $text($m.longitude),
+        "commodityCode": $string(code),
+        "commodityName": $text(name)
+      })
+    )]
+  )

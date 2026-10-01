@@ -13,7 +13,7 @@
 #   publish               url / refuseWhen
 #   mappings/*.yaml       JSONata, executed by jsonmapper
 #
-# The engine is catalogpublisher/pipeline. It knows seven primitives and
+# The engine is catalogpublisher/pipeline. It knows nine primitives and
 # nothing about Agmarknet: which calls happen, in what order, against which
 # paths, with which mappings, is all here. A second provider copies this file
 # and changes its contents, not the engine.
@@ -89,6 +89,36 @@ inputs:
     type: date
     format: dd-MM-yyyy
     default: yesterday
+  # Which catalogs a run publishes, from ONE collection:
+  #
+  #   onDemand  one catalog per state, one resource per market, advertising
+  #             what a select can ask for (catalog:mandi-price:MH)
+  #   direct    up to 16 catalogs per state (a fixed bucket per market), one
+  #             resource per market and commodity, carrying its latest price
+  #             (catalog:mandi-price:MH-current-05)
+  #   both      the two side by side, from the same run
+  #
+  # Direct costs one upstream call per traded (market, commodity) pair -- the
+  # price call has no state-wide form -- so it is the slow half of a run.
+  mode:
+    flag: publish-mode
+    env: MANDI_PUBLISH_MODE
+    default: both
+    enum: [onDemand, direct, both]
+  # The Direct price window: the last week, ending with the day that just
+  # closed. A market that reported nothing in it has no Direct resource.
+  priceFromDate:
+    flag: price-from
+    env: MANDI_PRICE_FROM_DATE
+    type: date
+    format: dd-MM-yyyy
+    default: 7 days ago
+  priceToDate:
+    flag: price-to
+    env: MANDI_PRICE_TO_DATE
+    type: date
+    format: dd-MM-yyyy
+    default: yesterday
   # NO DEFAULTS for identity. A guessed participantId publishes under someone
   # else's name, and a guessed networkId makes the catalog visible to the
   # wrong network. `required` refuses the run, naming the variable, rather
@@ -156,8 +186,9 @@ upstream:
 
 # ---------------------------------------------------------------------------
 # pipeline — ordered steps, each naming what it produces. This IS the call
-# sequence: the interpreter runs these six in order, and forEach/onError/
-# concurrency all drive real behaviour.
+# sequence: the interpreter runs these in order, and forEach/onError/
+# concurrency/when all drive real behaviour. The first six collect the
+# markets; the rest build the OnDemand and Direct records `mode` asks for.
 # ---------------------------------------------------------------------------
 pipeline:
   - id: states
@@ -243,6 +274,73 @@ pipeline:
   - id: dedupe
     uses: dedupe
     with: { key: marketId }
+    out: markets
+
+  # --- From here the two modes part. -------------------------------------
+  #
+  # Every record says which catalog it belongs in (kind, catalogGroup), what
+  # its resource id ends in (resourceKey) and where it sorts when a state is
+  # split (orderKey), so the one catalog block below builds both kinds.
+
+  # OnDemand: the markets as they are, tagged. Always built: the Direct half
+  # needs the same markets for its codes and coordinates.
+  - id: onDemand
+    uses: transform
+    with:
+      left: ${markets}
+      mapping: mappings/market-tag.yaml
+    out: onDemandRecords
+
+  # Direct, step 1: every (market, commodity) the market traded in the
+  # window, one record each -- the list the price lookup walks.
+  - id: pricePairs
+    uses: transform
+    when: "${inputs.mode} != 'onDemand'"
+    with:
+      left: ${markets}
+      mapping: mappings/price-pairs.yaml
+    out: pricePairs
+
+  # Direct, step 2: price discovery. One call per pair, keeping the latest
+  # row. A pair with no price in the window is counted, not failed; a pair
+  # the upstream could not answer is counted under priceErrors and the run
+  # carries on, so one bad market does not cost a state its catalog.
+  - id: prices
+    uses: http.get
+    when: "${inputs.mode} != 'onDemand'"
+    forEach: ${pricePairs}
+    as: pair
+    concurrency: 1
+    with:
+      path: /v1/fetch-agmarknet-vistaar
+      mapping: mappings/market-price.yaml
+      local:
+        token: ${auth.token}
+        stateCode: ${pair.stateCode}
+        stateName: ${pair.stateName}
+        marketId: ${pair.marketId}
+        marketName: ${pair.marketName}
+        districtId: ${pair.districtId}
+        districtName: ${pair.districtName}
+        latitude: ${pair.latitude}
+        longitude: ${pair.longitude}
+        commodityCode: ${pair.commodityCode}
+        commodityName: ${pair.commodityName}
+        fromDate: ${inputs.priceFromDate}
+        toDate: ${inputs.priceToDate}
+    onError:
+      emptyResult: { record: emptyPrices, continue: true }
+      transportError: { record: priceErrors, continue: true }
+    onEmptyOutput: { record: emptyPrices }
+    out: directRecords
+
+  # Both: the two collections side by side. In onDemand or direct mode this
+  # step does not run and the collection is whichever half ran last.
+  - id: bothModes
+    uses: concat
+    when: "${inputs.mode} = 'both'"
+    with:
+      of: ["${onDemandRecords}", "${directRecords}"]
     out: collection
 
 # ---------------------------------------------------------------------------
@@ -250,7 +348,9 @@ pipeline:
 # cumulative 256-geometry-per-catalogId cap.
 # ---------------------------------------------------------------------------
 catalog:
-  groupBy: stateCode
+  # stateCode for an OnDemand market, stateCode-direct for a Direct price, so
+  # a state's two kinds are two catalogs, never one.
+  groupBy: catalogGroup
 
   exclude:
     # $number(...) is NOT decoration. Measured against the pinned jsonata
@@ -258,17 +358,23 @@ catalog:
     # empty array, so without the wrapper this rule never fires and a market
     # trading nothing is published with zero commodities -- which then fails
     # the catalog's own minItems check at the far end.
-    - when: "$number($count(commodities)) = 0"
+    #
+    # OnDemand only: a Direct price record carries one commodity, not a
+    # `commodities` list, and would otherwise match this rule every time.
+    - when: "kind = 'onDemand' and $number($count(commodities)) = 0"
       reason: "upstream reported no commodities trading in this window"
     # A market with no usable coordinate is NOT excluded: it publishes with no
     # point, findable by state and district but by no proximity search.
 
-  # `by` is the order a state is SPLIT in when it exceeds the geometry budget
-  # (MH, MH-2). It is the numeric marketId on purpose: a new market gets a new,
-  # higher id and lands in the last chunk, so no market ever moves between
-  # catalogIds -- under MERGE the old copy would never be removed.
+  # `by` is the order a group is SPLIT in when it exceeds the geometry budget
+  # (MH, MH-2). For OnDemand, orderKey is the numeric marketId on purpose: a
+  # new market gets a new, higher id and lands in the last chunk, so no market
+  # moves between catalogIds -- under MERGE the old copy would never be
+  # removed. Direct does not rely on this: its prices come and go weekly, so
+  # each market is held in place by a fixed bucket instead (market-price.yaml),
+  # and a split only ever happens inside one bucket.
   # `renderBy` is the order a reader sees inside each catalog.
-  order: { by: marketId, direction: asc, renderBy: [marketName, marketId] }
+  order: { by: orderKey, direction: asc, renderBy: [marketName, marketId, commodityName] }
 
   chunk:
     budget: 256
@@ -277,11 +383,16 @@ catalog:
     # with what the render actually emits as a Point, or a catalog silently
     # goes over the cap and indexes PARTIAL.
     cost: "$exists(latitude) and $exists(longitude) ? 1 : 0"
-    slug: "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
+    # MH and MH-2 for OnDemand; MH-current-05 (bucket 05) for Direct, and
+    # MH-current-05-2 only if that bucket alone exceeds the budget. A slug
+    # becomes a filename, so it cannot carry a colon.
+    slug: "${stateCode}${kind = 'direct' ? '-current-' & bucket : ''}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
 
   identity:
     catalogId: catalog:mandi-price:${slug}
-    resourceId: resource:mandi-price:market:${marketId}
+    # market:<marketId> for OnDemand (unchanged), price:<marketId>:<code>
+    # for Direct.
+    resourceId: resource:mandi-price:${resourceKey}
 
   render:
     mapping: mappings/catalog.yaml

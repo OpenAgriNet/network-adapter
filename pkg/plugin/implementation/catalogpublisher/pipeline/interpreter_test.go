@@ -632,6 +632,50 @@ func TestConstWithNoRecordsIsRefused(t *testing.T) {
 	}
 }
 
+// concat appends named collections in the order the file lists them, so one
+// catalog block can build two kinds of catalog from one run.
+func TestConcatAppendsCollectionsInOrder(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "a", Uses: usesConst, Out: "markets", With: With{Records: []map[string]any{{"id": "m1"}, {"id": "m2"}}}},
+		{ID: "b", Uses: usesConst, Out: "prices", With: With{Records: []map[string]any{{"id": "p1"}}}},
+		{ID: "both", Uses: usesConcat, Out: "collection", With: With{Of: []string{"${markets}", "${prices}"}}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+
+	records, err := runner.runSteps(context.Background())
+	if err != nil {
+		t.Fatalf("runSteps: %v", err)
+	}
+	var ids []string
+	for _, record := range records {
+		ids = append(ids, record["id"].(string))
+	}
+	if strings.Join(ids, ",") != "m1,m2,p1" {
+		t.Fatalf("ids = %v, want m1,m2,p1", ids)
+	}
+
+	// Copies: the catalog builder writes resourceId into each record, and
+	// that must not reach back into the steps that produced them.
+	records[0]["resourceId"] = "mutated"
+	if _, leaked := runner.rc.outputs["markets"].([]map[string]any)[0]["resourceId"]; leaked {
+		t.Error("concat handed out the source collection's own maps")
+	}
+}
+
+// A concat naming fewer than two collections is a mistake, not a no-op.
+func TestConcatNeedsTwoCollections(t *testing.T) {
+	spec := Spec{Pipeline: []Step{
+		{ID: "a", Uses: usesConst, Out: "markets", With: With{Records: []map[string]any{{"id": "m1"}}}},
+		{ID: "both", Uses: usesConcat, With: With{Of: []string{"${markets}"}}},
+	}}
+	runner, _ := testRunner(t, spec, `[]`)
+
+	_, err := runner.runSteps(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "of") {
+		t.Fatalf("err = %v, want a refusal naming `with.of`", err)
+	}
+}
+
 // With no upstream there is no client. An HTTP step reaching the runner
 // anyway (the schema should have refused it) must fail by name, not panic.
 func TestHTTPStepWithoutAnUpstreamIsRefused(t *testing.T) {

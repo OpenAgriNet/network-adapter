@@ -85,6 +85,12 @@ func TestGoldenCatalogs(t *testing.T) {
 // itself every run would fail for a reason that is not a regression.
 func renderGolden(t *testing.T, report pipeline.RunReport) []byte {
 	t.Helper()
+	return renderGoldenWith(t, report, volatile)
+}
+
+// renderGoldenWith is renderGolden with its own set of volatile fields.
+func renderGoldenWith(t *testing.T, report pipeline.RunReport, keys map[string]string) []byte {
+	t.Helper()
 
 	type entry struct {
 		Slug      string          `json:"slug"`
@@ -101,7 +107,7 @@ func renderGolden(t *testing.T, report pipeline.RunReport) []byte {
 		if err := json.Unmarshal(catalog.Content, &document); err != nil {
 			t.Fatalf("catalog %s is not JSON: %v", catalog.Slug, err)
 		}
-		stabilise(document)
+		stabiliseKeys(document, keys)
 		canonical, err := json.Marshal(document)
 		if err != nil {
 			t.Fatalf("re-encoding catalog %s: %v", catalog.Slug, err)
@@ -136,21 +142,78 @@ var volatile = map[string]string{
 // stabilise walks a decoded document and substitutes the volatile fields in
 // place, at any depth: the envelope has them at the top and a resource could
 // grow its own.
-func stabilise(node any) {
+func stabilise(node any) { stabiliseKeys(node, volatile) }
+
+// stabiliseKeys is stabilise over a given set of volatile fields.
+func stabiliseKeys(node any, keys map[string]string) {
 	switch typed := node.(type) {
 	case map[string]any:
 		for key, value := range typed {
-			if placeholder, isVolatile := volatile[key]; isVolatile {
+			if placeholder, isVolatile := keys[key]; isVolatile {
 				if _, isString := value.(string); isString {
 					typed[key] = placeholder
 					continue
 				}
 			}
-			stabilise(value)
+			stabiliseKeys(value, keys)
 		}
 	case []any:
 		for _, item := range typed {
-			stabilise(item)
+			stabiliseKeys(item, keys)
 		}
+	}
+}
+
+const goldenDirectPath = "testdata/golden/catalogs-direct.json"
+
+// directVolatile adds the Direct resources' wall-clock fields: a price is
+// published with the moment it was generated and is valid for a day from it.
+var directVolatile = map[string]string{
+	"transactionId": "<uuid>",
+	"messageId":     "<uuid>",
+	"timestamp":     "<timestamp>",
+	"generatedAt":   "<timestamp>",
+	"startsAt":      "<timestamp>",
+	"endsAt":        "<timestamp + 2 days>",
+	"startDate":     "<timestamp>",
+	"endDate":       "<timestamp + 2 days>",
+}
+
+// The Direct half, end to end against the fake upstream, byte for byte.
+// Regenerate with -update, and read the diff.
+func TestGoldenDirectCatalogs(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Pipeline: Pipeline(),
+		Record:   publishingRecord(),
+		Lookup:   modeEnv(upstream.URL, "direct"),
+		Now:      firingTime(t),
+		OutDir:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(report.Catalogs) == 0 {
+		t.Fatal("the run produced no catalogs, so the golden file would pin nothing")
+	}
+
+	got := renderGoldenWith(t, report, directVolatile)
+
+	if *update {
+		if err := os.WriteFile(goldenDirectPath, got, 0o644); err != nil {
+			t.Fatalf("writing %s: %v", goldenDirectPath, err)
+		}
+		t.Logf("golden file rewritten: %s -- read the diff before committing it", goldenDirectPath)
+		return
+	}
+
+	want, err := os.ReadFile(goldenDirectPath)
+	if err != nil {
+		t.Fatalf("reading %s (run with -update to create it): %v", goldenDirectPath, err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("the Direct output no longer matches %s.\n\n--- want ---\n%s\n\n--- got ---\n%s",
+			goldenDirectPath, want, got)
 	}
 }

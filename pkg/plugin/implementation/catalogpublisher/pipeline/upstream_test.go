@@ -73,6 +73,57 @@ func TestPipelineClient_HTTPGet_RejectsANonScalarMappedField(t *testing.T) {
 	}
 }
 
+// recordingMapper keeps what the response half was given.
+type recordingMapper struct{ response map[string]any }
+
+func (m *recordingMapper) Verify(context.Context, string, any) error { return nil }
+func (m *recordingMapper) Transform(_ context.Context, _ string, d definition.Direction, in any) ([]byte, error) {
+	if d == definition.DirectionRequest {
+		return []byte(`{"q":"1"}`), nil
+	}
+	m.response = in.(map[string]any)
+	return []byte(`[]`), nil
+}
+
+// A per-item call often answers without the item's own codes -- the price
+// call reports a market's NAME and not its code -- so the response half gets
+// the same _local the request half did. Except the credential: a response
+// mapping's output becomes published records, and no value carrying the
+// token may reach one.
+func TestResponseHalfSeesTheLocalsButNotTheCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"price":1}]`))
+	}))
+	defer server.Close()
+
+	mapper := &recordingMapper{}
+	client := NewClient(server.URL).
+		WithCredential(Credential{Value: "s3cret-token", CarriedAs: "query", Name: "token"})
+	_, err := client.Get(context.Background(), mapper, "m.yaml", "/v1/price", map[string]any{
+		"token":    "s3cret-token",
+		"wrapped":  "Bearer s3cret-token",
+		"marketId": "101",
+	})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	local, ok := mapper.response["_local"].(map[string]any)
+	if !ok {
+		t.Fatalf("the response half got no _local: %v", mapper.response)
+	}
+	if local["marketId"] != "101" {
+		t.Errorf("_local.marketId = %v, want 101", local["marketId"])
+	}
+	for _, key := range []string{"token", "wrapped"} {
+		if _, leaked := local[key]; leaked {
+			t.Errorf("_local.%s carries the credential into the response half", key)
+		}
+	}
+	if _, ok := mapper.response["response"]; !ok {
+		t.Error("the response half lost the upstream's answer")
+	}
+}
+
 // One line per upstream call, and the credential is never in it -- not in the
 // path (the query is stripped), not in a field (Review Focus 3).
 func TestClientLogsEachCallWithoutTheToken(t *testing.T) {

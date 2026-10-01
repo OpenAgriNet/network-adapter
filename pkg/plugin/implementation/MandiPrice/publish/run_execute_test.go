@@ -20,10 +20,12 @@ package publish
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +111,43 @@ const (
 ]`
 )
 
+// pricesByPair is how the fake price call answers each (marketcode,
+// commoditycode) the Direct half asks about, in the upstream's raw shape. A
+// pair not listed answers "No data available.", which is the upstream's way
+// of saying the pair traded nothing in the window.
+//
+// Pune onion carries three rows on purpose: two days, and two varieties on
+// the newer day. The record must be the newer day's HIGHER modal price.
+// Nashik onion's minimum is the "NR" marker the upstream writes for an
+// unreported price: the row is still usable, the minimum is simply absent.
+var pricesByPair = map[string]string{
+	"101|23": `[
+  {"Grade":"FAQ","Group":"Vegetables","State":"Maharashtra","Market":"Pune ","Variety":"Red",
+   "District":"Pune","Commodity":"Onion","Max Price":"2400","Min Price":"1500",
+   "Price Unit":"Rs./Qtl","Modal Price":"2000","Arrival Date":"28-08-2026"},
+  {"Grade":"FAQ","Group":"Vegetables","State":"Maharashtra","Market":"Pune ","Variety":"Local",
+   "District":"Pune","Commodity":"Onion","Max Price":"3000","Min Price":"2000",
+   "Price Unit":"Rs./Qtl","Modal Price":"2600","Arrival Date":"01-09-2026"},
+  {"Grade":"FAQ","Group":"Vegetables","State":"Maharashtra","Market":"Pune ","Variety":"Red",
+   "District":"Pune","Commodity":"Onion","Max Price":"3600","Min Price":"2200",
+   "Price Unit":"Rs./Qtl","Modal Price":"3100","Arrival Date":"01-09-2026"}
+]`,
+	"102|23": `[
+  {"Grade":"Non-FAQ","Group":"Vegetables","State":"Maharashtra","Market":"Nashik","Variety":"Other",
+   "District":"Nashik","Commodity":"Onion","Max Price":"2800","Min Price":"NR",
+   "Price Unit":"Rs./Qtl","Modal Price":"2500","Arrival Date":"30-08-2026"}
+]`,
+	"201|23": `[
+  {"Grade":"FAQ","Group":"Vegetables","State":"Karnataka","Market":"Hubli","Variety":"Bellary",
+   "District":"Dharwad","Commodity":"Onion","Max Price":"2200","Min Price":"1200",
+   "Price Unit":"Rs./Qtl","Modal Price":"1800","Arrival Date":"31-08-2026"}
+]`,
+}
+
+// districtByMarket is the district each fixture market is in, so the fake can
+// refuse a price call carrying the wrong district code.
+var districtByMarket = map[string]string{"101": "501", "102": "502", "201": "601"}
+
 // twoGoodStates is the healthy fixture every case below starts from and then
 // breaks in one specific way.
 func twoGoodStates() []upstreamState {
@@ -181,6 +220,28 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 			}
 			_, _ = w.Write([]byte(state.rows))
 
+		case r.URL.Path == "/v1/fetch-agmarknet-vistaar":
+			// The price call names one market, its district and one
+			// commodity. Every parameter is checked, because a mapping that
+			// sent the wrong code would still get an answer from the real
+			// service -- just not the one it meant.
+			q := r.URL.Query()
+			market, commodity := q.Get("marketcode"), q.Get("commoditycode")
+			if want := districtByMarket[market]; q.Get("districtcode") != want {
+				t.Errorf("price call for market %s sent districtcode %q, want %q", market, q.Get("districtcode"), want)
+			}
+			for _, name := range []string{"token", "statecode", "from_date", "to_date"} {
+				if q.Get(name) == "" {
+					t.Errorf("price call for %s|%s sent no %s", market, commodity, name)
+				}
+			}
+			body, ok := pricesByPair[market+"|"+commodity]
+			if !ok {
+				http.Error(w, noDataBody, http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(body))
+
 		default:
 			t.Errorf("unexpected upstream path %q", r.URL.Path)
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
@@ -209,8 +270,23 @@ func fakeUpstreamEnv(baseURL string) func(string) (string, bool) {
 			return "test-participant", true
 		case "APP_NETWORK_ID":
 			return "test-network", true
+		case "MANDI_PUBLISH_MODE":
+			// The cases in this file are about the OnDemand half and predate
+			// the Direct one; they keep its meaning. modeEnv switches mode.
+			return "onDemand", true
 		}
 		return "", false
+	}
+}
+
+// modeEnv is fakeUpstreamEnv with the publish mode set.
+func modeEnv(baseURL, mode string) func(string) (string, bool) {
+	env := fakeUpstreamEnv(baseURL)
+	return func(name string) (string, bool) {
+		if name == "MANDI_PUBLISH_MODE" {
+			return mode, true
+		}
+		return env(name)
 	}
 }
 
@@ -719,5 +795,201 @@ func TestPublishedListingIsValidFromTheRunUntilAfterTheNextOne(t *testing.T) {
 			rv := raw.(map[string]any)["resourceAttributes"].(map[string]any)["validity"].(map[string]any)
 			check(catalog.Slug+" resource", rv["startsAt"].(string), rv["endsAt"].(string))
 		}
+	}
+}
+
+// catalogBySlug decodes each built catalog's single catalog entry, by slug.
+func catalogBySlug(t *testing.T, report pipeline.RunReport) map[string]map[string]any {
+	t.Helper()
+	out := map[string]map[string]any{}
+	for _, catalog := range report.Catalogs {
+		var doc map[string]any
+		if err := json.Unmarshal(catalog.Content, &doc); err != nil {
+			t.Fatalf("%s: %v", catalog.Slug, err)
+		}
+		out[catalog.Slug] = doc["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)
+	}
+	return out
+}
+
+// resourcesByID indexes a decoded catalog entry's resources by id.
+func resourcesByID(entry map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, raw := range entry["resources"].([]any) {
+		resource := raw.(map[string]any)
+		out[resource["id"].(string)] = resource
+	}
+	return out
+}
+
+// mode=both builds, from ONE run, each state's OnDemand catalog exactly as
+// before and beside it a Direct catalog of latest prices, one resource per
+// (market, commodity) that reported a price in the window.
+func TestRunBuildsBothModesFromOneRun(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: modeEnv(upstream.URL, "both"), Now: firingTime(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	catalogs := catalogBySlug(t, report)
+	var slugs []string
+	for slug := range catalogs {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	// Direct catalogs are one per state and market bucket (marketId mod 16),
+	// so a market's resources never move because another market came or
+	// went: 101 -> 05, 102 -> 06, 201 -> 09.
+	if got, want := strings.Join(slugs, ","), "KA,KA-current-09,MH,MH-current-05,MH-current-06"; got != want {
+		t.Fatalf("slugs = %s, want %s", got, want)
+	}
+
+	// The OnDemand catalogs keep their ids and their market resources.
+	if got := catalogs["MH"]["id"]; got != "catalog:mandi-price:MH" {
+		t.Errorf("MH id = %v", got)
+	}
+	if _, ok := resourcesByID(catalogs["MH"])["resource:mandi-price:market:101"]; !ok {
+		t.Error("the OnDemand MH catalog lost its market resource for Pune")
+	}
+
+	direct := catalogs["MH-current-05"]
+	if got := direct["id"]; got != "catalog:mandi-price:MH-current-05" {
+		t.Errorf("Direct MH bucket 05 id = %v", got)
+	}
+	if got := direct["descriptor"].(map[string]any)["code"]; got != "MANDI_PRICE_CURRENT_MH_05" {
+		t.Errorf("Direct MH bucket 05 descriptor.code = %v", got)
+	}
+	// Listed with an end that outlasts the next daily run, as OnDemand is.
+	if _, ok := direct["validity"].(map[string]any); !ok {
+		t.Error("the Direct catalog carries no catalog-level validity")
+	}
+
+	// Pune onion priced, Pune potato reported nothing; Nashik is bucket 06.
+	resources := resourcesByID(direct)
+	for id, resource := range resourcesByID(catalogs["MH-current-06"]) {
+		resources[id] = resource
+	}
+	if len(resources) != 2 {
+		t.Fatalf("Direct MH resources = %d (%v), want 2", len(resources), resources)
+	}
+	if report.Counters["emptyPrices"] != 1 {
+		t.Errorf("emptyPrices = %d, want 1 (Pune potato)", report.Counters["emptyPrices"])
+	}
+
+	pune, ok := resources["resource:mandi-price:price:101:23"]
+	if !ok {
+		t.Fatalf("no Direct resource for Pune onion; have %v", resources)
+	}
+	attrs := pune["resourceAttributes"].(map[string]any)
+	if attrs["informationMode"] != "Direct" {
+		t.Errorf("informationMode = %v, want Direct", attrs["informationMode"])
+	}
+	// The latest day, and on that day the higher modal price.
+	if attrs["arrivalDate"] != "2026-09-01" || attrs["variety"] != "Red" {
+		t.Errorf("Pune onion picked %v / %v; want the 2026-09-01 Red row", attrs["arrivalDate"], attrs["variety"])
+	}
+	prices := attrs["prices"].(map[string]any)
+	if prices["modal"] != 3100.0 || prices["minimum"] != 2200.0 || prices["maximum"] != 3600.0 {
+		t.Errorf("Pune onion prices = %v; want min 2200, max 3600, modal 3100 as numbers", prices)
+	}
+	if prices["currency"] != "INR" || prices["unit"] != "quintal" {
+		t.Errorf("Pune onion currency/unit = %v/%v, want INR/quintal", prices["currency"], prices["unit"])
+	}
+	market := attrs["market"].(map[string]any)
+	if market["marketCode"] != "101" || market["state"] != "Maharashtra" {
+		t.Errorf("Pune market = %v", market)
+	}
+	if _, ok := market["location"]; !ok {
+		t.Error("Pune has a coordinate, so its Direct resource must carry a location")
+	}
+	// Valid for two days from when it was generated: past the next daily
+	// run, which republishes it in place, and one missed run.
+	validity := attrs["validity"].(map[string]any)
+	starts, err1 := time.Parse(time.RFC3339, validity["startsAt"].(string))
+	ends, err2 := time.Parse(time.RFC3339, validity["endsAt"].(string))
+	if err1 != nil || err2 != nil || validity["startsAt"] != attrs["generatedAt"] || ends.Sub(starts) != 48*time.Hour {
+		t.Errorf("validity = %v, generatedAt = %v; want startsAt = generatedAt and endsAt two days later",
+			validity, attrs["generatedAt"])
+	}
+
+	nashik := resources["resource:mandi-price:price:102:23"]["resourceAttributes"].(map[string]any)
+	// Nashik has no coordinate: published, but with no point.
+	if _, ok := nashik["market"].(map[string]any)["location"]; ok {
+		t.Error("Nashik has no coordinate, yet its Direct resource carries a location")
+	}
+	// "NR" is an unreported price: absent, not zero.
+	if _, ok := nashik["prices"].(map[string]any)["minimum"]; ok {
+		t.Error("an NR minimum was published as a price")
+	}
+}
+
+// mode=direct publishes only the Direct catalogs, though it still reads the
+// markets the price calls need.
+func TestRunBuildsOnlyDirectCatalogsInDirectMode(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: modeEnv(upstream.URL, "direct"), Now: firingTime(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var slugs []string
+	for _, catalog := range report.Catalogs {
+		slugs = append(slugs, catalog.Slug)
+	}
+	sort.Strings(slugs)
+	if got, want := strings.Join(slugs, ","), "KA-current-09,MH-current-05,MH-current-06"; got != want {
+		t.Fatalf("slugs = %s, want %s", got, want)
+	}
+}
+
+// mode=onDemand makes no price calls at all.
+func TestOnDemandModeMakesNoPriceCalls(t *testing.T) {
+	var priceCalls int
+	inner := fakeAgmarknet(t, twoGoodStates())
+	counting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/fetch-agmarknet-vistaar" {
+			priceCalls++
+		}
+		proxy, err := http.NewRequestWithContext(r.Context(), r.Method, inner.URL+r.URL.RequestURI(), r.Body)
+		if err != nil {
+			t.Fatalf("proxy: %v", err)
+		}
+		proxy.Header = r.Header
+		resp, err := http.DefaultClient.Do(proxy)
+		if err != nil {
+			t.Fatalf("proxy: %v", err)
+		}
+		defer resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(counting.Close)
+
+	if _, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: modeEnv(counting.URL, "onDemand"), Now: firingTime(t), OutDir: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if priceCalls != 0 {
+		t.Errorf("onDemand mode made %d price calls, want 0", priceCalls)
+	}
+}
+
+// A mode the file does not list is refused before anything is fetched.
+func TestRunRefusesAnUnknownMode(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	_, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: modeEnv(upstream.URL, "everything"), Now: firingTime(t), OutDir: t.TempDir(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("err = %v, want a refusal naming the mode input", err)
 	}
 }

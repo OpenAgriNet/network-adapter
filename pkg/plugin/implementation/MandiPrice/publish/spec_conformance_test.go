@@ -77,6 +77,29 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 			Format:  "dd-MM-yyyy",
 			Default: "yesterday",
 		},
+		// Both catalogs by default, from one run; either alone on request.
+		"mode": {
+			Flag:    "publish-mode",
+			Env:     "MANDI_PUBLISH_MODE",
+			Default: "both",
+			Enum:    []string{"onDemand", "direct", "both"},
+		},
+		// The Direct price window: the last week, ending with the day that
+		// just closed.
+		"priceFromDate": {
+			Flag:    "price-from",
+			Env:     "MANDI_PRICE_FROM_DATE",
+			Type:    "date",
+			Format:  "dd-MM-yyyy",
+			Default: "7 days ago",
+		},
+		"priceToDate": {
+			Flag:    "price-to",
+			Env:     "MANDI_PRICE_TO_DATE",
+			Type:    "date",
+			Format:  "dd-MM-yyyy",
+			Default: "yesterday",
+		},
 		// No defaults: a guessed identity publishes under someone else's name
 		// and to someone else's network. Required, so an unset variable
 		// refuses the run instead of publishing under an empty id.
@@ -189,7 +212,8 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 		t.Errorf("Upstream.Auth.Token.ReexchangeOn[1] = %d, want %d", got, want)
 	}
 
-	wantStepIDs := []string{"states", "masterMarkets", "stateRows", "join", "coordinates", "dedupe"}
+	wantStepIDs := []string{"states", "masterMarkets", "stateRows", "join", "coordinates", "dedupe",
+		"onDemand", "pricePairs", "prices", "bothModes"}
 	if got, want := len(spec.Pipeline), len(wantStepIDs); got != want {
 		t.Fatalf("len(Pipeline) = %d, want %d", got, want)
 	}
@@ -268,7 +292,34 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 		t.Errorf("dedupe.With.Key = %q, want %q", got, want)
 	}
 
-	if got, want := spec.Catalog.GroupBy, "stateCode"; got != want {
+	// The OnDemand half always runs: the Direct half reads the same markets.
+	onDemand := spec.Pipeline[6]
+	if onDemand.Uses != "transform" || onDemand.When != "" || onDemand.With.Mapping != "mappings/market-tag.yaml" {
+		t.Errorf("onDemand = %+v; want an unconditional transform through market-tag.yaml", onDemand)
+	}
+	// The Direct half runs unless the mode is onDemand alone.
+	for _, i := range []int{7, 8} {
+		if got, want := spec.Pipeline[i].When, "${inputs.mode} != 'onDemand'"; got != want {
+			t.Errorf("%s.When = %q, want %q", spec.Pipeline[i].ID, got, want)
+		}
+	}
+	prices := spec.Pipeline[8]
+	if prices.Uses != "http.get" || prices.With.Path != "/v1/fetch-agmarknet-vistaar" ||
+		prices.With.Mapping != "mappings/market-price.yaml" || prices.ForEach != "${pricePairs}" {
+		t.Errorf("prices = %+v; want an http.get per price pair through market-price.yaml", prices)
+	}
+	// A pair the upstream could not answer is counted and passed, so one bad
+	// market does not cost a state its catalog.
+	if !prices.OnError["emptyResult"].Continue || !prices.OnError["transportError"].Continue {
+		t.Errorf("prices.OnError = %+v; want emptyResult and transportError both to continue", prices.OnError)
+	}
+	bothModes := spec.Pipeline[9]
+	if bothModes.Uses != "concat" || bothModes.When != "${inputs.mode} = 'both'" ||
+		fmt.Sprint(bothModes.With.Of) != "[${onDemandRecords} ${directRecords}]" {
+		t.Errorf("bothModes = %+v; want a concat of the two halves when mode is both", bothModes)
+	}
+
+	if got, want := spec.Catalog.GroupBy, "catalogGroup"; got != want {
 		t.Errorf("Catalog.GroupBy = %q, want %q", got, want)
 	}
 	if got, want := spec.Catalog.Chunk.Budget, 256; got != want {
@@ -314,6 +365,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 	for _, key := range []string{
 		"baseUrl", "fromDate", "toDate", "participantId", "networkId",
 		"publishUrl", "tokenUser", "tokenSecret",
+		"mode", "priceFromDate", "priceToDate",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("%s declares input %q but it is missing from the resolved map", PipelinePath, key)
@@ -325,6 +377,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 		"tokenSecret":   "secret",                      // secret, env only
 		"baseUrl":       "http://upstream.test:8080",   // env beats default
 		"participantId": "",                            // no default; the run refuses it
+		"mode":          "both",                        // both catalogs unless asked otherwise
 	} {
 		if got[key] != want {
 			t.Errorf("%s = %q, want %q", key, got[key], want)
@@ -346,13 +399,16 @@ func TestCatalogRulesAreTheFilesOnly(t *testing.T) {
 	if len(catalog.Exclude) != 1 || !strings.Contains(catalog.Exclude[0].When, "$count(commodities)") {
 		t.Errorf("exclude = %+v; want exactly the no-commodities rule", catalog.Exclude)
 	}
-	wantOrder := pipeline.Order{By: "marketId", Direction: "asc", RenderBy: []string{"marketName", "marketId"}}
+	// orderKey is marketId for a market and marketId-then-commodity for a
+	// price (market-tag.yaml, market-price.yaml).
+	wantOrder := pipeline.Order{By: "orderKey", Direction: "asc", RenderBy: []string{"marketName", "marketId", "commodityName"}}
 	if fmt.Sprint(catalog.Order) != fmt.Sprint(wantOrder) {
 		t.Errorf("order = %+v, want %+v", catalog.Order, wantOrder)
 	}
+	// resourceKey is market:<marketId> or price:<marketId>:<commodityCode>.
 	if catalog.Identity.CatalogID != "catalog:mandi-price:${slug}" ||
-		catalog.Identity.ResourceID != "resource:mandi-price:market:${marketId}" {
-		t.Errorf("identity = %+v; want catalog:mandi-price:<slug> and resource:mandi-price:market:<marketId>",
+		catalog.Identity.ResourceID != "resource:mandi-price:${resourceKey}" {
+		t.Errorf("identity = %+v; want catalog:mandi-price:<slug> and resource:mandi-price:<resourceKey>",
 			catalog.Identity)
 	}
 	if _, declared := spec.Inputs["withoutGeometry"]; declared {

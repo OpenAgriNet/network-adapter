@@ -444,7 +444,7 @@ func (c *Client) Get(ctx context.Context, m Mapper, mappingRef, path string, loc
 		return nil, err
 	}
 
-	return c.runResponseMapping(ctx, m, mappingRef, path, body)
+	return c.runResponseMapping(ctx, m, mappingRef, path, body, local)
 }
 
 // Post builds a JSON body from the mapping's request half, POSTs it to path,
@@ -473,12 +473,17 @@ func (c *Client) Post(ctx context.Context, m Mapper, mappingRef, path string, lo
 		return nil, err
 	}
 
-	return c.runResponseMapping(ctx, m, mappingRef, path, rawBody)
+	return c.runResponseMapping(ctx, m, mappingRef, path, rawBody, local)
 }
 
 // runResponseMapping decodes a raw response body and runs the mapping's
 // response half over it. Shared between Get and Post.
-func (c *Client) runResponseMapping(ctx context.Context, m Mapper, mappingRef, path string, body []byte) ([]byte, error) {
+//
+// The response half sees the request's _local too, less the credential (see
+// responseLocal): a per-item call often answers without the item's own codes
+// -- the price call reports a market's name, not its code -- so the mapping
+// needs the item to say which record the answer belongs to.
+func (c *Client) runResponseMapping(ctx context.Context, m Mapper, mappingRef, path string, body []byte, local map[string]any) ([]byte, error) {
 	var answer any
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return nil, fmt.Errorf("%s: upstream answered with something that is not JSON: %w", path, err)
@@ -496,11 +501,32 @@ func (c *Client) runResponseMapping(ctx context.Context, m Mapper, mappingRef, p
 	if _, ok := answer.([]any); !ok {
 		return nil, fmt.Errorf("%s: upstream answered with a JSON %s where an array was expected", path, jsonShape(answer))
 	}
-	out, err := m.Transform(ctx, mappingRef, definition.DirectionResponse, map[string]any{"response": answer})
+	out, err := m.Transform(ctx, mappingRef, definition.DirectionResponse, map[string]any{
+		"response": answer,
+		"_local":   c.responseLocal(local),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("%s: response half: %w", path, err)
 	}
 	return out, nil
+}
+
+// responseLocal is local without any value that carries the credential.
+//
+// A response mapping's output becomes records, and records become published
+// catalogs, so the token must not be within its reach -- not as `token`, and
+// not inside another value such as "Bearer <token>". Matched on the value,
+// not the key, because the key is whatever the pipeline file named it.
+func (c *Client) responseLocal(local map[string]any) map[string]any {
+	out := make(map[string]any, len(local))
+	secret := c.credential.Value
+	for key, value := range local {
+		if text, isText := value.(string); isText && secret != "" && strings.Contains(text, secret) {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 // jsonShape names the JSON type of a value decoded by encoding/json, for an
