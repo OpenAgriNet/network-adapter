@@ -214,7 +214,7 @@ func (s *Step) postForToken(ctx context.Context, cfg AuthProfile, payload []byte
 		// The status, not the body: a failure body routinely quotes the
 		// request back.
 		log.Warnf(ctx, "token endpoint %s returned %s: %s",
-			cfg.TokenURL, resp.Status, s.redactString(util.Explain(body)))
+			cfg.TokenURL, resp.Status, s.explainRedacted(body))
 		err := fmt.Errorf("token endpoint returned %s", resp.Status)
 		// The same rule the provider's own status gets: 5xx and 429 ask to be
 		// tried again, and every other 4xx is a statement about the request --

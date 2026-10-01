@@ -1,0 +1,22 @@
+# Tags each market as an OnDemand record, so one catalog block can tell it
+# apart from a Direct price record when both are in the same collection.
+#
+#   kind          onDemand | direct -- which document catalog.yaml renders
+#   catalogGroup  what the catalog block groups by. For a market it is the
+#                 state code alone, so the OnDemand catalog keeps the id it has
+#                 always had (catalog:mandi-price:MH).
+#   resourceKey   the resource id's tail: market:<marketId>, unchanged.
+#   orderKey      what a group is split in when it exceeds the geometry
+#                 budget. For a market it is the marketId, exactly as before,
+#                 so no market moves between catalogIds.
+#
+# WRAPPED IN [...]: JSONata collapses a one-element sequence to a bare value.
+response: |
+  [$map(response, function($m) {
+    $merge([$m, {
+      "kind":         "onDemand",
+      "catalogGroup": $m.stateCode,
+      "resourceKey":  "market:" & $string($m.marketId),
+      "orderKey":     $m.marketId
+    }])
+  })]

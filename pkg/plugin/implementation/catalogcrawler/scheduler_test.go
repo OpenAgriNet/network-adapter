@@ -224,3 +224,84 @@ func TestScheduler_ParkSweepTicksOnItsOwnIndependentCadence(t *testing.T) {
 		}
 	}
 }
+
+// Work registered with AfterCatalogSync rides the catalog-sync ticker instead
+// of a ticker of its own: it runs on Start (the first sync tick) and again on
+// every later sync tick.
+func TestAfterCatalogSyncRidesTheSyncTicker(t *testing.T) {
+	var runs atomic.Int64
+	sched := NewScheduler(
+		crawlmanager.Params{Source: &countingSource{}, Store: &fakeStore{}, Fetcher: noopFetcher()},
+		SchedulerConfig{IndexInterval: time.Hour, CatalogInterval: 20 * time.Millisecond, ParkSweepInterval: time.Hour}, nil,
+	)
+	if err := sched.AfterCatalogSync(func(context.Context) { runs.Add(1) }); err != nil {
+		t.Fatalf("AfterCatalogSync: %v", err)
+	}
+	sched.Start(context.Background())
+	defer sched.Stop()
+
+	deadline := time.After(2 * time.Second)
+	for runs.Load() < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("after-sync work ran %d times, want it on every sync tick", runs.Load())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// A slow after-sync job (a publish run takes minutes) must not hold up the
+// catalog sync that carries it, and Stop must still wait for it.
+func TestAfterCatalogSyncDoesNotBlockSyncAndStopWaitsForIt(t *testing.T) {
+	store := &fakeStore{}
+	release := make(chan struct{})
+	var finished atomic.Bool
+	sched := NewScheduler(
+		crawlmanager.Params{Source: &countingSource{}, Store: store, Fetcher: noopFetcher()},
+		SchedulerConfig{IndexInterval: time.Hour, CatalogInterval: 20 * time.Millisecond, ParkSweepInterval: time.Hour}, nil,
+	)
+	var once sync.Once
+	if err := sched.AfterCatalogSync(func(ctx context.Context) {
+		once.Do(func() {
+			<-release
+			finished.Store(true)
+		})
+	}); err != nil {
+		t.Fatalf("AfterCatalogSync: %v", err)
+	}
+	sched.Start(context.Background())
+
+	// The first hook is still blocked; sync must keep draining regardless.
+	_ = store.Enqueue(context.Background(), crawlmanager.QueueItem{})
+	deadline := time.After(2 * time.Second)
+	for store.queueLen() != 0 {
+		select {
+		case <-deadline:
+			t.Fatal("catalog sync stalled behind a running after-sync job")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	stopped := make(chan struct{})
+	go func() { sched.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while an after-sync job was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-stopped
+	if !finished.Load() {
+		t.Error("the after-sync job did not finish before Stop returned")
+	}
+}
+
+func TestAfterCatalogSyncMustBeRegisteredBeforeStart(t *testing.T) {
+	sched := NewScheduler(crawlmanager.Params{Source: &countingSource{}, Store: &fakeStore{}},
+		SchedulerConfig{IndexInterval: time.Hour, CatalogInterval: time.Hour, ParkSweepInterval: time.Hour}, nil)
+	sched.Start(context.Background())
+	defer sched.Stop()
+	if err := sched.AfterCatalogSync(func(context.Context) {}); err == nil {
+		t.Error("a job registered after Start was accepted; it would never run")
+	}
+}

@@ -1,7 +1,7 @@
 // Package catalogcrawler is the onix plugin wiring for the decentralized-
 // catalog crawl: it parses plugin config, builds the four concrete pieces
 // crawlmanager.Params needs (a Postgres Store, a registry+static Source, an
-// HTTP-push-to-Discovery Sink, and a ticker-driven Scheduler), and satisfies
+// HTTP-publish-to-provider-adapter Sink, and a ticker-driven Scheduler), and satisfies
 // definition.Crawler by delegating to the Scheduler's lifecycle. No business
 // logic of its own -- see github.com/beckn/catalog-core's
 // pkg/catalog/crawlmanager for that.
@@ -16,6 +16,7 @@ package catalogcrawler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -23,10 +24,12 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/source"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 	"github.com/beckn/catalog-core/pkg/catalog"
 	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
@@ -41,8 +44,9 @@ const (
 	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
 	cfgStaticIndexURLs      = "staticIndexUrls" // comma-separated, optional fixed index URLs
 	cfgDiscoveryURL         = "discoveryPushUrl"
-	cfgParticipantID        = "participantId" // this deployment's own bppId
-	cfgBppURI               = "bppUri"        // this deployment's own bppUri
+	cfgParticipantID        = "participantId" // this deployment's id: context.senderId on every publish
+	cfgReceiverID           = "receiverId"    // who it publishes to: context.receiverId (optional)
+	cfgBppURI               = "bppUri"        // RETIRED: refused at startup; see publishConfigFrom
 	cfgFetchTimeoutSec      = "fetchTimeoutSeconds"
 	cfgMaxFetchBytes        = "maxFetchBytes"
 	cfgMaxDecompressed      = "maxDecompressedBytes"
@@ -72,7 +76,7 @@ const (
 type Provider struct{}
 
 // New builds a Crawler from config, wiring a Postgres Store, a
-// registry+static Source, a Discovery-push Sink, and a ticker Scheduler.
+// registry+static Source, a /publish Sink, and a ticker Scheduler.
 // registry is REQUIRED: it is the key-distribution channel every fetched
 // index entry/file's self-signature is verified against. metadataLookup is
 // REQUIRED whenever registry-backed discovery (the "networks" config) is
@@ -95,8 +99,20 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	if discoveryURL == "" {
 		return nil, nil, fmt.Errorf("catalogcrawler: config %q is required", cfgDiscoveryURL)
 	}
+	// discoveryPushUrl is now the provider adapter's /publish, where every
+	// catalog this crawler sends goes. It used to be discovery's /push; a
+	// config still carrying that is refused rather than left to fail at every
+	// send (publish bodies at /push, pipelines at .../push/publish).
+	if strings.HasSuffix(strings.TrimRight(discoveryURL, "/"), "/push") {
+		return nil, nil, fmt.Errorf("catalogcrawler: config %q is %q, a discovery /push address; it now names the "+
+			"provider adapter's /publish endpoint (e.g. http://<host>:<port>/publish)", cfgDiscoveryURL, discoveryURL)
+	}
 
 	log := slog.New(log.NewSlogHandler())
+	if !strings.HasSuffix(strings.TrimRight(discoveryURL, "/"), "/publish") {
+		log.Warn("catalogcrawler: discoveryPushUrl does not end in /publish; catalogs are sent to the provider adapter's /publish",
+			"discoveryPushUrl", discoveryURL)
+	}
 
 	db, err := store.Open(dsn)
 	if err != nil {
@@ -118,7 +134,8 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	fetcher := catalog.NewFetcher(client, keys, maxDecompressed)
 
 	src := buildSource(config, metadataLookup, log)
-	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgBppURI], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
+	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgReceiverID], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
+	snk.Client.Log = log
 
 	// The same configured networks drive both registry-backed discovery
 	// (buildSource) and scope filtering (Params.Networks) -- one deployment
@@ -159,9 +176,36 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		MaxParkCount: maxParkCount,
 	}
 
+	sched := NewScheduler(params, schedCfg, log)
+
+	// The scheduled publish sweep, if this deployment asked for one. It rides
+	// the catalog-sync ticker -- one cadence, catalogIntervalSeconds -- and
+	// shares the Scheduler's context and shutdown; see publishsweep.go for why
+	// the crawler owns so little of it. Registered before Start, which
+	// AfterCatalogSync requires.
+	publishCfg, err := publishConfigFrom(config)
+	if err != nil {
+		db.Close()
+		return nil, nil, err
+	}
+	if publishCfg.enabled {
+		publishSrc, err := buildPublishSource(registry, log)
+		if err != nil {
+			db.Close()
+			return nil, nil, err
+		}
+		sweep := newPublishSweep(publishCfg, publishSrc, st, log)
+		if err := sched.AfterCatalogSync(sweep.tick); err != nil {
+			db.Close()
+			return nil, nil, err
+		}
+		log.Info("catalogcrawler: publish sweep enabled",
+			"tickInterval", schedCfg.catalogInterval(), "publish", publishCfg.publish)
+	}
+
 	c := &crawlerImpl{
 		params:         params,
-		sched:          NewScheduler(params, schedCfg, log),
+		sched:          sched,
 		metadataLookup: metadataLookup,
 		log:            log,
 		st:             st,
@@ -256,6 +300,151 @@ func (m multiSource) Discover(ctx context.Context) ([]crawlmanager.IndexRef, err
 		}
 	}
 	return refs, nil
+}
+
+// buildPublishSource is buildSource's counterpart for the scheduled publish
+// pipelines: the registry-backed discovery of which capabilities publish, and
+// with which pipeline. It needs a registry plugin that can both LIST provider
+// bindings and resolve each (sunbirdRegistry can); without the list there is
+// nothing to sweep, and without the lookup no way to learn what is sanctioned.
+// So a configured sweep with an incapable registry is a startup error, not a
+// silently disabled feature.
+func buildPublishSource(registry definition.RegistryLookup, log *slog.Logger) (*publishDiscoverer, error) {
+	lookup, ok := registry.(publishRegistry)
+	if !ok {
+		return nil, fmt.Errorf(
+			"catalogcrawler: config %q needs a registry plugin that can list and resolve provider bindings (e.g. sunbirdRegistry)",
+			cfgPublishPipelines)
+	}
+	return &publishDiscoverer{lookup: lookup, resolve: pipeline.RemotePipeline, log: log}, nil
+}
+
+// publishRegistry is what publish discovery needs from the registry plugin.
+//
+// ProviderBindingKeys is declared here, not in definition/, because this is
+// its only consumer: a shared package should not grow a concept that only one
+// feature uses. sunbirdRegistry satisfies it structurally, with no import of
+// this package and no declared conformance -- Go only needs the method to
+// exist with this signature.
+type publishRegistry interface {
+	// ProviderBindingKeys returns every binding key the registry holds, in the
+	// registry's order. A registry that could not be consulted returns an
+	// error, never an empty list: an empty list reads as "nothing publishes".
+	ProviderBindingKeys(ctx context.Context) ([]string, error)
+	definition.ProviderRecordLookup
+}
+
+// bindingLister narrows publishRegistry's listing to bindings serving one
+// action, from the listing itself, so Discover resolves only the handful of
+// bindings that publish instead of every capability the registry holds.
+//
+// Same reasoning as publishRegistry: this is the only place that wants the
+// narrower listing, so it is declared here rather than in definition/, and
+// callers fall back to publishRegistry.ProviderBindingKeys when a registry
+// plugin does not implement it.
+type bindingLister interface {
+	// ProviderBindingKeysServing returns the keys whose listed binding carries
+	// an active entry for action. Like ProviderBindingKeys, a registry that
+	// could not be consulted returns an error, never an empty list.
+	ProviderBindingKeysServing(ctx context.Context, action string) ([]string, error)
+}
+
+// publishTarget is one pipeline the registry sanctions, by URL.
+type publishTarget struct {
+	record *model.ProviderRecord
+	files  pipeline.Files
+}
+
+// publishDiscoverer finds the publish pipelines the registry sanctions, the
+// way registryDiscoverer finds catalog indexes: the registry is the sole
+// source of truth -- each binding's publish action names its pipeline YAML --
+// and this is only the mapping from its records to runnable pipelines.
+type publishDiscoverer struct {
+	lookup publishRegistry
+	// resolve turns the registry's pipeline URL into the Files a run is given.
+	// Injectable so discovery is testable without a registry.
+	resolve func(registryPath string) (pipeline.Files, error)
+	log     *slog.Logger
+	// refused is the pipeline value each binding was last refused for. A bad
+	// value is refused on every tick and never reaches a retry budget, so it
+	// is said at ERROR once per value, and at Debug after that.
+	refused map[string]string
+}
+
+// Discover lists every binding and returns the ones with a publish action
+// naming a pipeline URL.
+//
+// Only a failed LIST is an error. Each binding is judged on its own: one that
+// cannot be resolved, serves no publish action, or names a pipeline this
+// binary does not carry is logged and skipped, and never hides the others.
+func (d *publishDiscoverer) Discover(ctx context.Context) ([]publishTarget, error) {
+	keys, err := d.bindingKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing the registry's capabilities: %w", err)
+	}
+	// Per tick, so DEBUG: it fires whether or not anything is due.
+	d.log.DebugContext(ctx, "catalogcrawler: publish sweep", "capabilities", len(keys))
+
+	var targets []publishTarget
+	for _, key := range keys {
+		record, err := d.lookup.ProviderRecord(ctx, key)
+		if errors.Is(err, definition.ErrProviderRecordNotFound) {
+			// Listed but not usable: inactive, unowned, or no active actions.
+			// The registry plugin has already logged which.
+			d.log.DebugContext(ctx, "catalogcrawler: binding is not usable; skipping", "bindingKey", key)
+			continue
+		}
+		if err != nil {
+			d.log.ErrorContext(ctx, "catalogcrawler: could not consult the registry for a publish pipeline",
+				"bindingKey", key, "error", err)
+			continue
+		}
+
+		// Most capabilities are consumed, not published. Quiet, not an error.
+		if _, publishes := record.Actions[publishActionName]; !publishes {
+			d.log.DebugContext(ctx, "catalogcrawler: binding serves no publish action", "bindingKey", key)
+			continue
+		}
+
+		pipelinePath, err := pipeline.PipelinePathFor(record)
+		if err != nil {
+			d.log.ErrorContext(ctx, "catalogcrawler: publish action names no pipeline", "bindingKey", key, "error", err)
+			continue
+		}
+		files, err := d.resolve(pipelinePath)
+		if err != nil {
+			// The record's publish mappings is not a pipeline URL (a repo path
+			// from before pipelines were hosted, say). A registry fix, said
+			// loudly -- once, since it will be refused again every tick.
+			level := slog.LevelError
+			if d.refused[key] == pipelinePath {
+				level = slog.LevelDebug
+			} else {
+				if d.refused == nil {
+					d.refused = map[string]string{}
+				}
+				d.refused[key] = pipelinePath
+			}
+			d.log.Log(ctx, level, "catalogcrawler: the registry's publish mappings is not a pipeline URL",
+				"bindingKey", key, "pipeline", pipelinePath, "error", err)
+			continue
+		}
+		delete(d.refused, key)
+
+		d.log.DebugContext(ctx, "catalogcrawler: registry sanctions publishing",
+			"bindingKey", key, "actions", servedActions(record), "pipeline", pipelinePath)
+		targets = append(targets, publishTarget{record: record, files: files})
+	}
+	return targets, nil
+}
+
+// bindingKeys lists the bindings worth resolving: only those serving publish
+// when the registry can say so from its listing, every binding otherwise.
+func (d *publishDiscoverer) bindingKeys(ctx context.Context) ([]string, error) {
+	if narrowed, ok := d.lookup.(bindingLister); ok {
+		return narrowed.ProviderBindingKeysServing(ctx, publishActionName)
+	}
+	return d.lookup.ProviderBindingKeys(ctx)
 }
 
 // crawlerImpl implements definition.Crawler.

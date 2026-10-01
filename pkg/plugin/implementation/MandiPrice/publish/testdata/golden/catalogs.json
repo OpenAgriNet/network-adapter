@@ -1,0 +1,317 @@
+[
+  {
+    "slug": "KA",
+    "catalogId": "catalog:mandi-price:KA",
+    "content": {
+      "context": {
+        "action": "catalog/publish",
+        "messageId": "\u003cuuid\u003e",
+        "timestamp": "\u003ctimestamp\u003e",
+        "transactionId": "\u003cuuid\u003e",
+        "version": "2.0.0"
+      },
+      "message": {
+        "catalogs": [
+          {
+            "descriptor": {
+              "code": "AGMARKNET-KA",
+              "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery.",
+              "name": "Agmarknet mandi markets — Karnataka",
+              "shortDesc": "Markets in Karnataka, their locations, and what each trades"
+            },
+            "id": "catalog:mandi-price:KA",
+            "isActive": true,
+            "provider": {
+              "descriptor": {
+                "code": "AGMARKNET-01",
+                "name": "Agmarknet Vistaar",
+                "shortDesc": "Provider of live agricultural market price information."
+              },
+              "id": "test-participant"
+            },
+            "resources": [
+              {
+                "descriptor": {
+                  "code": "201",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Hubli. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Hubli",
+                  "shortDesc": "Mandi prices at Hubli, Dharwad, Karnataka"
+                },
+                "id": "resource:mandi-price:market:201",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "coordinates": [
+                        75.124,
+                        15.3647
+                      ],
+                      "type": "Point"
+                    },
+                    {
+                      "areaCode": "601",
+                      "areaLevel": "District",
+                      "areaName": "Dharwad",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-KA",
+                      "areaLevel": "State",
+                      "areaName": "Karnataka",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "historicalDataAvailable": true,
+                  "historyPeriod": "P1Y",
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "Dharwad",
+                    "marketCode": "201",
+                    "marketName": "Hubli",
+                    "state": "KA"
+                  },
+                  "source": {
+                    "sourceId": "agmarknet",
+                    "sourceName": "Agmarknet Vistaar",
+                    "sourceUri": "https://agmarknet.gov.in/"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ],
+                  "updateFrequency": "P1D",
+                  "validity": {
+                    "endsAt": "2026-09-22T23:59:59+05:30",
+                    "startsAt": "2026-09-20T00:00:00+05:30"
+                  }
+                }
+              }
+            ],
+            "validity": {
+              "endDate": "2026-09-22T23:59:59+05:30",
+              "startDate": "2026-09-20T00:00:00+05:30"
+            }
+          }
+        ],
+        "publishDirectives": [
+          {
+            "catalogId": "catalog:mandi-price:KA",
+            "catalogType": "REGULAR",
+            "schemaTypes": [
+              "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
+            ],
+            "updateMode": "MERGE",
+            "visibleTo": [
+              "test-network"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "slug": "MH",
+    "catalogId": "catalog:mandi-price:MH",
+    "content": {
+      "context": {
+        "action": "catalog/publish",
+        "messageId": "\u003cuuid\u003e",
+        "timestamp": "\u003ctimestamp\u003e",
+        "transactionId": "\u003cuuid\u003e",
+        "version": "2.0.0"
+      },
+      "message": {
+        "catalogs": [
+          {
+            "descriptor": {
+              "code": "AGMARKNET-MH",
+              "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery.",
+              "name": "Agmarknet mandi markets — Maharashtra",
+              "shortDesc": "Markets in Maharashtra, their locations, and what each trades"
+            },
+            "id": "catalog:mandi-price:MH",
+            "isActive": true,
+            "provider": {
+              "descriptor": {
+                "code": "AGMARKNET-01",
+                "name": "Agmarknet Vistaar",
+                "shortDesc": "Provider of live agricultural market price information."
+              },
+              "id": "test-participant"
+            },
+            "resources": [
+              {
+                "descriptor": {
+                  "code": "102",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Nashik. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Nashik",
+                  "shortDesc": "Mandi prices at Nashik, Nashik, Maharashtra"
+                },
+                "id": "resource:mandi-price:market:102",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "areaCode": "502",
+                      "areaLevel": "District",
+                      "areaName": "Nashik",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "historicalDataAvailable": true,
+                  "historyPeriod": "P1Y",
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "Nashik",
+                    "marketCode": "102",
+                    "marketName": "Nashik",
+                    "state": "MH"
+                  },
+                  "source": {
+                    "sourceId": "agmarknet",
+                    "sourceName": "Agmarknet Vistaar",
+                    "sourceUri": "https://agmarknet.gov.in/"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ],
+                  "updateFrequency": "P1D",
+                  "validity": {
+                    "endsAt": "2026-09-22T23:59:59+05:30",
+                    "startsAt": "2026-09-20T00:00:00+05:30"
+                  }
+                }
+              },
+              {
+                "descriptor": {
+                  "code": "101",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Pune. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Pune",
+                  "shortDesc": "Mandi prices at Pune, Pune, Maharashtra"
+                },
+                "id": "resource:mandi-price:market:101",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "coordinates": [
+                        73.8567,
+                        18.5204
+                      ],
+                      "type": "Point"
+                    },
+                    {
+                      "areaCode": "501",
+                      "areaLevel": "District",
+                      "areaName": "Pune",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "historicalDataAvailable": true,
+                  "historyPeriod": "P1Y",
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "Pune",
+                    "marketCode": "101",
+                    "marketName": "Pune",
+                    "state": "MH"
+                  },
+                  "source": {
+                    "sourceId": "agmarknet",
+                    "sourceName": "Agmarknet Vistaar",
+                    "sourceUri": "https://agmarknet.gov.in/"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    },
+                    {
+                      "code": "24",
+                      "name": "Potato"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ],
+                  "updateFrequency": "P1D",
+                  "validity": {
+                    "endsAt": "2026-09-22T23:59:59+05:30",
+                    "startsAt": "2026-09-20T00:00:00+05:30"
+                  }
+                }
+              }
+            ],
+            "validity": {
+              "endDate": "2026-09-22T23:59:59+05:30",
+              "startDate": "2026-09-20T00:00:00+05:30"
+            }
+          }
+        ],
+        "publishDirectives": [
+          {
+            "catalogId": "catalog:mandi-price:MH",
+            "catalogType": "REGULAR",
+            "schemaTypes": [
+              "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
+            ],
+            "updateMode": "MERGE",
+            "visibleTo": [
+              "test-network"
+            ]
+          }
+        ]
+      }
+    }
+  }
+]

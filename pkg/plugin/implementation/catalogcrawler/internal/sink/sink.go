@@ -1,41 +1,44 @@
 package sink
 
-// sink.go — DiscoverySink: crawlmanager.Sink backed by an HTTP push to a
-// Discovery service. Batches the resolved catalog if it exceeds MaxDocBytes,
-// pushes each batch, and rolls the outcomes up into one SinkOutcome.
+// sink.go — DiscoverySink: crawlmanager.Sink backed by an HTTP publish to the
+// provider adapter's /publish. Batches the resolved catalog if it exceeds
+// MaxDocBytes, publishes each batch, and rolls the outcomes up into one
+// SinkOutcome. Publish is the same client for the scheduled publish pipelines.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogpublisher/pipeline"
 
 	"github.com/beckn/catalog-core/pkg/catalog"
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
 	"github.com/google/uuid"
 )
 
-// DiscoverySink pushes a resolved catalog's current content to a Discovery
-// endpoint as one or more FULL-mode /push requests.
+// DiscoverySink publishes a resolved catalog's current content to the
+// provider adapter's /publish as one or more MERGE-mode catalog/publish
+// requests.
 //
-// UpdateMode is always FULL: unlike the catalog-crawler prototype's runner,
-// crawlmanager never tracks an incremental Changeset (upserts/removals since
-// a cursor) -- catalog.Resolve always folds a catalog's COMPLETE current
-// content, so a FULL replace is the only mode that matches what SyncNext
-// actually resolved. A batch after the first still omits offers (Discovery's
-// existing MERGE semantics for the spillover batches of one push), even
-// though it's still conceptually "the same full push" split across requests.
+// UpdateMode is MERGE. catalog.Resolve folds a catalog's COMPLETE current
+// content, which FULL would match, but /publish rejects FULL as unsupported,
+// so every batch is a MERGE: a resource a source stops listing is no longer
+// removed by a crawl. A batch after the first still omits offers.
 type DiscoverySink struct {
-	Endpoint      string // Discovery's /push URL
-	ParticipantID string // this deployment's bppId
-	BppURI        string // this deployment's bppUri
-	MaxDocBytes   int64  // 0 => no batching
-	Client        *Client
-	Now           func() time.Time // nil => time.Now
+	Endpoint    string // the provider adapter's /publish URL
+	SenderID    string // this deployment: context.senderId
+	ReceiverID  string // who it publishes to: context.receiverId (optional)
+	MaxDocBytes int64  // 0 => no batching
+	Client      *Client
+	Now         func() time.Time // nil => time.Now
 }
 
 // NewDiscoverySink builds a DiscoverySink. timeout bounds each batch's push.
-func NewDiscoverySink(endpoint, participantID, bppURI string, maxDocBytes int64, timeout time.Duration) *DiscoverySink {
-	return &DiscoverySink{Endpoint: endpoint, ParticipantID: participantID, BppURI: bppURI, MaxDocBytes: maxDocBytes, Client: NewClient(timeout)}
+func NewDiscoverySink(endpoint, senderID, receiverID string, maxDocBytes int64, timeout time.Duration) *DiscoverySink {
+	return &DiscoverySink{Endpoint: endpoint, SenderID: senderID, ReceiverID: receiverID, MaxDocBytes: maxDocBytes, Client: NewClient(timeout)}
 }
 
 func (d *DiscoverySink) now() time.Time {
@@ -47,7 +50,7 @@ func (d *DiscoverySink) now() time.Time {
 
 // Send implements crawlmanager.Sink.
 func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, content []byte) (crawlmanager.SinkOutcome, error) {
-	batches, err := BatchCatalog(content, d.MaxDocBytes, UpdateModeFull)
+	batches, err := BatchCatalog(content, d.MaxDocBytes, UpdateModeMerge)
 	if err != nil {
 		return crawlmanager.SinkOutcome{}, fmt.Errorf("catalogcrawler: batching %s: %w", entry.CatalogID, err)
 	}
@@ -55,8 +58,8 @@ func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, co
 	var outcomes []BatchOutcome
 	for _, batch := range batches {
 		meta := PushMeta{
-			ParticipantID: d.ParticipantID,
-			BppURI:        d.BppURI,
+			SenderID:      d.SenderID,
+			ReceiverID:    d.ReceiverID,
 			MessageID:     uuid.NewString(),
 			TransactionID: uuid.NewString(),
 			Timestamp:     d.now().UTC().Format(time.RFC3339),
@@ -78,4 +81,105 @@ func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, co
 
 	accepted, reason := Rollup(outcomes)
 	return crawlmanager.SinkOutcome{Accepted: accepted, Reason: reason}, nil
+}
+
+var _ pipeline.Publisher = (*DiscoverySink)(nil)
+
+// Publish implements pipeline.Publisher: a pipeline-built catalog/publish body
+// goes to baseURL's /publish through the same Client.Push the crawl path
+// uses, and the batch outcome maps onto the pipeline's.
+//
+// The body is posted as built EXCEPT for context.senderId/receiverId, which the sink
+// stamps: identity is the deployment's, not the pipeline's, and a mapping
+// that wrote it would have to be told who it runs as.
+func (d *DiscoverySink) Publish(ctx context.Context, baseURL string, body []byte) pipeline.Outcome {
+	stamped, err := d.stampIdentity(body)
+	if err != nil {
+		return pipeline.Outcome{Status: pipeline.StatusTransportError, Reason: err.Error()}
+	}
+	return d.post(ctx, baseURL, stamped)
+}
+
+// stampIdentity sets context.senderId/receiverId on a publish body, leaving the rest
+// of the context and the message as built. A sink with no identity
+// configured posts the body unchanged.
+func (d *DiscoverySink) stampIdentity(body []byte) ([]byte, error) {
+	if d.SenderID == "" && d.ReceiverID == "" {
+		return body, nil
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("publish body is not a JSON object: %w", err)
+	}
+	context := map[string]any{}
+	if raw, ok := envelope["context"]; ok {
+		if err := json.Unmarshal(raw, &context); err != nil {
+			return nil, fmt.Errorf("publish body's context is not an object: %w", err)
+		}
+	}
+	if d.SenderID != "" {
+		context["senderId"] = d.SenderID
+	}
+	if d.ReceiverID != "" {
+		context["receiverId"] = d.ReceiverID
+	}
+	encoded, err := json.Marshal(context)
+	if err != nil {
+		return nil, fmt.Errorf("re-encoding the publish context: %w", err)
+	}
+	envelope["context"] = encoded
+	return json.Marshal(envelope)
+}
+
+// Retire implements pipeline.Publisher: it deactivates the retirement's
+// catalog, which is how its resources leave the network. Built with
+// BuildPushBody -- the one builder every publish goes through -- with every
+// field the pipeline's retireOld resolved: identity from this sink, and the
+// catalogType, updateMode, visibleTo and schemaTypes the file states.
+func (d *DiscoverySink) Retire(ctx context.Context, baseURL string, retirement pipeline.Retirement) pipeline.Outcome {
+	doc, err := json.Marshal(map[string]any{
+		"id":         retirement.CatalogID,
+		"isActive":   false,
+		"descriptor": map[string]any{"code": retirement.CatalogID, "name": retirement.DescriptorName},
+		"resources":  []any{},
+	})
+	if err == nil {
+		var body []byte
+		body, err = BuildPushBody(PushMeta{
+			SenderID:      d.SenderID,
+			ReceiverID:    d.ReceiverID,
+			MessageID:     uuid.NewString(),
+			TransactionID: uuid.NewString(),
+			Timestamp:     d.now().UTC().Format(time.RFC3339),
+			UpdateMode:    retirement.UpdateMode,
+			CatalogType:   retirement.CatalogType,
+			VisibleTo:     retirement.VisibleTo,
+			SchemaContext: retirement.SchemaTypes,
+		}, doc)
+		if err == nil {
+			out := d.post(ctx, baseURL, body)
+			out.CatalogID = retirement.CatalogID
+			return out
+		}
+	}
+	return pipeline.Outcome{CatalogID: retirement.CatalogID, Status: pipeline.StatusTransportError, Reason: err.Error()}
+}
+
+// post sends one body to baseURL's /publish and maps the batch outcome onto
+// the pipeline's: ACCEPTED is published, any other verdict is rejected, and a
+// failure to reach the adapter is a transport error.
+func (d *DiscoverySink) post(ctx context.Context, baseURL string, body []byte) pipeline.Outcome {
+	endpoint := strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/publish"
+	out, err := d.Client.Push(ctx, endpoint, body)
+	switch {
+	case err != nil:
+		return pipeline.Outcome{Status: pipeline.StatusTransportError, Reason: err.Error()}
+	case out.Acked:
+		return pipeline.Outcome{Status: pipeline.StatusPublished}
+	case out.HTTPStatus == 200:
+		return pipeline.Outcome{Status: pipeline.StatusRejected, Reason: out.Reason}
+	default:
+		return pipeline.Outcome{Status: pipeline.StatusTransportError,
+			Reason: fmt.Sprintf("HTTP %d: %s", out.HTTPStatus, out.Reason)}
+	}
 }

@@ -42,6 +42,15 @@ func (e redactedErr) Error() string { return e.text }
 
 func (e redactedErr) Unwrap() error { return e.err }
 
+// explainRedacted renders a failed body for a human, credential removed.
+//
+// Redacted BEFORE Explain truncates, not after: a secret that straddles
+// Explain's cut point would otherwise survive as a partial, unmatched prefix
+// no substring replacement can find once the rest of it is gone.
+func (s *Step) explainRedacted(body []byte) string {
+	return util.Explain([]byte(s.redactString(string(body))))
+}
+
 // redactString removes every configured credential from text about to be logged
 // or returned -- an error, a response body, or a requested URL.
 //

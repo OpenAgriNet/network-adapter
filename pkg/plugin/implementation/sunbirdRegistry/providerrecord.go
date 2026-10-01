@@ -23,6 +23,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"github.com/hashicorp/go-retryablehttp"
 	"go.opentelemetry.io/otel"
@@ -136,6 +137,67 @@ func (c *Client) ProviderRecord(ctx context.Context, bindingKey string) (*model.
 	span.SetAttributes(telemetry.AttrErrorType.String(outcomeFound))
 	c.emitMetrics(ctx, start, operationProviderRecord, outcomeFound)
 	return plan, nil
+}
+
+// ProviderBindingKeys lists every capability binding the registry holds.
+//
+// The filter is an EMPTY OBJECT, not null: the search endpoint reads a null
+// filter as "match nothing" on some backends, which would read here as a
+// registry with no capabilities. Rows without a key are skipped -- they can
+// never be resolved, and an empty key would reach ProviderRecord as a caller
+// bug. Status is NOT judged here; ProviderRecord judges each key, so there is
+// one place that decides whether a binding is usable.
+func (c *Client) ProviderBindingKeys(ctx context.Context) ([]string, error) {
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry provider binding keys")
+	defer span.End()
+
+	bindings, err := searchRecords[providerBinding](ctx, c, tracer, c.providerSearchURL, map[string]eqFilter{})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, classify(err))
+		return nil, err
+	}
+	keys := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		if key := strings.TrimSpace(binding.BindingKey); key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
+// ProviderBindingKeysServing lists the bindings whose listed record carries an
+// active entry for action.
+//
+// The BINDING's own status is still judged by ProviderRecord, so there remains
+// one place that decides whether a binding is usable; this only avoids
+// resolving bindings that cannot serve the action at all.
+func (c *Client) ProviderBindingKeysServing(ctx context.Context, action string) ([]string, error) {
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry provider binding keys serving")
+	defer span.End()
+
+	bindings, err := searchRecords[providerBinding](ctx, c, tracer, c.providerSearchURL, map[string]eqFilter{})
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, classify(err))
+		return nil, err
+	}
+	var keys []string
+	for _, binding := range bindings {
+		key := strings.TrimSpace(binding.BindingKey)
+		if key == "" {
+			continue
+		}
+		for _, plan := range servableActions(binding) {
+			if plan.Action == action {
+				keys = append(keys, key)
+				break
+			}
+		}
+	}
+	return keys, nil
 }
 
 // refuse records a deliberate denial and returns the caller's sentinel. The
@@ -332,8 +394,11 @@ func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, u
 	}
 	if resp.StatusCode != http.StatusOK {
 		// The body can carry registry internals, so it is logged but never
-		// returned in the error.
-		log.Errorf(ctx, nil, "OAN registry search failed with status: %s, response: %s", resp.Status, string(respBody))
+		// returned in the error -- and only its opening, because this runs on
+		// every lookup while the registry is failing, and a whole error page
+		// on every tick is noise that buries the status. A WARN, not an
+		// ERROR: it is the registry's fault, and the caller reports its own.
+		log.Warnf(ctx, "OAN registry search failed with status: %s, response: %s", resp.Status, util.Explain(respBody))
 		return nil, fmt.Errorf("%w: %s", errRegistryStatus, resp.Status)
 	}
 	return decodeRecords[T](respBody)

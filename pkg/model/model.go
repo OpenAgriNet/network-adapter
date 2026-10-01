@@ -122,6 +122,19 @@ type ActionPlan struct {
 	//
 	// Carried verbatim: it is a URL the mapper fetches, and this type does not
 	// interpret it.
+	//
+	// It is not the same URL on every path this field is read from, though.
+	// On a request/response action it names a jsonmapper file: DATA, fetched
+	// and interpreted as a transform over one payload. On the publish action a
+	// registry can name, it names a pipeline YAML: a PROGRAM, fetched and
+	// interpreted as a sequence of upstream calls this binary goes on to make
+	// with the deployment's own credentials (see catalogpublisher/pipeline/
+	// source.go). Whatever is trusted to write one of these URLs into the
+	// registry is trusted to choose what code runs on the publish side, not
+	// just what data reshaping happens on the request side. Fetch-time
+	// enforcement (host allowlist, signature, or both) is source.go's own
+	// call, not this type's -- flagged here because this is the field both
+	// meanings pass through.
 	Mappings string
 
 	// TimeoutMs and RetryMax are this action's own budget, and are zero when the

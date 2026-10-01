@@ -1055,8 +1055,8 @@ func TestEvaluateLockedReleasesTheLockOnPanic(t *testing.T) {
 	// forever rather than fail.
 	done := make(chan struct{})
 	go func() {
-		evaluating.Lock()
-		evaluating.Unlock()
+		Evaluating.Lock()
+		Evaluating.Unlock()
 		close(done)
 	}()
 	select {
