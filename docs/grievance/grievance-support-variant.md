@@ -125,7 +125,7 @@ POST /init
   "message": { "contract": {
     "id": "b1d4e2f0-5a63-4c81-9e77-2af0c9d31b45",
     "commitments": [{
-      "status": { "descriptor": { "code": "DRAFT", "name": "draft" } },
+      "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmfby:grievance",
         "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
@@ -152,7 +152,7 @@ POST /init
   "message": { "contract": {
     "id": "b1d4e2f0-5a63-4c81-9e77-2af0c9d31b45",
     "commitments": [{
-      "status": { "descriptor": { "code": "DRAFT", "name": "draft" } },
+      "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmfby:grievance",
         "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
@@ -288,7 +288,7 @@ POST /status
   "message": { "contract": {
     "id": "b1d4e2f0-5a63-4c81-9e77-2af0c9d31b45",
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmfby:grievance",
         "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
@@ -323,7 +323,7 @@ the complaint, so it stays in attributes; it is absent while nothing has been re
       "longDesc": "Claim approved in July but no amount has been credited to my account."
     },
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmfby:grievance",
         "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
@@ -465,7 +465,7 @@ POST /status
   "message": { "contract": {
     "id": "c9b31a45-0f78-4e2d-9a60-84b7d3e15c02",
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:grievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
@@ -500,7 +500,7 @@ five of the record's fourteen fields survive. The record carries no category, so
       "longDesc": "Third instalment for 2026 has not been credited."
     },
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:grievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },

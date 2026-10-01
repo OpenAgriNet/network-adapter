@@ -85,7 +85,7 @@ POST /init
   "message": { "contract": {
     "id": "b1d4e2f0-5a63-4c81-9e77-2af0c9d31b45",
     "commitments": [{
-      "status": { "descriptor": { "code": "DRAFT", "name": "draft" } },
+      "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmfby:grievance",
         "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
@@ -244,7 +244,7 @@ POST /status
   "message": { "contract": {
     "id": "b1d4e2f0-5a63-4c81-9e77-2af0c9d31b45",
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmfby:grievance",
         "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
@@ -281,7 +281,7 @@ when there is one, rides alongside in `caseStatus.name`.
       "longDesc": "Claim approved in July but no amount credited."
     },
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmfby:grievance",
         "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
@@ -454,7 +454,7 @@ POST /status
   "message": { "contract": {
     "id": "c9b31a45-0f78-4e2d-9a60-84b7d3e15c02",
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:grievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
@@ -490,7 +490,7 @@ portal stored — and no `code` or `name`.
       "longDesc": "Third instalment for 2026 has not been credited."
     },
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:grievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
@@ -504,8 +504,8 @@ portal stored — and no `code` or `name`.
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "caseStatus": { "code": "Replied" },
         "filedOn": "2026-09-28",
-        "remarkedOn": "2026-10-01",
         "caseRemark": "Instalment released on 2026-10-01, credited to the linked account.",
+        "remarkedOn": "2026-10-01",
         "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
       }
     }]
@@ -625,7 +625,7 @@ data is, who we call, and how.
   "capabilityCode": "openagrinet:PMFBYGrievance",
   "name": "PMFBY Grievance",
   "version": "v0.1",
-  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/api-schemas/PMFBYGrievance/v0.1/attributes.yaml",
+  "schemaUrl": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/attributes.yaml",
   "status": "active"
 } }
 
@@ -648,7 +648,8 @@ data is, who we call, and how.
       "timeoutMs": 20000, "status": "active" },
     { "action": "support", "method": "POST", "path": "/InsertGrievenceTicket",   // TODO: path unconfirmed
       "mappings": "mappings/pmfby/grievance.support.yaml",
-      "providerIdAt":     "message.support.channels[].providerId",   // see below
+      "providerIdAt":     "message.support.channels[].providerId",   // [] is the grammar's
+                                                                      // only plural: no index
       "capabilityCodeAt": "message.support.channels[].@type",
       "timeoutMs": 30000, "status": "active" },
     { "action": "status",  "method": "POST", "path": "/GetGrievenceTicketsStatus", // TODO: path unconfirmed
@@ -664,7 +665,7 @@ data is, who we call, and how.
   "capabilityCode": "openagrinet:PMKISANGrievance",
   "name": "PM-KISAN Grievance",
   "version": "v0.1",
-  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/api-schemas/PMKISANGrievance/v0.1/attributes.yaml",
+  "schemaUrl": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/attributes.yaml",
   "status": "active"
 } }
 
@@ -684,7 +685,8 @@ data is, who we call, and how.
   "actions": [
     { "action": "support", "method": "POST", "path": "/LodgeGrievance",
       "mappings": "mappings/pmkisan/grievance.support.yaml",
-      "providerIdAt":     "message.support.channels[].providerId",   // see below
+      "providerIdAt":     "message.support.channels[].providerId",   // [] is the grammar's
+                                                                      // only plural: no index
       "capabilityCodeAt": "message.support.channels[].@type",
       "timeoutMs": 30000, "status": "active" },
     { "action": "status",  "method": "POST", "path": "/GrievanceStatusCheck",
@@ -692,68 +694,3 @@ data is, who we call, and how.
       "timeoutMs": 30000, "retryMax": 2, "status": "active" }
   ] } }
 ```
-
-Worth noticing:
-
-- **Routing on the lodge leg, and why both halves still come off the payload.**
-  The adapter builds a binding key of `<participantId>|<capabilityCode>` and reads both
-  halves out of the payload — by default from `message.contract.commitments[].offer.provider.id`
-  and `…resourceAttributes.@type`. A `support` payload has no contract, so both re-path into
-  the channel: `@type` for the capability, `providerId` for the participant. `Support` itself
-  is sealed at three fields and none names a participant, but `channels` is an array of
-  `Attributes` — the spec's extensibility container, `additionalProperties: true` — so the
-  pack declares `providerId` there. `scheme.code` is not a substitute: it reads `PMFBY`, not
-  `pmfby`, the lookup is an exact string match, and a scheme is not a participant.
-  The objection to this is that it pushes a registry identifier into the experience layer,
-  which is the thing the registry exists to hide. It does — but the experience layer already
-  sends that identifier on `init` and `status`, in `offer.provider.id`, and it has to,
-  because that is the value the binding key is built from. `support` was the only leg
-  pretending otherwise. Naming the provider statically in the row would hide it on that one
-  leg, at the cost of a third case in `BindingPaths` and of the one-channel guard below —
-  which counts an array on the provider path that a static value would not have.
-- **The path grammar has no indices.** It is segments separated by `.`, with `[]` meaning
-  "look in each element" — no wildcards, filters or `[0]`. A row written `channels[0].@type`
-  would not fail at startup; it would be read as a field literally named `channels[0]`, match
-  nothing, and leave every lodge request unserved with nothing said. Hence `channels[]`.
-- **`channels` carries exactly one entry on the lodge leg.** The adapter counts the first
-  array on the provider path and refuses a payload with more than one, because one request
-  maps to one upstream call. That suits us — the ask is a single complaint — but the refusal
-  message is worded for commitments and will read oddly on a support payload.
-- **`retryMax` is missing on `init` and `support`, deliberately.** It defaults to `0`.
-  Retrying a lodge that timed out *after* the portal filed the grievance lodges a duplicate;
-  retrying an `init` texts a second OTP that invalidates the one the farmer is typing. Only
-  `status` retries. Duplicates hurt more on PM-KISAN, which issues no ticket number: two
-  grievances filed on one identity on one date are indistinguishable, including to `status`,
-  which matches on `filedOn`.
-- **`path` is the lodge endpoint only.** PMFBY's `support` makes two upstream calls — the
-  OTP verify belongs to the plugin, is selected by `bindingKey`, and is named in no field.
-  `timeoutMs` covers the mapped call only, so the wall-clock a farmer waits on `support` is
-  the sum of both budgets, not the 30 s in the row.
-- **No credential is here, or anywhere in the registry.** Auth schemes and the `*Env`
-  variable names that locate secrets live in the adapter config; the values live in its
-  environment. A registry read cannot leak one — not because it is filtered, but because
-  none of the three schemas has a field to hold one, which is why none carries
-  `_osConfig.privateFields`.
-- **Nothing goes `active` early.** The pack has to be published before its row is seeded,
-  the plugin has to be deployed before PMFBY's `support` is enabled, and PM-KISAN's
-  `bodyCodec` binding must wait for the codec — or every call ships plaintext to a portal
-  that accepts only envelopes.
-
-## Open
-
-- **`/status` asks about a contract that was never confirmed.** Its precondition is
-  explicit: a `/confirm` must have completed and an `/on_confirm` carrying a confirmed
-  contract id must have been received. Lodging with `support` means that is never true, and
-  on PM-KISAN there is no `init` either, so the `contract.id` presented at `status` is a
-  UUID the provider has never seen. Take this to the network's spec authority.
-- **`channels` is carrying something that is not a channel.** The spec defines it as
-  "available support channels … such as phone, email, or chat endpoints", and we put a case
-  record in it. It validates — `Attributes` requires only `@context` and `@type` — but it is
-  a repurposing, and the reason is that `Support` has no `supportAttributes` the way
-  `Commitment` has `commitmentAttributes`. There is no other slot. Raise it with the same
-  authority, together with the item above.
-- **No helpline is published by either scheme.** PMFBY's 14447 comes from the legacy voice
-  prompts, not from a PMFBY page; PM-KISAN has none on file. No contact channel ships until
-  one is sourced from the scheme itself.
-- **The PMFBY case read is unverified** — see the note at the end of Step 3. It is the
-  largest open item on this page and is independent of the lodge action.
