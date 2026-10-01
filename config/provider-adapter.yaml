@@ -230,7 +230,7 @@ modules:
             # schema content; narrowing it to a path prefix, or mirroring the
             # packs on a host we control, is the real fix and is not a
             # one-line change.
-            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
+            extendedSchema_allowedDomains: "openagrinet.github.io,raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
 
             extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
