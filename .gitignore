@@ -178,5 +178,10 @@ test_request.json
 
 # catalogPublish handler's local output root (config/local-beckn-one-bap.yaml)
 /catalog/
-/docs/
+# /docs/ is a local scratch root, except the grievance capability docs.
+# The glob excludes the contents rather than the directory: git does not
+# descend into an excluded directory, so `/docs/` + `!/docs/grievance/`
+# would never re-include anything.
+/docs/*
+!/docs/grievance/
 /dev_docs/
