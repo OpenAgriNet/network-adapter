@@ -44,8 +44,9 @@ const (
 	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
 	cfgStaticIndexURLs      = "staticIndexUrls" // comma-separated, optional fixed index URLs
 	cfgDiscoveryURL         = "discoveryPushUrl"
-	cfgParticipantID        = "participantId" // this deployment's own bppId
-	cfgBppURI               = "bppUri"        // this deployment's own bppUri
+	cfgParticipantID        = "participantId" // this deployment's id: context.senderId on every publish
+	cfgReceiverID           = "receiverId"    // who it publishes to: context.receiverId (optional)
+	cfgBppURI               = "bppUri"        // RETIRED: refused at startup; see publishConfigFrom
 	cfgFetchTimeoutSec      = "fetchTimeoutSeconds"
 	cfgMaxFetchBytes        = "maxFetchBytes"
 	cfgMaxDecompressed      = "maxDecompressedBytes"
@@ -133,7 +134,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	fetcher := catalog.NewFetcher(client, keys, maxDecompressed)
 
 	src := buildSource(config, metadataLookup, log)
-	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgBppURI], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
+	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgReceiverID], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
 	snk.Client.Log = log
 
 	// The same configured networks drive both registry-backed discovery

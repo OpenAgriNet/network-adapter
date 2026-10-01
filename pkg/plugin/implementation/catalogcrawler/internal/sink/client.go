@@ -105,12 +105,12 @@ type pushContext struct {
 	Context struct {
 		TransactionID string `json:"transactionId"`
 		MessageID     string `json:"messageId"`
-		BppID         string `json:"bppId"`
+		SenderID      string `json:"senderId"`
 	} `json:"context"`
 }
 
 // emitAudit routes this push through the SAME audit pipeline every inbound
-// Beckn action goes through (core/module/handler/stdHandler.go ->
+// Beckn action goes through (core/module/handler we /stdHandler.go ->
 // telemetry.EmitAuditLogs): masked per config/audit-fields.yaml, checksummed,
 // tagged with the transaction/message id, and shipped to the same OTel
 // backend. No new masking or redaction logic here on purpose -- reusing the
@@ -133,7 +133,7 @@ func (c *Client) emitAudit(ctx context.Context, endpoint string, body []byte, st
 		attribute.String("audit.direction", "publish"),
 		attribute.Int("http.response.status_code", status),
 		attribute.String("http.request.error", errString(pushErr)),
-		attribute.String("sender.id", pc.Context.BppID),
+		attribute.String("sender.id", pc.Context.SenderID),
 		attribute.String("receiver.id", endpoint),
 	)
 }

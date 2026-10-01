@@ -21,8 +21,8 @@ catalogCrawler:
     dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
     networks: "example.network.production"
     discoveryPushUrl: "http://provider-adapter:9200/publish"
-    participantId: "bpp.example.org"
-    bppUri: "https://bpp.example.org"
+    participantId: "provider.example.org"
+    receiverId: "discovery.example.org"
     indexIntervalSeconds: "300"
     catalogIntervalSeconds: "30"
     fetchTimeoutSeconds: "30"
@@ -41,7 +41,9 @@ Supported config keys:
 - `discoveryPushUrl`: required. The provider adapter's `/publish` endpoint (e.g. `http://<host>:<port>/publish`). Every catalog the crawler sends goes here as `catalog/publish` (updateMode MERGE; `/publish` rejects FULL): crawled catalogs, and the scheduled publish pipelines, which are handed its base (the URL without `/publish`). A batch counts as sent only on HTTP 200 **and** an `ACCEPTED` verdict -- a `PARTIAL` indexed with resources missing -- and an unreadable 200 answer is not a success. A value ending in `/push` (the old discovery address) is refused at startup.
   - **MERGE consequence:** a resource a source stops listing stays indexed until its catalog is deactivated; a crawl no longer removes it.
   - **Split catalogs:** a catalog over `maxPushBytes` is sent as several MERGE requests under one catalogId. Discovery's handling of a partial resource set per MERGE is not verified; keep catalogs under the cap.
-- `participantId`, `bppUri`: this deployment's own bppId/bppUri, stamped onto every published catalog -- crawled ones and those the scheduled publish pipelines build (as `context.bppId`/`context.bppUri`).
+- `participantId`: who this deployment publishes AS, stamped onto every published catalog -- crawled ones and those the scheduled publish pipelines build -- as `context.senderId`.
+- `receiverId`: optional, who it publishes TO (the discovery service's id), stamped as `context.receiverId`.
+- `bppUri`: retired, and refused at startup. The publish context names a sender and a receiver and has no URI field for either.
 - `networks`: comma-separated networkIds to discover indexes for via the configured `RegistryMetadataLookup` plugin (e.g. `dediregistry`'s `QueryByNetwork`). Drives both discovery and scope filtering — a catalog entry naming a network not in this list is skipped.
 - `staticIndexUrls`: comma-separated, optional fixed index URLs, unioned with any registry-discovered ones.
 - `fetchTimeoutSeconds`: optional, default `30`. Whole-attempt HTTP timeout for index/catalog fetches.
@@ -59,7 +61,7 @@ Supported config keys:
 - `publishEnabled`: optional, default `false`. `"true"` lets a due pipeline run post to `discoveryPushUrl`. Off, runs still build their catalogs (observable and reversible), but nothing reaches the network.
 - `publishTickIntervalSeconds`: retired, and refused at startup. The sweep has no ticker of its own: it checks whether each pipeline is due on every catalog-sync tick (`catalogIntervalSeconds`, default 30 s), in its own goroutine so a long run never holds up the sync. Each pipeline's own `schedule.cron` still decides when it actually runs; the sync interval only bounds how late that can start.
 - `publishCatalogOutputDir`: optional, default empty (a temporary directory each run removes). Keeps built catalogs for inspection, one subdirectory per pipeline.
-- `publish.<pipeline>.<input>`: optional, one line per value. Overrides that pipeline input without a rebuild (`<pipeline>` is the file's `metadata.name`, e.g. `publish.mandi-price.participantId: "bpp.example.org"`). Precedence: plugin config > environment > the file's default. The value is still held to the input's declared type and enum (`publish.mandi-price.fromDate: "yesterday"` works). A key naming no input is refused at every tick. **Secret inputs (credentials) cannot be set here**; they come from the environment only.
+- `publish.<pipeline>.<input>`: optional, one line per value. Overrides that pipeline input without a rebuild (`<pipeline>` is the file's `metadata.name`, e.g. `publish.mandi-price.participantId: "agmarknet"`). Precedence: plugin config > environment > the file's default. The value is still held to the input's declared type and enum (`publish.mandi-price.fromDate: "yesterday"` works). A key naming no input is refused at every tick. **Secret inputs (credentials) cannot be set here**; they come from the environment only.
 - `publish.<pipeline>.schedule`: optional. Replaces the file's `schedule.cron` (five-field cron, resolved against the file's `schedule.utcOffset`). A schedule change is then a config edit, not a rebuild.
 - `publishBindingKeys`: retired. The registry now decides which capabilities publish; a config still setting it is refused at startup.
 

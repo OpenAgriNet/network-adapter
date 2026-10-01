@@ -25,8 +25,8 @@ const (
 // PushMeta carries everything that varies per push call. IDs and timestamp
 // are injected so the builder stays pure and testable.
 type PushMeta struct {
-	ParticipantID string   // publisher identity (a domain) -> context.bppId
-	BppURI        string   // publisher URI -> context.bppUri
+	SenderID      string   // who publishes (a domain) -> context.senderId
+	ReceiverID    string   // who it is published to -> context.receiverId; omitted when empty
 	MessageID     string   // per-call uuid
 	TransactionID string   // per-call uuid
 	Timestamp     string   // RFC3339
@@ -68,12 +68,14 @@ func BuildPushBody(meta PushMeta, catalog []byte) ([]byte, error) {
 
 	context := map[string]any{
 		"action":        "catalog/publish",
-		"bppId":         meta.ParticipantID,
-		"bppUri":        meta.BppURI,
+		"senderId":      meta.SenderID,
 		"messageId":     meta.MessageID,
 		"transactionId": meta.TransactionID,
 		"timestamp":     meta.Timestamp,
 		"version":       "2.0.0",
+	}
+	if meta.ReceiverID != "" {
+		context["receiverId"] = meta.ReceiverID
 	}
 	if len(meta.SchemaContext) > 0 {
 		context["schemaContext"] = meta.SchemaContext

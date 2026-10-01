@@ -97,11 +97,12 @@ type publishConfig struct {
 	// so crawled catalogs and pipelines all reach the same /publish.
 	publishURL string
 
-	// participantID and bppURI are this deployment's identity, the same keys
-	// the crawl sink reads. The sweep's sink stamps them onto every pipeline
-	// body as context.bppId/bppUri: the pipeline does not know who it runs as.
+	// participantID and receiverID are this deployment's identity, the same
+	// keys the crawl sink reads. The sweep's sink stamps them onto every
+	// pipeline body as context.senderId/receiverId: the pipeline does not know
+	// who it runs as.
 	participantID string
-	bppURI        string
+	receiverID    string
 
 	// pipelineConfig is every publish.<pipeline>.<key> line of this plugin's
 	// config, handed to each run as RunOptions.Config: per-pipeline schedule
@@ -123,6 +124,12 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 				"Remove it and set %q for the cadence",
 			cfgPublishTickIntervalSec, cfgCatalogIntervalSec)
 	}
+	if strings.TrimSpace(config[cfgBppURI]) != "" {
+		return publishConfig{}, fmt.Errorf(
+			"catalogcrawler: config %q is retired; a publish names its sender (%q) and receiver (%q), "+
+				"and the context has no URI field for either. Remove it",
+			cfgBppURI, cfgParticipantID, cfgReceiverID)
+	}
 	if config[cfgPublishPipelines] != "true" {
 		return publishConfig{}, nil
 	}
@@ -134,7 +141,7 @@ func publishConfigFrom(config map[string]string) (publishConfig, error) {
 		publishURL: publishBase(config[cfgDiscoveryURL]),
 
 		participantID: strings.TrimSpace(config[cfgParticipantID]),
-		bppURI:        strings.TrimSpace(config[cfgBppURI]),
+		receiverID:    strings.TrimSpace(config[cfgReceiverID]),
 
 		pipelineConfig: pipelineConfigFrom(config),
 	}, nil
@@ -420,7 +427,7 @@ func (p *publishSweep) runPipeline(ctx context.Context, record *model.ProviderRe
 
 // newPublishSweep wires the sweep over a discovery source.
 func newPublishSweep(cfg publishConfig, source publishSource, runLog pipeline.RunLog, log *slog.Logger) *publishSweep {
-	publisher := sink.NewDiscoverySink("", cfg.participantID, cfg.bppURI, 0, pipelinePublishTimeout)
+	publisher := sink.NewDiscoverySink("", cfg.participantID, cfg.receiverID, 0, pipelinePublishTimeout)
 	publisher.Client.Log = log
 	sweep := &publishSweep{
 		cfg:    cfg,

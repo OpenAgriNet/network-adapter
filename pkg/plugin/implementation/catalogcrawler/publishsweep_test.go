@@ -610,8 +610,8 @@ func (s staticSource) Discover(context.Context) ([]publishTarget, error) { retur
 func TestPublishSweepCarriesTheDeploymentIdentity(t *testing.T) {
 	cfg, err := publishConfigFrom(map[string]string{
 		cfgPublishPipelines: "true",
-		cfgParticipantID:    "bpp.example",
-		cfgBppURI:           "https://bpp.example/bpp",
+		cfgParticipantID:    "sender.example",
+		cfgReceiverID:       "discovery.example",
 	})
 	if err != nil {
 		t.Fatalf("publishConfigFrom: %v", err)
@@ -621,9 +621,19 @@ func TestPublishSweepCarriesTheDeploymentIdentity(t *testing.T) {
 	if !ok {
 		t.Fatalf("publisher is %T, want *sink.DiscoverySink", sweep.publisher)
 	}
-	if discovery.ParticipantID != "bpp.example" || discovery.BppURI != "https://bpp.example/bpp" {
-		t.Fatalf("sink identity = %q, %q; want the crawler's participantId and bppUri",
-			discovery.ParticipantID, discovery.BppURI)
+	if discovery.SenderID != "sender.example" || discovery.ReceiverID != "discovery.example" {
+		t.Fatalf("sink identity = %q, %q; want the crawler's participantId and receiverId",
+			discovery.SenderID, discovery.ReceiverID)
+	}
+}
+
+// bppUri is retired with the bpp vocabulary: the publish context names a
+// sender and a receiver, and has no URI field for either. A config still
+// setting it is refused rather than silently ignored.
+func TestPublishConfigRefusesTheRetiredBppURI(t *testing.T) {
+	_, err := publishConfigFrom(map[string]string{cfgPublishPipelines: "true", cfgBppURI: "https://x"})
+	if err == nil || !strings.Contains(err.Error(), "receiverId") {
+		t.Fatalf("err = %v, want bppUri refused, naming receiverId", err)
 	}
 }
 

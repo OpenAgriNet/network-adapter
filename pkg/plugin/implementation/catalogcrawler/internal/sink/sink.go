@@ -28,17 +28,17 @@ import (
 // so every batch is a MERGE: a resource a source stops listing is no longer
 // removed by a crawl. A batch after the first still omits offers.
 type DiscoverySink struct {
-	Endpoint      string // the provider adapter's /publish URL
-	ParticipantID string // this deployment's bppId
-	BppURI        string // this deployment's bppUri
-	MaxDocBytes   int64  // 0 => no batching
-	Client        *Client
-	Now           func() time.Time // nil => time.Now
+	Endpoint    string // the provider adapter's /publish URL
+	SenderID    string // this deployment: context.senderId
+	ReceiverID  string // who it publishes to: context.receiverId (optional)
+	MaxDocBytes int64  // 0 => no batching
+	Client      *Client
+	Now         func() time.Time // nil => time.Now
 }
 
 // NewDiscoverySink builds a DiscoverySink. timeout bounds each batch's push.
-func NewDiscoverySink(endpoint, participantID, bppURI string, maxDocBytes int64, timeout time.Duration) *DiscoverySink {
-	return &DiscoverySink{Endpoint: endpoint, ParticipantID: participantID, BppURI: bppURI, MaxDocBytes: maxDocBytes, Client: NewClient(timeout)}
+func NewDiscoverySink(endpoint, senderID, receiverID string, maxDocBytes int64, timeout time.Duration) *DiscoverySink {
+	return &DiscoverySink{Endpoint: endpoint, SenderID: senderID, ReceiverID: receiverID, MaxDocBytes: maxDocBytes, Client: NewClient(timeout)}
 }
 
 func (d *DiscoverySink) now() time.Time {
@@ -58,8 +58,8 @@ func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, co
 	var outcomes []BatchOutcome
 	for _, batch := range batches {
 		meta := PushMeta{
-			ParticipantID: d.ParticipantID,
-			BppURI:        d.BppURI,
+			SenderID:      d.SenderID,
+			ReceiverID:    d.ReceiverID,
 			MessageID:     uuid.NewString(),
 			TransactionID: uuid.NewString(),
 			Timestamp:     d.now().UTC().Format(time.RFC3339),
@@ -89,7 +89,7 @@ var _ pipeline.Publisher = (*DiscoverySink)(nil)
 // goes to baseURL's /publish through the same Client.Push the crawl path
 // uses, and the batch outcome maps onto the pipeline's.
 //
-// The body is posted as built EXCEPT for context.bppId/bppUri, which the sink
+// The body is posted as built EXCEPT for context.senderId/receiverId, which the sink
 // stamps: identity is the deployment's, not the pipeline's, and a mapping
 // that wrote it would have to be told who it runs as.
 func (d *DiscoverySink) Publish(ctx context.Context, baseURL string, body []byte) pipeline.Outcome {
@@ -100,11 +100,11 @@ func (d *DiscoverySink) Publish(ctx context.Context, baseURL string, body []byte
 	return d.post(ctx, baseURL, stamped)
 }
 
-// stampIdentity sets context.bppId/bppUri on a publish body, leaving the rest
+// stampIdentity sets context.senderId/receiverId on a publish body, leaving the rest
 // of the context and the message as built. A sink with no identity
 // configured posts the body unchanged.
 func (d *DiscoverySink) stampIdentity(body []byte) ([]byte, error) {
-	if d.ParticipantID == "" && d.BppURI == "" {
+	if d.SenderID == "" && d.ReceiverID == "" {
 		return body, nil
 	}
 	var envelope map[string]json.RawMessage
@@ -117,11 +117,11 @@ func (d *DiscoverySink) stampIdentity(body []byte) ([]byte, error) {
 			return nil, fmt.Errorf("publish body's context is not an object: %w", err)
 		}
 	}
-	if d.ParticipantID != "" {
-		context["bppId"] = d.ParticipantID
+	if d.SenderID != "" {
+		context["senderId"] = d.SenderID
 	}
-	if d.BppURI != "" {
-		context["bppUri"] = d.BppURI
+	if d.ReceiverID != "" {
+		context["receiverId"] = d.ReceiverID
 	}
 	encoded, err := json.Marshal(context)
 	if err != nil {
@@ -146,8 +146,8 @@ func (d *DiscoverySink) Retire(ctx context.Context, baseURL string, retirement p
 	if err == nil {
 		var body []byte
 		body, err = BuildPushBody(PushMeta{
-			ParticipantID: d.ParticipantID,
-			BppURI:        d.BppURI,
+			SenderID:      d.SenderID,
+			ReceiverID:    d.ReceiverID,
 			MessageID:     uuid.NewString(),
 			TransactionID: uuid.NewString(),
 			Timestamp:     d.now().UTC().Format(time.RFC3339),

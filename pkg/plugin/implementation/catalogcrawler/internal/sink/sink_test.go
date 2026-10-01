@@ -21,7 +21,7 @@ import (
 
 func TestBuildPushBody_CarriesEntryMetadata(t *testing.T) {
 	meta := PushMeta{
-		ParticipantID: "p1", BppURI: "https://p1.example", MessageID: "m1", TransactionID: "t1",
+		SenderID: "p1", ReceiverID: "discovery.example", MessageID: "m1", TransactionID: "t1",
 		Timestamp: "2026-01-01T00:00:00Z", UpdateMode: UpdateModeFull, CatalogType: "REGULAR",
 		VisibleTo: []string{"beckn.one/testnet"}, SchemaContext: []string{"https://schema.example/retail"},
 	}
@@ -34,8 +34,13 @@ func TestBuildPushBody_CarriesEntryMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := got["context"].(map[string]any)
-	if ctx["bppId"] != "p1" || ctx["action"] != "catalog/publish" {
-		t.Fatalf("context = %+v, want bppId=p1 action=catalog/publish", ctx)
+	if ctx["senderId"] != "p1" || ctx["receiverId"] != "discovery.example" || ctx["action"] != "catalog/publish" {
+		t.Fatalf("context = %+v, want senderId=p1 receiverId=discovery.example action=catalog/publish", ctx)
+	}
+	for _, old := range []string{"bppId", "bppUri", "bapId", "bapUri"} {
+		if _, present := ctx[old]; present {
+			t.Errorf("context carries %q; sender/receiver are the only identity fields", old)
+		}
 	}
 	directives := got["message"].(map[string]any)["publishDirectives"].([]any)
 	directive := directives[0].(map[string]any)
@@ -121,7 +126,7 @@ func TestDiscoverySink_Send_PushesAndReportsAccepted(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewDiscoverySink(srv.URL, "p1", "https://p1.example", 0, 5*time.Second)
+	s := NewDiscoverySink(srv.URL, "p1", "discovery.example", 0, 5*time.Second)
 	entry := catalog.CatalogEntry{CatalogID: "p/c", CatalogType: "REGULAR", NetworkIDs: []string{"beckn.one/testnet"}}
 	outcome, err := s.Send(context.Background(), entry, []byte(`{"id":"p/c","resources":[]}`))
 	if err != nil {
@@ -150,7 +155,7 @@ func TestDiscoverySink_Send_RejectionIsReported(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewDiscoverySink(srv.URL, "p1", "https://p1.example", 0, 5*time.Second)
+	s := NewDiscoverySink(srv.URL, "p1", "discovery.example", 0, 5*time.Second)
 	outcome, err := s.Send(context.Background(), catalog.CatalogEntry{CatalogID: "p/c"}, []byte(`{"id":"p/c","resources":[]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -325,7 +330,7 @@ func TestDiscoverySink_Send_EveryBatchIsMerge(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewDiscoverySink(srv.URL, "p1", "https://p1.example", 300, 5*time.Second)
+	s := NewDiscoverySink(srv.URL, "p1", "discovery.example", 300, 5*time.Second)
 	if _, err := s.Send(context.Background(), catalog.CatalogEntry{CatalogID: "p/c", CatalogType: "REGULAR"}, doc); err != nil {
 		t.Fatal(err)
 	}
@@ -349,14 +354,17 @@ func TestPublishStampsTheDeploymentIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewDiscoverySink("", "bpp.example", "https://bpp.example/bpp", 0, 5*time.Second)
+	d := NewDiscoverySink("", "sender.example", "discovery.example", 0, 5*time.Second)
 	body := []byte(`{"context":{"action":"catalog/publish","version":"2.0.0"},"message":{"catalogs":[{"id":"c1"}]}}`)
 	if out := d.Publish(context.Background(), server.URL, body); out.Status != pipeline.StatusPublished {
 		t.Fatalf("outcome = %+v", out)
 	}
 	ctx := got["context"].(map[string]any)
-	if ctx["bppId"] != "bpp.example" || ctx["bppUri"] != "https://bpp.example/bpp" {
-		t.Fatalf("context = %v; want bppId/bppUri stamped", ctx)
+	if ctx["senderId"] != "sender.example" || ctx["receiverId"] != "discovery.example" {
+		t.Fatalf("context = %v; want senderId/receiverId stamped", ctx)
+	}
+	if _, present := ctx["bppId"]; present {
+		t.Errorf("context carries bppId: %v", ctx)
 	}
 	if ctx["action"] != "catalog/publish" || ctx["version"] != "2.0.0" {
 		t.Fatalf("stamping lost the existing context: %v", ctx)
@@ -392,7 +400,7 @@ func TestRetireSendsAnInactiveCatalogWithIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewDiscoverySink("", "bpp.example", "https://bpp.example/bpp", 0, 5*time.Second)
+	d := NewDiscoverySink("", "sender.example", "discovery.example", 0, 5*time.Second)
 	out := d.Retire(context.Background(), server.URL, pipeline.Retirement{
 		CatalogID: "cat-old", DescriptorName: "Retired", CatalogType: "REGULAR", UpdateMode: "MERGE",
 	})
@@ -403,7 +411,7 @@ func TestRetireSendsAnInactiveCatalogWithIdentity(t *testing.T) {
 		t.Errorf("posted to %q, want /publish", path)
 	}
 	ctx := got["context"].(map[string]any)
-	if ctx["bppId"] != "bpp.example" || ctx["bppUri"] != "https://bpp.example/bpp" {
+	if ctx["senderId"] != "sender.example" || ctx["receiverId"] != "discovery.example" {
 		t.Fatalf("retire context = %v", ctx)
 	}
 	message := got["message"].(map[string]any)
@@ -457,7 +465,7 @@ func TestPushEmitsAnAuditRecord(t *testing.T) {
 	}))
 	defer server.Close()
 
-	body := []byte(`{"context":{"transactionId":"t1","messageId":"m1","bppId":"agmarknet"}}`)
+	body := []byte(`{"context":{"transactionId":"t1","messageId":"m1","senderId":"agmarknet"}}`)
 	c := NewClient(5 * time.Second)
 	if _, err := c.Push(ctx, server.URL+"/publish", body); err != nil {
 		t.Fatalf("Push: %v", err)
@@ -524,7 +532,7 @@ func TestRetireCarriesTheWholeRetirement(t *testing.T) {
 	}))
 	defer server.Close()
 
-	d := NewDiscoverySink("", "bpp.example", "https://bpp.example/bpp", 0, 5*time.Second)
+	d := NewDiscoverySink("", "sender.example", "discovery.example", 0, 5*time.Second)
 	out := d.Retire(context.Background(), server.URL, pipeline.Retirement{
 		CatalogID: "cat-old", DescriptorName: "Retired", CatalogType: "MASTER", UpdateMode: "FULL",
 		VisibleTo: []string{"oan-prod"}, SchemaTypes: []string{"https://schema.example/ctx.jsonld"},
@@ -539,7 +547,7 @@ func TestRetireCarriesTheWholeRetirement(t *testing.T) {
 		t.Fatalf("directive = %v; want the retirement's catalogType, updateMode, visibleTo, schemaTypes", directive)
 	}
 	ctx := got["context"].(map[string]any)
-	if fmt.Sprint(ctx["schemaContext"]) != "[https://schema.example/ctx.jsonld]" || ctx["bppId"] != "bpp.example" {
+	if fmt.Sprint(ctx["schemaContext"]) != "[https://schema.example/ctx.jsonld]" || ctx["senderId"] != "sender.example" {
 		t.Fatalf("context = %v; want schemaContext and identity", ctx)
 	}
 }
