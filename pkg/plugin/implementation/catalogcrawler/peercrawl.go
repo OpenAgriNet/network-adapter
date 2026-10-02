@@ -95,7 +95,12 @@ func (p *peerCrawl) discoverBody(page int) ([]byte, error) {
 			"networkId": p.localNetwork,
 			"bapId":     p.subscriberID,
 			"messageId": uuid.NewString(),
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			// One transaction per PAGE request, matching messageId. A crawl is
+			// not a conversation with the peer -- each page stands alone -- and
+			// a shared transactionId would claim a continuity that does not
+			// exist. Required, and refused with CTX_MISSING_FIELD if absent.
+			"transactionId": uuid.NewString(),
+			"timestamp":     time.Now().UTC().Format(time.RFC3339),
 		},
 		"message": map[string]any{
 			"intent": intent,
