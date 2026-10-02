@@ -42,7 +42,8 @@ func RegisterHandler(crawler definition.Crawler) {
 
 // NewHandler builds the /crawl/* endpoint family. Sub-routes on the request
 // path stripped of cfg.BasePath: "trigger" -> the on-demand crawl trigger
-// (trigger.go), "status" -> the crawl/sync status query (status.go). Both
+// (trigger.go), "peers" -> the peer-network crawl (peercrawl.go), "status" ->
+// the crawl/sync status query (status.go). Both
 // explicit, rather than treating the bare path as the trigger, so neither
 // endpoint depends on how a bare-subtree-root request happens to redirect.
 func NewHandler(ctx context.Context, crawler definition.Crawler, cfg *handler.Config, moduleName string) (http.Handler, error) {
@@ -51,6 +52,7 @@ func NewHandler(ctx context.Context, crawler definition.Crawler, cfg *handler.Co
 	}
 
 	trigger := newTriggerHandler(crawler)
+	peers := newPeersHandler(crawler)
 	status := newStatusHandler(crawler, cfg)
 
 	log.Debugf(ctx, "catalogCrawl handler %s initialized", moduleName)
@@ -59,6 +61,8 @@ func NewHandler(ctx context.Context, crawler definition.Crawler, cfg *handler.Co
 		switch sub {
 		case "trigger":
 			trigger.ServeHTTP(w, r)
+		case "peers":
+			peers.ServeHTTP(w, r)
 		case "status":
 			status.ServeHTTP(w, r)
 		default:

@@ -217,7 +217,11 @@ func (c *registryClient) save(ctx context.Context, record participantRecord) err
 		path = fmt.Sprintf("/api/v1/Participant/%s", existing.OSID)
 	}
 
-	body, err := json.Marshal(record)
+	// The registry stamps its own osid/osCreatedAt/osUpdatedBy onto a record and
+	// onto every key inside it, and then refuses a write that carries them back
+	// -- "extraneous key is not permitted". A record read and written again
+	// therefore has to be stripped of the registry's own bookkeeping first.
+	body, err := json.Marshal(withoutRegistryMetadata(record))
 	if err != nil {
 		return err
 	}
@@ -276,6 +280,22 @@ func (c *registryClient) call(ctx context.Context, method, path string, body []b
 		return json.Unmarshal(envelope.Data, into)
 	}
 	return json.Unmarshal(raw, into)
+}
+
+// withoutRegistryMetadata returns the record as the registry will accept it
+// back: our fields only, with every osid removed.
+//
+// The osid in the URL is what addresses the update, so dropping it from the body
+// loses nothing.
+func withoutRegistryMetadata(record participantRecord) participantRecord {
+	record.OSID = ""
+	keys := make([]publicKey, 0, len(record.Keys))
+	for _, key := range record.Keys {
+		key.OSID = ""
+		keys = append(keys, key)
+	}
+	record.Keys = keys
+	return record
 }
 
 func truncate(s string, max int) string {
