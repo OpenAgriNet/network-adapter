@@ -75,7 +75,7 @@ type peerCrawl struct {
 // The intent is CONFIGURATION, not a constant: a deployment decides what breadth
 // of catalog it wants to mirror -- a jsonpath filter, a spatial bound, or
 // nothing at all for everything the peer will give us.
-func (p *peerCrawl) discoverBody(page int) ([]byte, error) {
+func (p *peerCrawl) discoverBody() ([]byte, error) {
 	intent := p.intent
 	if intent == nil {
 		intent = map[string]any{}
@@ -102,16 +102,23 @@ func (p *peerCrawl) discoverBody(page int) ([]byte, error) {
 			"transactionId": uuid.NewString(),
 			"timestamp":     time.Now().UTC().Format(time.RFC3339),
 		},
+		// No page. The Beckn discover schema has no paging member -- sending one
+		// is refused with "property \"page\" is unsupported at $.message" -- so a
+		// crawl asks ONCE and takes whatever the peer chooses to return.
+		//
+		// That is a real limitation, not a simplification: a peer with more
+		// catalogs than it returns in one response is partially mirrored, and
+		// nothing here can tell that it was. Paging across networks needs a
+		// protocol answer, not a client-side one.
 		"message": map[string]any{
 			"intent": intent,
-			"page":   map[string]any{"number": page},
 		},
 	})
 }
 
 // fetchPage sends one signed discover and returns what the peer answered.
-func (p *peerCrawl) fetchPage(ctx context.Context, target peerTarget, page int) ([]json.RawMessage, error) {
-	body, err := p.discoverBody(page)
+func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMessage, error) {
+	body, err := p.discoverBody()
 	if err != nil {
 		return nil, fmt.Errorf("build discover for %s: %w", target.NetworkID, err)
 	}
@@ -157,20 +164,13 @@ func (p *peerCrawl) fetchPage(ctx context.Context, target peerTarget, page int) 
 	return answer.Message.Catalogs, nil
 }
 
-// crawlPeer drains one peer, page by page, and stores what it returns.
+// crawlPeer asks one peer and stores what it returns.
 func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
-	var all []json.RawMessage
-	for page := 1; page <= p.maxPages; page++ {
-		got, err := p.fetchPage(ctx, target, page)
-		if err != nil {
-			return err
-		}
-		if len(got) == 0 {
-			break
-		}
-		all = append(all, got...)
+	catalogs, err := p.fetch(ctx, target)
+	if err != nil {
+		return err
 	}
-	return p.pushAll(ctx, target, all)
+	return p.pushAll(ctx, target, catalogs)
 }
 
 // pushAll sends one peer's catalogs on, through the same sink our own crawled

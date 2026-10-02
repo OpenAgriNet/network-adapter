@@ -57,17 +57,15 @@ func newPeerCrawl(t *testing.T, push catalogPusher) *peerCrawl {
 	}
 }
 
-// catalogsPage serves a peer that answers with n catalogs, then nothing.
-func catalogsPage(t *testing.T, pages int, perPage int) (*httptest.Server, *int) {
+// peerWith serves a peer that answers with n catalogs.
+func peerWith(t *testing.T, catalogCount int) (*httptest.Server, *int) {
 	t.Helper()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		catalogs := []string{}
-		if calls <= pages {
-			for i := 0; i < perPage; i++ {
-				catalogs = append(catalogs, `{"id":"c1"}`)
-			}
+		for i := 0; i < catalogCount; i++ {
+			catalogs = append(catalogs, `{"id":"c1"}`)
 		}
 		_, _ = io.WriteString(w,
 			`{"message":{"catalogs":[`+strings.Join(catalogs, ",")+`]}}`)
@@ -124,7 +122,7 @@ func TestCrawlPeerDeclaresOurNetwork(t *testing.T) {
 // Everything stored from a peer is tagged with where it came from, which is what
 // the origin filter reads to keep it from being re-exported.
 func TestCrawlPeerTagsWhatItPushedWithTheOrigin(t *testing.T) {
-	server, _ := catalogsPage(t, 1, 1)
+	server, _ := peerWith(t, 1)
 	push := &recordingPush{}
 
 	err := newPeerCrawl(t, push).crawlPeer(context.Background(),
@@ -138,32 +136,6 @@ func TestCrawlPeerTagsWhatItPushedWithTheOrigin(t *testing.T) {
 	}
 	if push.origins[0] != "maha.oan.local" {
 		t.Fatalf("origin = %q, want the peer we fetched it from", push.origins[0])
-	}
-}
-
-// A discover answers one page, so the crawl keeps asking until the peer stops
-// returning rows. Without this a peer with more catalogs than fit one page is
-// silently half-crawled.
-func TestCrawlPeerPagesUntilExhausted(t *testing.T) {
-	server, calls := catalogsPage(t, 2, 1)
-
-	newPeerCrawl(t, &recordingPush{}).crawlPeer(context.Background(),
-		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL})
-
-	if *calls != 3 {
-		t.Fatalf("made %d requests, want 3 — two pages of results and one empty", *calls)
-	}
-}
-
-// A peer that never stops must not hold the pass open for ever.
-func TestCrawlPeerStopsAtTheCap(t *testing.T) {
-	server, calls := catalogsPage(t, 1000, 1)
-
-	newPeerCrawl(t, &recordingPush{}).crawlPeer(context.Background(),
-		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL})
-
-	if *calls != 5 {
-		t.Fatalf("made %d requests, want the 5-page cap", *calls)
 	}
 }
 
