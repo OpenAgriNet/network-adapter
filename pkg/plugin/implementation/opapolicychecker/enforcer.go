@@ -166,7 +166,6 @@ func parsePolicyConfig(cfg map[string]string) (*PolicyConfig, error) {
 		return nil, fmt.Errorf("'query' must not be set for type=%s", policyTypeManifest)
 	}
 
-
 	if enabled, ok := cfg["enabled"]; ok {
 		config.Enabled = enabled == "true" || enabled == "1"
 	}
@@ -225,7 +224,6 @@ func parsePolicyConfig(cfg map[string]string) (*PolicyConfig, error) {
 
 	return config, nil
 }
-
 
 type loadedPolicy struct {
 	name                   string
@@ -657,7 +655,7 @@ func (e *PolicyEnforcer) CheckPolicy(ctx *model.StepContext) error {
 	}
 
 	reqCtx := parseRequestContext(ctx.Body)
-	policy := e.selectedPolicy(reqCtx.NetworkID)
+	policy := e.selectedPolicy(networkForPolicy(ctx, reqCtx))
 	if policy == nil {
 		log.Debugf(ctx, "OPAPolicyChecker: no matching network policy for networkID=%q and no default configured, skipping", reqCtx.NetworkID)
 		return nil
@@ -725,6 +723,24 @@ type parsedRequestContext struct {
 	Timestamp     string
 }
 
+// networkForPolicy decides which network's policy applies.
+//
+// A call from another NETWORK is answered under that network's policy, taken
+// from the verified signature and never from the body -- the body is written by
+// the caller, so choosing a policy from it would let a peer pick a friendlier
+// one by naming someone else.
+//
+// The test is ADMISSION, not the presence of a signature and not the role.
+// Every caller here signs, our own consumers included, and this deployment's own
+// network-layer adapter carries role "network" -- keying on either would send an
+// ordinary local call looking for a peer policy that does not exist.
+func networkForPolicy(ctx *model.StepContext, reqCtx parsedRequestContext) string {
+	if ctx.VerifiedCallerPeerNetwork {
+		return ctx.VerifiedCaller
+	}
+	return reqCtx.NetworkID
+}
+
 func parseRequestContext(body []byte) parsedRequestContext {
 	var payload struct {
 		Context map[string]interface{} `json:"context"`
@@ -748,7 +764,7 @@ func parseRequestContext(body []byte) parsedRequestContext {
 		BPPID:         get("bpp_id", "bppId", "receiverId"),
 		MessageID:     get("message_id", "messageId"),
 		TransactionID: get("transaction_id", "transactionId"),
-		Action:        get("action", "action"), // "action" has no camelCase variant
+		Action:        get("action", "action"),       // "action" has no camelCase variant
 		Timestamp:     get("timestamp", "timestamp"), // "timestamp" has no camelCase variant
 	}
 }
@@ -778,4 +794,3 @@ func formatRequestLogContext(ctx parsedRequestContext) string {
 	}
 	return " " + strings.Join(parts, " ")
 }
-
