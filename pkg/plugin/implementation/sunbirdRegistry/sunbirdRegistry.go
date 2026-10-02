@@ -192,6 +192,11 @@ type participant struct {
 	Status        string `json:"status"`
 	BaseURL       string `json:"baseUrl"`
 	Keys          []key  `json:"keys"`
+
+	// AdmittedKeyID is present only on a peer network an operator admitted.
+	// Absent on everything else, including this deployment's own network-layer
+	// adapter -- which is why it, and not role, is what identifies a peer.
+	AdmittedKeyID string `json:"admittedKeyId"`
 }
 
 // key is one published key. A participant publishes several -- separate signing
@@ -564,6 +569,7 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		ValidFrom:        validFrom,
 		ValidUntil:       validUntil,
 		Status:           status,
+		AdmittedKeyID:    p.AdmittedKeyID,
 	}
 }
 

@@ -32,8 +32,8 @@ func TestSimpleKeyManagerProvider_New(t *testing.T) {
 		{
 			name: "valid config with keys",
 			config: map[string]string{
-				"subscriberId":     "bap-one",
-				"keyId":            "test-key",
+				"subscriberId":      "bap-one",
+				"keyId":             "test-key",
 				"signingPrivateKey": "dGVzdC1zaWduaW5nLXByaXZhdGU=",
 				"signingPublicKey":  "dGVzdC1zaWduaW5nLXB1YmxpYw==",
 				"encrPrivateKey":    "dGVzdC1lbmNyLXByaXZhdGU=",
@@ -44,7 +44,7 @@ func TestSimpleKeyManagerProvider_New(t *testing.T) {
 		{
 			name: "invalid config - partial keys",
 			config: map[string]string{
-				"keyId":            "test-key",
+				"keyId":             "test-key",
 				"signingPrivateKey": "dGVzdC1zaWduaW5nLXByaXZhdGU=",
 				// Missing other required keys
 			},
@@ -111,8 +111,8 @@ func TestConfigMapping(t *testing.T) {
 	registry := &mockRegistry{}
 
 	configMap := map[string]string{
-		"subscriberId":     "mapped-np",
-		"keyId":            "mapped-key-id",
+		"subscriberId":      "mapped-np",
+		"keyId":             "mapped-key-id",
 		"signingPrivateKey": "dGVzdC1zaWduaW5nLXByaXZhdGU=",
 		"signingPublicKey":  "dGVzdC1zaWduaW5nLXB1YmxpYw==",
 		"encrPrivateKey":    "dGVzdC1lbmNyLXByaXZhdGU=",

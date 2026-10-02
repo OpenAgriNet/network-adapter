@@ -184,6 +184,13 @@ func (s *validateSignStep) Run(ctx *model.StepContext) error {
 	}
 	err := s.validateHeaders(stepCtx)
 	s.recordMetrics(stepCtx, err)
+
+	// validateHeaders works on a copy, so what it proved about the caller has to
+	// be carried back or it is lost the moment this returns -- and every later
+	// step would fall back to reading the body, which is the thing this exists
+	// to stop.
+	ctx.VerifiedCaller = stepCtx.VerifiedCaller
+	ctx.VerifiedCallerPeerNetwork = stepCtx.VerifiedCallerPeerNetwork
 	return err
 }
 
@@ -277,10 +284,39 @@ func (s *validateSignStep) validate(ctx *model.StepContext, value, requestSig st
 	} else {
 		validErr = s.validator.Validate(ctx, value, signingPublicKey, checkIdentity)
 	}
+	if validErr == nil {
+		// The signature held, so this identity is now PROVEN rather than
+		// claimed. Recorded here and nowhere else: this is the only place that
+		// knows both who signed and that the signature was good.
+		s.recordVerifiedCaller(ctx, headerVals.SubscriberID, headerVals.UniqueID)
+	}
 	if validErr != nil {
 		return fmt.Errorf("sign validation failed: %w", validErr)
 	}
 	return nil
+}
+
+// recordVerifiedCaller puts the proven caller identity on the context.
+//
+// Also asks whether that caller is an admitted PEER NETWORK, which later steps
+// use to decide how a request is scoped. An error is deliberately swallowed: the
+// signature has already verified by the time this runs, so the caller is
+// legitimate, and failing to learn whether they are a peer should downgrade them
+// to an ordinary participant rather than reject a good call. False is the safe
+// direction -- it keeps today's behaviour -- so the quiet path is the safe one.
+func (s *validateSignStep) recordVerifiedCaller(ctx *model.StepContext, subscriberID, keyID string) {
+	ctx.VerifiedCaller = subscriberID
+
+	lookup, ok := s.km.(definition.PeerNetworkLookup)
+	if !ok {
+		return
+	}
+	isPeer, err := lookup.IsAdmittedPeer(ctx, subscriberID, keyID)
+	if err != nil {
+		log.Warnf(ctx, "could not tell whether %s is an admitted peer: %v", subscriberID, err)
+		return
+	}
+	ctx.VerifiedCallerPeerNetwork = isPeer
 }
 
 func (s *validateSignStep) recordMetrics(ctx *model.StepContext, err error) {
