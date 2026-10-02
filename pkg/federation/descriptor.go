@@ -151,6 +151,22 @@ func EncodeKey(key ed25519.PublicKey) string {
 	return base64.RawURLEncoding.EncodeToString(key)
 }
 
+// RegistryKey renders a JWKS key in the form the registry stores.
+//
+// A JWKS carries base64url WITHOUT padding, because RFC 7517 says so. The
+// registry's PublicKey schema pins ^[A-Za-z0-9+/]{43}=$, which is standard
+// base64 WITH padding. Both are correct for their own format, so something has
+// to convert -- and it is one function rather than an inline re-encode at each
+// call site, because getting it wrong produces a key that is silently the wrong
+// bytes rather than an error.
+func RegistryKey(jwkX string) (string, error) {
+	raw, err := DecodeKey(jwkX)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
 // DecodeKey reads a public key back out of its JWKS form.
 func DecodeKey(encoded string) (ed25519.PublicKey, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(encoded)

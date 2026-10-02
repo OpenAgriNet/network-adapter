@@ -14,13 +14,22 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/federation"
 )
 
-// governanceKeyID is the kid the descriptor's signing key is published under.
+// The two kids a network publishes.
 //
-// Fixed rather than configurable because a network has exactly one governance
-// key at a time and admission pins the kid a peer was admitted under -- a value
-// an operator could vary per run would be a value that silently breaks every
-// peer's refresh.
-const governanceKeyID = "gov-1"
+// Fixed rather than configurable: a network has one governance key at a time,
+// and admission pins the kid a peer was admitted under, so a value an operator
+// could vary per run is a value that silently breaks every peer's refresh.
+//
+// They are SEPARATE because the contract forbids the governance key from
+// signing ordinary traffic. Admission drops the governance key from the registry
+// record precisely so a peer cannot sign a discover with it -- which means a
+// network publishing only a governance key is admissible but unable to say
+// anything, and the registry refuses the record outright for having no usable
+// key. Publishing both is what makes a network actually reachable.
+const (
+	governanceKeyID  = "gov-1"
+	operationalKeyID = "op-1"
+)
 
 type publishFlags struct {
 	networkID    string
@@ -33,6 +42,7 @@ type publishFlags struct {
 	status       string
 	out          string
 	govKey       string
+	opKey        string
 }
 
 func publish(args []string) error {
@@ -47,7 +57,8 @@ func publish(args []string) error {
 	set.StringVar(&f.profile, "operating-profile", "OAN/v0.1,Beckn/v2", "comma-separated version stack")
 	set.StringVar(&f.status, "status", "Active", "Active, Suspended or Retired")
 	set.StringVar(&f.out, "out", "", "directory to write .well-known/ into")
-	set.StringVar(&f.govKey, "gov-key", "", "governance private key file; generated if absent")
+	set.StringVar(&f.govKey, "gov-key", "", "governance private key file, which signs the descriptor; generated if absent")
+	set.StringVar(&f.opKey, "op-key", "", "operational private key file, which signs traffic; generated if absent")
 	if err := set.Parse(args); err != nil {
 		return err
 	}
@@ -55,19 +66,23 @@ func publish(args []string) error {
 		return err
 	}
 
-	private, err := loadOrCreateKey(f.govKey)
+	governance, err := loadOrCreateKey(f.govKey)
+	if err != nil {
+		return err
+	}
+	operational, err := loadOrCreateKey(f.opKey)
 	if err != nil {
 		return err
 	}
 
-	descriptor, err := federation.Sign(f.descriptor(), governanceKeyID, private)
+	descriptor, err := federation.Sign(f.descriptor(), governanceKeyID, governance)
 	if err != nil {
 		return err
 	}
-	keys := federation.KeySet{Keys: []federation.JWK{{
-		Kty: "OKP", Crv: "Ed25519", Kid: governanceKeyID,
-		X: federation.EncodeKey(private.Public().(ed25519.PublicKey)),
-	}}}
+	keys := federation.KeySet{Keys: []federation.JWK{
+		publishedKey(governanceKeyID, governance),
+		publishedKey(operationalKeyID, operational),
+	}}
 
 	// Verified before it is written, not after. A descriptor that does not
 	// verify against its own key is a bug here, and publishing it would move
@@ -79,6 +94,14 @@ func publish(args []string) error {
 	return writeWellKnown(f.out, descriptor, keys)
 }
 
+// publishedKey renders a private key's public half as the JWKS carries it.
+func publishedKey(kid string, private ed25519.PrivateKey) federation.JWK {
+	return federation.JWK{
+		Kty: "OKP", Crv: "Ed25519", Kid: kid,
+		X: federation.EncodeKey(private.Public().(ed25519.PublicKey)),
+	}
+}
+
 func (f publishFlags) validate() error {
 	required := map[string]string{
 		"-network-id":    f.networkID,
@@ -86,6 +109,8 @@ func (f publishFlags) validate() error {
 		"-operator":      f.operator,
 		"-discovery-url": f.discoveryURL,
 		"-out":           f.out,
+		"-gov-key":       f.govKey,
+		"-op-key":        f.opKey,
 	}
 	for flagName, value := range required {
 		if value == "" {
@@ -137,9 +162,6 @@ func splitList(value string) []string {
 // Generated rather than demanded so a network can be stood up in one command,
 // and written 0600 because it is the key that speaks for the whole network.
 func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
-	if path == "" {
-		return nil, fmt.Errorf("-gov-key is required")
-	}
 	switch encoded, err := os.ReadFile(path); {
 	case err == nil:
 		raw, decodeErr := base64.RawURLEncoding.DecodeString(string(encoded))
@@ -170,7 +192,7 @@ func createKey(path string) (ed25519.PrivateKey, error) {
 	if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
 		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
-	fmt.Fprintf(os.Stderr, "oanfed: generated a governance key at %s -- it is not recoverable, and a peer that admitted this network pinned its kid\n", path)
+	fmt.Fprintf(os.Stderr, "oanfed: generated a key at %s -- it is not recoverable\n", path)
 	return private, nil
 }
 

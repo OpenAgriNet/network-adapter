@@ -6,9 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"time"
-
-	"github.com/beckn-one/beckn-onix/pkg/federation"
 )
 
 // verify fetches a network's two published documents and checks them.
@@ -18,18 +15,14 @@ import (
 // network should be dealt with. Admission is the separate decision.
 func verify(args []string) error {
 	var (
+		access    peerAccess
 		networkID string
-		scheme    string
-		timeout   time.Duration
 		show      bool
-		resolve   string
 	)
 	set := flag.NewFlagSet("verify", flag.ExitOnError)
+	access.bind(set)
 	set.StringVar(&networkID, "network-id", "", "the network to fetch, which is its domain")
-	set.StringVar(&scheme, "scheme", "https", "http only for a local stack that has no certificates")
-	set.DurationVar(&timeout, "timeout", 10*time.Second, "per-request timeout")
 	set.BoolVar(&show, "show", false, "print the descriptor that verified")
-	set.StringVar(&resolve, "resolve", "", "reach the network at this host:port instead of resolving its domain")
 	if err := set.Parse(args); err != nil {
 		return err
 	}
@@ -37,13 +30,10 @@ func verify(args []string) error {
 		return fmt.Errorf("-network-id is required")
 	}
 
-	fetcher := federation.NewFetcher(scheme, timeout)
-	if resolve != "" {
-		// The Host header and the descriptor check still use the network id;
-		// only the connection goes elsewhere.
-		fetcher.ResolveTo(networkID, resolve)
+	fetcher, err := access.fetcher(networkID)
+	if err != nil {
+		return err
 	}
-
 	descriptor, keys, err := fetcher.Fetch(context.Background(), networkID)
 	if err != nil {
 		return err

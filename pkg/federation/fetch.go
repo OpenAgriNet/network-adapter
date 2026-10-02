@@ -2,6 +2,8 @@ package federation
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -43,6 +45,41 @@ func NewFetcher(scheme string, timeout time.Duration) *Fetcher {
 	return &Fetcher{Client: &http.Client{Timeout: timeout}, Scheme: scheme}
 }
 
+// TrustCA makes this fetcher verify certificates against the CAs in a PEM file,
+// instead of the system roots.
+//
+// This is real certificate verification against a different root, NOT skipping
+// it: a peer presenting a certificate this CA did not sign, or one whose name
+// does not match, is still refused. It exists because a local stack has no
+// publicly trusted certificate, and the alternative -- turning verification off
+// -- would quietly remove the check in the one place a POC is meant to prove it.
+func (f *Fetcher) TrustCA(pemBytes []byte) error {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return fmt.Errorf("federation: no certificate found in the CA file")
+	}
+
+	transport := f.transport()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	transport.TLSClientConfig.RootCAs = pool
+
+	client := *f.client()
+	client.Transport = transport
+	f.Client = &client
+	return nil
+}
+
+// transport returns a private copy of this fetcher's transport, so changing it
+// cannot reach into a client the caller shares with anything else.
+func (f *Fetcher) transport() *http.Transport {
+	if existing, ok := f.client().Transport.(*http.Transport); ok && existing != nil {
+		return existing.Clone()
+	}
+	return http.DefaultTransport.(*http.Transport).Clone()
+}
+
 // ResolveTo makes this fetcher reach networkID at a given address, the way
 // curl --resolve does.
 //
@@ -52,12 +89,7 @@ func NewFetcher(scheme string, timeout time.Duration) *Fetcher {
 // and an operator's own machine usually cannot resolve one belonging to a
 // stack running in containers.
 func (f *Fetcher) ResolveTo(networkID, address string) {
-	base, _ := f.client().Transport.(*http.Transport)
-	if base == nil {
-		base = http.DefaultTransport.(*http.Transport).Clone()
-	} else {
-		base = base.Clone()
-	}
+	base := f.transport()
 	dial := base.DialContext
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext
