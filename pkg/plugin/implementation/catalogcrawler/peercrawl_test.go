@@ -191,3 +191,44 @@ func TestCrawlAllContinuesPastAFailingPeer(t *testing.T) {
 		t.Fatal("a failing peer stopped the pass before the healthy one")
 	}
 }
+
+// A discover match carries the provider's endpoint, and the next Beckn action
+// goes to exactly that endpoint. If the crawl drops it a federated match is
+// useless: the Experience gets a result it cannot act on, and nothing downstream
+// can reconstruct the endpoint, because our registry has no record of another
+// network's provider.
+func TestCrawlPeerKeepsTheProviderEndpoint(t *testing.T) {
+	const published = `{"id":"c1","bppId":"pocra.mahavistara","bppUri":"https://pocra.example.org/beckn"}`
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls > 1 {
+			_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"message":{"catalogs":[`+published+`]}}`)
+	}))
+	defer server.Close()
+
+	push := &recordingPush{}
+	if err := newPeerCrawl(t, push).crawlPeer(context.Background(),
+		peerTarget{NetworkID: "maha.oan.local", DiscoveryURL: server.URL}); err != nil {
+		t.Fatalf("crawlPeer: %v", err)
+	}
+
+	if len(push.bodies) != 1 {
+		t.Fatalf("pushed %d bodies, want 1", len(push.bodies))
+	}
+	body := string(push.bodies[0])
+
+	// Verbatim, and never rewritten to point at us: the request goes from the
+	// originating adapter straight to the provider, so an adapter that pointed a
+	// cached endpoint at itself would have quietly made itself a relay.
+	if !strings.Contains(body, `"bppUri":"https://pocra.example.org/beckn"`) {
+		t.Errorf("the provider endpoint did not survive the crawl unchanged: %s", body)
+	}
+	if !strings.Contains(body, `"bppId":"pocra.mahavistara"`) {
+		t.Errorf("the provider id did not survive the crawl: %s", body)
+	}
+}
