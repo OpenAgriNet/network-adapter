@@ -139,6 +139,17 @@ func storedPeer(ctx context.Context, client *registryClient, networkID string) (
 	}, nil
 }
 
+// reinstate undoes a suspension.
+//
+// A separate command and an explicit act, for the same reason Admit never sets
+// status: lifting a suspension is a decision, and the one thing that must not be
+// able to make it is the suspended peer. Re-running admit will not do it --
+// Admit carries status over on purpose.
+func reinstate(args []string) error {
+	return setStatus(args, "reinstate", federation.StatusActive,
+		"reinstated %s; it will be crawled again and its calls will verify\n")
+}
+
 // suspend stops dealing with a peer.
 //
 // It fetches nothing, and that is the point: this is a decision about a network
@@ -149,11 +160,20 @@ func storedPeer(ctx context.Context, client *registryClient, networkID string) (
 // carries status over and never sets it -- letting `admit --suspend` reach in
 // would put the one decision Admit refuses to make back inside it.
 func suspend(args []string) error {
+	return setStatus(args, "suspend", federation.StatusInactive,
+		"suspended %s; it will not be crawled, and its calls will not verify\n")
+}
+
+// setStatus is the whole of both commands: read the record, change one field,
+// write it back. They are two names rather than one with a flag because they are
+// two decisions, and a single command taking a status would read as though the
+// status were data rather than a choice.
+func setStatus(args []string, name, status, message string) error {
 	var (
 		registry  registryFlags
 		networkID string
 	)
-	set := flag.NewFlagSet("suspend", flag.ExitOnError)
+	set := flag.NewFlagSet(name, flag.ExitOnError)
 	registry.bind(set)
 	set.StringVar(&networkID, "network-id", "", "the peer to suspend")
 	if err := set.Parse(args); err != nil {
@@ -177,8 +197,6 @@ func suspend(args []string) error {
 		return fmt.Errorf("%s is not an admitted peer", networkID)
 	}
 
-	suspended := federation.Suspend(*current)
-
 	// The stored keys are read back and rewritten unchanged. Suspension is
 	// about status; dropping the keys would make it unrecoverable without a
 	// fresh fetch from a network we have just decided to stop talking to.
@@ -186,11 +204,11 @@ func suspend(args []string) error {
 	if err != nil {
 		return err
 	}
-	record.Status = suspended.Status
+	record.Status = status
 
 	if err := client.save(ctx, *record); err != nil {
 		return err
 	}
-	fmt.Printf("suspended %s; it will not be crawled, and its calls will not verify\n", networkID)
+	fmt.Printf(message, networkID)
 	return nil
 }

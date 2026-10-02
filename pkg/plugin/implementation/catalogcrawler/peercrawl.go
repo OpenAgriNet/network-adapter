@@ -55,17 +55,19 @@ type requestSigner interface {
 // What a peer returns goes where every other catalog goes -- to
 // discovery-service, through the sink.
 type peerCrawl struct {
-	signer       requestSigner
-	localNetwork string // our networkId: declared to the peer, and signed over
-	subscriberID string // who we sign as
-	privateKey   string // the operational key, never the governance key
-	window       time.Duration
-	intent       map[string]any // configured: what breadth of catalog to mirror
-	maxPages     int
-	client       *http.Client
-	push         catalogPusher
-	pushEndpoint string
-	log          *slog.Logger
+	signer          requestSigner
+	localNetwork    string // our networkId: declared to the peer, and signed over
+	subscriberID    string // who we sign as
+	privateKey      string // the operational key, never the governance key
+	window          time.Duration
+	domain          string // the Beckn domain a peer routes on
+	protocolVersion string
+	intent          map[string]any // configured: what breadth of catalog to mirror
+	maxPages        int
+	client          *http.Client
+	push            catalogPusher
+	pushEndpoint    string
+	log             *slog.Logger
 }
 
 // discoverBody builds the Beckn discover sent to a peer.
@@ -83,7 +85,13 @@ func (p *peerCrawl) discoverBody(page int) ([]byte, error) {
 		// and its signature validation checks this against the keyId -- the two
 		// disagreeing is what checkIdentity already refuses.
 		"context": map[string]any{
-			"action":    "discover",
+			"action": "discover",
+			// The peer routes on domain and version, so a discover missing
+			// either is refused before it reaches its discovery service -- with
+			// "no routing rules found for domain", which names the field and
+			// not the caller.
+			"domain":    p.domain,
+			"version":   p.protocolVersion,
 			"networkId": p.localNetwork,
 			"bapId":     p.subscriberID,
 			"messageId": uuid.NewString(),

@@ -18,10 +18,11 @@ func main() {
 		usage()
 	}
 	commands := map[string]func([]string) error{
-		"publish": publish,
-		"verify":  verify,
-		"admit":   admit,
-		"suspend": suspend,
+		"publish":   publish,
+		"verify":    verify,
+		"admit":     admit,
+		"suspend":   suspend,
+		"reinstate": reinstate,
 	}
 	run, known := commands[os.Args[1]]
 	if !known {
@@ -41,6 +42,7 @@ func usage() {
   verify    fetch another network's documents and check them
   admit     record the decision to deal with a peer; also the refresh job
   suspend   stop dealing with a peer
+  reinstate undo a suspension; a peer cannot do this for itself
 
 Run a command with -h for its flags.
 `)

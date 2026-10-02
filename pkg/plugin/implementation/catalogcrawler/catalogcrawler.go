@@ -46,6 +46,8 @@ const (
 	cfgFederationNetworkID  = "federationNetworkId" // our own networkId, declared to a peer
 	cfgFederationKey        = "federationSigningKey"
 	cfgFederationMaxPages   = "federationMaxPages"
+	cfgFederationDomain     = "federationDomain"
+	cfgFederationVersion    = "federationProtocolVersion"
 	cfgFederationWindowSec  = "federationSignatureWindowSeconds"
 	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
 	cfgStaticIndexURLs      = "staticIndexUrls" // comma-separated, optional fixed index URLs
@@ -84,6 +86,13 @@ const (
 	// empty page cannot hold a pass open indefinitely.
 	defaultFederationWindow = 30 * time.Second
 	defaultPeerMaxPages     = 50
+
+	// A peer ROUTES on these two, so they are not cosmetic: a discover without
+	// them is refused before it reaches the peer's discovery service, with "no
+	// routing rules found for domain" -- which names the field and not the
+	// caller, and so is a confusing way to learn this.
+	defaultFederationDomain = "agriculture"
+	defaultProtocolVersion  = "2.0.0"
 )
 
 // Provider implements definition.CrawlerProvider.
@@ -321,12 +330,14 @@ func newPeerCrawlFromConfig(
 		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
 		// Empty: mirror everything the peer will give us. A deployment that
 		// wants less sets a jsonpath or spatial intent here.
-		intent:       map[string]any{},
-		maxPages:     int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
-		client:       &http.Client{Timeout: timeout},
-		push:         sink.NewClient(timeout),
-		pushEndpoint: pushEndpoint,
-		log:          log,
+		domain:          stringOr(config[cfgFederationDomain], defaultFederationDomain),
+		protocolVersion: stringOr(config[cfgFederationVersion], defaultProtocolVersion),
+		intent:          map[string]any{},
+		maxPages:        int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
+		client:          &http.Client{Timeout: timeout},
+		push:            sink.NewClient(timeout),
+		pushEndpoint:    pushEndpoint,
+		log:             log,
 	}
 }
 
@@ -500,6 +511,14 @@ func splitNonEmpty(s string) []string {
 		}
 	}
 	return out
+}
+
+// stringOr returns the configured value, or a default when it is blank.
+func stringOr(value, def string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
+	}
+	return def
 }
 
 func durationSecondsOr(s string, def time.Duration) time.Duration {
