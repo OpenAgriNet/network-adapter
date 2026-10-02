@@ -16,6 +16,7 @@ package catalogcrawler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -47,6 +48,7 @@ const (
 	cfgFederationKey        = "federationSigningKey"
 	cfgFederationMaxPages   = "federationMaxPages"
 	cfgFederationDomain     = "federationDomain"
+	cfgFederationIntent     = "federationIntent" // raw JSON: the Beckn intent sent to a peer
 	cfgFederationVersion    = "federationProtocolVersion"
 	cfgFederationWindowSec  = "federationSignatureWindowSeconds"
 	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
@@ -332,7 +334,7 @@ func newPeerCrawlFromConfig(
 		// wants less sets a jsonpath or spatial intent here.
 		domain:          stringOr(config[cfgFederationDomain], defaultFederationDomain),
 		protocolVersion: stringOr(config[cfgFederationVersion], defaultProtocolVersion),
-		intent:          map[string]any{},
+		intent:          federationIntent(config[cfgFederationIntent]),
 		maxPages:        int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
 		client:          &http.Client{Timeout: timeout},
 		push:            sink.NewClient(timeout),
@@ -511,6 +513,33 @@ func splitNonEmpty(s string) []string {
 		}
 	}
 	return out
+}
+
+// federationIntent is the Beckn intent a crawl sends a peer.
+//
+// It CANNOT be empty. A discover carrying neither spatial nor filters is refused
+// -- "an intent needs at least one of spatial or filters" -- so "mirror
+// everything the peer will give us" is not something the protocol lets a caller
+// ask for. The default below is the widest thing that IS expressible: a jsonpath
+// filter matching every resource that has an id.
+//
+// A deployment wanting less sets federationIntent to its own Beckn intent.
+func federationIntent(configured string) map[string]any {
+	if trimmed := strings.TrimSpace(configured); trimmed != "" {
+		var intent map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &intent); err == nil {
+			return intent
+		}
+		// A malformed intent falls back to the default rather than failing
+		// start-up: the crawl is an addition, and refusing to boot over it would
+		// take the whole adapter down with it.
+	}
+	return map[string]any{
+		"filters": map[string]any{
+			"type":       "jsonpath",
+			"expression": "$[?(@.id)]",
+		},
+	}
 }
 
 // stringOr returns the configured value, or a default when it is blank.
