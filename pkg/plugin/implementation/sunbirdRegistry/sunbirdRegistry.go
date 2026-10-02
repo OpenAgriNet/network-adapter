@@ -431,6 +431,64 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 	return results, nil
 }
 
+// AdmittedPeers implements definition.AdmittedPeerLookup.
+//
+// Filtered on role server-side and on admittedKeyId client-side, because the
+// registry's filter is an exact match and admittedKeyId has no "is present"
+// form. Role alone would include this deployment's own network-layer adapter,
+// which carries it.
+func (c *Client) AdmittedPeers(ctx context.Context) ([]model.Subscription, error) {
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry admitted peers")
+	defer span.End()
+
+	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
+		"role": {Eq: roleNetwork},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	peers := make([]model.Subscription, 0, len(participants))
+	for _, p := range participants {
+		if p.AdmittedKeyID == "" {
+			// Role "network" without an admission record: our own network-layer
+			// adapter, not a peer.
+			continue
+		}
+		if !strings.EqualFold(p.Status, statusActive) {
+			continue
+		}
+		key, ok := firstActiveSigningKey(p)
+		if !ok {
+			// Admitted, but with nothing to verify its calls. Not usable as a
+			// peer, and saying so beats a crawl that fails opaquely later.
+			log.Warnf(ctx, "OAN registry peer %s has no active signing key", p.ParticipantID)
+			continue
+		}
+		peers = append(peers, toSubscription(p, key, statusSubscribed))
+	}
+	return peers, nil
+}
+
+// firstActiveSigningKey returns the participant's usable signing key.
+//
+// Resolved by position rather than by id: the Lookup path is told which key by
+// the request header, and a listing has no header to read, so it has to pick.
+// key.isSigning keeps an encryption key from being mistaken for one.
+func firstActiveSigningKey(p participant) (key, bool) {
+	for _, k := range p.Keys {
+		if k.isSigning() && strings.EqualFold(k.Status, statusActive) && k.publicKey() != "" {
+			return k, true
+		}
+	}
+	return key{}, false
+}
+
+// roleNetwork is the registry role a peer network carries. Necessary for the
+// server-side filter, but NOT sufficient to identify a peer -- see AdmittedPeers.
+const roleNetwork = "network"
+
 // search asks the registry for the participant holding this business id, and
 // returns it only if it carries the key the caller asked about.
 //

@@ -69,7 +69,9 @@ func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, co
 		if err != nil {
 			return crawlmanager.SinkOutcome{}, fmt.Errorf("catalogcrawler: building push body for %s: %w", entry.CatalogID, err)
 		}
-		outcome, err := d.Client.Push(ctx, d.Endpoint, body)
+		// Empty: this path crawls our OWN providers, and discovery-service
+		// defaults an absent origin to the publishing network.
+		outcome, err := d.Client.Push(ctx, d.Endpoint, body, "")
 		if err != nil {
 			return crawlmanager.SinkOutcome{}, fmt.Errorf("catalogcrawler: pushing %s: %w", entry.CatalogID, err)
 		}

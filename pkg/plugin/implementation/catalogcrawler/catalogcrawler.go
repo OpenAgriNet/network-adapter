@@ -270,6 +270,80 @@ type crawlerImpl struct {
 	// needs its own reporting query -- not part of crawlmanager.Store's
 	// narrow scheduler-facing surface.
 	st *store.Store
+
+	// registry is this crawler's own registry plugin instance -- the one its
+	// `registry:` config block already builds. Held as the narrow
+	// RegistryLookup and type-asserted when peers are listed, the way
+	// metadataLookup is obtained today.
+	//
+	// It is NOT metadataLookup. That is a RegistryMetadataLookup, which only
+	// dediregistry implements, so on an OAN deployment it is nil.
+	registry definition.RegistryLookup
+
+	// peers is nil when federation is not configured. CrawlPeers refuses rather
+	// than reporting an empty success.
+	peers *peerCrawl
+}
+
+// CrawlPeers runs one pass over every admitted peer network.
+//
+// Mirrors CrawlRegistry: one background run under the scheduler's own lifecycle,
+// a run id returned at once, the outcome observable through the logs.
+func (c *crawlerImpl) CrawlPeers(ctx context.Context) (string, error) {
+	// Nil when the deployment configured no federation, or when its registry
+	// plugin cannot list admitted peers. An error rather than a silent success:
+	// an operator who asked for a peer crawl and got a run id back would
+	// reasonably believe one happened.
+	if c.peers == nil {
+		return "", fmt.Errorf("catalogcrawler: federation is not configured; no peers to crawl")
+	}
+
+	targets, err := c.peerTargets(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	runID := uuid.NewString()
+	started := c.sched.RunOnce(func(ctx context.Context) {
+		c.peers.crawlAll(ctx, targets, runID)
+	})
+	if !started {
+		return "", fmt.Errorf("catalogcrawler: crawler is not running")
+	}
+	return runID, nil
+}
+
+// peerTargets lists the networks to crawl, from the registry.
+//
+// A registry that cannot answer yields no peers rather than an error: peer
+// crawling is an addition, and a deployment whose registry plugin does not
+// support it must keep crawling its own providers normally.
+func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
+	lookup, ok := c.registry.(definition.AdmittedPeerLookup)
+	if !ok {
+		c.log.WarnContext(ctx, "catalogcrawler: registry plugin cannot list admitted peers; none will be crawled")
+		return nil, nil
+	}
+
+	peers, err := lookup.AdmittedPeers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("catalogcrawler: list admitted peers: %w", err)
+	}
+
+	targets := make([]peerTarget, 0, len(peers))
+	for _, peer := range peers {
+		// The registry record's baseUrl holds what admission read out of the
+		// peer's services.discovery. A peer network has no other endpoint we
+		// call, so there is nothing else it could hold.
+		if peer.URL == "" {
+			continue
+		}
+		targets = append(targets, peerTarget{
+			NetworkID:    peer.SubscriberID,
+			DiscoveryURL: trimmedURL(peer.URL),
+		})
+	}
+	return targets, nil
 }
 
 func (c *crawlerImpl) Start(ctx context.Context) error {

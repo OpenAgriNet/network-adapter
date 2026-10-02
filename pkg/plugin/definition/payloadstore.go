@@ -15,8 +15,8 @@ type PayloadEntry struct {
 	Action        string
 	SubscriberID  string
 	Role          model.Role
-	RequestBody   []byte    // nil when StoreBody: false
-	Signature     string    // raw Authorization header; empty when StoreSignature: false
+	RequestBody   []byte // nil when StoreBody: false
+	Signature     string // raw Authorization header; empty when StoreSignature: false
 	StoredAt      time.Time
 	ExpiresAt     time.Time
 }

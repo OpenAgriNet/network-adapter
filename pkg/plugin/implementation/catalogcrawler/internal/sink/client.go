@@ -29,14 +29,28 @@ func NewClient(timeout time.Duration) *Client {
 	return &Client{hc: &http.Client{Timeout: timeout}}
 }
 
+// HeaderSourceNetwork names the peer a crawled catalog came from. The literal
+// is the contract with discovery-service, which declares its own copy.
+const HeaderSourceNetwork = "X-OAN-Source-Network"
+
 // Push POSTs a /push body. 200 = accepted; anything else is a non-ack with
 // the body as the reason.
-func (c *Client) Push(ctx context.Context, endpoint string, body []byte) (BatchOutcome, error) {
+//
+// sourceNetwork names the peer this catalog was crawled FROM, and is empty for
+// our own providers. It travels as a header rather than in the body because the
+// body is a Beckn catalog publish and origin is not part of that contract --
+// discovery-service pins those structs to the specification.
+func (c *Client) Push(ctx context.Context, endpoint string, body []byte, sourceNetwork string) (BatchOutcome, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return BatchOutcome{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Omitted for our own catalogs, so discovery-service applies its default
+	// rather than us asserting what we already are.
+	if sourceNetwork != "" {
+		req.Header.Set(HeaderSourceNetwork, sourceNetwork)
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return BatchOutcome{}, err
