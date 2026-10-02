@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/source"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/signer"
 	"github.com/beckn/catalog-core/pkg/catalog"
 	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
@@ -37,7 +39,14 @@ import (
 // matching onix's own config-key convention (e.g. schemaversionmediator's
 // fetchTimeout/artifactCacheTTL).
 const (
-	cfgDBDSN                = "dbDsn"
+	cfgDBDSN = "dbDsn"
+
+	// The federated half. Absent means this deployment crawls its own providers
+	// and nothing else, which is every deployment that has admitted no peers.
+	cfgFederationNetworkID  = "federationNetworkId" // our own networkId, declared to a peer
+	cfgFederationKey        = "federationSigningKey"
+	cfgFederationMaxPages   = "federationMaxPages"
+	cfgFederationWindowSec  = "federationSignatureWindowSeconds"
 	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
 	cfgStaticIndexURLs      = "staticIndexUrls" // comma-separated, optional fixed index URLs
 	cfgDiscoveryURL         = "discoveryPushUrl"
@@ -66,6 +75,15 @@ const (
 	// combined with the actual (possibly overridden) park-sweep interval
 	// via crawlmanager.DeriveMaxParkCount to compute Params.MaxParkCount.
 	DefaultMaxParkRetryBudget = 12 * time.Hour
+
+	// How long a signature sent to a peer stays valid, and how many pages are
+	// drained from one peer before the pass moves on.
+	//
+	// The window is short because a cross-network signature is a bearer token
+	// for its lifetime. The page cap exists so a peer that never returns an
+	// empty page cannot hold a pass open indefinitely.
+	defaultFederationWindow = 30 * time.Second
+	defaultPeerMaxPages     = 50
 )
 
 // Provider implements definition.CrawlerProvider.
@@ -163,8 +181,10 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		params:         params,
 		sched:          NewScheduler(params, schedCfg, log),
 		metadataLookup: metadataLookup,
+		registry:       registry,
 		log:            log,
 		st:             st,
+		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, log),
 	}
 	return c, db.Close, nil
 }
@@ -256,6 +276,58 @@ func (m multiSource) Discover(ctx context.Context) ([]crawlmanager.IndexRef, err
 		}
 	}
 	return refs, nil
+}
+
+// newPeerCrawlFromConfig builds the federated half, or nil when this deployment
+// has none configured.
+//
+// Nil rather than a zero value: CrawlPeers refuses on nil and says why, which is
+// a better answer to an operator than a run id for a pass that visited nobody.
+//
+// It reuses the crawler's own HTTP client and its discovery push URL, because a
+// peer's catalogs go exactly where our own providers' catalogs go. Only the way
+// they are FETCHED differs.
+func newPeerCrawlFromConfig(
+	ctx context.Context, config map[string]string, pushEndpoint string,
+	timeout time.Duration, log *slog.Logger,
+) *peerCrawl {
+	networkID := strings.TrimSpace(config[cfgFederationNetworkID])
+	key := strings.TrimSpace(config[cfgFederationKey])
+	if networkID == "" || key == "" {
+		return nil
+	}
+
+	// The signer is constructed here rather than injected, because
+	// CrawlerProvider.New takes no Signer and widening that contract for one
+	// consumer would touch every crawler deployment. It is a stateless helper --
+	// Sign is a pure function of the body, the key and the window -- so there is
+	// no instance to share and nothing to keep in step.
+	//
+	// Constructing it is still better than re-implementing the signing string
+	// here: that is a security primitive, and a second copy of one is a second
+	// thing to get subtly wrong.
+	signing, _, err := signer.New(ctx, &signer.Config{})
+	if err != nil {
+		log.Warn("catalogcrawler: federation is configured but the signer could not be built; peers will not be crawled",
+			"error", err)
+		return nil
+	}
+
+	return &peerCrawl{
+		signer:       signing,
+		localNetwork: networkID,
+		subscriberID: strings.TrimSpace(config[cfgParticipantID]),
+		privateKey:   key,
+		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
+		// Empty: mirror everything the peer will give us. A deployment that
+		// wants less sets a jsonpath or spatial intent here.
+		intent:       map[string]any{},
+		maxPages:     int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
+		client:       &http.Client{Timeout: timeout},
+		push:         sink.NewClient(timeout),
+		pushEndpoint: pushEndpoint,
+		log:          log,
+	}
 }
 
 // crawlerImpl implements definition.Crawler.
