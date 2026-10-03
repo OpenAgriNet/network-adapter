@@ -189,9 +189,12 @@ func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []j
 			Timestamp:     time.Now().UTC().Format(time.RFC3339),
 			// discovery-service's /publish checks the body's action against the
 			// route, so this must say publish and not push.
-			Action:      "catalog/publish",
-			UpdateMode:  sink.UpdateModeFull,
-			CatalogType: "regular",
+			Action:     "catalog/publish",
+			UpdateMode: sink.UpdateModeFull,
+			// Upper case: the enum is ["MASTER","REGULAR"] and the comparison is
+			// exact. A crawled catalog is never a master -- a master is a
+			// deployment's own shared definition, not something mirrored.
+			CatalogType: "REGULAR",
 			VisibleTo:   []string{p.localNetwork},
 		}
 		body, err := sink.BuildPushBody(meta, document)
