@@ -534,13 +534,31 @@ func federationIntent(configured string) map[string]any {
 		// start-up: the crawl is an addition, and refusing to boot over it would
 		// take the whole adapter down with it.
 	}
+	// The widest intent that is actually expressible: everything, geographically.
+	//
+	// A filters-only intent does not work -- a filter that narrows nothing is
+	// refused, because it would be answered by reading every row. A spatial
+	// constraint IS index-served, so a world-covering polygon is how "mirror
+	// what this peer will give us" gets said.
+	//
+	// targets is the CANONICAL path form the geometry index stores. The
+	// shorthand "$.provider.availableAt[*].geo" parses but matches nothing,
+	// which is the worst of both: a successful request and an empty answer.
 	return map[string]any{
-		"filters": map[string]any{
-			"type": "jsonpath",
-			// Rooted at $.catalogs, which is what resources.filter_doc holds --
-			// an expression rooted anywhere else is refused outright.
-			"expression": "$.catalogs[?(@.id)]",
-		},
+		"spatial": []any{map[string]any{
+			"op":      "S_INTERSECTS",
+			"targets": "$['catalogs'][*]['provider']['availableAt'][*]['geo']",
+			"geometry": map[string]any{
+				"type": "Polygon",
+				"coordinates": []any{[]any{
+					[]any{-180.0, -90.0},
+					[]any{180.0, -90.0},
+					[]any{180.0, 90.0},
+					[]any{-180.0, 90.0},
+					[]any{-180.0, -90.0},
+				}},
+			},
+		}},
 	}
 }
 
