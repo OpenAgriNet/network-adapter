@@ -536,8 +536,10 @@ func federationIntent(configured string) map[string]any {
 	}
 	return map[string]any{
 		"filters": map[string]any{
-			"type":       "jsonpath",
-			"expression": "$[?(@.id)]",
+			"type": "jsonpath",
+			// Rooted at $.catalogs, which is what resources.filter_doc holds --
+			// an expression rooted anywhere else is refused outright.
+			"expression": "$.catalogs[?(@.id)]",
 		},
 	}
 }
