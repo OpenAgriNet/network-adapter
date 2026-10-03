@@ -187,9 +187,12 @@ func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []j
 			MessageID:     uuid.NewString(),
 			TransactionID: uuid.NewString(),
 			Timestamp:     time.Now().UTC().Format(time.RFC3339),
-			UpdateMode:    sink.UpdateModeFull,
-			CatalogType:   "regular",
-			VisibleTo:     []string{p.localNetwork},
+			// discovery-service's /publish checks the body's action against the
+			// route, so this must say publish and not push.
+			Action:      "catalog/publish",
+			UpdateMode:  sink.UpdateModeFull,
+			CatalogType: "regular",
+			VisibleTo:   []string{p.localNetwork},
 		}
 		body, err := sink.BuildPushBody(meta, document)
 		if err != nil {
