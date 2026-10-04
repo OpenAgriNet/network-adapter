@@ -49,6 +49,8 @@ const (
 	cfgFederationMaxPages   = "federationMaxPages"
 	cfgFederationDomain     = "federationDomain"
 	cfgFederationIntent     = "federationIntent" // raw JSON: the Beckn intent sent to a peer
+	cfgFederationSchemas    = "federationSchemaContext"
+	cfgFederationRefreshSec = "federationRefreshSeconds"
 	cfgFederationVersion    = "federationProtocolVersion"
 	cfgFederationWindowSec  = "federationSignatureWindowSeconds"
 	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
@@ -93,6 +95,11 @@ const (
 	// them is refused before it reaches the peer's discovery service, with "no
 	// routing rules found for domain" -- which names the field and not the
 	// caller, and so is a confusing way to learn this.
+	// How often peers are re-crawled. A cache nobody refreshes keeps serving
+	// what a peer has already withdrawn, which is the one thing a cache must
+	// not do. Set federationRefreshSeconds to 0 to disable it.
+	defaultPeerRefresh = 15 * time.Minute
+
 	defaultFederationDomain = "agriculture"
 	defaultProtocolVersion  = "2.0.0"
 )
@@ -196,6 +203,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		log:            log,
 		st:             st,
 		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, log),
+		peerRefresh:    durationSecondsOr(config[cfgFederationRefreshSec], defaultPeerRefresh),
 	}
 	return c, db.Close, nil
 }
@@ -335,6 +343,7 @@ func newPeerCrawlFromConfig(
 		domain:          stringOr(config[cfgFederationDomain], defaultFederationDomain),
 		protocolVersion: stringOr(config[cfgFederationVersion], defaultProtocolVersion),
 		intent:          federationIntent(config[cfgFederationIntent]),
+		schemaContext:   splitNonEmpty(config[cfgFederationSchemas]),
 		maxPages:        int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
 		client:          &http.Client{Timeout: timeout},
 		push:            sink.NewClient(timeout),
@@ -368,6 +377,13 @@ type crawlerImpl struct {
 	// peers is nil when federation is not configured. CrawlPeers refuses rather
 	// than reporting an empty success.
 	peers *peerCrawl
+
+	// peerRefresh is how often peers are re-crawled. Zero disables it, leaving
+	// POST /crawl/peers as the only way a cache is ever refreshed.
+	peerRefresh time.Duration
+
+	// stopPeers ends the refresh loop. Nil when there is no loop.
+	stopPeers context.CancelFunc
 }
 
 // CrawlPeers runs one pass over every admitted peer network.
@@ -433,10 +449,22 @@ func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
 
 func (c *crawlerImpl) Start(ctx context.Context) error {
 	c.sched.Start(ctx)
+
+	if c.peers != nil && c.peerRefresh > 0 {
+		// Its own context, not the caller's: Start is handed a request-shaped
+		// context in some deployments, and a refresh loop that died with it
+		// would look like a cache that silently stopped updating.
+		loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		c.stopPeers = cancel
+		go c.peers.refreshEvery(loopCtx, c.peerRefresh, c.peerTargets)
+	}
 	return nil
 }
 
 func (c *crawlerImpl) Stop() error {
+	if c.stopPeers != nil {
+		c.stopPeers()
+	}
 	c.sched.Stop()
 	return nil
 }
@@ -517,13 +545,18 @@ func splitNonEmpty(s string) []string {
 
 // federationIntent is the Beckn intent a crawl sends a peer.
 //
-// It CANNOT be empty. A discover carrying neither spatial nor filters is refused
-// -- "an intent needs at least one of spatial or filters" -- so "mirror
-// everything the peer will give us" is not something the protocol lets a caller
-// ask for. The default below is the widest thing that IS expressible: a jsonpath
-// filter matching every resource that has an id.
+// Fully configurable: set federationIntent to any Beckn intent as raw JSON and
+// that is sent verbatim. The default below is a jsonpath filter matching every
+// catalog the peer is willing to show us.
 //
-// A deployment wanting less sets federationIntent to its own Beckn intent.
+// A filter alone is NOT enough. An intent that narrows nothing is refused --
+// "answered by reading every row" -- unless the request also carries a text
+// search, a spatial constraint, or a schemaContext. So this default is usable
+// only alongside federationSchemaContext, which is the natural pairing anyway:
+// a network mirrors the schemas it understands, not everything in existence.
+//
+// With neither configured the peer refuses, and the crawl says so rather than
+// quietly storing nothing.
 func federationIntent(configured string) map[string]any {
 	if trimmed := strings.TrimSpace(configured); trimmed != "" {
 		var intent map[string]any
@@ -534,31 +567,15 @@ func federationIntent(configured string) map[string]any {
 		// start-up: the crawl is an addition, and refusing to boot over it would
 		// take the whole adapter down with it.
 	}
-	// The widest intent that is actually expressible: everything, geographically.
-	//
-	// A filters-only intent does not work -- a filter that narrows nothing is
-	// refused, because it would be answered by reading every row. A spatial
-	// constraint IS index-served, so a world-covering polygon is how "mirror
-	// what this peer will give us" gets said.
-	//
-	// targets is the CANONICAL path form the geometry index stores. The
-	// shorthand "$.provider.availableAt[*].geo" parses but matches nothing,
-	// which is the worst of both: a successful request and an empty answer.
 	return map[string]any{
-		"spatial": []any{map[string]any{
-			"op":      "S_INTERSECTS",
-			"targets": "$['catalogs'][*]['provider']['availableAt'][*]['geo']",
-			"geometry": map[string]any{
-				"type": "Polygon",
-				"coordinates": []any{[]any{
-					[]any{-180.0, -90.0},
-					[]any{180.0, -90.0},
-					[]any{180.0, 90.0},
-					[]any{-180.0, 90.0},
-					[]any{-180.0, -90.0},
-				}},
-			},
-		}},
+		"filters": map[string]any{
+			"type": "jsonpath",
+			// PostgreSQL SQL/JSON path, NOT RFC 9535: the filter is written
+			// `? (...)` AFTER the subscript, and the expression must be rooted
+			// at $.catalogs, which is what resources.filter_doc holds. Both are
+			// refused outright rather than quietly matching nothing.
+			"expression": "$.catalogs[*] ? (exists(@.id))",
+		},
 	}
 }
 

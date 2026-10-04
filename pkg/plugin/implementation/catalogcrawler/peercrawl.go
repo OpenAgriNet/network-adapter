@@ -62,12 +62,20 @@ type peerCrawl struct {
 	window          time.Duration
 	domain          string // the Beckn domain a peer routes on
 	protocolVersion string
-	intent          map[string]any // configured: what breadth of catalog to mirror
-	maxPages        int
-	client          *http.Client
-	push            catalogPusher
-	pushEndpoint    string
-	log             *slog.Logger
+
+	// schemaContext is what we are willing to mirror, by schema.
+	//
+	// It is also what makes a jsonpath intent usable at all: a filter that
+	// narrows nothing is refused, and schemaContext is one of the three things
+	// that may narrow it first. Empty is valid, but then the intent has to
+	// narrow on its own.
+	schemaContext []string
+	intent        map[string]any // configured: what breadth of catalog to mirror
+	maxPages      int
+	client        *http.Client
+	push          catalogPusher
+	pushEndpoint  string
+	log           *slog.Logger
 }
 
 // discoverBody builds the Beckn discover sent to a peer.
@@ -90,11 +98,12 @@ func (p *peerCrawl) discoverBody() ([]byte, error) {
 			// either is refused before it reaches its discovery service -- with
 			// "no routing rules found for domain", which names the field and
 			// not the caller.
-			"domain":    p.domain,
-			"version":   p.protocolVersion,
-			"networkId": p.localNetwork,
-			"bapId":     p.subscriberID,
-			"messageId": uuid.NewString(),
+			"domain":        p.domain,
+			"version":       p.protocolVersion,
+			"networkId":     p.localNetwork,
+			"bapId":         p.subscriberID,
+			"messageId":     uuid.NewString(),
+			"schemaContext": p.schemaContext,
 			// One transaction per PAGE request, matching messageId. A crawl is
 			// not a conversation with the peer -- each page stands alone -- and
 			// a shared transactionId would claim a continuity that does not
@@ -209,6 +218,38 @@ func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []j
 		}
 	}
 	return nil
+}
+
+// refreshEvery re-crawls every peer on an interval until ctx is cancelled.
+//
+// Without this a crawled catalogue is frozen at whatever the peer said once:
+// a resource it has since withdrawn keeps being served by us, which is the one
+// thing a cache must not do. The interval is how stale we are willing to be.
+//
+// The first pass runs immediately, so a restart does not leave the cache empty
+// for a whole interval.
+func (p *peerCrawl) refreshEvery(ctx context.Context, interval time.Duration, targets func(context.Context) ([]peerTarget, error)) {
+	run := func() {
+		found, err := targets(ctx)
+		if err != nil {
+			p.log.ErrorContext(ctx, "catalogcrawler: listing peers for refresh", "error", err)
+			return
+		}
+		p.crawlAll(ctx, found, "refresh")
+	}
+
+	run()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }
 
 // crawlAll visits every peer in one pass.
