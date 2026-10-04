@@ -34,7 +34,7 @@ type pathOverrideDef struct {
 }
 
 type auditConfig struct {
-	Mode                    string                `yaml:"mode"`           // "full" | "selective"
+	Mode                    string                `yaml:"mode"` // "full" | "selective"
 	Patterns                map[string]patternDef `yaml:"patterns"`
 	MaskRules               []maskRule            `yaml:"maskRules"`
 	PathOverrides           []pathOverrideDef     `yaml:"pathOverrides"`

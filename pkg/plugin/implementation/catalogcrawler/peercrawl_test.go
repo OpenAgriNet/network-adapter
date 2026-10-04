@@ -25,15 +25,13 @@ func (s stubSigner) Sign(context.Context, []byte, string, int64, int64) (string,
 	return s.signature, nil
 }
 
-// recordingPush captures what a crawl would have sent on, so the origin tag can
-// be asserted without a discovery-service to send it to.
+// recordingPush captures what a crawl would have sent on, so the body can be
+// asserted without a discovery-service to send it to.
 type recordingPush struct {
-	origins []string
-	bodies  [][]byte
+	bodies [][]byte
 }
 
-func (r *recordingPush) Push(_ context.Context, _ string, body []byte, sourceNetwork string) (sink.BatchOutcome, error) {
-	r.origins = append(r.origins, sourceNetwork)
+func (r *recordingPush) Push(_ context.Context, _ string, body []byte) (sink.BatchOutcome, error) {
 	r.bodies = append(r.bodies, body)
 	return sink.BatchOutcome{Acked: true}, nil
 }
@@ -119,9 +117,10 @@ func TestCrawlPeerDeclaresOurNetwork(t *testing.T) {
 	}
 }
 
-// Everything stored from a peer is tagged with where it came from, which is what
-// the origin filter reads to keep it from being re-exported.
-func TestCrawlPeerTagsWhatItPushedWithTheOrigin(t *testing.T) {
+// A peer's catalogue is stored visible to OUR network and no one else. That
+// single value is the whole no-re-export rule: a third network asking us
+// matches nothing, with no origin column needed to enforce it.
+func TestCrawlPeerStoresAPeersCatalogVisibleToUsOnly(t *testing.T) {
 	server, _ := peerWith(t, 1)
 	push := &recordingPush{}
 
@@ -131,11 +130,16 @@ func TestCrawlPeerTagsWhatItPushedWithTheOrigin(t *testing.T) {
 		t.Fatalf("crawlPeer: %v", err)
 	}
 
-	if len(push.origins) != 1 {
-		t.Fatalf("pushed %d catalogs, want 1", len(push.origins))
+	if len(push.bodies) != 1 {
+		t.Fatalf("pushed %d catalogs, want 1", len(push.bodies))
 	}
-	if push.origins[0] != "maha.oan.local" {
-		t.Fatalf("origin = %q, want the peer we fetched it from", push.origins[0])
+	body := string(push.bodies[0])
+
+	if !strings.Contains(body, `"bharatvistar.oan.local"`) {
+		t.Errorf("a crawled catalog was not made visible to our own network: %s", body)
+	}
+	if strings.Contains(body, "maha.oan.local") {
+		t.Errorf("the peer was named in the audience, which would re-export it: %s", body)
 	}
 }
 

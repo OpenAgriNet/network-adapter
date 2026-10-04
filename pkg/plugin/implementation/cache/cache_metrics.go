@@ -87,5 +87,3 @@ func newCacheMetrics() (*CacheMetrics, error) {
 
 	return m, nil
 }
-
-

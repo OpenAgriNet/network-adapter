@@ -72,7 +72,7 @@ func (e *RecordingLogExporter) Export(_ context.Context, records []logsdk.Record
 	return nil
 }
 
-func (e *RecordingLogExporter) Shutdown(_ context.Context) error  { return nil }
+func (e *RecordingLogExporter) Shutdown(_ context.Context) error   { return nil }
 func (e *RecordingLogExporter) ForceFlush(_ context.Context) error { return nil }
 
 // Records returns a snapshot of all collected log records.

@@ -71,20 +71,20 @@ type NetworkManifestPolicies struct {
 
 // NetworkManifestBundle describes an OPA bundle policy artifact.
 type NetworkManifestBundle struct {
-	ID                       string `yaml:"id"`
-	URL                      string `yaml:"url"`
-	PolicyQueryPath          string `yaml:"policyQueryPath"`
-	Signed                   bool   `yaml:"signed"`
+	ID                        string `yaml:"id"`
+	URL                       string `yaml:"url"`
+	PolicyQueryPath           string `yaml:"policyQueryPath"`
+	Signed                    bool   `yaml:"signed"`
 	SigningPublicKeyLookupURL string `yaml:"signingPublicKeyLookupUrl"`
 }
 
 // NetworkManifestFile describes a single Rego policy artifact.
 type NetworkManifestFile struct {
-	ID                       string `yaml:"id"`
-	URL                      string `yaml:"url"`
-	PolicyQueryPath          string `yaml:"policyQueryPath"`
-	Signed                   bool   `yaml:"signed"`
-	SignatureURL             string `yaml:"signatureUrl"`
+	ID                        string `yaml:"id"`
+	URL                       string `yaml:"url"`
+	PolicyQueryPath           string `yaml:"policyQueryPath"`
+	Signed                    bool   `yaml:"signed"`
+	SignatureURL              string `yaml:"signatureUrl"`
 	SigningPublicKeyLookupURL string `yaml:"signingPublicKeyLookupUrl"`
 }
 

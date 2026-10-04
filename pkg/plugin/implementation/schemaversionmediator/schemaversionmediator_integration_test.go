@@ -177,7 +177,8 @@ func TestIntegration_BPPReceiver_RetailConsideration_v21_to_v22(t *testing.T) {
 //
 // BPP response carries currencyCode (v2.2). BAP expects currency (v2.1).
 // Artifact: RetailConsideration/v2.1/RetailConsideration_from_v2.2
-//   → $ ~> |$|{"currency": currencyCode}, ["currencyCode"]|
+//
+//	→ $ ~> |$|{"currency": currencyCode}, ["currencyCode"]|
 //
 // Note: the artifact uses a JSONata transform expression to rename the field.
 // The rename (currencyCode → currency) is applied. Field deletion of currencyCode

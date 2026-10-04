@@ -21,11 +21,11 @@ func validNetworkManifestForTest(networkID string, now time.Time) NetworkManifes
 			Type:   PolicyTypeRego,
 			Source: PolicySourceFile,
 			File: &NetworkManifestFile{
-				ID:                       "network-policy-file",
-				URL:                      "https://example.com/policy.rego",
-				PolicyQueryPath:          "data.logistics.result",
-				Signed:                   true,
-				SignatureURL:             "https://example.com/policy.rego.sig",
+				ID:                        "network-policy-file",
+				URL:                       "https://example.com/policy.rego",
+				PolicyQueryPath:           "data.logistics.result",
+				Signed:                    true,
+				SignatureURL:              "https://example.com/policy.rego.sig",
 				SigningPublicKeyLookupURL: "https://example.com/public-key",
 			},
 		},
@@ -398,4 +398,3 @@ func TestParseNodeManifest_InvalidYAML(t *testing.T) {
 		t.Fatal("expected error for invalid YAML, got nil")
 	}
 }
-

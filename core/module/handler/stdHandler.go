@@ -439,18 +439,6 @@ func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpC
 		req.URL = target
 		req.Host = target.Host
 
-		// What the signature PROVED about the caller, handed to whatever is
-		// behind this proxy.
-		//
-		// Set here rather than carried from the inbound request, and set
-		// unconditionally so a caller cannot supply their own: an inbound value
-		// is overwritten, including with an empty one. Everything downstream is
-		// inside this deployment and unreachable from outside it, which is what
-		// makes these headers trustworthy there and worthless anywhere else.
-		req.Header.Set(model.HeaderVerifiedCaller, ctx.VerifiedCaller)
-		req.Header.Set(model.HeaderVerifiedCallerPeerNetwork,
-			strconv.FormatBool(ctx.VerifiedCallerPeerNetwork))
-
 		log.Request(req.Context(), req, ctx.Body)
 	}
 

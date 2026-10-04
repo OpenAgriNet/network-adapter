@@ -39,7 +39,7 @@ type peerTarget struct {
 // catalogPusher is the push half of the sink, narrowed to what a peer crawl
 // needs so a test does not have to stand up an HTTP client.
 type catalogPusher interface {
-	Push(ctx context.Context, endpoint string, body []byte, sourceNetwork string) (sink.BatchOutcome, error)
+	Push(ctx context.Context, endpoint string, body []byte) (sink.BatchOutcome, error)
 }
 
 // requestSigner is the Signer plugin, narrowed the same way.
@@ -177,9 +177,12 @@ func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
 // catalogs go through.
 //
 // UpdateModeFull, one catalog at a time: a peer that has withdrawn resources
-// must not keep them alive in our cache by omitting them. VisibleTo is OUR
-// network -- we cached this for our own consumers, and the origin filter is what
-// stops it going further.
+// must not keep them alive in our cache by omitting them.
+//
+// VisibleTo is OUR network, and that single value is what stops a peer's
+// catalogue being re-exported: we cached it for our own consumers, so a third
+// network asking us matches nothing. It is a Beckn field doing the work, which
+// is why this needs no origin column of its own.
 func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []json.RawMessage) error {
 	for _, document := range catalogs {
 		meta := sink.PushMeta{
@@ -201,9 +204,7 @@ func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []j
 		if err != nil {
 			return fmt.Errorf("build push body for %s: %w", target.NetworkID, err)
 		}
-		// The origin, on every push. This is the whole reason the column exists:
-		// it is what marks the row as another network's.
-		if _, err := p.push.Push(ctx, p.pushEndpoint, body, target.NetworkID); err != nil {
+		if _, err := p.push.Push(ctx, p.pushEndpoint, body); err != nil {
 			return fmt.Errorf("push %s: %w", target.NetworkID, err)
 		}
 	}

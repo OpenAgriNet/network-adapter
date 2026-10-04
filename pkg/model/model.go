@@ -428,20 +428,6 @@ type StepContext struct {
 	ResponseBody []byte
 }
 
-// The headers the adapter uses to hand a verified caller to the services behind
-// it.
-//
-// INTERNAL. They are set on the adapter's own outbound request and overwrite
-// anything inbound, and nothing behind the adapter is reachable from outside it
-// -- which is what makes them trustworthy there and worthless anywhere else.
-//
-// discovery-service is a different module and declares its own constants with
-// the same literals, so the LITERAL is the contract between the two.
-const (
-	HeaderVerifiedCaller            = "X-OAN-Verified-Caller"
-	HeaderVerifiedCallerPeerNetwork = "X-OAN-Verified-Caller-Peer-Network"
-)
-
 // WithContext updates the existing StepContext with a new context.
 func (ctx *StepContext) WithContext(newCtx context.Context) {
 	ctx.Context = newCtx
