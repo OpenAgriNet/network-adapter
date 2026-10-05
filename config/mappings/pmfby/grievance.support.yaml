@@ -1,0 +1,99 @@
+# PMFBY, openagrinet:PMFBYGrievance, support -> POST /AddKRPHNCIPGrievenceSupportTicket.
+# Both directions, one file.
+#
+# Step two of three: lodge the grievance. A support request composes no
+# contract: message.support carries the application number in orderId, the
+# complaint in descriptor (code "3.10" is category and sub-category), and the
+# farmer in channels[0]. The OTP init sent travels on the lodge call until
+# PMFBY's verify endpoint is wired in; it is never echoed back.
+#
+# "Grievence" is PMFBY's spelling, kept where PMFBY reads it.
+
+# required holds format checks, which return SCH_INVALID_FORMAT and let an
+# absent field pass. A missing field is refused by the request half under
+# _error, which can name SCH_REQUIRED_FIELD_MISSING.
+required:
+  - check: |
+      (
+        $code := beckn.message.support.descriptor.code;
+        $not($exists($code)) or $exists($match($code, /^[0-9]+\.[0-9]+$/)[0])
+      )
+    message: "descriptor.code must be <category>.<subCategory>, e.g. 3.10"
+  - check: |
+      (
+        $season := beckn.message.support.channels[0].season;
+        $not($exists($season)) or $season in ["Kharif", "Rabi", "Zaid"]
+      )
+    message: "season must be Kharif, Rabi or Zaid"
+
+request: |
+  (
+    $s := beckn.message.support;
+    $ch := $s.channels[0];
+    $category := $split($s.descriptor.code, ".");
+    $seasons := { "Kharif": 1, "Rabi": 2, "Zaid": 3 };
+    /* PMFBY's fixed id for this channel as the source of the grievance. */
+    $receiptSourceID := 134306;
+    $complete := $exists($s.orderId) and $exists($s.descriptor.code) and $exists($s.descriptor.longDesc)
+      and $exists($ch.applicantPhone) and $exists($ch.otp)
+      and $exists($ch.cropYear) and $exists($ch.season);
+    $not($complete)
+    ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                    "message": "lodging a grievance needs orderId, descriptor.code, descriptor.longDesc and, on channels[0], applicantPhone, otp, cropYear and season" } }
+    : {
+      "requestorMobileNo": $ch.applicantPhone,
+      "otp": $ch.otp,
+      "complaintDate": $now("[Y0001]-[M01]-[D01]", "+0530"),
+      "receiptSourceID": $receiptSourceID,
+      "ticketCategoryID": $number($category[0]),
+      "ticketSubCategoryID": $number($category[1]),
+      "requestYear": $string($ch.cropYear),
+      "requestSeason": $lookup($seasons, $ch.season),
+      "applicationNo": $s.orderId,
+      "grievenceDescription": $trim($s.descriptor.longDesc)
+    }
+  )
+
+# A 4xx from PMFBY reaches this half with its status under _status.
+#
+# orderId and descriptor are the caller's own, echoed, and the
+# ticket goes on the channel. caseStatus, filedOn and source are not in PMFBY's
+# reply: a freshly lodged grievance is registered, and filedOn restates the IST
+# date just sent.
+response: |
+  $exists(_status)
+  ? (
+      /* PMFBY refused the lodge call with a 4xx. A 400 is a wrong or expired
+         OTP: the farmer's to fix, so a 400 back. Any other status is left to
+         the adapter's 502. */
+      _status = 400
+        ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": "the OTP is wrong or has expired" } }
+        : {}
+    )
+  : (
+    $s := beckn.message.support;
+    $ch := $s.channels[0];
+    $ticket := response.responseDynamic;
+    {
+      "context": $merge([beckn.context, { "action": "on_support", "timestamp": $now() }]),
+      "message": {
+        "support": {
+          "orderId": $s.orderId,
+          "descriptor": $s.descriptor,
+          "channels": [{
+            "@context": $ch.`@context`,
+            "@type": $ch.`@type`,
+            "informationMode": "Direct",
+            "scheme": $ch.scheme,
+            "ticketNo": $ticket.GrievenceSupportTicketNo,
+            "ticketId": $type($ticket.GrievenceSupportTicketID) = "number"
+              or $type($ticket.GrievenceSupportTicketID) = "string"
+              ? $string($ticket.GrievenceSupportTicketID),
+            "caseStatus": { "code": "REGISTERED", "name": "Registered" },
+            "filedOn": $now("[Y0001]-[M01]-[D01]", "+0530"),
+            "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
+          }]
+        }
+      }
+    }
+  )
