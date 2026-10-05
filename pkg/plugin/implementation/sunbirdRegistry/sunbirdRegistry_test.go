@@ -92,7 +92,7 @@ func activeRecord() participant {
 	return participant{
 		ParticipantID: testParticipantID,
 		Type:          "node",
-		Role:          "BPP",
+		Role:          roleList{"BPP"},
 		Status:        "active",
 		BaseURL:       "https://providera.example.com/onix",
 		Keys:          []key{signingKey()},
@@ -1689,7 +1689,7 @@ func peerRecord(participantID, status string, keys ...key) participant {
 	return participant{
 		ParticipantID: participantID,
 		Type:          "node",
-		Role:          "network",
+		Role:          roleList{"network"},
 		Status:        status,
 		BaseURL:       "https://" + participantID + "/federation/discovery",
 		Keys:          keys,
@@ -1808,5 +1808,71 @@ func TestAdmittedPeersCarriesTheDeclaredProjectionTtl(t *testing.T) {
 	}
 	if peers[0].ProjectionTtl != 5*time.Minute {
 		t.Fatalf("ProjectionTtl = %v, want the declared 300s", peers[0].ProjectionTtl)
+	}
+}
+
+// --- role, as a string or a list -----------------------------------------
+
+// A registry holds BOTH shapes at once: a network that serves several layers
+// carries a list, and older records carry a single string. Nothing rewrites a
+// record just to change its shape, so refusing either would make half the
+// registry unreadable.
+func TestRoleDecodesFromAStringOrAList(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"a list", `{"role":["consumer","network","provider"]}`,
+			[]string{"consumer", "network", "provider"}},
+		{"a single string", `{"role":"network"}`, []string{"network"}},
+		{"one-element list", `{"role":["network"]}`, []string{"network"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var p participant
+			if err := json.Unmarshal([]byte(tc.raw), &p); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if len(p.Role) != len(tc.want) {
+				t.Fatalf("role = %v, want %v", p.Role, tc.want)
+			}
+			for i := range tc.want {
+				if p.Role[i] != tc.want[i] {
+					t.Fatalf("role = %v, want %v", p.Role, tc.want)
+				}
+			}
+			if !p.Role.has("network") {
+				t.Errorf("has(network) = false for %v", p.Role)
+			}
+		})
+	}
+}
+
+func TestRoleRefusesSomethingThatIsNeither(t *testing.T) {
+	t.Parallel()
+
+	var p participant
+	if err := json.Unmarshal([]byte(`{"role":42}`), &p); err == nil {
+		t.Fatal("a numeric role was accepted")
+	}
+}
+
+// has is case-insensitive: a registry record written "NETWORK" is the same
+// participant as one written "network", and a case mismatch silently dropping a
+// peer from the crawl would be very hard to see.
+func TestRoleMatchingIgnoresCase(t *testing.T) {
+	t.Parallel()
+
+	if !(roleList{"NETWORK"}).has("network") {
+		t.Error("NETWORK did not match network")
+	}
+	if (roleList{"consumer"}).has("network") {
+		t.Error("consumer matched network")
+	}
+	if (roleList{}).has("network") {
+		t.Error("an empty role list matched")
 	}
 }

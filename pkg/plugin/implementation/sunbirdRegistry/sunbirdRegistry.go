@@ -188,7 +188,7 @@ type Client struct {
 type participant struct {
 	ParticipantID string `json:"participantId"`
 	Type          string `json:"type"`
-	Role          string `json:"role"`
+	Role          roleList `json:"role"`
 	Status        string `json:"status"`
 	BaseURL       string `json:"baseUrl"`
 	Keys          []key  `json:"keys"`
@@ -230,8 +230,61 @@ func (k key) isSigning() bool {
 	return k.Use == "" || strings.EqualFold(k.Use, useSign)
 }
 
+// eqFilter is one condition in a registry search.
+//
+// Eq matches a scalar field exactly. Contains matches a value INSIDE an array
+// field -- `eq` does not, which matters for role: a network that serves several
+// layers carries them as a list, and an exact match finds nothing.
+//
+// Both are omitempty so a filter sends only the condition it set.
+// roleList is the layers a participant serves.
+//
+// It decodes from EITHER a JSON string or an array of strings. A network that
+// serves several layers carries a list; older records carry a single string,
+// and both are in the registry at once because nothing rewrites a record just
+// to change its shape. Refusing one of them would make half the registry
+// unreadable for no gain.
+type roleList []string
+
+func (r *roleList) UnmarshalJSON(data []byte) error {
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		*r = list
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(data, &single); err != nil {
+		return fmt.Errorf("role is neither a string nor a list of strings: %w", err)
+	}
+	*r = roleList{single}
+	return nil
+}
+
+// has reports whether this participant serves a layer.
+func (r roleList) has(role string) bool {
+	for _, carried := range r {
+		if strings.EqualFold(carried, role) {
+			return true
+		}
+	}
+	return false
+}
+
+// primary is the one role to report where a single value is expected.
+//
+// Nothing downstream acts on it -- Subscriber.Type carries it and no code reads
+// it -- so the first entry is as good an answer as any, and an empty list is
+// reported as empty rather than guessed at.
+func (r roleList) primary() string {
+	if len(r) == 0 {
+		return ""
+	}
+	return r[0]
+}
+
 type eqFilter struct {
-	Eq string `json:"eq"`
+	Eq       string `json:"eq,omitempty"`
+	Contains string `json:"contains,omitempty"`
 }
 
 type searchRequest struct {
@@ -446,8 +499,12 @@ func (c *Client) AdmittedPeers(ctx context.Context) ([]model.Subscription, error
 	ctx, span := tracer.Start(ctx, "registry admitted peers")
 	defer span.End()
 
+	// Contains, not Eq. A network's role is a LIST of the layers it serves, and
+	// an exact match against an array finds nothing. Verified against the live
+	// registry: `contains` matches both a list and an older plain-string role,
+	// so entries written either way are found and no migration is needed.
 	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
-		"role": {Eq: roleNetwork},
+		"role": {Contains: roleNetwork},
 	})
 	if err != nil {
 		return nil, err
@@ -603,7 +660,7 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 			// role is the Beckn role -- BAP, BPP or NETWORK. type is the
 			// registry's own discriminator (node or upstream) and means
 			// something else entirely, so it is not what a subscriber's Type is.
-			Type: p.Role,
+			Type: p.Role.primary(),
 		},
 		KeyID:            k.OSID,
 		SigningPublicKey: k.publicKey(),
