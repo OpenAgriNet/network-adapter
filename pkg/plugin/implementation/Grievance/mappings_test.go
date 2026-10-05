@@ -596,6 +596,45 @@ func TestStatus_NoRemarkYet_OmitsOfficerReply(t *testing.T) {
 	}
 }
 
+func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		from, to string
+		absent   string
+	}{
+		"null status":          {`"TicketStatus":"Under Review"`, `"TicketStatus":null`, "caseStatus"},
+		"empty status":         {`"TicketStatus":"Under Review"`, `"TicketStatus":""`, "caseStatus"},
+		"null sub-category id": {`"TicketSubCategoryID":10`, `"TicketSubCategoryID":null`, "grievanceCategory"},
+		"null description":     {`"GrievenceDescription":"Claim not received"`, `"GrievenceDescription":null`, "grievanceDescription"},
+		"null complaint date":  {`"ComplaintDate":"2026-10-04"`, `"ComplaintDate":null`, "filedOn"},
+		"null remark":          {`"latestRemark":"Forwarded to insurer"`, `"latestRemark":null`, "officerReply"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			record := strings.Replace(knownTicketRecord, tc.from, tc.to, 1)
+			got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+				mustSend(t, request("status", statusAttributes()))
+			if value, present := got.attributes()[tc.absent]; present {
+				t.Errorf("%s = %v, want it dropped", tc.absent, value)
+			}
+			if got.attributes()["ticketNo"] != knownTicket {
+				t.Errorf("ticketNo = %v, want the rest of the answer intact", got.attributes()["ticketNo"])
+			}
+		})
+	}
+}
+
+func TestStatus_NullCategoryName_KeepsCodeDropsName(t *testing.T) {
+	record := strings.Replace(knownTicketRecord, `"TicketCategoryName":"Claim"`, `"TicketCategoryName":null`, 1)
+	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+		mustSend(t, request("status", statusAttributes()))
+	category, _ := got.attributes()["grievanceCategory"].(map[string]any)
+	if category["code"] != "3.10" {
+		t.Errorf("code = %v, want 3.10", category["code"])
+	}
+	if name, present := category["name"]; present {
+		t.Errorf("name = %v, want it dropped rather than \"null / ...\"", name)
+	}
+}
+
 func TestStatus_UnknownTicket_ReturnsTicketNumberAlone(t *testing.T) {
 	attributes := statusAttributes()
 	attributes["ticketNo"] = "999"
