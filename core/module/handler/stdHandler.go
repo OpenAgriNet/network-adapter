@@ -764,6 +764,11 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 			s, err = newValidateSchemaStep(h.schemaValidator, h.basePath)
 		case "addRoute":
 			s, err = newAddRouteStep(h.router, h.basePath)
+		case "federated":
+			// Listed BEFORE the provider steps in a module's step list: it has
+			// to decide that a request is foreign before the local steps start
+			// failing to find a binding for it.
+			s, err = newFederatedStep(cfg.NetworkID, cfg.FederatedTimeout)
 		case "checkPolicy":
 			s, err = newCheckPolicyStep(h.policyChecker)
 		case "mediateSchema":

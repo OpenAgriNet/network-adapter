@@ -193,4 +193,13 @@ type Config struct {
 	// Authorization header, so any caller can query any subscriber's crawl
 	// status. Must stay false/unset for any network-facing deployment.
 	AuthDisabled bool `yaml:"authDisabled,omitempty"`
+	// NetworkID is this deployment's own network id, as published in its
+	// Network Descriptor. Required by the "federated" step and read by nothing
+	// else: it is the one thing that tells a request for us apart from a
+	// request for a peer.
+	NetworkID string `yaml:"networkId,omitempty"`
+	// FederatedTimeout bounds a single call to a peer network. Zero takes
+	// defaultFederatedTimeout rather than meaning "no timeout" -- an
+	// unbounded wait on a network we do not operate is never the intent.
+	FederatedTimeout time.Duration `yaml:"federatedTimeout,omitempty"`
 }
