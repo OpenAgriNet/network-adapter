@@ -202,7 +202,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		registry:       registry,
 		log:            log,
 		st:             st,
-		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, log),
+		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, log),
 		peerRefresh:    durationSecondsOr(config[cfgFederationRefreshSec], defaultPeerRefresh),
 	}
 	return c, db.Close, nil
@@ -308,7 +308,7 @@ func (m multiSource) Discover(ctx context.Context) ([]crawlmanager.IndexRef, err
 // they are FETCHED differs.
 func newPeerCrawlFromConfig(
 	ctx context.Context, config map[string]string, pushEndpoint string,
-	timeout time.Duration, log *slog.Logger,
+	timeout time.Duration, projections projectionStore, log *slog.Logger,
 ) *peerCrawl {
 	networkID := strings.TrimSpace(config[cfgFederationNetworkID])
 	key := strings.TrimSpace(config[cfgFederationKey])
@@ -348,6 +348,7 @@ func newPeerCrawlFromConfig(
 		client:          &http.Client{Timeout: timeout},
 		push:            sink.NewClient(timeout),
 		pushEndpoint:    pushEndpoint,
+		projections:     projections,
 		log:             log,
 	}
 }
@@ -442,6 +443,9 @@ func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
 		targets = append(targets, peerTarget{
 			NetworkID:    peer.SubscriberID,
 			DiscoveryURL: trimmedURL(peer.URL),
+			// Declared by the peer and recorded at admission. Carried, not
+			// decided: nothing here may lengthen it.
+			ProjectionTtl: peer.ProjectionTtl,
 		})
 	}
 	return targets, nil

@@ -34,6 +34,15 @@ import (
 type peerTarget struct {
 	NetworkID    string
 	DiscoveryURL string
+
+	// ProjectionTtl is how long this peer permits us to keep what it returns.
+	// The peer's declaration, read off its registry record -- not a local
+	// setting, because it is not ours to decide.
+	//
+	// Zero means a record written before the field existed, not "forever": the
+	// crawl falls back to the configured interval and the projection still
+	// expires, it is just not paced by the peer.
+	ProjectionTtl time.Duration
 }
 
 // catalogPusher is the push half of the sink, narrowed to what a peer crawl
@@ -76,6 +85,12 @@ type peerCrawl struct {
 	push          catalogPusher
 	pushEndpoint  string
 	log           *slog.Logger
+
+	// projections records what we are holding from each peer, so it can be
+	// withdrawn later. Nil disables every purge path: a deployment whose store
+	// is unavailable keeps crawling rather than silently losing the ability to
+	// expire, and says so once at start-up.
+	projections projectionStore
 }
 
 // discoverBody builds the Beckn discover sent to a peer.
@@ -173,14 +188,69 @@ func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMes
 	return answer.Message.Catalogs, nil
 }
 
-// crawlPeer asks one peer and stores what it returns.
+// crawlPeer asks one peer, stores what it returns, and withdraws what it has
+// stopped returning.
+//
+// The withdrawal half only runs after a SUCCESSFUL fetch. A peer that could not
+// be reached has told us nothing about what it still publishes, and treating
+// silence as a withdrawal would empty the cache on one timeout -- which is what
+// the ttl, and only the ttl, is allowed to do.
 func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
 	catalogs, err := p.fetch(ctx, target)
 	if err != nil {
 		return err
 	}
-	return p.pushAll(ctx, target, catalogs)
+	if err := p.pushAll(ctx, target, catalogs); err != nil {
+		return err
+	}
+	return p.reconcile(ctx, target, catalogs)
 }
+
+// reconcile records this pass's projections and withdraws the ones the peer
+// has dropped.
+//
+// Ordering: the fresh ids are recorded BEFORE the dropped ones are withdrawn.
+// The reverse order would, if the process died in between, leave a catalog
+// published to discovery with no row naming it -- unpurgeable for ever.
+func (p *peerCrawl) reconcile(ctx context.Context, target peerTarget, catalogs []json.RawMessage) error {
+	if p.projections == nil {
+		return nil
+	}
+
+	fresh, unnamed := catalogIDsOf(catalogs)
+	if unnamed > 0 {
+		p.log.WarnContext(ctx, "catalogcrawler: peer returned catalogs with no id; they cannot be expired later",
+			"networkId", target.NetworkID, "count", unnamed)
+	}
+
+	held, err := p.projections.ProjectionsFor(ctx, target.NetworkID)
+	if err != nil {
+		return fmt.Errorf("list projections of %s: %w", target.NetworkID, err)
+	}
+
+	expiresAt := time.Now().Add(p.ttlFor(target))
+	if err := p.projections.RecordProjections(ctx, target.NetworkID, fresh, expiresAt); err != nil {
+		return fmt.Errorf("record projections of %s: %w", target.NetworkID, err)
+	}
+
+	p.purgeAll(ctx, target.NetworkID, missingFrom(held, fresh), "peer no longer publishes it")
+	return nil
+}
+
+// ttlFor is the licence to apply to what this peer just returned.
+//
+// A peer whose record carries no ttl still gets a finite one. There is no state
+// in which a projection has no expiry: that is the whole obligation.
+func (p *peerCrawl) ttlFor(target peerTarget) time.Duration {
+	if target.ProjectionTtl > 0 {
+		return target.ProjectionTtl
+	}
+	return defaultProjectionTtl
+}
+
+// defaultProjectionTtl covers a registry record written before projectionTtl
+// existed. Deliberately short: an unknown licence is not a long one.
+const defaultProjectionTtl = time.Hour
 
 // pushAll sends one peer's catalogs on, through the same sink our own crawled
 // catalogs go through.
@@ -228,26 +298,41 @@ func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []j
 //
 // The first pass runs immediately, so a restart does not leave the cache empty
 // for a whole interval.
-func (p *peerCrawl) refreshEvery(ctx context.Context, interval time.Duration, targets func(context.Context) ([]peerTarget, error)) {
-	run := func() {
+func (p *peerCrawl) refreshEvery(ctx context.Context, configured time.Duration, targets func(context.Context) ([]peerTarget, error)) {
+	// A TIMER re-armed each pass, not a fixed ticker. The interval depends on
+	// what the peers declared, and the peers are only known once a pass has
+	// listed them -- a peer admitted later with a shorter ttl has to be able to
+	// speed the loop up, or its data lapses between passes.
+	run := func() time.Duration {
 		found, err := targets(ctx)
 		if err != nil {
 			p.log.ErrorContext(ctx, "catalogcrawler: listing peers for refresh", "error", err)
-			return
+			// Still a pass: expiry does not depend on the registry answering,
+			// and a registry outage must not suspend every licence.
+			p.crawlAll(ctx, nil, "refresh")
+			return configured
 		}
 		p.crawlAll(ctx, found, "refresh")
+		// Only on a listing that SUCCEEDED. found is authoritative here --
+		// empty means every peer really was suspended, and purging everything
+		// is then correct. On the error path above it means nothing of the
+		// kind, which is why this is not inside crawlAll.
+		if p.projections != nil {
+			p.purgeUnadmitted(ctx, found)
+		}
+		return refreshInterval(configured, found)
 	}
 
-	run()
+	next := run()
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(next)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			run()
+		case <-timer.C:
+			timer.Reset(run())
 		}
 	}
 }
@@ -266,6 +351,20 @@ func (p *peerCrawl) crawlAll(ctx context.Context, targets []peerTarget, runID st
 				"runId", runID, "networkId", target.NetworkID, "error", err)
 		}
 	}
+	if p.projections == nil {
+		return
+	}
+	// Expiry runs AFTER the crawl and regardless of how it went. It is not
+	// about any one peer -- it acts precisely on the peers that answered
+	// nothing -- so skipping it when a crawl failed would let a bad pass
+	// suspend every licence.
+	//
+	// Suspension is NOT swept here. It is driven by the admitted list, and
+	// crawlAll cannot tell an empty list ("every peer was suspended", purge
+	// everything) from an absent one ("the registry did not answer", purge
+	// nothing). Acting on that distinction belongs where the error is still in
+	// hand: refreshEvery.
+	p.purgeExpired(ctx, time.Now())
 }
 
 // trimmedURL is the peer's endpoint as published, with a stray trailing slash
