@@ -115,8 +115,8 @@ func admit(args []string) error {
 	if current != nil {
 		verb = "refreshed"
 	}
-	fmt.Printf("%s %s at revision %d, signed by %s, status %s\n",
-		verb, admitted.NetworkID, admitted.Revision, admitted.AdmittedKeyID, admitted.Status)
+	fmt.Printf("%s %s at revision %d, status %s\n",
+		verb, admitted.NetworkID, admitted.Revision, admitted.Status)
 	fmt.Printf("  discovery  %s\n", admitted.DiscoveryURL)
 	fmt.Printf("  keys       %d operational (the governance key is deliberately not stored)\n", len(admitted.Keys))
 	return nil
@@ -135,7 +135,6 @@ func storedPeer(ctx context.Context, client *registryClient, networkID string) (
 		DiscoveryURL:  record.BaseURL,
 		Status:        record.Status,
 		Revision:      record.Revision,
-		AdmittedKeyID: record.AdmittedKeyID,
 	}, nil
 }
 

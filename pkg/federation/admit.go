@@ -14,21 +14,20 @@ const RoleNetwork = "network"
 // Participant is the registry record for an admitted peer network.
 //
 // It maps onto the registry's existing Participant schema: NetworkID is
-// participantId, DiscoveryURL is baseUrl, Status is status. Revision and
-// AdmittedKeyID are the two fields federation adds.
+// participantId, DiscoveryURL is baseUrl, Status is status. Revision is the
+// field federation adds.
 //
 // Keys is a plain slice and not the KeySet that was fetched. What a peer
 // PUBLISHES and what we ADMIT are different things -- the governance key is in
 // one and must not be in the other -- and giving them one type invites assigning
 // the first to the second without noticing.
 type Participant struct {
-	NetworkID     string
-	Name          string
-	DiscoveryURL  string
-	Keys          []JWK
-	Status        string
-	Revision      int
-	AdmittedKeyID string
+	NetworkID    string
+	Name         string
+	DiscoveryURL string
+	Keys         []JWK
+	Status       string
+	Revision     int
 
 	// ProjectionTtl is how long we may keep what we crawl from this peer.
 	// Always positive on an admitted record: zero is refused at admission.
@@ -64,9 +63,6 @@ func projectionTtl(d Descriptor) (time.Duration, error) {
 var (
 	// ErrStaleRevision reports a descriptor that does not advance the revision.
 	ErrStaleRevision = errors.New("descriptor revision did not increase")
-	// ErrKeyChanged reports a descriptor signed by a different key than the one
-	// this peer was admitted under.
-	ErrKeyChanged = errors.New("descriptor is signed by a different key than the admitted one")
 	// ErrWrongNetwork reports a descriptor for a different network than the
 	// record being refreshed.
 	ErrWrongNetwork = errors.New("descriptor is for a different network")
@@ -86,12 +82,14 @@ const (
 // current is nil on first admission; on every later call it is what the registry
 // already holds, which is what makes the revision and key checks possible.
 //
-// Three rules, and each exists because of a specific way a peer could otherwise
+// Two rules, and each exists because of a specific way a peer could otherwise
 // take something back or take something over:
 //
 //   - The revision must increase, so a superseded descriptor cannot be replayed.
-//   - The signing key may not change, so possession of one signing key cannot be
-//     used to hand the network's identity to another key.
+//     This, and the fact that the documents are served from the network's own
+//     domain, is what the contract rests identity on -- a peer's right to speak
+//     for itself comes from controlling that domain, not from holding one
+//     particular key, which is also what leaves key rotation open to it.
 //   - Status is carried over and never read from the descriptor, so a peer an
 //     operator suspended cannot reinstate itself by publishing a new file. What
 //     the peer says about itself is a claim; what we recorded is a decision.
@@ -123,7 +121,6 @@ func Admit(current *Participant, fresh Descriptor, keys KeySet) (Participant, er
 		Keys:          operationalKeys(keys, fresh.Signature.KeyID),
 		Status:        status,
 		Revision:      fresh.Revision,
-		AdmittedKeyID: fresh.Signature.KeyID,
 		ProjectionTtl: ttl,
 	}, nil
 }
@@ -137,10 +134,6 @@ func refreshable(current Participant, fresh Descriptor) error {
 	if fresh.Revision <= current.Revision {
 		return fmt.Errorf("%w: hold %d, offered %d",
 			ErrStaleRevision, current.Revision, fresh.Revision)
-	}
-	if fresh.Signature.KeyID != current.AdmittedKeyID {
-		return fmt.Errorf("%w: admitted under %q, now signed by %q",
-			ErrKeyChanged, current.AdmittedKeyID, fresh.Signature.KeyID)
 	}
 	return nil
 }

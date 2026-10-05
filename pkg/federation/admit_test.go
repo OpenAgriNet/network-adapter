@@ -64,8 +64,8 @@ func TestAdmitBuildsTheRecord(t *testing.T) {
 	if admitted.Status != StatusActive {
 		t.Errorf("status = %q, want %q on first admission", admitted.Status, StatusActive)
 	}
-	if admitted.Revision != 1 || admitted.AdmittedKeyID != "gov-1" {
-		t.Errorf("revision/key = %d/%q, want 1/gov-1", admitted.Revision, admitted.AdmittedKeyID)
+	if admitted.Revision != 1 {
+		t.Errorf("revision = %d, want 1", admitted.Revision)
 	}
 }
 
@@ -134,19 +134,32 @@ func TestRefreshRefusesAStaleRevision(t *testing.T) {
 	}
 }
 
-// A peer may rotate the keys it publishes, but may not change which key speaks
-// for the network. Otherwise anyone who obtained one signing key could hand the
-// identity to another.
-func TestRefreshRefusesADifferentSigningKey(t *testing.T) {
+// A peer MAY change which key signs its descriptor, and the refresh is accepted.
+//
+// Deliberate, and the contract's own choice. Identity rests on serving the two
+// documents from the network's own domain -- that is what proves who you are --
+// plus a revision that only increases, so an old copy cannot be replayed.
+// Pinning the signing key as well would add a second basis for identity and
+// make key rotation impossible, which the contract lists as still open.
+func TestRefreshAcceptsADifferentSigningKey(t *testing.T) {
 	peer := newNetwork(t)
-	current, _ := Admit(nil, peer.issues(t, 1), peer.keys)
+	current, err := Admit(nil, peer.issues(t, 1), peer.keys)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
 
 	newPublic, newPrivate, _ := ed25519.GenerateKey(nil)
-	resigned, _ := Sign(descriptorAt(2), "gov-2", newPrivate)
+	resigned, err := Sign(descriptorAt(2), "gov-2", newPrivate)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
 
-	_, err := Admit(&current, resigned, keysetOf(t, "gov-2", newPublic))
-	if !errors.Is(err, ErrKeyChanged) {
-		t.Fatalf("err = %v, want ErrKeyChanged", err)
+	refreshed, err := Admit(&current, resigned, keysetOf(t, "gov-2", newPublic))
+	if err != nil {
+		t.Fatalf("a rotated signing key was refused: %v", err)
+	}
+	if refreshed.Revision != 2 {
+		t.Fatalf("revision = %d, want the refreshed 2", refreshed.Revision)
 	}
 }
 

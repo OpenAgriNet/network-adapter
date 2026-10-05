@@ -88,10 +88,10 @@ type ProviderRecordLookup interface {
 // question from the others: not "what is this sender's key", keyed by an inbound
 // header, but "who have we agreed to deal with", which has no caller and no key.
 //
-// It deliberately does NOT list by role. A deployment's own network-layer
-// adapter carries role "network" too, and crawling ourselves would be the least
-// useful possible outcome. What makes a participant a peer is that an operator
-// admitted it, which the registry records as admittedKeyId.
+// It lists by role, and that is NOT sufficient on its own: a deployment's own
+// network-layer adapter carries role "network" too. The caller drops itself,
+// because it knows its own network id and the registry does not. Crawling
+// ourselves would be the least useful possible outcome.
 type AdmittedPeerLookup interface {
 	// AdmittedPeers returns the ACTIVE peer networks. A suspended peer is
 	// omitted rather than returned with a status for the caller to check:

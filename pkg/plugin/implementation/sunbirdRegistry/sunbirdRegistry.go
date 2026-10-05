@@ -193,11 +193,6 @@ type participant struct {
 	BaseURL       string `json:"baseUrl"`
 	Keys          []key  `json:"keys"`
 
-	// AdmittedKeyID is present only on a peer network an operator admitted.
-	// Absent on everything else, including this deployment's own network-layer
-	// adapter -- which is why it, and not role, is what identifies a peer.
-	AdmittedKeyID string `json:"admittedKeyId"`
-
 	// ProjectionTtl is in seconds, as the schema stores it. Zero means the
 	// record predates the field, NOT that the peer forbade caching -- a peer
 	// that forbids caching is refused at admission and never written here, so
@@ -439,10 +434,10 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 
 // AdmittedPeers implements definition.AdmittedPeerLookup.
 //
-// Filtered on role server-side and on admittedKeyId client-side, because the
-// registry's filter is an exact match and admittedKeyId has no "is present"
-// form. Role alone would include this deployment's own network-layer adapter,
-// which carries it.
+// Filtered on role, which is all the registry is asked for. Role alone also
+// matches this deployment's OWN network-layer adapter, so the caller drops
+// itself from the list -- it knows its own network id and the registry does
+// not, which is the only reason that check does not live here.
 func (c *Client) AdmittedPeers(ctx context.Context) ([]model.Subscription, error) {
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry admitted peers")
@@ -457,11 +452,6 @@ func (c *Client) AdmittedPeers(ctx context.Context) ([]model.Subscription, error
 
 	peers := make([]model.Subscription, 0, len(participants))
 	for _, p := range participants {
-		if p.AdmittedKeyID == "" {
-			// Role "network" without an admission record: our own network-layer
-			// adapter, not a peer.
-			continue
-		}
 		if !strings.EqualFold(p.Status, statusActive) {
 			continue
 		}

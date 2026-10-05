@@ -132,7 +132,6 @@ type participantRecord struct {
 	Role          string      `json:"role"`
 	Keys          []publicKey `json:"keys,omitempty"`
 	Revision      int         `json:"revision,omitempty"`
-	AdmittedKeyID string      `json:"admittedKeyId,omitempty"`
 	// ProjectionTtl is in SECONDS, which is the unit the descriptor declares
 	// and the schema stores. The Go side carries a time.Duration; the
 	// conversion happens here, at the boundary, so neither side has to
@@ -184,7 +183,6 @@ func recordFor(p federation.Participant) (participantRecord, error) {
 		Role:          federation.RoleNetwork,
 		Keys:          keys,
 		Revision:      p.Revision,
-		AdmittedKeyID: p.AdmittedKeyID,
 		ProjectionTtl: int(p.ProjectionTtl / time.Second),
 	}, nil
 }

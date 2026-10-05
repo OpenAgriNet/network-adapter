@@ -440,6 +440,13 @@ func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
 		if peer.URL == "" {
 			continue
 		}
+		// Ourselves. This deployment's own network-layer adapter carries role
+		// "network" too, and the registry has no way to tell which record is
+		// the caller's -- we do, from the network id we were configured with.
+		// Crawling ourselves would be the least useful possible outcome.
+		if c.peers != nil && strings.EqualFold(peer.SubscriberID, c.peers.localNetwork) {
+			continue
+		}
 		targets = append(targets, peerTarget{
 			NetworkID:    peer.SubscriberID,
 			DiscoveryURL: trimmedURL(peer.URL),
