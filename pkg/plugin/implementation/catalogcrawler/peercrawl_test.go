@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 )
 
@@ -100,7 +101,11 @@ func TestCrawlPeerSendsASignedDiscover(t *testing.T) {
 // Our OWN network id goes in the context, not the peer's. It is what the peer
 // scopes its answer by, and so what keeps a third network's cached rows out of
 // what we receive.
-func TestCrawlPeerDeclaresOurNetwork(t *testing.T) {
+// The discover names WHOSE CATALOGS we want, not who is asking.
+//
+// A peer's database holds its own catalogs and copies of what it crawled
+// elsewhere. Naming the peer is what leaves those copies behind.
+func TestCrawlPeerAsksForThePeersOwnCatalogs(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -112,15 +117,18 @@ func TestCrawlPeerDeclaresOurNetwork(t *testing.T) {
 		crawlPeer(context.Background(), peerTarget{NetworkID: "maha", DiscoveryURL: server.URL})
 
 	envelope, _ := body["context"].(map[string]any)
-	if envelope["networkId"] != "bharatvistar.oan.local" {
-		t.Fatalf("networkId = %v, want our own network", envelope["networkId"])
+	if envelope["networkId"] != "maha" {
+		t.Fatalf("networkId = %v, want the peer we are asking", envelope["networkId"])
 	}
 }
 
-// A peer's catalogue is stored visible to OUR network and no one else. That
-// single value is the whole no-re-export rule: a third network asking us
-// matches nothing, with no origin column needed to enforce it.
-func TestCrawlPeerStoresAPeersCatalogVisibleToUsOnly(t *testing.T) {
+// A crawled catalogue stays labelled as the SOURCE network's. We hold a copy;
+// we do not become its owner.
+//
+// This is what makes "answer with your own data only" true by construction: a
+// peer asks us for a specific owner, so copies of a third network's data cannot
+// match. Stamping our own id here would relabel Maha's catalog as ours.
+func TestCrawlPeerKeepsTheSourceNetworkOnWhatItStores(t *testing.T) {
 	server, _ := peerWith(t, 1)
 	push := &recordingPush{}
 
@@ -133,13 +141,26 @@ func TestCrawlPeerStoresAPeersCatalogVisibleToUsOnly(t *testing.T) {
 	if len(push.bodies) != 1 {
 		t.Fatalf("pushed %d catalogs, want 1", len(push.bodies))
 	}
-	body := string(push.bodies[0])
-
-	if !strings.Contains(body, `"bharatvistar.oan.local"`) {
-		t.Errorf("a crawled catalog was not made visible to our own network: %s", body)
+	// The AUDIENCE specifically, not the body as a whole: our own id also
+	// appears as bppId, and legitimately -- we are the one publishing into our
+	// own discovery. Only visibleTo says whose catalog it is.
+	var pushed struct {
+		Message struct {
+			PublishDirectives []struct {
+				VisibleTo []string `json:"visibleTo"`
+			} `json:"publishDirectives"`
+		} `json:"message"`
 	}
-	if strings.Contains(body, "maha.oan.local") {
-		t.Errorf("the peer was named in the audience, which would re-export it: %s", body)
+	if err := json.Unmarshal(push.bodies[0], &pushed); err != nil {
+		t.Fatalf("push body is not JSON: %v", err)
+	}
+	if len(pushed.Message.PublishDirectives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(pushed.Message.PublishDirectives))
+	}
+
+	audience := pushed.Message.PublishDirectives[0].VisibleTo
+	if len(audience) != 1 || audience[0] != "maha.oan.local" {
+		t.Errorf("visibleTo = %v, want only the network that owns it", audience)
 	}
 }
 
@@ -206,5 +227,76 @@ func TestCrawlPeerKeepsTheProviderEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(body, `"bppId":"pocra.mahavistara"`) {
 		t.Errorf("the provider id did not survive the crawl: %s", body)
+	}
+}
+
+// --- who counts as a peer -------------------------------------------------
+
+// fakePeerLookup is a registry that returns whatever the test puts in it.
+type fakePeerLookup struct{ subs []model.Subscription }
+
+func (f fakePeerLookup) Lookup(context.Context, *model.Subscription) ([]model.Subscription, error) {
+	return nil, nil
+}
+
+func (f fakePeerLookup) AdmittedPeers(context.Context) ([]model.Subscription, error) {
+	return f.subs, nil
+}
+
+func peerSub(id string) model.Subscription {
+	return model.Subscription{
+		Subscriber: model.Subscriber{SubscriberID: id, URL: "https://" + id + "/federation/discovery"},
+	}
+}
+
+// We must not crawl OURSELVES.
+//
+// Role "network" matches this deployment's own network-layer adapter as well as
+// a real peer, and the registry cannot tell which record is the caller's. The
+// trap: that adapter does NOT register under the bare network id -- a network
+// "bharatvistar.oan.local" registers it as "network.bharatvistar.oan.local" --
+// so a check that reads only the network id matches nothing and the crawler
+// tries to crawl itself. It did exactly that until this test existed.
+func TestPeerTargetsDropsOurselves(t *testing.T) {
+	crawler := &crawlerImpl{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		peers: &peerCrawl{
+			localNetwork: "bharatvistar.oan.local",
+			subscriberID: "network.bharatvistar.oan.local",
+		},
+		registry: fakePeerLookup{subs: []model.Subscription{
+			peerSub("network.bharatvistar.oan.local"), // our own adapter
+			peerSub("bharatvistar.oan.local"),         // our network id, however it was recorded
+			peerSub("mahavistara.oan.local"),          // an actual peer
+		}},
+	}
+
+	targets, err := crawler.peerTargets(context.Background())
+	if err != nil {
+		t.Fatalf("peerTargets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want only the peer: %+v", len(targets), targets)
+	}
+	if targets[0].NetworkID != "mahavistara.oan.local" {
+		t.Fatalf("target = %q, want the peer", targets[0].NetworkID)
+	}
+}
+
+// A peer with no endpoint is skipped: there is nowhere to send a discover.
+func TestPeerTargetsSkipsAPeerWithNoUrl(t *testing.T) {
+	bare := model.Subscription{Subscriber: model.Subscriber{SubscriberID: "maha.oan.local"}}
+	crawler := &crawlerImpl{
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		peers:    &peerCrawl{localNetwork: "bharatvistar.oan.local", subscriberID: "network.bharatvistar.oan.local"},
+		registry: fakePeerLookup{subs: []model.Subscription{bare}},
+	}
+
+	targets, err := crawler.peerTargets(context.Background())
+	if err != nil {
+		t.Fatalf("peerTargets: %v", err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("got %+v, want none", targets)
 	}
 }

@@ -64,8 +64,12 @@ type requestSigner interface {
 // What a peer returns goes where every other catalog goes -- to
 // discovery-service, through the sink.
 type peerCrawl struct {
-	signer          requestSigner
-	localNetwork    string // our networkId: declared to the peer, and signed over
+	signer requestSigner
+	// localNetwork is our OWN networkId. It is not sent to a peer and not
+	// stamped on what we store -- a crawl names the peer in both places. It is
+	// kept so the crawler can drop ITSELF from the admitted-peer list, which
+	// carries role "network" for our own network-layer adapter too.
+	localNetwork    string
 	subscriberID    string // who we sign as
 	privateKey      string // the operational key, never the governance key
 	window          time.Duration
@@ -98,15 +102,22 @@ type peerCrawl struct {
 // The intent is CONFIGURATION, not a constant: a deployment decides what breadth
 // of catalog it wants to mirror -- a jsonpath filter, a spatial bound, or
 // nothing at all for everything the peer will give us.
-func (p *peerCrawl) discoverBody() ([]byte, error) {
+func (p *peerCrawl) discoverBody(target peerTarget) ([]byte, error) {
 	intent := p.intent
 	if intent == nil {
 		intent = map[string]any{}
 	}
 	return json.Marshal(map[string]any{
-		// Our OWN network id, not the peer's. It tells the peer who is asking,
-		// and its signature validation checks this against the keyId -- the two
-		// disagreeing is what checkIdentity already refuses.
+		// The PEER's network id, because this names WHOSE CATALOGS we want --
+		// not who is asking.
+		//
+		// A peer's database holds its own catalogs and copies of what it crawled
+		// from elsewhere. Asking as ourselves would match whatever that peer
+		// labelled for us, which includes nothing useful and excludes what we
+		// came for. Asking for the peer's own id returns the peer's own data and
+		// leaves a third network's copies behind -- which is the contract's
+		// "answer with your own data only", enforced by the question rather than
+		// by trusting the answer.
 		"context": map[string]any{
 			"action": "discover",
 			// The peer routes on domain and version, so a discover missing
@@ -115,7 +126,7 @@ func (p *peerCrawl) discoverBody() ([]byte, error) {
 			// not the caller.
 			"domain":        p.domain,
 			"version":       p.protocolVersion,
-			"networkId":     p.localNetwork,
+			"networkId":     target.NetworkID,
 			"bapId":         p.subscriberID,
 			"messageId":     uuid.NewString(),
 			"schemaContext": p.schemaContext,
@@ -142,7 +153,7 @@ func (p *peerCrawl) discoverBody() ([]byte, error) {
 
 // fetchPage sends one signed discover and returns what the peer answered.
 func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMessage, error) {
-	body, err := p.discoverBody()
+	body, err := p.discoverBody(target)
 	if err != nil {
 		return nil, fmt.Errorf("build discover for %s: %w", target.NetworkID, err)
 	}
@@ -258,10 +269,21 @@ const defaultProjectionTtl = time.Hour
 // UpdateModeFull, one catalog at a time: a peer that has withdrawn resources
 // must not keep them alive in our cache by omitting them.
 //
-// VisibleTo is OUR network, and that single value is what stops a peer's
-// catalogue being re-exported: we cached it for our own consumers, so a third
-// network asking us matches nothing. It is a Beckn field doing the work, which
-// is why this needs no origin column of its own.
+// VisibleTo is the SOURCE network, so a crawled catalog stays labelled as whose
+// it is. We hold a copy; we do not become its owner.
+//
+// Stamping our OWN id here would say "this is visible to us" about a fact that
+// is really "this belongs to Maha" -- one field carrying two unrelated things,
+// and overwriting the one it is named for. It would also make a third network
+// asking us for OUR catalogs unable to tell a copy from an original.
+//
+// Keeping the owner is what makes "answer with your own data only" true by
+// construction: a peer asks us for a specific owner, so copies of a third
+// network's data cannot match. It is a Beckn field doing the work, which is why
+// this needs no origin column of its own.
+//
+// A local search carries no network id at all, so it is unaffected: it still
+// sees everything we hold, ours and crawled alike.
 func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []json.RawMessage) error {
 	for _, document := range catalogs {
 		meta := sink.PushMeta{
@@ -277,7 +299,7 @@ func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []j
 			// exact. A crawled catalog is never a master -- a master is a
 			// deployment's own shared definition, not something mirrored.
 			CatalogType: "REGULAR",
-			VisibleTo:   []string{p.localNetwork},
+			VisibleTo:   []string{target.NetworkID},
 		}
 		body, err := sink.BuildPushBody(meta, document)
 		if err != nil {

@@ -97,7 +97,10 @@ func (p *peerCrawl) purge(ctx context.Context, networkID, catalogID string) erro
 		Action:        "catalog/publish",
 		UpdateMode:    sink.UpdateModeFull,
 		CatalogType:   "REGULAR",
-		VisibleTo:     []string{p.localNetwork},
+		// The SOURCE network, matching what the crawl stored. A withdrawal that
+		// named a different audience would rewrite the catalog's audience on
+		// its way out instead of simply deactivating it.
+		VisibleTo: []string{networkID},
 	}
 	body, err := sink.BuildPushBody(meta, withdrawn)
 	if err != nil {
