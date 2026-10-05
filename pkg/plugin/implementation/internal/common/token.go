@@ -87,7 +87,7 @@ type tokenResponse struct {
 // issuer that failed. Unclassified they would surface as 500, telling a peer
 // this adapter broke when it did not.
 func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
-	if auth.cfg.Scheme == util.AuthSchemeTokenQuery {
+	if auth.cfg.Scheme == util.AuthSchemeTokenQuery || auth.cfg.Scheme == util.AuthSchemeTokenHeader {
 		return s.exchangeQueryToken(ctx, auth)
 	}
 	return s.exchangeOAuth2Token(ctx, auth)
@@ -103,7 +103,7 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 	cfg := auth.cfg
 	user, secret := os.Getenv(cfg.TokenUserEnv), os.Getenv(cfg.TokenSecretEnv)
 	if user == "" || secret == "" {
-		return "", 0, s.missingCredential(ctx, cfg.Provider, util.AuthSchemeTokenQuery,
+		return "", 0, s.missingCredential(ctx, cfg.Provider, cfg.Scheme,
 			cfg.TokenUserEnv+" and "+cfg.TokenSecretEnv)
 	}
 
