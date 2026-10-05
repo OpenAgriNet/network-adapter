@@ -8,6 +8,11 @@ required:
       $exists(beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone)
     message: "requesting an OTP needs commitmentAttributes.applicantPhone"
     code: SCH_REQUIRED_FIELD_MISSING
+  # Checked before the call: the reply masks the phone as text, so a number
+  # would fail only after PMFBY had already sent the OTP.
+  - check: |
+      $type(beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone) = "string"
+    message: "commitmentAttributes.applicantPhone must be a string"
 
 # PMFBY answers 200 whatever happened; responseCode 1 is the only success.
 reject:

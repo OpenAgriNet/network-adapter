@@ -332,6 +332,15 @@ func TestInit_MissingPhone_Returns400WithoutCallingPMFBY(t *testing.T) {
 	}
 }
 
+func TestInit_NumericPhone_Returns400WithoutSendingOTP(t *testing.T) {
+	h := newHarness(t, &pmfbyStub{}, 0)
+	_, err := h.send(t, request("init", map[string]any{"applicantPhone": 9876543210}))
+	assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
+	if h.pmfby.calls[sendOTPPath] != 0 {
+		t.Error("SendOTP was called for a phone the reply cannot mask")
+	}
+}
+
 func TestInit_PortalRefuses_Returns502(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{answers: map[string]string{
 		sendOTPPath: `{"responseCode":0,"responseMessage":"Mobile 9876543210 not registered"}`}}, 0)
@@ -515,6 +524,8 @@ func TestConfirm_PortalRefuses_Returns502(t *testing.T) {
 		"failure code":        `{"responseCode":0,"responseMessage":"Service error for 9876543210"}`,
 		"no message":          `{"responseCode":0}`,
 		"no code":             `{"responseMessage":"something"}`,
+		"null message":        `{"responseCode":0,"responseMessage":null}`,
+		"empty message":       `{"responseCode":0,"responseMessage":""}`,
 		"code as other value": `{"responseCode":2,"responseMessage":"duplicate"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
