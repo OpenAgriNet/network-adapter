@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/source"
@@ -420,8 +421,32 @@ func (c *crawlerImpl) CrawlPeers(ctx context.Context) (string, error) {
 // A registry that cannot answer yields no peers rather than an error: peer
 // crawling is an addition, and a deployment whose registry plugin does not
 // support it must keep crawling its own providers normally.
+// admittedPeerLookup is the slice of a registry plugin that lists the peer
+// networks an operator has admitted.
+//
+// Declared HERE, at the consumer, and not in pkg/plugin/definition beside the
+// shared lookups. Those are passed between core, the manager and several
+// plugins; this one is asked for in exactly one place -- the line below -- and
+// a federation concept in the shared contract package would be carried by every
+// deployment that never federates. Go satisfies interfaces implicitly, so the
+// registry plugin needs no import and no knowledge that this exists.
+//
+// It answers a different question from the shared lookups: not "what is this
+// sender's key", keyed by an inbound header, but "who have we agreed to deal
+// with", which has no caller and no key.
+type admittedPeerLookup interface {
+	// AdmittedPeers returns the ACTIVE peer networks. A suspended peer is
+	// omitted rather than returned with a status for the caller to check:
+	// deciding who we still deal with belongs in one place.
+	//
+	// It lists by role, which is NOT sufficient on its own -- this deployment's
+	// own network-layer adapter carries role "network" too -- so the caller
+	// drops itself below.
+	AdmittedPeers(ctx context.Context) ([]model.Subscription, error)
+}
+
 func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
-	lookup, ok := c.registry.(definition.AdmittedPeerLookup)
+	lookup, ok := c.registry.(admittedPeerLookup)
 	if !ok {
 		c.log.WarnContext(ctx, "catalogcrawler: registry plugin cannot list admitted peers; none will be crawled")
 		return nil, nil

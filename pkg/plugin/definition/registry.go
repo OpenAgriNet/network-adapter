@@ -80,21 +80,3 @@ type ProviderRecordLookup interface {
 	// consulted, which is not the same as it answering "no".
 	ProviderRecord(ctx context.Context, bindingKey string) (*model.ProviderRecord, error)
 }
-
-// AdmittedPeerLookup lists the peer networks an operator has admitted.
-//
-// Optional, like RegistryMetadataLookup and ProviderRecordLookup, and obtained
-// the same way -- by type-asserting a RegistryLookup. It answers a different
-// question from the others: not "what is this sender's key", keyed by an inbound
-// header, but "who have we agreed to deal with", which has no caller and no key.
-//
-// It lists by role, and that is NOT sufficient on its own: a deployment's own
-// network-layer adapter carries role "network" too. The caller drops itself,
-// because it knows its own network id and the registry does not. Crawling
-// ourselves would be the least useful possible outcome.
-type AdmittedPeerLookup interface {
-	// AdmittedPeers returns the ACTIVE peer networks. A suspended peer is
-	// omitted rather than returned with a status for the caller to check:
-	// deciding who we still deal with belongs in one place.
-	AdmittedPeers(ctx context.Context) ([]model.Subscription, error)
-}

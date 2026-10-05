@@ -432,7 +432,10 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 	return results, nil
 }
 
-// AdmittedPeers implements definition.AdmittedPeerLookup.
+// AdmittedPeers lists the peer networks an operator has admitted.
+//
+// The interface this satisfies is declared by its consumer, the catalog
+// crawler, and satisfied implicitly -- nothing here imports it.
 //
 // Filtered on role, which is all the registry is asked for. Role alone also
 // matches this deployment's OWN network-layer adapter, so the caller drops
