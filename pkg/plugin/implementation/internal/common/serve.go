@@ -13,6 +13,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // Run serves the request when it is this step's capability, and does nothing
@@ -135,6 +136,10 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return fmt.Errorf("provider answered with something that is not JSON: %w", err)
 	}
 
+	if err := s.reject(ctx, plan.BindingKey, call.Mappings, beckn, answer, upstreamResponse); err != nil {
+		return err
+	}
+
 	// The same file's other half. It is handed what each party sent, plus
 	// whatever prerequisites resolved, under _local.
 	becknResponse, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionResponse, map[string]any{
@@ -156,6 +161,28 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	ctx.ResponseBody = becknResponse
 	log.Infof(ctx, "served %s in %d bytes", plan.BindingKey, len(becknResponse))
 	return nil
+}
+
+// rejecter is a mapper that can also refuse a provider's answer. Optional, so
+// mappers and mapping files that never refuse need nothing new.
+type rejecter interface {
+	Reject(ctx context.Context, mappingRef string, input any) error
+}
+
+// reject checks the provider's answer against the mapping's reject conditions.
+//
+// A 200 can still be a refusal. The provider's own words go to the log, never
+// to the caller: the mapping says what the caller is told.
+func (s *Step) reject(ctx context.Context, bindingKey, mappingRef string, beckn, answer any, raw []byte) error {
+	mapper, ok := s.mapper.(rejecter)
+	if !ok {
+		return nil
+	}
+	err := mapper.Reject(ctx, mappingRef, map[string]any{"beckn": beckn, "response": answer})
+	if err != nil {
+		log.Warnf(ctx, "%s refused the request: %s", bindingKey, s.redactString(util.Explain(raw)))
+	}
+	return err
 }
 
 // buildRequest produces what the provider is sent.
