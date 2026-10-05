@@ -27,7 +27,7 @@ type AuthProfile struct {
 	// operator guessing which block to look at.
 	Provider string
 
-	// One of none, basic, header, query, oauth2 or tokenQuery.
+	// One of none, basic, header, query, oauth2, tokenQuery or tokenHeader.
 	Scheme string
 
 	// Variable NAMES, never the values.
@@ -116,21 +116,27 @@ func (a *AuthProfile) validate() error {
 				"%s: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv",
 				a.Provider)
 		}
-	case util.AuthSchemeTokenQuery:
+	case util.AuthSchemeTokenQuery, util.AuthSchemeTokenHeader:
 		// Every one of these is required, and none can be defaulted: the JSON
 		// keys, the response key and the parameter name are all this
 		// provider's spelling, and guessing any of them sends a malformed
 		// request whose rejection says nothing about the cause.
 		if a.TokenURL == "" || a.TokenUserField == "" || a.TokenUserEnv == "" ||
 			a.TokenSecretName == "" || a.TokenSecretEnv == "" ||
-			a.TokenResponseField == "" || a.QueryName == "" {
-			return fmt.Errorf("%s: authScheme tokenQuery requires tokenUrl, "+
-				"tokenUserField, tokenUserEnv, tokenSecretField, tokenSecretEnv, "+
-				"tokenResponseField and queryName", a.Provider)
+			a.TokenResponseField == "" {
+			return fmt.Errorf("%s: authScheme %s requires tokenUrl, "+
+				"tokenUserField, tokenUserEnv, tokenSecretField, tokenSecretEnv "+
+				"and tokenResponseField", a.Provider, a.Scheme)
+		}
+		if a.Scheme == util.AuthSchemeTokenQuery && a.QueryName == "" {
+			return fmt.Errorf("%s: authScheme tokenQuery requires queryName", a.Provider)
+		}
+		if a.Scheme == util.AuthSchemeTokenHeader && a.HeaderName == "" {
+			return fmt.Errorf("%s: authScheme tokenHeader requires headerName", a.Provider)
 		}
 		if a.TokenTTLRaw == "" {
-			return fmt.Errorf("%s: authScheme tokenQuery requires tokenTtl, "+
-				"because the token response carries no expiry to read", a.Provider)
+			return fmt.Errorf("%s: authScheme %s requires tokenTtl, "+
+				"because the token response carries no expiry to read", a.Provider, a.Scheme)
 		}
 		ttl, err := time.ParseDuration(a.TokenTTLRaw)
 		if err != nil {
@@ -152,7 +158,7 @@ func (a *AuthProfile) validate() error {
 	default:
 		return fmt.Errorf(
 			"%s: unknown authScheme %q: must be none, basic, header, query, "+
-				"oauth2 or tokenQuery", a.Provider, a.Scheme)
+				"oauth2, tokenQuery or tokenHeader", a.Provider, a.Scheme)
 	}
 	return nil
 }
@@ -306,6 +312,14 @@ func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
+
+	case util.AuthSchemeTokenHeader:
+		// Exchanged like tokenQuery, placed like header: the bare token.
+		token, err := s.providerToken(req.Context(), auth)
+		if err != nil {
+			return err
+		}
+		req.Header.Set(cfg.HeaderName, token)
 
 	case util.AuthSchemeTokenQuery:
 		// Exchanged like oauth2, placed like query: the same held token, put

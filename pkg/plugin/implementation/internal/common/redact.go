@@ -129,7 +129,7 @@ func (a *authenticator) secretForms() []string {
 			forms = append(forms, encoded)
 		}
 		return forms
-	case util.AuthSchemeTokenQuery:
+	case util.AuthSchemeTokenQuery, util.AuthSchemeTokenHeader:
 		// oauth2's two halves, with query's escaping: the secret goes to the
 		// token endpoint, and the token it returns travels in a QUERY STRING --
 		// which is the exposed placement, so its escaped form has to be
