@@ -25,12 +25,12 @@ func (k *simpleKeyManagerProvider) New(ctx context.Context, registry definition.
 	}
 
 	config := &simplekeymanager.Config{
-		SubscriberID:      subscriberID,
-		KeyID:             cfg["keyId"],
+		SubscriberID:     subscriberID,
+		KeyID:            cfg["keyId"],
 		SigningPrivateKey: cfg["signingPrivateKey"],
 		SigningPublicKey:  cfg["signingPublicKey"],
-		EncrPrivateKey:    cfg["encrPrivateKey"],
-		EncrPublicKey:     cfg["encrPublicKey"],
+		EncrPrivateKey:   cfg["encrPrivateKey"],
+		EncrPublicKey:    cfg["encrPublicKey"],
 	}
 	log.Debugf(ctx, "SimpleKeyManager config mapped: subscriberId=%s, keyId=%s, has_signing_private=%v, has_signing_public=%v, has_encr_private=%v, has_encr_public=%v",
 		config.SubscriberID,

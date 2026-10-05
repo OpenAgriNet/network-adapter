@@ -275,10 +275,10 @@ func TestRegistryClient_Lookup_Cache(t *testing.T) {
 	t.Run("cache miss calls HTTP and writes to cache", func(t *testing.T) {
 		validUntil := time.Now().Add(10 * time.Minute)
 		resp := []model.Subscription{{
-			Subscriber:       model.Subscriber{SubscriberID: "test-np"},
-			KeyID:            "key-1",
+			Subscriber:      model.Subscriber{SubscriberID: "test-np"},
+			KeyID:           "key-1",
 			SigningPublicKey: "registry-key",
-			ValidUntil:       validUntil,
+			ValidUntil:      validUntil,
 		}}
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

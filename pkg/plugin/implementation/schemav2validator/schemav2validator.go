@@ -30,17 +30,17 @@ type payload struct {
 type schemav2Validator struct {
 	config          *Config
 	specMutex       sync.RWMutex
-	specsLoaded     bool                           // true once at least one successful loadAllSpecs has completed
-	actionSchemas   map[string]*openapi3.SchemaRef // merged across primary + all auxiliary specs
-	bodylessActions map[string]struct{}            // merged across primary + all auxiliary specs
-	schemaCache     *schemaCache                   // cache for extended schemas
+	specsLoaded     bool                            // true once at least one successful loadAllSpecs has completed
+	actionSchemas   map[string]*openapi3.SchemaRef  // merged across primary + all auxiliary specs
+	bodylessActions map[string]struct{}              // merged across primary + all auxiliary specs
+	schemaCache     *schemaCache                     // cache for extended schemas
 }
 
 // cachedSpec holds a cached OpenAPI spec.
 type cachedSpec struct {
 	doc             *openapi3.T
 	actionSchemas   map[string]*openapi3.SchemaRef // body operations: action → schema (O(1) lookup)
-	bodylessActions map[string]struct{}            // bodyless operations: path without leading slash → exists
+	bodylessActions map[string]struct{}             // bodyless operations: path without leading slash → exists
 	loadedAt        time.Time
 }
 

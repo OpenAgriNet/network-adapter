@@ -180,9 +180,9 @@ func TestProvider_AuxiliaryConfig(t *testing.T) {
 		{
 			name: "auxiliary collides with primary",
 			config: map[string]string{
-				"type":               "url",
-				"location":           primary.URL,
-				"auxiliaryTypes":     "url",
+				"type":              "url",
+				"location":          primary.URL,
+				"auxiliaryTypes":    "url",
 				"auxiliaryLocations": aux.URL,
 			},
 			// aux and primary serve the same spec — collision on "test" action.
