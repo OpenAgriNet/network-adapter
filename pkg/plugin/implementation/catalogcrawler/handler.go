@@ -52,8 +52,16 @@ func NewHandler(ctx context.Context, crawler definition.Crawler, cfg *handler.Co
 	}
 
 	trigger := newTriggerHandler(crawler)
-	peers := newPeersHandler(crawler)
 	status := newStatusHandler(crawler, cfg)
+
+	// Peer crawling is not part of the Crawler contract -- it is asked for here
+	// and nowhere else, so the interface lives beside this endpoint rather than
+	// in the shared plugin definition. A Crawler that does not implement it
+	// simply does not serve the route, which is what the nil below means.
+	var peers http.Handler
+	if federated, ok := crawler.(peerCrawler); ok {
+		peers = newPeersHandler(federated)
+	}
 
 	log.Debugf(ctx, "catalogCrawl handler %s initialized", moduleName)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +70,13 @@ func NewHandler(ctx context.Context, crawler definition.Crawler, cfg *handler.Co
 		case "trigger":
 			trigger.ServeHTTP(w, r)
 		case "peers":
+			if peers == nil {
+				// Said plainly: the route exists in this build, but this
+				// crawler cannot answer it. A 404 would read as a typo.
+				http.Error(w, "this crawler does not implement peer crawling",
+					http.StatusNotImplemented)
+				return
+			}
 			peers.ServeHTTP(w, r)
 		case "status":
 			status.ServeHTTP(w, r)

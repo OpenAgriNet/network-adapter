@@ -14,17 +14,6 @@ type Crawler interface {
 	Start(ctx context.Context) error
 	// Stop signals the jobs and waits for the in-flight pass to drain.
 	Stop() error
-
-	// CrawlPeers runs an immediate pass over every ADMITTED PEER NETWORK.
-	//
-	// A different input model from CrawlRegistry, because a peer is a different
-	// thing: it publishes no catalog index, so it is asked with a signed Beckn
-	// discover rather than fetched. It takes no networks because the set is not
-	// the caller's to choose -- a peer is one an operator admitted, and the
-	// registry is the record of that.
-	//
-	// Returns a run ID, or an error when federation is not configured.
-	CrawlPeers(ctx context.Context) (string, error)
 	// CrawlRegistry runs an immediate registry-backed crawl: it discovers the
 	// providers of the given networks (via the configured registry plugin's
 	// RegistryMetadataLookup) and crawls each -- the same registry-based
