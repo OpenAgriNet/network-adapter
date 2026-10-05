@@ -25,12 +25,12 @@ required:
     message: "season must be Kharif, Rabi or Zaid"
 
 # Wrong OTP first: it is the farmer's to fix, so a 400. Any other refusal is
-# PMFBY's, so a 502. "= false" rather than $not: an absent message must read as
-# "not an OTP error", and this engine answers null for string functions on it.
+# PMFBY's, so a 502. Only a string message can name the OTP: an absent or null
+# one reads as "not an OTP error" rather than failing the check.
 reject:
   - check: |
       response.responseCode = 1
-        or ($exists(response.responseMessage) and $contains($lowercase(response.responseMessage), "otp")) = false
+        or ($type(response.responseMessage) = "string" and $contains($lowercase(response.responseMessage), "otp")) = false
     message: "the OTP is wrong or has expired"
     code: BIZ_GENERIC_ERROR
     status: 400
