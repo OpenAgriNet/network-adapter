@@ -38,6 +38,10 @@ response: |
     $commitment := beckn.message.contract.commitments[0];
     $ca := $commitment.commitmentAttributes;
     $ticket := response.responseDynamic;
+    /* PMFBY may send null or "" for a field it has no value for; such a
+       field is dropped rather than mapped as "null" or failing the call. */
+    $isText := function($v) { $type($v) = "string" and $v != "" };
+    $isNumber := function($v) { $type($v) = "number" };
     {
       "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
       "message": {
@@ -48,15 +52,16 @@ response: |
               "@context": $ca.`@context`,
               "@type": $ca.`@type`,
               "ticketNo": $ca.ticketNo,
-              "caseStatus": $exists($ticket.TicketStatus)
+              "caseStatus": $isText($ticket.TicketStatus)
                 ? $uppercase($replace($ticket.TicketStatus, " ", "_")),
-              "grievanceCategory": $exists($ticket.TicketCategoryID) ? {
+              "grievanceCategory": $isNumber($ticket.TicketCategoryID) and $isNumber($ticket.TicketSubCategoryID) ? {
                 "code": $string($ticket.TicketCategoryID) & "." & $string($ticket.TicketSubCategoryID),
-                "name": $ticket.TicketCategoryName & " / " & $ticket.TicketSubCategoryName
+                "name": $isText($ticket.TicketCategoryName) and $isText($ticket.TicketSubCategoryName)
+                  ? $ticket.TicketCategoryName & " / " & $ticket.TicketSubCategoryName
               },
-              "grievanceDescription": $ticket.GrievenceDescription,
-              "filedOn": $ticket.ComplaintDate,
-              "officerReply": $ticket.latestRemark != "" ? $ticket.latestRemark,
+              "grievanceDescription": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription,
+              "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
+              "officerReply": $isText($ticket.latestRemark) ? $ticket.latestRemark,
               "source": "PMFBY"
             }
           }])]
