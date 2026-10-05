@@ -251,23 +251,23 @@ func peerSub(id string) model.Subscription {
 
 // We must not crawl OURSELVES.
 //
-// Role "network" matches this deployment's own network-layer adapter as well as
-// a real peer, and the registry cannot tell which record is the caller's. The
-// trap: that adapter does NOT register under the bare network id -- a network
-// "bharatvistar.oan.local" registers it as "network.bharatvistar.oan.local" --
-// so a check that reads only the network id matches nothing and the crawler
-// tries to crawl itself. It did exactly that until this test existed.
+// Role "network" matches this deployment's own entry as well as a real peer,
+// and the registry cannot tell which record is the caller's.
+//
+// The comparison is a plain one, and it is only plain because a network is now
+// ONE participant: our entry IS our network id. It used to register as
+// "network.<networkId>", so comparing the network id matched nothing and the
+// crawler cheerfully crawled itself -- which is what this test was written for.
 func TestPeerTargetsDropsOurselves(t *testing.T) {
 	crawler := &crawlerImpl{
 		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		peers: &peerCrawl{
 			localNetwork: "bharatvistar.oan.local",
-			subscriberID: "network.bharatvistar.oan.local",
+			subscriberID: "bharatvistar.oan.local",
 		},
 		registry: fakePeerLookup{subs: []model.Subscription{
-			peerSub("network.bharatvistar.oan.local"), // our own adapter
-			peerSub("bharatvistar.oan.local"),         // our network id, however it was recorded
-			peerSub("mahavistara.oan.local"),          // an actual peer
+			peerSub("bharatvistar.oan.local"), // ours
+			peerSub("mahavistara.oan.local"),  // an actual peer
 		}},
 	}
 
@@ -288,7 +288,7 @@ func TestPeerTargetsSkipsAPeerWithNoUrl(t *testing.T) {
 	bare := model.Subscription{Subscriber: model.Subscriber{SubscriberID: "maha.oan.local"}}
 	crawler := &crawlerImpl{
 		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		peers:    &peerCrawl{localNetwork: "bharatvistar.oan.local", subscriberID: "network.bharatvistar.oan.local"},
+		peers:    &peerCrawl{localNetwork: "bharatvistar.oan.local", subscriberID: "bharatvistar.oan.local"},
 		registry: fakePeerLookup{subs: []model.Subscription{bare}},
 	}
 

@@ -198,6 +198,10 @@ type participant struct {
 	// that forbids caching is refused at admission and never written here, so
 	// zero can only mean "not recorded".
 	ProjectionTtl int `json:"projectionTtl"`
+
+	// FederationRole is what this entry is IN RELATION TO US: self, source,
+	// requester or both. Empty on a record written before the field existed.
+	FederationRole string `json:"federationRole"`
 }
 
 // key is one published key. A participant publishes several -- separate signing

@@ -465,18 +465,15 @@ func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
 		if peer.URL == "" {
 			continue
 		}
-		// Ourselves. This deployment's own network-layer adapter carries role
-		// "network" too, and the registry cannot tell which record is the
-		// caller's -- we can, from what we were configured as.
+		// Ourselves. Role "network" matches this deployment's own entry too,
+		// and the registry cannot tell which record is the caller's -- we can,
+		// from the network id we were configured with.
 		//
-		// Checked against our PARTICIPANT id first, because that is what the
-		// adapter actually registers under and it is NOT the bare network id:
-		// a network "bharatvistar.oan.local" registers its network-layer
-		// adapter as "network.bharatvistar.oan.local". Comparing only the
-		// network id matches nothing, and the crawler then tries to crawl
-		// itself -- which is what happened before this check read both.
-		if c.peers != nil && (strings.EqualFold(peer.SubscriberID, c.peers.subscriberID) ||
-			strings.EqualFold(peer.SubscriberID, c.peers.localNetwork)) {
+		// A plain comparison, and it is only plain because a network is now ONE
+		// participant: our entry IS our network id. It used to register as
+		// "network.<networkId>", so comparing the network id matched nothing
+		// and the crawler cheerfully crawled itself.
+		if c.peers != nil && strings.EqualFold(peer.SubscriberID, c.peers.localNetwork) {
 			continue
 		}
 		targets = append(targets, peerTarget{
