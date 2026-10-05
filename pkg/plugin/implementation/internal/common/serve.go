@@ -13,7 +13,6 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // Run serves the request when it is this step's capability, and does nothing
@@ -136,7 +135,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return fmt.Errorf("provider answered with something that is not JSON: %w", err)
 	}
 
-	if err := s.reject(ctx, plan.BindingKey, call.Mappings, beckn, answer, upstreamResponse); err != nil {
+	if err := s.reject(ctx, plan.BindingKey, call.Mappings, beckn, answer); err != nil {
 		return err
 	}
 
@@ -171,16 +170,17 @@ type rejecter interface {
 
 // reject checks the provider's answer against the mapping's reject conditions.
 //
-// A 200 can still be a refusal. The provider's own words go to the log, never
-// to the caller: the mapping says what the caller is told.
-func (s *Step) reject(ctx context.Context, bindingKey, mappingRef string, beckn, answer any, raw []byte) error {
+// A 200 can still be a refusal. The provider's body is not logged: a refusal
+// can echo the farmer's own details back, and redaction only covers
+// credentials. The mapping's message says what was refused.
+func (s *Step) reject(ctx context.Context, bindingKey, mappingRef string, beckn, answer any) error {
 	mapper, ok := s.mapper.(rejecter)
 	if !ok {
 		return nil
 	}
 	err := mapper.Reject(ctx, mappingRef, map[string]any{"beckn": beckn, "response": answer})
 	if err != nil {
-		log.Warnf(ctx, "%s refused the request: %s", bindingKey, s.redactString(util.Explain(raw)))
+		log.Warnf(ctx, "%s refused the request: %v", bindingKey, err)
 	}
 	return err
 }
