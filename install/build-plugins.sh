@@ -51,6 +51,10 @@ plugins=(
     "catalogpublisher"
     "catalogcrawler"
     "vcvalidator:validateVC"
+    # federatedrouter builds as federated.so: the step is named for what it
+    # decides, not for the package it lives in, the same way vcvalidator above
+    # builds as validateVC.
+    "federatedrouter:federated"
 )
 
 for entry in "${plugins[@]}"; do
