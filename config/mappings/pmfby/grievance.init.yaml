@@ -1,33 +1,34 @@
 # PMFBY, openagrinet:PMFBYGrievance, init -> POST /SendOTP. Both directions, one file.
 #
 # Step one of three: send an OTP to the farmer's phone. The commitment stays
-# DRAFT; confirm carries the OTP back with the grievance itself.
+# DRAFT; support carries the OTP back with the grievance itself.
 
+# required holds format checks, which return SCH_INVALID_FORMAT and let an
+# absent field pass. A missing field is refused by the request half under
+# _error, which can name SCH_REQUIRED_FIELD_MISSING.
 required:
-  - check: |
-      $exists(beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone)
-    message: "requesting an OTP needs commitmentAttributes.applicantPhone"
-    code: SCH_REQUIRED_FIELD_MISSING
   # Checked before the call: the reply masks the phone as text, so a number
   # would fail only after PMFBY had already sent the OTP.
   - check: |
-      $type(beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone) = "string"
+      (
+        $phone := beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone;
+        $not($exists($phone)) or $type($phone) = "string"
+      )
     message: "commitmentAttributes.applicantPhone must be a string"
 
-# PMFBY answers 200 whatever happened; responseCode 1 is the only success.
-reject:
-  - check: response.responseCode = 1
-    message: "PMFBY did not send the OTP"
-    code: NET_DOWNSTREAM_UNAVAILABLE
-    status: 502
-
 request: |
-  {
-    "requestorMobileNo": beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone
-  }
+  (
+    $phone := beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone;
+    $exists($phone)
+      ? { "requestorMobileNo": $phone }
+      : { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                      "message": "requesting an OTP needs commitmentAttributes.applicantPhone" } }
+  )
 
-# The phone is masked rather than echoed: enough for the farmer to recognise
-# which number, not enough to read it back.
+# Built from the request alone: SendOTP's reply is not documented, so nothing
+# is read from it, and expiresAt is left out until it is. The phone is masked
+# rather than echoed: enough for the farmer to recognise which number, not
+# enough to read it back.
 response: |
   (
     $commitment := beckn.message.contract.commitments[0];
@@ -38,13 +39,15 @@ response: |
       "message": {
         "contract": $merge([beckn.message.contract, {
           "commitments": [$merge([$commitment, {
-            "status": { "descriptor": { "code": "DRAFT" } },
+            "status": { "descriptor": { "code": "DRAFT", "name": "draft" } },
             "commitmentAttributes": {
               "@context": $ca.`@context`,
               "@type": $ca.`@type`,
+              /* Still OnDemand: an OTP acknowledgement carries no case. */
+              "informationMode": "OnDemand",
+              "scheme": $ca.scheme,
               "otpChallenge": {
-                "sentTo": $substring($phone, 0, 2) & "XXXXXX" & $substring($phone, -2),
-                "expiresAt": $fromMillis($toMillis($now()) + response.responseDynamic.otpValidityInSeconds * 1000)
+                "sentTo": $substring($phone, 0, 2) & "XXXXXX" & $substring($phone, -2)
               }
             }
           }])]
