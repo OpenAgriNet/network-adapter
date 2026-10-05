@@ -1679,3 +1679,134 @@ func TestValidateRejectsAMalformedURL(t *testing.T) {
 		}
 	}
 }
+
+// --- admitted peers ------------------------------------------------------
+
+// peerRecord is a peer network as the registry stores one: role "network", and
+// an id that IS its network id, because admission writes participantId from the
+// descriptor's networkId.
+func peerRecord(participantID, status string, keys ...key) participant {
+	return participant{
+		ParticipantID: participantID,
+		Type:          "node",
+		Role:          "network",
+		Status:        status,
+		BaseURL:       "https://" + participantID + "/federation/discovery",
+		Keys:          keys,
+	}
+}
+
+func TestAdmittedPeersReturnsActiveNetworks(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, recordJSON(t, peerRecord("mahavistara.oan.local", "active", signingKey())))
+	}))
+	defer srv.Close()
+
+	peers, err := newTestClient(t, srv.URL, nil).AdmittedPeers(context.Background())
+	if err != nil {
+		t.Fatalf("AdmittedPeers: %v", err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("got %d peers, want 1", len(peers))
+	}
+	if peers[0].SubscriberID != "mahavistara.oan.local" {
+		t.Errorf("SubscriberID = %q, want the network id", peers[0].SubscriberID)
+	}
+	if peers[0].URL == "" {
+		t.Error("URL is empty; the crawler has nowhere to send a discover")
+	}
+}
+
+// A suspended peer is omitted rather than returned with a status to check.
+// Deciding who we still deal with belongs in one place.
+func TestAdmittedPeersOmitsASuspendedNetwork(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, recordJSON(t,
+			peerRecord("mahavistara.oan.local", "active", signingKey()),
+			peerRecord("tamilvistar.oan.local", "inactive", signingKey()),
+		))
+	}))
+	defer srv.Close()
+
+	peers, err := newTestClient(t, srv.URL, nil).AdmittedPeers(context.Background())
+	if err != nil {
+		t.Fatalf("AdmittedPeers: %v", err)
+	}
+	if len(peers) != 1 || peers[0].SubscriberID != "mahavistara.oan.local" {
+		t.Fatalf("got %v, want only the active peer", peers)
+	}
+}
+
+// A peer with NO usable signing key is still returned.
+//
+// Crawling is outbound: we POST a discover to the peer and sign it with OUR
+// key. A peer's own key matters when it calls US, which is a different path
+// with its own lookup. An earlier version resolved a key here and skipped the
+// peer when it found none -- quietly dropping a network we could still crawl,
+// for a reason belonging to verification.
+func TestAdmittedPeersKeepsANetworkWithNoUsableSigningKey(t *testing.T) {
+	t.Parallel()
+
+	expired := signingKey()
+	expired.Status = "inactive"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, recordJSON(t, peerRecord("mahavistara.oan.local", "active", expired)))
+	}))
+	defer srv.Close()
+
+	peers, err := newTestClient(t, srv.URL, nil).AdmittedPeers(context.Background())
+	if err != nil {
+		t.Fatalf("AdmittedPeers: %v", err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("got %d peers, want the peer kept despite its key", len(peers))
+	}
+}
+
+// A peer carrying no keys at all is still crawlable, for the same reason.
+func TestAdmittedPeersKeepsANetworkWithNoKeys(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, recordJSON(t, peerRecord("mahavistara.oan.local", "active")))
+	}))
+	defer srv.Close()
+
+	peers, err := newTestClient(t, srv.URL, nil).AdmittedPeers(context.Background())
+	if err != nil {
+		t.Fatalf("AdmittedPeers: %v", err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("got %d peers, want 1", len(peers))
+	}
+}
+
+// The peer's declared ttl reaches the caller. It is the peer's licence to cache
+// and the crawler's pacing, so losing it here would silently default it.
+func TestAdmittedPeersCarriesTheDeclaredProjectionTtl(t *testing.T) {
+	t.Parallel()
+
+	record := peerRecord("mahavistara.oan.local", "active", signingKey())
+	record.ProjectionTtl = 300
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, recordJSON(t, record))
+	}))
+	defer srv.Close()
+
+	peers, err := newTestClient(t, srv.URL, nil).AdmittedPeers(context.Background())
+	if err != nil {
+		t.Fatalf("AdmittedPeers: %v", err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("got %d peers, want 1", len(peers))
+	}
+	if peers[0].ProjectionTtl != 5*time.Minute {
+		t.Fatalf("ProjectionTtl = %v, want the declared 300s", peers[0].ProjectionTtl)
+	}
+}

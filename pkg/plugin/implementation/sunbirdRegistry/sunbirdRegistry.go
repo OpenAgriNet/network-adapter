@@ -455,30 +455,15 @@ func (c *Client) AdmittedPeers(ctx context.Context) ([]model.Subscription, error
 		if !strings.EqualFold(p.Status, statusActive) {
 			continue
 		}
-		key, ok := firstActiveSigningKey(p)
-		if !ok {
-			// Admitted, but with nothing to verify its calls. Not usable as a
-			// peer, and saying so beats a crawl that fails opaquely later.
-			log.Warnf(ctx, "OAN registry peer %s has no active signing key", p.ParticipantID)
-			continue
-		}
-		peers = append(peers, toSubscription(p, key, statusSubscribed))
+		// No key is resolved, and none is needed. The caller crawls a peer by
+		// POSTing a discover to its baseUrl, signed with OUR key -- a peer's
+		// own key matters when it calls US, which is a different path with its
+		// own lookup. Picking one here also meant SKIPPING a peer whose key had
+		// expired, quietly removing a network we could still crawl for a reason
+		// belonging to verification.
+		peers = append(peers, toSubscription(p, key{}, statusSubscribed))
 	}
 	return peers, nil
-}
-
-// firstActiveSigningKey returns the participant's usable signing key.
-//
-// Resolved by position rather than by id: the Lookup path is told which key by
-// the request header, and a listing has no header to read, so it has to pick.
-// key.isSigning keeps an encryption key from being mistaken for one.
-func firstActiveSigningKey(p participant) (key, bool) {
-	for _, k := range p.Keys {
-		if k.isSigning() && strings.EqualFold(k.Status, statusActive) && k.publicKey() != "" {
-			return k, true
-		}
-	}
-	return key{}, false
 }
 
 // roleNetwork is the registry role a peer network carries. Necessary for the
