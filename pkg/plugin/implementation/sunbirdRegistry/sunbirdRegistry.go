@@ -633,7 +633,6 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		ValidFrom:        validFrom,
 		ValidUntil:       validUntil,
 		Status:           status,
-		AdmittedKeyID:    p.AdmittedKeyID,
 		ProjectionTtl:    time.Duration(p.ProjectionTtl) * time.Second,
 	}
 }

@@ -34,15 +34,6 @@ type Subscription struct {
 	Nonce              string    `json:"nonce,omitzero"`
 	NetworkMemberships []string  `json:"network_memberships,omitempty"`
 
-	// AdmittedKeyID is set only on a participant an operator ADMITTED as a peer
-	// network -- it is the kid that signed the descriptor on the day of
-	// admission. Empty on every ordinary participant.
-	//
-	// It is what distinguishes a peer network from this deployment's own
-	// network-layer adapter, which carries role "network" too. Role is what a
-	// participant does; this is a record of a decision we made about it.
-	AdmittedKeyID string `json:"admitted_key_id,omitzero"`
-
 	// ProjectionTtl is how long this peer network permits us to keep what we
 	// crawled from it. Set only on an admitted peer; zero on every ordinary
 	// participant, which caches nothing.
@@ -405,25 +396,6 @@ type StepContext struct {
 	InboundAuthSignature string // Raw Base64 signature from the inbound Authorization header's signature="..." attribute
 	IsCallerHandler      bool   // True when the handler is a Caller (outbound); false for Receiver (inbound)
 
-	// VerifiedCaller is the subscriber id the inbound signature PROVED, taken
-	// from the Authorization header's keyId. Empty when nothing was verified.
-	//
-	// Steps that make an authorization or scoping decision must read this and
-	// not the request body. The body is written by the caller; this is not.
-	VerifiedCaller string
-
-	// VerifiedCallerPeerNetwork reports that the verified caller is a peer
-	// network this deployment has admitted.
-	//
-	// NOT the same as "its role is network": this network's own network-layer
-	// adapter carries that role too. What marks a peer is that an operator
-	// admitted it, which the registry records as admittedKeyId. Treating the
-	// role as the test would classify our own network adapter as a foreign peer
-	// and cut it off from everything we crawled.
-	//
-	// It is also not the same as "a signature verified": every caller here
-	// signs, a farmer's app included.
-	VerifiedCallerPeerNetwork bool
 
 	// ResponseBody, when non-empty, is written as the synchronous response in
 	// place of the generated ACK envelope. It is how a step that has already

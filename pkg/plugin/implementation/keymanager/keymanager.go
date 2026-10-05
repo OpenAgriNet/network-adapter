@@ -313,31 +313,6 @@ func (km *KeyMgr) LookupNPKeys(ctx context.Context, subscriberID, uniqueKeyID st
 	return subscribers[0].SigningPublicKey, subscribers[0].EncrPublicKey, nil
 }
 
-// IsAdmittedPeer implements definition.PeerNetworkLookup.
-//
-// It repeats the registry lookup LookupNPKeys made rather than threading the
-// answer back through it: the registry caches on (subscriberID, keyID), so this
-// is a cache hit, and widening LookupNPKeys's signature would touch every caller
-// and every fake in the suite for a value almost none of them want.
-func (km *KeyMgr) IsAdmittedPeer(ctx context.Context, subscriberID, uniqueKeyID string) (bool, error) {
-	if err := validateParams(subscriberID, uniqueKeyID); err != nil {
-		return false, err
-	}
-	subscribers, err := km.Registry.Lookup(ctx, &model.Subscription{
-		Subscriber: model.Subscriber{SubscriberID: subscriberID},
-		KeyID:      uniqueKeyID,
-	})
-	if err != nil {
-		return false, err
-	}
-	if len(subscribers) == 0 {
-		return false, nil
-	}
-	// A non-empty admittedKeyId is the record of an operator's decision, and
-	// nothing else sets it.
-	return subscribers[0].AdmittedKeyID != "", nil
-}
-
 // validateParams checks that subscriberID and uniqueKeyID are not empty.
 func validateParams(subscriberID, uniqueKeyID string) error {
 	if subscriberID == "" {
