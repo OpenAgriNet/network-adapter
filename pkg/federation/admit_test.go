@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"testing"
+	"time"
 )
 
 // network is one peer's published material, kept together so a test can issue a
@@ -199,5 +200,89 @@ func TestAdmitRefusesAnEmptyNetworkID(t *testing.T) {
 
 	if _, err := Admit(nil, descriptor, keys); err != ErrMissingNetwork {
 		t.Fatalf("err = %v, want ErrMissingNetwork", err)
+	}
+}
+
+// ttlOf signs a descriptor declaring a projectionTtl, as a peer would publish it.
+func (n *network) issuesWithTtl(t *testing.T, revision int, seconds *int) Descriptor {
+	t.Helper()
+	d := descriptorAt(revision)
+	d.ProjectionTtl = seconds
+	signed, err := Sign(d, "gov-1", n.private)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	return signed
+}
+
+func seconds(n int) *int { return &n }
+
+// The peer decides how long its data may be kept, and we record it.
+func TestAdmitTakesTheTtlThePeerDeclared(t *testing.T) {
+	peer := newNetwork(t)
+
+	admitted, err := Admit(nil, peer.issuesWithTtl(t, 1, seconds(300)), peer.keys)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if admitted.ProjectionTtl != 5*time.Minute {
+		t.Fatalf("ttl = %v, want the 300s the peer declared", admitted.ProjectionTtl)
+	}
+}
+
+// Zero means "do not cache, query me live". We do not implement live querying,
+// so admitting such a peer and caching anyway would be ignoring the one thing it
+// asked for -- and it would LOOK like it worked, which is why this is refused
+// loudly rather than defaulted quietly.
+func TestAdmitRefusesAPeerThatForbidsCaching(t *testing.T) {
+	peer := newNetwork(t)
+
+	_, err := Admit(nil, peer.issuesWithTtl(t, 1, seconds(0)), peer.keys)
+	if !errors.Is(err, ErrLiveQueryOnly) {
+		t.Fatalf("err = %v, want ErrLiveQueryOnly", err)
+	}
+}
+
+// Silence is not an unlimited licence. A descriptor that says nothing gets a
+// finite default, so nothing is ever kept for ever by omission.
+func TestAdmitDefaultsAnUndeclaredTtlToSomethingFinite(t *testing.T) {
+	peer := newNetwork(t)
+
+	admitted, err := Admit(nil, peer.issuesWithTtl(t, 1, nil), peer.keys)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if admitted.ProjectionTtl != DefaultProjectionTtl {
+		t.Fatalf("ttl = %v, want the default %v", admitted.ProjectionTtl, DefaultProjectionTtl)
+	}
+	if admitted.ProjectionTtl <= 0 {
+		t.Fatal("an undeclared ttl became unbounded")
+	}
+}
+
+func TestAdmitRefusesANegativeTtl(t *testing.T) {
+	peer := newNetwork(t)
+
+	if _, err := Admit(nil, peer.issuesWithTtl(t, 1, seconds(-1)), peer.keys); err == nil {
+		t.Fatal("a negative projectionTtl was accepted")
+	}
+}
+
+// A peer may tighten the licence on a later revision, and the tighter value is
+// what takes effect. Keeping the old one would mean holding data longer than
+// its owner now permits.
+func TestRefreshTakesTheShorterTtl(t *testing.T) {
+	peer := newNetwork(t)
+	current, err := Admit(nil, peer.issuesWithTtl(t, 1, seconds(3600)), peer.keys)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+
+	refreshed, err := Admit(&current, peer.issuesWithTtl(t, 2, seconds(60)), peer.keys)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	if refreshed.ProjectionTtl != time.Minute {
+		t.Fatalf("ttl = %v, want the shorter 60s from the new revision", refreshed.ProjectionTtl)
 	}
 }

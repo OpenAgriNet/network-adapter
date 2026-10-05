@@ -197,6 +197,12 @@ type participant struct {
 	// Absent on everything else, including this deployment's own network-layer
 	// adapter -- which is why it, and not role, is what identifies a peer.
 	AdmittedKeyID string `json:"admittedKeyId"`
+
+	// ProjectionTtl is in seconds, as the schema stores it. Zero means the
+	// record predates the field, NOT that the peer forbade caching -- a peer
+	// that forbids caching is refused at admission and never written here, so
+	// zero can only mean "not recorded".
+	ProjectionTtl int `json:"projectionTtl"`
 }
 
 // key is one published key. A participant publishes several -- separate signing
@@ -628,6 +634,7 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		ValidUntil:       validUntil,
 		Status:           status,
 		AdmittedKeyID:    p.AdmittedKeyID,
+		ProjectionTtl:    time.Duration(p.ProjectionTtl) * time.Second,
 	}
 }
 

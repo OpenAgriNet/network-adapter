@@ -58,6 +58,16 @@ type Descriptor struct {
 
 	Services Services `json:"services"`
 
+	// ProjectionTtl is how long this network permits a peer to keep what it
+	// crawled, in SECONDS. It is the peer's to declare, not the crawler's to
+	// configure: the network that owns the data decides how stale a copy of it
+	// may get.
+	//
+	// A POINTER because absent and zero mean opposite things. Absent is "you
+	// decide"; zero is "do not cache, query me live". Collapsing them to one
+	// int would turn the second into the first, which is exactly backwards.
+	ProjectionTtl *int `json:"projectionTtl,omitempty"`
+
 	// Role-based contacts. Optional, and never personal.
 	Contacts map[string]string `json:"contacts,omitempty"`
 

@@ -42,6 +42,14 @@ type Subscription struct {
 	// network-layer adapter, which carries role "network" too. Role is what a
 	// participant does; this is a record of a decision we made about it.
 	AdmittedKeyID string `json:"admitted_key_id,omitzero"`
+
+	// ProjectionTtl is how long this peer network permits us to keep what we
+	// crawled from it. Set only on an admitted peer; zero on every ordinary
+	// participant, which caches nothing.
+	//
+	// A Duration here and SECONDS in the registry: the unit conversion happens
+	// once, where the record is read, rather than at every use.
+	ProjectionTtl time.Duration `json:"projection_ttl,omitzero"`
 }
 
 // nonUsableKeySubscriptionStatuses are the Subscription.Status values that mean a

@@ -133,6 +133,11 @@ type participantRecord struct {
 	Keys          []publicKey `json:"keys,omitempty"`
 	Revision      int         `json:"revision,omitempty"`
 	AdmittedKeyID string      `json:"admittedKeyId,omitempty"`
+	// ProjectionTtl is in SECONDS, which is the unit the descriptor declares
+	// and the schema stores. The Go side carries a time.Duration; the
+	// conversion happens here, at the boundary, so neither side has to
+	// remember the other's unit.
+	ProjectionTtl int `json:"projectionTtl,omitempty"`
 
 	// OSID is the registry's own id, present on a record that was read back and
 	// absent on one being created. It is what an update is addressed to.
@@ -180,6 +185,7 @@ func recordFor(p federation.Participant) (participantRecord, error) {
 		Keys:          keys,
 		Revision:      p.Revision,
 		AdmittedKeyID: p.AdmittedKeyID,
+		ProjectionTtl: int(p.ProjectionTtl / time.Second),
 	}, nil
 }
 

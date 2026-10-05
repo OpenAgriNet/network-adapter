@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // RoleNetwork is the registry role that makes a participant a peer network
@@ -28,6 +29,36 @@ type Participant struct {
 	Status        string
 	Revision      int
 	AdmittedKeyID string
+
+	// ProjectionTtl is how long we may keep what we crawl from this peer.
+	// Always positive on an admitted record: zero is refused at admission.
+	ProjectionTtl time.Duration
+}
+
+// DefaultProjectionTtl is what a peer that declares none is held to.
+//
+// Finite, and deliberately short. A descriptor silent about how long its data
+// may be kept has not granted an unlimited licence, and the safe reading of
+// silence is "not for long" rather than "for ever".
+const DefaultProjectionTtl = time.Hour
+
+// projectionTtl resolves what a descriptor permits.
+//
+// The three cases are genuinely different and none may be folded into another:
+// absent is consent to decide for ourselves, zero is a refusal to be cached,
+// and a positive value is a bounded licence.
+func projectionTtl(d Descriptor) (time.Duration, error) {
+	if d.ProjectionTtl == nil {
+		return DefaultProjectionTtl, nil
+	}
+	switch seconds := *d.ProjectionTtl; {
+	case seconds < 0:
+		return 0, fmt.Errorf("projectionTtl is negative: %d", seconds)
+	case seconds == 0:
+		return 0, ErrLiveQueryOnly
+	default:
+		return time.Duration(seconds) * time.Second, nil
+	}
 }
 
 var (
@@ -39,6 +70,9 @@ var (
 	// ErrWrongNetwork reports a descriptor for a different network than the
 	// record being refreshed.
 	ErrWrongNetwork = errors.New("descriptor is for a different network")
+	// ErrLiveQueryOnly reports a peer that forbids caching. Honouring it means
+	// querying it on every discover, which this build does not do.
+	ErrLiveQueryOnly = errors.New("peer declares projectionTtl 0 (live query only), which is not implemented")
 )
 
 // StatusActive and StatusInactive are the two the registry uses.
@@ -69,6 +103,11 @@ func Admit(current *Participant, fresh Descriptor, keys KeySet) (Participant, er
 		return Participant{}, fmt.Errorf("admit %s: %w", fresh.NetworkID, err)
 	}
 
+	ttl, err := projectionTtl(fresh)
+	if err != nil {
+		return Participant{}, fmt.Errorf("admit %s: %w", fresh.NetworkID, err)
+	}
+
 	status := StatusActive
 	if current != nil {
 		if err := refreshable(*current, fresh); err != nil {
@@ -85,6 +124,7 @@ func Admit(current *Participant, fresh Descriptor, keys KeySet) (Participant, er
 		Status:        status,
 		Revision:      fresh.Revision,
 		AdmittedKeyID: fresh.Signature.KeyID,
+		ProjectionTtl: ttl,
 	}, nil
 }
 
