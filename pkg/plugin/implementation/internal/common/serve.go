@@ -130,16 +130,12 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	upstreamResponse, err := s.call(ctx, auth, plan.BaseURL, call, upstreamRequest)
 	if err != nil {
-		return err
+		return s.explainRefusal(ctx, plan.BindingKey, call, beckn, local, err)
 	}
 
 	answer, err := decodeBody(upstreamResponse)
 	if err != nil {
 		return fmt.Errorf("provider answered with something that is not JSON: %w", err)
-	}
-
-	if err := s.reject(ctx, plan.BindingKey, call.Mappings, beckn, answer); err != nil {
-		return err
 	}
 
 	// The same file's other half. It is handed what each party sent, plus
@@ -150,6 +146,13 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		"response": answer,
 	})
 	if err != nil {
+		return err
+	}
+	// What the reply means may be a refusal -- nothing on file -- which the
+	// response half says under _error. The provider's body is not logged: it can
+	// echo the farmer's own details, and redaction only covers credentials.
+	if err := refusalIn(becknResponse); err != nil {
+		log.Warnf(ctx, "%s refused the request: %v", plan.BindingKey, err)
 		return err
 	}
 	if len(becknResponse) == 0 {
@@ -165,25 +168,32 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	return nil
 }
 
-// rejecter is a mapper that can also refuse a provider's answer. Optional, so
-// mappers and mapping files that never refuse need nothing new.
-type rejecter interface {
-	Reject(ctx context.Context, mappingRef string, input any) error
-}
-
-// reject checks the provider's answer against the mapping's reject conditions.
+// explainRefusal lets the response half say what a provider's 4xx means.
 //
-// A 200 can still be a refusal. The provider's body is not logged: a refusal
-// can echo the farmer's own details back, and redaction only covers
-// credentials. The mapping's message says what was refused.
-func (s *Step) reject(ctx context.Context, bindingKey, mappingRef string, beckn, answer any) error {
-	mapper, ok := s.mapper.(rejecter)
-	if !ok {
-		return nil
+// The half is run with the status under _status and the body under response.
+// Only an _error it returns is used. A mapping that does not recognise the
+// status, or cannot read the body, leaves the original 502 standing, so
+// capabilities whose mappings ignore _status behave as before.
+func (s *Step) explainRefusal(ctx context.Context, bindingKey string, call model.ActionPlan,
+	beckn any, local map[string]any, err error) error {
+	var refused *providerRefusal
+	if !errors.As(err, &refused) {
+		return err
 	}
-	err := mapper.Reject(ctx, mappingRef, map[string]any{"beckn": beckn, "response": answer})
-	if err != nil {
-		log.Warnf(ctx, "%s refused the request: %v", bindingKey, err)
+	// Not JSON is read as nothing: the status alone may be enough.
+	answer, _ := decodeBody(refused.body)
+	mapped, mapErr := s.mapper.Transform(ctx, call.Mappings, definition.DirectionResponse, map[string]any{
+		"beckn":    beckn,
+		"_local":   local,
+		"response": answer,
+		"_status":  refused.status,
+	})
+	if mapErr != nil {
+		return err
+	}
+	if explained := refusalIn(mapped); explained != nil {
+		log.Warnf(ctx, "%s refused the request: %v", bindingKey, explained)
+		return explained
 	}
 	return err
 }
@@ -200,6 +210,10 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 		"_local": local,
 	})
 	if err != nil {
+		return nil, err
+	}
+	// Refused before the provider is called, so a bad request costs no call.
+	if err := refusalIn(mapped); err != nil {
 		return nil, err
 	}
 	if len(mapped) == 0 {

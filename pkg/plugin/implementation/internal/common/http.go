@@ -129,13 +129,24 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 			s.forgetToken(auth)
 		}
 
-		err := fmt.Errorf("provider returned %s", resp.Status)
 		// 5xx and 429 ask to be tried again. Every other 4xx is a statement
-		// about the request, which will not improve.
+		// about the request, which will not improve -- and which the mapping
+		// may know the meaning of, so it keeps its status and body.
 		if resp.StatusCode < http.StatusInternalServerError && resp.StatusCode != http.StatusTooManyRequests {
-			return nil, util.DoNotRetry(err)
+			return nil, util.DoNotRetry(&providerRefusal{status: resp.StatusCode, text: resp.Status, body: body})
 		}
-		return nil, err
+		return nil, fmt.Errorf("provider returned %s", resp.Status)
 	}
 	return body, nil
 }
+
+// providerRefusal is a 4xx the provider answered with. It is still a failure,
+// but the response half is shown its status and body, so a mapping can say what
+// it means -- a wrong OTP -- rather than the generic 502.
+type providerRefusal struct {
+	status int
+	text   string
+	body   []byte
+}
+
+func (e *providerRefusal) Error() string { return "provider returned " + e.text }

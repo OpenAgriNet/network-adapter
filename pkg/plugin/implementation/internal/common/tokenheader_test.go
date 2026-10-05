@@ -2,14 +2,25 @@
 package common
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
+
+// assertStatus fails unless err is a CodedErr carrying status.
+func assertStatus(t *testing.T, err error, status int) {
+	t.Helper()
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != status {
+		t.Fatalf("error = %v, want a coded %d", err, status)
+	}
+}
 
 // tokenHeaderProfile is tokenQuery's profile under the header scheme. queryName
 // is cleared to prove it is not needed.

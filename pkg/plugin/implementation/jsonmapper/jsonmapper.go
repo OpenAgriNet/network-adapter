@@ -59,10 +59,6 @@ type mappingFile struct {
 	// Required are the preconditions this binding-action imposes on a payload,
 	// verified before either half runs. Absent means none.
 	Required []requirement `yaml:"required"`
-	// Reject are the conditions a provider's answer must meet, verified after
-	// the call and before the response half runs. For an upstream that says
-	// "no" with a 200 and a flag in the body. Absent means none.
-	Reject   []requirement `yaml:"reject"`
 	Request  string        `yaml:"request"`
 	Response string        `yaml:"response"`
 }
@@ -81,10 +77,6 @@ type mappingFile struct {
 type requirement struct {
 	Check   string `yaml:"check"`
 	Message string `yaml:"message"`
-	// Code and Status classify a failed check. Absent means a 400 with the
-	// generic bad-request code.
-	Code   string `yaml:"code"`
-	Status int    `yaml:"status"`
 }
 
 // Config holds configuration parameters for the mapper.
@@ -189,8 +181,6 @@ type cacheEntry struct {
 	directions map[definition.Direction]*compiledMapping
 	// checks are the file's preconditions, in the order it declared them.
 	checks []*compiledRequirement
-	// rejects are the conditions on the provider's answer, likewise in order.
-	rejects []*compiledRequirement
 	// err is a failure that applies to the whole file -- it could not be
 	// fetched, or not parsed -- as opposed to one action failing to compile.
 	err       error
@@ -204,17 +194,7 @@ type cacheEntry struct {
 type compiledRequirement struct {
 	expression jsonata.Expression
 	message    string
-	code       string
-	status     int
 	err        error
-}
-
-// failure is the error a failed check returns, classified as the file says.
-func (r *compiledRequirement) failure() error {
-	if r.status == 0 {
-		return model.NewBadReqErr(r.code, errors.New(r.message))
-	}
-	return model.NewCodedErr(r.status, r.code, errors.New(r.message))
 }
 
 // compiledMapping is one half of a mapping, or the failure that stopped it
@@ -336,22 +316,7 @@ func (m *Mapper) Verify(ctx context.Context, mappingRef string, input any) error
 	if err != nil {
 		return err
 	}
-	return m.check(ctx, mappingRef, entry.checks, input)
-}
-
-// Reject checks the provider's answer against the conditions the mapping
-// declares under reject, in the order declared, and returns the first failure.
-func (m *Mapper) Reject(ctx context.Context, mappingRef string, input any) error {
-	entry, err := m.compiled(ctx, mappingRef)
-	if err != nil {
-		return err
-	}
-	return m.check(ctx, mappingRef, entry.rejects, input)
-}
-
-// check runs one list of conditions over input and returns the first failure.
-func (m *Mapper) check(ctx context.Context, mappingRef string, checks []*compiledRequirement, input any) error {
-	if len(checks) == 0 {
+	if len(entry.checks) == 0 {
 		return nil
 	}
 
@@ -360,7 +325,7 @@ func (m *Mapper) check(ctx context.Context, mappingRef string, checks []*compile
 		return fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
 	}
 
-	for _, precondition := range checks {
+	for _, precondition := range entry.checks {
 		if precondition.err != nil {
 			return precondition.err
 		}
@@ -384,7 +349,7 @@ func (m *Mapper) check(ctx context.Context, mappingRef string, checks []*compile
 		if !holds {
 			// The mapping's own words: the caller is told what is wrong with
 			// their payload, not that an expression somewhere returned false.
-			return precondition.failure()
+			return model.NewBadReqErr("", errors.New(precondition.message))
 		}
 	}
 	return nil
@@ -429,8 +394,8 @@ func (m *Mapper) compiled(ctx context.Context, mappingRef string) (cacheEntry, e
 		if entry, found := m.cached(mappingRef); found {
 			return entry, entry.err
 		}
-		compiled, err := m.fetchAndCompile(ctx, mappingRef)
-		return m.remember(mappingRef, compiled, err), err
+		directions, checks, err := m.fetchAndCompile(ctx, mappingRef)
+		return m.remember(mappingRef, directions, checks, err), err
 	})
 	entry, _ := shared.(cacheEntry)
 	return entry, err
@@ -451,13 +416,18 @@ func (m *Mapper) cached(mappingRef string) (cacheEntry, bool) {
 // remember caches a compiled mapping, or the failure that stopped it compiling.
 // A failure gets the shorter TTL: it should stop hammering a broken reference
 // without outlasting the fix.
-func (m *Mapper) remember(mappingRef string, entry cacheEntry, err error) cacheEntry {
+func (m *Mapper) remember(mappingRef string, directions map[definition.Direction]*compiledMapping,
+	checks []*compiledRequirement, err error) cacheEntry {
 	ttl := m.config.CacheTTL
 	if err != nil {
 		ttl = m.config.NegativeTTL
 	}
-	entry.err = err
-	entry.expiresAt = time.Now().Add(ttl)
+	entry := cacheEntry{
+		directions: directions,
+		checks:     checks,
+		err:        err,
+		expiresAt:  time.Now().Add(ttl),
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -506,20 +476,23 @@ func (m *Mapper) cachedCount() int {
 }
 
 // fetchAndCompile retrieves a mapping and turns it into a runnable expression.
-func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (cacheEntry, error) {
+func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (
+	map[definition.Direction]*compiledMapping, []*compiledRequirement, error) {
 	body, err := m.fetch(ctx, mappingRef)
 	if err != nil {
-		return cacheEntry{}, err
+		return nil, nil, err
 	}
 	file, err := parseMapping(body)
 	if err != nil {
-		return cacheEntry{}, fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
+		return nil, nil, fmt.Errorf("jsonmapper: mapping %q: %w", mappingRef, err)
 	}
 
 	// Preconditions compile with the halves, so one round trip leaves the whole
 	// file ready and a precondition costs no extra fetch.
-	checks := m.compileRequirements(ctx, mappingRef, file.Required)
-	rejects := m.compileRequirements(ctx, mappingRef, file.Reject)
+	checks := make([]*compiledRequirement, 0, len(file.Required))
+	for _, declared := range file.Required {
+		checks = append(checks, m.compileRequirement(ctx, mappingRef, declared))
+	}
 
 	// Both halves are compiled now rather than on first use, so one fetch leaves
 	// the file ready in both directions. A compile failure is recorded against
@@ -527,18 +500,8 @@ func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (cacheE
 	directions := make(map[definition.Direction]*compiledMapping, 2)
 	directions[definition.DirectionRequest] = m.compileMapping(ctx, mappingRef, definition.DirectionRequest, file.Request)
 	directions[definition.DirectionResponse] = m.compileMapping(ctx, mappingRef, definition.DirectionResponse, file.Response)
-	log.Debugf(ctx, "JSON mapper compiled mapping: %s (%d precondition(s), %d reject(s))",
-		mappingRef, len(checks), len(rejects))
-	return cacheEntry{directions: directions, checks: checks, rejects: rejects}, nil
-}
-
-// compileRequirements compiles a list of conditions, keeping their order.
-func (m *Mapper) compileRequirements(ctx context.Context, mappingRef string, declared []requirement) []*compiledRequirement {
-	compiled := make([]*compiledRequirement, 0, len(declared))
-	for _, requirement := range declared {
-		compiled = append(compiled, m.compileRequirement(ctx, mappingRef, requirement))
-	}
-	return compiled
+	log.Debugf(ctx, "JSON mapper compiled mapping: %s (%d precondition(s))", mappingRef, len(checks))
+	return directions, checks, nil
 }
 
 // compileRequirement compiles one precondition, keeping any failure local to it.
@@ -560,8 +523,6 @@ func (m *Mapper) compileRequirement(ctx context.Context, mappingRef string, decl
 	return &compiledRequirement{
 		expression: expression,
 		message:    declared.Message,
-		code:       declared.Code,
-		status:     declared.Status,
 	}
 }
 
