@@ -507,7 +507,7 @@ modules:
 
           # ------------------------------------------------------------------
           # Grievance -- filing a grievance against a scheme and checking it:
-          # init sends an OTP, confirm files the grievance, status reads it back.
+          # init sends an OTP, support files the grievance, status reads it back.
           # ------------------------------------------------------------------
           - id: Grievance
             config:
@@ -518,6 +518,12 @@ modules:
               # capabilityCodeAt every grievance request passes through unserved.
               providerIdAt: "message.contract.commitments[].offer.provider.id"
               capabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type"
+
+              # A support request composes no contract, so it names its provider
+              # and type on its one channel instead. Tried only when the paths
+              # above find nothing. Both or neither, like the pair above.
+              fallbackProviderIdAt: "message.support.channels[].providerId"
+              fallbackCapabilityCodeAt: "message.support.channels[].@type"
 
               # PMFBY issues its own token from its login endpoint
               # (.../krphapi/FGMS/NICUsersLogin) and reads it back as the bare

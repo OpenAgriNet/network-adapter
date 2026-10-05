@@ -33,6 +33,10 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 		// this is a default rather than something to set.
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
+		// Where a support request, which composes no contract, names its
+		// provider and type.
+		FallbackProviderIDAt:     config["fallbackProviderIdAt"],
+		FallbackCapabilityCodeAt: config["fallbackCapabilityCodeAt"],
 	}
 
 	if raw, exists := config["maxResponseBytes"]; exists && raw != "" {
