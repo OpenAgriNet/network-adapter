@@ -1,0 +1,49 @@
+# PMFBY, openagrinet:PMFBYGrievance, init -> POST /SendOTP. Both directions, one file.
+#
+# Step one of three: send an OTP to the farmer's phone. The commitment stays
+# DRAFT; confirm carries the OTP back with the grievance itself.
+
+required:
+  - check: |
+      $exists(beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone)
+    message: "requesting an OTP needs commitmentAttributes.applicantPhone"
+    code: SCH_REQUIRED_FIELD_MISSING
+
+# PMFBY answers 200 whatever happened; responseCode 1 is the only success.
+reject:
+  - check: response.responseCode = 1
+    message: "PMFBY did not send the OTP"
+    code: NET_DOWNSTREAM_UNAVAILABLE
+    status: 502
+
+request: |
+  {
+    "requestorMobileNo": beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone
+  }
+
+# The phone is masked rather than echoed: enough for the farmer to recognise
+# which number, not enough to read it back.
+response: |
+  (
+    $commitment := beckn.message.contract.commitments[0];
+    $ca := $commitment.commitmentAttributes;
+    $phone := $ca.applicantPhone;
+    {
+      "context": $merge([beckn.context, { "action": "on_init", "timestamp": $now() }]),
+      "message": {
+        "contract": $merge([beckn.message.contract, {
+          "commitments": [$merge([$commitment, {
+            "status": { "descriptor": { "code": "DRAFT" } },
+            "commitmentAttributes": {
+              "@context": $ca.`@context`,
+              "@type": $ca.`@type`,
+              "otpChallenge": {
+                "sentTo": $substring($phone, 0, 2) & "XXXXXX" & $substring($phone, -2),
+                "expiresAt": $fromMillis($toMillis($now()) + response.responseDynamic.otpValidityInSeconds * 1000)
+              }
+            }
+          }])]
+        }])
+      }
+    }
+  )
