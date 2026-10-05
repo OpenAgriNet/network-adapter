@@ -300,3 +300,54 @@ func TestPeerTargetsSkipsAPeerWithNoUrl(t *testing.T) {
 		t.Fatalf("got %+v, want none", targets)
 	}
 }
+
+// --- the signature a peer actually receives -------------------------------
+
+// A crawl carries a FULL Authorization header, not a bare signature.
+//
+// It used to send only the base64, which left a peer holding something it could
+// not attribute to anybody: no sender, no key to check it against. The envelope
+// is what makes a signature verifiable at all, and this is the one place
+// outside the handler's sign step that has to build it.
+func TestCrawlSendsAnAttributableSignature(t *testing.T) {
+	var auth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
+	}))
+	defer server.Close()
+
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.subscriberID = "bharatvistar.oan.local"
+	crawl.keyID = "1-abc-def"
+	crawl.crawlPeer(context.Background(),
+		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL})
+
+	if !strings.HasPrefix(auth, "Signature ") {
+		t.Fatalf("Authorization = %q, want a Signature header", auth)
+	}
+	// WHO is asking, so a peer can scope its answer, and WHICH KEY, so it can
+	// pick the right one from among what we published.
+	if !strings.Contains(auth, `keyId="bharatvistar.oan.local|1-abc-def|ed25519"`) {
+		t.Errorf("Authorization names no usable keyId: %s", auth)
+	}
+	for _, part := range []string{"algorithm=", "created=", "expires=", "signature="} {
+		if !strings.Contains(auth, part) {
+			t.Errorf("Authorization is missing %s: %s", part, auth)
+		}
+	}
+}
+
+// The header a crawl builds has to be the SHAPE the handler's sign step
+// produces, because the same validator reads both. This pins the format so a
+// change on one side shows up here rather than at a peer.
+func TestTheAuthorizationShapeMatchesTheSignStep(t *testing.T) {
+	got := authorization("bharatvistar.oan.local", "key-1", 1700000000, 1700000030, "c2ln")
+
+	want := `Signature keyId="bharatvistar.oan.local|key-1|ed25519",algorithm="ed25519",` +
+		`created="1700000000",expires="1700000030",` +
+		`headers="(created) (expires) digest",signature="c2ln"`
+	if got != want {
+		t.Fatalf("header mismatch\n got: %s\nwant: %s", got, want)
+	}
+}

@@ -45,8 +45,11 @@ const (
 
 	// The federated half. Absent means this deployment crawls its own providers
 	// and nothing else, which is every deployment that has admitted no peers.
-	cfgFederationNetworkID  = "federationNetworkId" // our own networkId, declared to a peer
-	cfgFederationKey        = "federationSigningKey"
+	cfgFederationNetworkID = "federationNetworkId" // our own networkId, declared to a peer
+	cfgFederationKey       = "federationSigningKey"
+	// The id the registry filed our key under. It is the second component of
+	// the Authorization keyId, and the only way a peer can look the key up.
+	cfgFederationKeyID      = "federationKeyId"
 	cfgFederationMaxPages   = "federationMaxPages"
 	cfgFederationDomain     = "federationDomain"
 	cfgFederationIntent     = "federationIntent" // raw JSON: the Beckn intent sent to a peer
@@ -338,6 +341,7 @@ func newPeerCrawlFromConfig(
 		localNetwork: networkID,
 		subscriberID: strings.TrimSpace(config[cfgParticipantID]),
 		privateKey:   key,
+		keyID:        strings.TrimSpace(config[cfgFederationKeyID]),
 		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
 		// Empty: mirror everything the peer will give us. A deployment that
 		// wants less sets a jsonpath or spatial intent here.

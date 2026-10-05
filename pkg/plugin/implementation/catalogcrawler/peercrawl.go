@@ -71,7 +71,8 @@ type peerCrawl struct {
 	// carries role "network" for our own network-layer adapter too.
 	localNetwork    string
 	subscriberID    string // who we sign as
-	privateKey      string // the operational key, never the governance key
+	privateKey      string // the network's signing key
+	keyID           string // the id the registry filed that key under
 	window          time.Duration
 	domain          string // the Beckn domain a peer routes on
 	protocolVersion string
@@ -162,7 +163,8 @@ func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMes
 	// federation-specific signature: a cross-network discover is an ordinary
 	// signed Beckn call whose sender happens to be a network.
 	now := time.Now()
-	signature, err := p.signer.Sign(ctx, body, p.privateKey, now.Unix(), now.Add(p.window).Unix())
+	created, expires := now.Unix(), now.Add(p.window).Unix()
+	signature, err := p.signer.Sign(ctx, body, p.privateKey, created, expires)
 	if err != nil {
 		return nil, fmt.Errorf("sign discover for %s: %w", target.NetworkID, err)
 	}
@@ -172,7 +174,7 @@ func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMes
 		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", signature)
+	request.Header.Set("Authorization", authorization(p.subscriberID, p.keyID, created, expires, signature))
 
 	response, err := p.client.Do(request)
 	if err != nil {
@@ -197,6 +199,27 @@ func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMes
 		return nil, fmt.Errorf("decode %s: %w", target.NetworkID, err)
 	}
 	return answer.Message.Catalogs, nil
+}
+
+// authorization builds the header a signed Beckn call carries.
+//
+// The Signer plugin returns the signature and nothing else -- deliberately, it
+// does one cryptographic job -- so the envelope around it is the caller's to
+// build. Every signed request in this system carries the same shape, and this
+// is the one place outside the handler's sign step that has to produce it,
+// because a crawl is a background pass rather than a request moving through a
+// module.
+//
+// keyId is "<who>|<which key>|<algorithm>". Both halves matter: WHO lets a peer
+// know who is asking, and WHICH KEY lets it pick the right one from among what
+// we published. Sending the bare signature -- which this did until now -- left
+// a peer holding something it could not attribute to anybody, and so could not
+// verify even in principle.
+func authorization(subscriberID, keyID string, created, expires int64, signature string) string {
+	return fmt.Sprintf(
+		`Signature keyId="%s|%s|ed25519",algorithm="ed25519",created="%d",expires="%d",`+
+			`headers="(created) (expires) digest",signature="%s"`,
+		subscriberID, keyID, created, expires, signature)
 }
 
 // crawlPeer asks one peer, stores what it returns, and withdraws what it has
