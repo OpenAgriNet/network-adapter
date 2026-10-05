@@ -80,6 +80,12 @@ const (
 	// Inherits query's exposure -- the token reaches proxy logs and transport
 	// errors -- so it is redacted the same way. See redact.
 	AuthSchemeTokenQuery = "tokenQuery"
+
+	// tokenQuery's exchange, header's placement: the token that comes back is
+	// sent as-is in the configured header, with no "Bearer" prefix. For an
+	// upstream with its own login endpoint that reads the bare token from a
+	// header -- PMFBY.
+	AuthSchemeTokenHeader = "tokenHeader"
 )
 
 // CodeUpstreamUnavailable: the provider could not be reached or failed. Not
