@@ -55,6 +55,13 @@ type Config struct {
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
+	// A second place to read a binding key from, tried only when the first
+	// finds none. For an action whose payload composes no contract: a support
+	// request carries its provider and type on its channel instead. Both or
+	// neither; absent means there is no second place.
+	FallbackProviderIDAt     string `yaml:"fallbackProviderIdAt" json:"fallbackProviderIdAt"`
+	FallbackCapabilityCodeAt string `yaml:"fallbackCapabilityCodeAt" json:"fallbackCapabilityCodeAt"`
+
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
 	//
@@ -80,6 +87,7 @@ type Config struct {
 type Step struct {
 	config        *Config
 	paths         Paths
+	fallback      *Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
 	mapper        definition.Mapper
@@ -110,10 +118,15 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	if err != nil {
 		return nil, nil, err
 	}
+	fallback, err := fallbackPaths(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	step := &Step{
 		config:        cfg,
 		paths:         paths,
+		fallback:      fallback,
 		prerequisites: prerequisites,
 		registry:      registry,
 		mapper:        mapper,
@@ -159,6 +172,23 @@ func BindingPaths(cfg *Config) (Paths, error) {
 		return Paths{}, err
 	}
 	return paths, nil
+}
+
+// fallbackPaths resolves the second place a binding key may be read from, or
+// nil when none is configured. Both halves or neither, for the reason
+// BindingPaths gives.
+func fallbackPaths(cfg *Config) (*Paths, error) {
+	if cfg.FallbackProviderIDAt == "" && cfg.FallbackCapabilityCodeAt == "" {
+		return nil, nil
+	}
+	if cfg.FallbackProviderIDAt == "" || cfg.FallbackCapabilityCodeAt == "" {
+		return nil, errors.New("fallbackProviderIdAt and fallbackCapabilityCodeAt are set together or not at all")
+	}
+	paths := Paths{ProviderID: cfg.FallbackProviderIDAt, CapabilityCode: cfg.FallbackCapabilityCodeAt}
+	if err := paths.Validate(); err != nil {
+		return nil, fmt.Errorf("fallback %w", err)
+	}
+	return &paths, nil
 }
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.

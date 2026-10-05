@@ -23,6 +23,9 @@ import (
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
 	binding, err := BindingFrom(s.paths, ctx.Body)
+	if errors.Is(err, errNoBinding) && s.fallback != nil {
+		binding, err = BindingFrom(*s.fallback, ctx.Body)
+	}
 	if errors.Is(err, errNoBinding) {
 		return nil
 	}
