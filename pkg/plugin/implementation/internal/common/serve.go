@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -220,6 +221,33 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 		log.Debugf(ctx, "the request half of %s produced nothing; sending an empty request", call.Mappings)
 	}
 	return mapped, nil
+}
+
+// refusalIn returns the error a mapping half asks for under the reserved
+// _error field -- {status, code, message}, status absent meaning 400 -- or nil
+// when the document carries none. 202 is an answer with nothing in it, so it
+// is an ACK carrying the reason.
+func refusalIn(mapped []byte) error {
+	var document map[string]json.RawMessage
+	if json.Unmarshal(mapped, &document) != nil || document["_error"] == nil {
+		return nil
+	}
+	var r struct {
+		Status  int    `json:"status"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(document["_error"], &r) != nil || r.Message == "" {
+		return errors.New("a mapping refused the call with an unreadable _error; it needs status, code and message")
+	}
+	switch r.Status {
+	case 0, http.StatusBadRequest:
+		return model.NewBadReqErr(r.Code, errors.New(r.Message))
+	case http.StatusAccepted:
+		return model.NewAckNoCallbackErr(model.StatusACK, &model.Error{Code: r.Code, Message: r.Message})
+	default:
+		return model.NewCodedErr(r.Status, r.Code, errors.New(r.Message))
+	}
 }
 
 // extractAction reads the Beckn action a request is for.
