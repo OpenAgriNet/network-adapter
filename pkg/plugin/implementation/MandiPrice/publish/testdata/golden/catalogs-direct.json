@@ -1,7 +1,7 @@
 [
   {
-    "slug": "KA-current-09",
-    "catalogId": "catalog:mandi-price:KA-current-09",
+    "slug": "KA-current",
+    "catalogId": "catalog:mandi-price:KA-current",
     "content": {
       "context": {
         "action": "catalog/publish",
@@ -14,12 +14,12 @@
         "catalogs": [
           {
             "descriptor": {
-              "code": "MANDI_PRICE_CURRENT_KA_09",
+              "code": "MANDI_PRICE_CURRENT_KA",
               "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation.",
               "name": "Karnataka current mandi prices",
               "shortDesc": "1 Direct price Resources for Karnataka, one per market and commodity, each carrying its latest price."
             },
-            "id": "catalog:mandi-price:KA-current-09",
+            "id": "catalog:mandi-price:KA-current",
             "isActive": true,
             "provider": {
               "descriptor": {
@@ -97,7 +97,7 @@
         ],
         "publishDirectives": [
           {
-            "catalogId": "catalog:mandi-price:KA-current-09",
+            "catalogId": "catalog:mandi-price:KA-current",
             "catalogType": "REGULAR",
             "schemaTypes": [
               "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
@@ -112,8 +112,8 @@
     }
   },
   {
-    "slug": "MH-current-37",
-    "catalogId": "catalog:mandi-price:MH-current-37",
+    "slug": "MH-current",
+    "catalogId": "catalog:mandi-price:MH-current",
     "content": {
       "context": {
         "action": "catalog/publish",
@@ -126,12 +126,12 @@
         "catalogs": [
           {
             "descriptor": {
-              "code": "MANDI_PRICE_CURRENT_MH_37",
+              "code": "MANDI_PRICE_CURRENT_MH",
               "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation.",
               "name": "Maharashtra current mandi prices",
-              "shortDesc": "1 Direct price Resources for Maharashtra, one per market and commodity, each carrying its latest price."
+              "shortDesc": "2 Direct price Resources for Maharashtra, one per market and commodity, each carrying its latest price."
             },
-            "id": "catalog:mandi-price:MH-current-37",
+            "id": "catalog:mandi-price:MH-current",
             "isActive": true,
             "provider": {
               "descriptor": {
@@ -142,6 +142,54 @@
               "id": "test-participant"
             },
             "resources": [
+              {
+                "descriptor": {
+                  "code": "MANDI_PRICE_OBSERVATION",
+                  "name": "Onion prices at Nashik on 2026-08-30",
+                  "shortDesc": "Minimum, maximum, and modal onion prices reported by Nashik for 2026-08-30."
+                },
+                "id": "resource:mandi-price:price:102:23",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "arrivalDate": "2026-08-30",
+                  "commodityGroup": "Vegetables",
+                  "generatedAt": "\u003ctimestamp\u003e",
+                  "grade": "Non-FAQ",
+                  "informationMode": "Direct",
+                  "market": {
+                    "district": "Nashik",
+                    "marketCode": "102",
+                    "marketName": "Nashik",
+                    "state": "Maharashtra"
+                  },
+                  "prices": {
+                    "currency": "INR",
+                    "maximum": 2800,
+                    "modal": 2500,
+                    "unit": "quintal"
+                  },
+                  "source": {
+                    "sourceId": "agmarknet",
+                    "sourceName": "Agmarknet Vistaar",
+                    "sourceUri": "https://agmarknet.gov.in/"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    }
+                  ],
+                  "validity": {
+                    "endsAt": "\u003ctimestamp + 2 days\u003e",
+                    "startsAt": "\u003ctimestamp\u003e"
+                  },
+                  "variety": "Other"
+                }
+              },
               {
                 "descriptor": {
                   "code": "MANDI_PRICE_OBSERVATION",
@@ -209,109 +257,7 @@
         ],
         "publishDirectives": [
           {
-            "catalogId": "catalog:mandi-price:MH-current-37",
-            "catalogType": "REGULAR",
-            "schemaTypes": [
-              "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
-            ],
-            "updateMode": "MERGE",
-            "visibleTo": [
-              "test-network"
-            ]
-          }
-        ]
-      }
-    }
-  },
-  {
-    "slug": "MH-current-38",
-    "catalogId": "catalog:mandi-price:MH-current-38",
-    "content": {
-      "context": {
-        "action": "catalog/publish",
-        "messageId": "\u003cuuid\u003e",
-        "timestamp": "\u003ctimestamp\u003e",
-        "transactionId": "\u003cuuid\u003e",
-        "version": "2.0.0"
-      },
-      "message": {
-        "catalogs": [
-          {
-            "descriptor": {
-              "code": "MANDI_PRICE_CURRENT_MH_38",
-              "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation.",
-              "name": "Maharashtra current mandi prices",
-              "shortDesc": "1 Direct price Resources for Maharashtra, one per market and commodity, each carrying its latest price."
-            },
-            "id": "catalog:mandi-price:MH-current-38",
-            "isActive": true,
-            "provider": {
-              "descriptor": {
-                "code": "AGMARKNET-01",
-                "name": "Agmarknet Vistaar",
-                "shortDesc": "Provider of live agricultural market price information."
-              },
-              "id": "test-participant"
-            },
-            "resources": [
-              {
-                "descriptor": {
-                  "code": "MANDI_PRICE_OBSERVATION",
-                  "name": "Onion prices at Nashik on 2026-08-30",
-                  "shortDesc": "Minimum, maximum, and modal onion prices reported by Nashik for 2026-08-30."
-                },
-                "id": "resource:mandi-price:price:102:23",
-                "resourceAttributes": {
-                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
-                  "@type": "openagrinet:MandiPrice",
-                  "arrivalDate": "2026-08-30",
-                  "commodityGroup": "Vegetables",
-                  "generatedAt": "\u003ctimestamp\u003e",
-                  "grade": "Non-FAQ",
-                  "informationMode": "Direct",
-                  "market": {
-                    "district": "Nashik",
-                    "marketCode": "102",
-                    "marketName": "Nashik",
-                    "state": "Maharashtra"
-                  },
-                  "prices": {
-                    "currency": "INR",
-                    "maximum": 2800,
-                    "modal": 2500,
-                    "unit": "quintal"
-                  },
-                  "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
-                  },
-                  "subjectCategories": [
-                    "Market"
-                  ],
-                  "supportedCommodities": [
-                    {
-                      "code": "23",
-                      "name": "Onion"
-                    }
-                  ],
-                  "validity": {
-                    "endsAt": "\u003ctimestamp + 2 days\u003e",
-                    "startsAt": "\u003ctimestamp\u003e"
-                  },
-                  "variety": "Other"
-                }
-              }
-            ],
-            "validity": {
-              "endDate": "\u003ctimestamp + 2 days\u003e",
-              "startDate": "\u003ctimestamp\u003e"
-            }
-          }
-        ],
-        "publishDirectives": [
-          {
-            "catalogId": "catalog:mandi-price:MH-current-38",
+            "catalogId": "catalog:mandi-price:MH-current",
             "catalogType": "REGULAR",
             "schemaTypes": [
               "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"

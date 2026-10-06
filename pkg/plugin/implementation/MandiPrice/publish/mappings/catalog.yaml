@@ -269,8 +269,8 @@ response: |
       ? [ $map(response, $makePriceResource) ]
       : [ $map(response, $makeResource) ];
 
-    /* MH-current-05 is MANDI_PRICE_CURRENT_MH_05; a split bucket's
-       MH-current-05-2 is MANDI_PRICE_CURRENT_MH_05_2. */
+    /* MH-current is MANDI_PRICE_CURRENT_MH; a split state's
+       MH-current-2 is MANDI_PRICE_CURRENT_MH_2. */
     $directCode := "MANDI_PRICE_CURRENT_" & $replace($replace(_local.catalogSlug, "-current", ""), "-", "_");
 
     $catalog := $isDirect ? {

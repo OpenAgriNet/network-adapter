@@ -84,37 +84,20 @@ response: |
 
     $hasPoint := _local.latitude != "" and _local.longitude != "";
 
-    /* THE BUCKET IS WHAT KEEPS A RESOURCE IN ONE CATALOG. A Direct catalog
-       is published in MERGE mode, which never removes a resource, so a
-       resource that moved to another catalogId would stay behind in the old
-       one with a stale price. Sorting and splitting cannot prevent that
-       here: pairs come and go every week (a pair that reported nothing
-       drops out), and every arrival or departure would shift a split
-       boundary. A bucket fixed by the market's own id cannot shift: a
-       market's resources stay in catalog:mandi-price:<state>-current-<NN>
-       whatever other markets do.
-
-       64 buckets keeps the largest state under the 256-geometry cap per
-       catalog. Measured on 2026-10-06 over the 30-06 to 07-10 window, the
-       fullest bucket is Tamil Nadu's, at 209 (market, commodity) pairs; 16
-       buckets put 607 there and would have split it. The pipeline's
-       chunk.refuseSplitWhen fails the run if a Direct bucket ever does
-       exceed the cap, instead of splitting it.
-       CHANGING THIS NUMBER MOVES EVERY DIRECT RESOURCE; do it only with a
-       plan to deactivate the old catalogs. */
-    $bucket := $pad($string($number(_local.marketId) % 64), -2, "0");
-
     $exists($latest) ? [
       {
         "kind":          "direct",
-        /* Its own group per bucket, so a state's Direct catalogs are
-           separate from its OnDemand one: catalog:mandi-price:MH-current-05
-           beside catalog:mandi-price:MH. */
-        "catalogGroup":  _local.stateCode & "-direct-" & $bucket,
-        "bucket":        $bucket,
+        /* One group per state, apart from the state's OnDemand one:
+           catalog:mandi-price:MH-current beside catalog:mandi-price:MH. A
+           state over the 256-geometry budget splits in order (MH-current,
+           MH-current-2), as OnDemand does. */
+        "catalogGroup":  _local.stateCode & "-direct",
         "resourceKey":   "price:" & _local.marketId & ":" & _local.commodityCode,
-        /* Market, then commodity: only used if one bucket ever exceeds the
-           cap and splits, and then only within that bucket. */
+        /* The order a state is split in: market, then commodity. Pairs come
+           and go week to week, so a split boundary can move and leave a
+           resource's old copy behind in its earlier catalog: MERGE never
+           removes one. Accepted for a state's one-catalog shape; the old
+           copy keeps its own, older price until its validity ends. */
         "orderKey":      $number(_local.marketId) * 100000 + $number(_local.commodityCode),
 
         "stateCode":     _local.stateCode,

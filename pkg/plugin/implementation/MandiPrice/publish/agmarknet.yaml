@@ -93,9 +93,10 @@ inputs:
   #
   #   onDemand  one catalog per state, one resource per market, advertising
   #             what a select can ask for (catalog:mandi-price:MH)
-  #   direct    up to 64 catalogs per state (a fixed bucket per market), one
-  #             resource per market and commodity, carrying its latest price
-  #             (catalog:mandi-price:MH-current-37)
+  #   direct    one catalog per state, split in order when it passes the
+  #             256-geometry budget; one resource per market and commodity,
+  #             carrying its latest price (catalog:mandi-price:MH-current,
+  #             then MH-current-2)
   #   both      the two side by side, from the same run
   #
   # Direct costs one upstream call per traded (market, commodity) pair -- the
@@ -369,9 +370,9 @@ catalog:
   # (MH, MH-2). For OnDemand, orderKey is the numeric marketId on purpose: a
   # new market gets a new, higher id and lands in the last chunk, so no market
   # moves between catalogIds -- under MERGE the old copy would never be
-  # removed. Direct does not rely on this: its prices come and go weekly, so
-  # each market is held in place by a fixed bucket instead (market-price.yaml),
-  # and a split only ever happens inside one bucket.
+  # removed. Direct splits in the same way, by market then commodity, so
+  # a state's prices can shift between chunks as pairs come and go; see
+  # market-price.yaml.
   # `renderBy` is the order a reader sees inside each catalog.
   order: { by: orderKey, direction: asc, renderBy: [marketName, marketId, commodityName] }
 
@@ -382,16 +383,9 @@ catalog:
     # with what the render actually emits as a Point, or a catalog silently
     # goes over the cap and indexes PARTIAL.
     cost: "$exists(latitude) and $exists(longitude) ? 1 : 0"
-    # MH and MH-2 for OnDemand; MH-current-37 (bucket 37) for Direct. A
-    # Direct bucket that would exceed the budget fails the run (refuseSplitWhen)
-    # instead of becoming MH-current-37-2. A slug
+    # MH and MH-2 for OnDemand; MH-current and MH-current-2 for Direct. A slug
     # becomes a filename, so it cannot carry a colon.
-    slug: "${stateCode}${kind = 'direct' ? '-current-' & bucket : ''}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
-    # A Direct bucket is fixed by the market's id so its resources never change
-    # catalogId; splitting one by order would move them, and MERGE leaves the
-    # old copy behind. So a Direct bucket over the budget is an error, not a
-    # split. OnDemand still splits (MH, MH-2): its order key is stable.
-    refuseSplitWhen: "kind = 'direct'"
+    slug: "${stateCode}${kind = 'direct' ? '-current' : ''}${chunkIndex > 1 ? '-' & chunkIndex : ''}"
 
   identity:
     catalogId: catalog:mandi-price:${slug}
