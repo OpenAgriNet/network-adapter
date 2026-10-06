@@ -32,7 +32,7 @@ import (
 
 var update = flag.Bool("update", false, "rewrite the golden file from this run's output")
 
-const goldenPath = "testdata/golden/catalogs.json"
+const goldenOnDemandPath = "testdata/golden/catalog-ondemand.json"
 
 // The whole pipeline, end to end, against the fake upstream, compared byte
 // for byte.
@@ -56,25 +56,25 @@ func TestGoldenCatalogs(t *testing.T) {
 	got := renderGolden(t, report)
 
 	if *update {
-		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(goldenOnDemandPath), 0o755); err != nil {
 			t.Fatalf("creating the golden directory: %v", err)
 		}
-		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
-			t.Fatalf("writing %s: %v", goldenPath, err)
+		if err := os.WriteFile(goldenOnDemandPath, got, 0o644); err != nil {
+			t.Fatalf("writing %s: %v", goldenOnDemandPath, err)
 		}
-		t.Logf("golden file rewritten: %s -- read the diff before committing it", goldenPath)
+		t.Logf("golden file rewritten: %s -- read the diff before committing it", goldenOnDemandPath)
 		return
 	}
 
-	want, err := os.ReadFile(goldenPath)
+	want, err := os.ReadFile(goldenOnDemandPath)
 	if err != nil {
-		t.Fatalf("reading %s (run with -update to create it): %v", goldenPath, err)
+		t.Fatalf("reading %s (run with -update to create it): %v", goldenOnDemandPath, err)
 	}
 	if string(got) != string(want) {
 		// The whole documents, not a first-difference offset: the reader
 		// needs to see WHAT changed, and these are small.
 		t.Errorf("the pipeline's output no longer matches %s.\n\n--- want ---\n%s\n\n--- got ---\n%s",
-			goldenPath, want, got)
+			goldenOnDemandPath, want, got)
 	}
 }
 
@@ -164,7 +164,7 @@ func stabiliseKeys(node any, keys map[string]string) {
 	}
 }
 
-const goldenDirectPath = "testdata/golden/catalogs-direct.json"
+const goldenDirectPath = "testdata/golden/catalog-direct.json"
 
 // directVolatile adds the Direct resources' wall-clock fields: a price is
 // published with the moment it was generated and is valid for a day from it.
