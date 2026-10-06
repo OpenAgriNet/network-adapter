@@ -683,15 +683,12 @@ func TestPublishStagedDropsAnEmptyRow(t *testing.T) {
 	}
 }
 
-// A peer declares what it can speak; the crawl asks for exactly that.
+// A network declares what it can speak, and the crawl asks for exactly that.
 //
 // Translated at crawl time, not at admission: the registry record keeps
 // agreeing with the descriptor it was read from.
-func TestSchemaContextComesFromThePeersDeclaration(t *testing.T) {
-	crawl := newPeerCrawl(t, &recordingPush{})
-	crawl.schemaContext = []string{"https://configured.example/schema/Fallback/v0.1/context.jsonld"}
-
-	got := crawl.schemaContextsFor(peerTarget{SchemaPacks: []string{
+func TestSchemaContextComesFromTheirDeclaration(t *testing.T) {
+	got := newPeerCrawl(t, &recordingPush{}).schemaContextsFor(peerTarget{SchemaPacks: []string{
 		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/WeatherObservation/v0.1/attributes.yaml",
 		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/api-schemas/PMFBYGrievance/v0.1/attributes.yaml",
 	}})
@@ -710,13 +707,10 @@ func TestSchemaContextComesFromThePeersDeclaration(t *testing.T) {
 	}
 }
 
-// A peer that declared nothing is crawled exactly as it was before a peer could
-// say anything about this.
-func TestSchemaContextFallsBackToConfig(t *testing.T) {
-	configured := []string{"https://configured.example/schema/Fallback/v0.1/context.jsonld"}
+// A network that declared nothing is asked with NO schema filter. Nothing is
+// substituted -- what it does with an unnarrowed filter is its decision.
+func TestNoDeclarationMeansNoSchemaFilter(t *testing.T) {
 	crawl := newPeerCrawl(t, &recordingPush{})
-	crawl.schemaContext = configured
-
 	for name, target := range map[string]peerTarget{
 		"none":       {},
 		"empty":      {SchemaPacks: []string{}},
@@ -724,9 +718,8 @@ func TestSchemaContextFallsBackToConfig(t *testing.T) {
 		"noFilePart": {SchemaPacks: []string{"https://example.test/"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := crawl.schemaContextsFor(target)
-			if len(got) != 1 || got[0] != configured[0] {
-				t.Errorf("got %v, want the configured %v", got, configured)
+			if got := crawl.schemaContextsFor(target); len(got) != 0 {
+				t.Errorf("got %v, want no filter at all", got)
 			}
 		})
 	}

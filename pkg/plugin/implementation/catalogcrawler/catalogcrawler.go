@@ -391,7 +391,6 @@ func newPeerCrawlFromConfig(
 		domain:          stringOr(config[cfgFederationDomain], defaultFederationDomain),
 		protocolVersion: stringOr(config[cfgFederationVersion], defaultProtocolVersion),
 		intent:          federationIntent(config[cfgFederationIntent]),
-		schemaContext:   splitNonEmpty(config[cfgFederationSchemas]),
 		maxPages:        int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
 		client:          &http.Client{Timeout: timeout},
 		sink:            catalogs,

@@ -90,15 +90,8 @@ type peerCrawl struct {
 	domain          string // the Beckn domain a peer routes on
 	protocolVersion string
 
-	// schemaContext is what we are willing to mirror, by schema.
-	//
-	// It is also what makes a jsonpath intent usable at all: a filter that
-	// narrows nothing is refused, and schemaContext is one of the three things
-	// that may narrow it first. Empty is valid, but then the intent has to
-	// narrow on its own.
-	schemaContext []string
-	intent        map[string]any // configured: what breadth of catalog to mirror
-	maxPages      int
+	intent   map[string]any // configured: what breadth of catalog to mirror
+	maxPages int
 	// pageSize is the `limit` query parameter. 0 asks once with no limit.
 	//
 	// It counts RESOURCES, not catalogs -- discovery ranks resources, pages
@@ -535,28 +528,27 @@ func withPage(raw string, limit, offset int) string {
 // URIs used to interpret the message schema".
 const packContextFile = "context.jsonld"
 
-// schemaContextsFor is what a discover to this peer filters on.
+// schemaContextsFor is what a discover to this network filters on.
 //
-// The peer's own declaration where it made one, and our configured list
-// otherwise. A peer that declared nothing is crawled exactly as it was before
-// it could say anything about this.
+// Its OWN declaration, translated: a pack URL names the pack's attributes.yaml
+// while a discover filters on the context.jsonld beside it.
 //
-// Translated here rather than stored translated: the registry record keeps
-// agreeing with the descriptor it was read from, and a change to this mapping
-// does not need every admitted peer re-admitted.
+// Nothing else. A network that declared no schemaPacks is asked with no schema
+// filter, and what it does with that is its decision -- a peer refusing an
+// unnarrowed filter is a clearer signal than us quietly substituting a list it
+// never agreed to.
 func (p *peerCrawl) schemaContextsFor(target peerTarget) []string {
-	if len(target.SchemaPacks) == 0 {
-		return p.schemaContext
-	}
+	return contextsOf(target.SchemaPacks)
+}
 
-	contexts := make([]string, 0, len(target.SchemaPacks))
-	for _, pack := range target.SchemaPacks {
+// contextsOf translates pack URLs into the context URLs a discover filters on,
+// dropping any that name no file.
+func contextsOf(packs []string) []string {
+	contexts := make([]string, 0, len(packs))
+	for _, pack := range packs {
 		if context := contextURLOf(pack); context != "" {
 			contexts = append(contexts, context)
 		}
-	}
-	if len(contexts) == 0 {
-		return p.schemaContext
 	}
 	return contexts
 }
