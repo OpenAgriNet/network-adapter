@@ -4,12 +4,12 @@
 # Step two of two: read a lodged grievance back. status carries a contract,
 # and the ask is in commitmentAttributes:
 #
-#   applicantId   the registration number the grievance was filed under
-#   filedOn       the date on_support returned, which picks this grievance out
+#   registrationNo  the registration number the grievance was filed under
+#   filedOn         the date on_support returned, which picks this grievance out
 #
-# The registration number is accepted as applicantId, the name the grievance
-# architecture uses, or registrationNo, the name the PMKISANGrievance pack
-# gives the same field.
+# A Contract has no orderId, so the registration number rides here rather than
+# where support carries it. applicantId, its name in an earlier draft of the
+# grievance architecture, is still read when registrationNo is absent.
 #
 # As with support, this file speaks plaintext: the Grievance plugin's envelope
 # adds TokenNo and encrypts on the way out, and decrypts before the response
@@ -25,10 +25,10 @@ required:
   - check: |
       (
         $ca := beckn.message.contract.commitments[0].commitmentAttributes;
-        $id := $exists($ca.applicantId) ? $ca.applicantId : $ca.registrationNo;
+        $id := $exists($ca.registrationNo) ? $ca.registrationNo : $ca.applicantId;
         $not($exists($id)) or ($type($id) = "string" and $exists($match($id, /^[A-Za-z0-9]+$/)[0]))
       )
-    message: "applicantId must be the registration number: ASCII letters and digits only"
+    message: "registrationNo must be the registration number: ASCII letters and digits only"
   - check: |
       (
         $f := beckn.message.contract.commitments[0].commitmentAttributes.filedOn;
@@ -40,10 +40,10 @@ required:
 request: |
   (
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
-    $id := $exists($ca.applicantId) ? $ca.applicantId : $ca.registrationNo;
+    $id := $exists($ca.registrationNo) ? $ca.registrationNo : $ca.applicantId;
     $not($exists($id) and $exists($ca.filedOn))
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "reading a grievance needs applicantId (the registration number) and filedOn: the portal returns every grievance on a registration number, and the filing date picks this one out" } }
+                    "message": "reading a grievance needs registrationNo and filedOn: the portal returns every grievance on a registration number, and the filing date picks this one out" } }
     : {
       "Type":       "Reg_No_Status",
       "IdentityNo": $id
@@ -63,16 +63,25 @@ request: |
 # emitted.
 #
 #   GrievanceDescription  contract.descriptor.longDesc  the complaint, as the
-#                                                       portal holds it
-#   GrievanceStatus       caseStatus.name, verbatim; code derived from it
+#                                                       portal holds it; the
+#                                                       record has no category,
+#                                                       so no code or name
+#   GrievanceStatus       caseStatus.name               verbatim, when present
 #   GrievanceDate         filedOn
-#   OfficerReply          officerReply                  absent while none
-#   OfficeReplyDate       repliedOn                     absent while none
+#   OfficerReply          caseRemark                    absent while none
+#   OfficeReplyDate       remarkedOn                    absent while none
 #
-# Where the portal publishes no GrievanceStatus, the state is inferred: REPLIED
-# when a reply exists, UNDER_REVIEW otherwise. Never a closed state -- that has
-# to come from the portal, and it documents none -- so the commitment stays
-# ACTIVE.
+# caseStatus.code is the network's CaseStatusCode, never the portal's phrase:
+#
+#   - a phrase that names a network state (case and spacing aside) maps to it,
+#     and the phrase is kept in name;
+#   - a phrase it does not recognise maps to UnderReview -- non-terminal and
+#     honest -- with the phrase kept in name;
+#   - no phrase at all: Replied when a remark exists, UnderReview otherwise,
+#     with no name, so a client can tell an inferred state from a stated one.
+#
+# Never an inferred closed state -- that has to come from the portal -- so the
+# commitment stays ACTIVE.
 #
 # A 4xx from the portal reaches this half under _status; each is left to the
 # adapter's 502.
@@ -107,6 +116,13 @@ response: |
     $text := function($v) {
       $type($v) = "string" and $length($trim($v)) > 0 ? $trim($v)
     };
+    /* The network's CaseStatusCode values, keyed by how a portal might spell
+       them: lower case, letters only. */
+    $codes := {
+      "registered": "Registered", "underreview": "UnderReview",
+      "awaitingapplicant": "AwaitingApplicant", "replied": "Replied",
+      "resolved": "Resolved", "rejected": "Rejected", "closed": "Closed"
+    };
 
     $record := $filter($records, function($r) { $iso($r.GrievanceDate) = $ca.filedOn })[0];
     $phrase := $text($record.GrievanceStatus);
@@ -126,7 +142,7 @@ response: |
           "id": beckn.message.contract.id,
           "descriptor": $complaint ? { "longDesc": $complaint },
           "commitments": [{
-            "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+            "status": { "descriptor": { "code": "ACTIVE" } },
             "offer":     $c.offer,
             "resources": $c.resources,
             "commitmentAttributes": {
@@ -134,20 +150,18 @@ response: |
               "@type":           "openagrinet:PMKISANGrievance",
               "informationMode": "Direct",
               "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-              /* The portal's phrase verbatim in name; code is the phrase in
-                 capitals with runs of anything else as one underscore. */
               "caseStatus": $phrase
                 ? {
-                    "code": $uppercase($replace($replace($phrase, /[^A-Za-z0-9]+/, "_"), /^_+|_+$/, "")),
+                    "code": (
+                      $known := $lookup($codes, $lowercase($replace($phrase, /[^A-Za-z]/, "")));
+                      $exists($known) ? $known : "UnderReview"
+                    ),
                     "name": $phrase
                   }
-                : $reply
-                  ? { "code": "REPLIED", "name": "Replied" }
-                  : { "code": "UNDER_REVIEW", "name": "Under Review" },
-              "filedOn":      $iso($record.GrievanceDate),
-              "repliedOn":    $reply ? $iso($record.OfficeReplyDate),
-              "officerReply": $reply,
-              "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
+                : { "code": $reply ? "Replied" : "UnderReview" },
+              "filedOn":    $iso($record.GrievanceDate),
+              "caseRemark": $reply,
+              "remarkedOn": $reply ? $iso($record.OfficeReplyDate)
             }
           }]
         }

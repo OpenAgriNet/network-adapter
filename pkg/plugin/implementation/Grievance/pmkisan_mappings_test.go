@@ -98,7 +98,7 @@ const pkStatusRequest = `{
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicantId": "UP12345678A",
+        "registrationNo": "UP12345678A",
         "filedOn": "2026-09-28"
       }
     }]
@@ -380,11 +380,15 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 			t.Errorf("channel %s = %v, want %v", field, got, want)
 		}
 	}
-	if got := pkAt(t, channel, "caseStatus", "code"); got != "REGISTERED" {
-		t.Errorf("caseStatus.code = %v, want REGISTERED", got)
+	// Asserted, not stated by the portal: the network's code and no name.
+	if got := pkAt(t, channel, "caseStatus"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Registered"}) {
+		t.Errorf("caseStatus = %v, want {code: Registered} with no name", got)
 	}
-	if got := pkAt(t, channel, "source", "sourceId"); got != "pmkisan" {
-		t.Errorf("source.sourceId = %v, want pmkisan", got)
+	if got := pkAt(t, channel, "provider", "id"); got != "pmkisan" {
+		t.Errorf("provider.id = %v, want pmkisan", got)
+	}
+	if _, present := channel.(map[string]any)["source"]; present {
+		t.Error("on_support carries source, which the architecture no longer emits")
 	}
 
 	// filedOn is today in IST -- the date a later status matches on.
@@ -498,16 +502,24 @@ func TestPMKISANStatusAnswersTheGrievanceFiledOnThatDate(t *testing.T) {
 	for field, want := range map[string]any{
 		"informationMode": "Direct",
 		"filedOn":         "2026-09-28",
-		"repliedOn":       "2026-10-01",
-		"officerReply":    "Instalment released on 2026-10-01, credited to the linked account.",
+		"remarkedOn":      "2026-10-01",
+		"caseRemark":      "Instalment released on 2026-10-01, credited to the linked account.",
 	} {
 		if got := pkAt(t, attributes, field); got != want {
 			t.Errorf("%s = %v, want %v", field, got, want)
 		}
 	}
-	// No GrievanceStatus on this record, and a reply exists: inferred.
-	if got := pkAt(t, attributes, "caseStatus"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "REPLIED", "name": "Replied"}) {
-		t.Errorf("caseStatus = %v, want REPLIED/Replied", got)
+	// No GrievanceStatus on this record, and a remark exists: inferred, so
+	// the network's code and no name.
+	if got := pkAt(t, attributes, "caseStatus"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Replied"}) {
+		t.Errorf("caseStatus = %v, want {code: Replied} with no name", got)
+	}
+	if _, present := attributes.(map[string]any)["source"]; present {
+		t.Error("on_status carries source, which the architecture no longer emits")
+	}
+	commitmentStatus := pkAt(t, pkDecode(t, body), "message", "contract", "commitments", 0, "status", "descriptor")
+	if fmt.Sprint(commitmentStatus) != fmt.Sprint(map[string]any{"code": "ACTIVE"}) {
+		t.Errorf("commitment status = %v, want {code: ACTIVE}", commitmentStatus)
 	}
 
 	// The allow-list: nothing about the farmer, and not the other grievance.
@@ -519,16 +531,27 @@ func TestPMKISANStatusAnswersTheGrievanceFiledOnThatDate(t *testing.T) {
 	}
 }
 
-func TestPMKISANStatusKeepsThePortalsOwnStatusPhrase(t *testing.T) {
-	answer := strings.Replace(pkStatusAnswer, `"GrievanceDate": "28/09/2026 11:04:12",`,
-		`"GrievanceDate": "2026-09-28", "GrievanceStatus": "Pending at District",`, 1)
-	body, err := runPMKISAN(t, newPKPortal(t, answer), pkStatusRequest)
-	if err != nil {
-		t.Fatalf("Run() = %v", err)
-	}
-	status := pkAt(t, pkDecode(t, body), "message", "contract", "commitments", 0, "commitmentAttributes", "caseStatus")
-	if fmt.Sprint(status) != fmt.Sprint(map[string]any{"code": "PENDING_AT_DISTRICT", "name": "Pending at District"}) {
-		t.Errorf("caseStatus = %v, want the phrase in name and its code derived", status)
+func TestPMKISANStatusMapsThePortalsPhraseToTheNetworksCode(t *testing.T) {
+	for phrase, code := range map[string]string{
+		// A phrase naming a network state maps to it, case and spacing aside.
+		"Under Review": "UnderReview",
+		"REPLIED":      "Replied",
+		"Closed":       "Closed",
+		// One it does not recognise is non-terminal: never inferred closed.
+		"Pending at District": "UnderReview",
+	} {
+		t.Run(phrase, func(t *testing.T) {
+			answer := strings.Replace(pkStatusAnswer, `"GrievanceDate": "28/09/2026 11:04:12",`,
+				`"GrievanceDate": "2026-09-28", "GrievanceStatus": "`+phrase+`",`, 1)
+			body, err := runPMKISAN(t, newPKPortal(t, answer), pkStatusRequest)
+			if err != nil {
+				t.Fatalf("Run() = %v", err)
+			}
+			status := pkAt(t, pkDecode(t, body), "message", "contract", "commitments", 0, "commitmentAttributes", "caseStatus")
+			if fmt.Sprint(status) != fmt.Sprint(map[string]any{"code": code, "name": phrase}) {
+				t.Errorf("caseStatus = %v, want code %s with the phrase kept in name", status, code)
+			}
+		})
 	}
 }
 
@@ -547,14 +570,14 @@ func TestPMKISANStatusReportsNothingOnFileAsAnAcceptedAnswer(t *testing.T) {
 	}
 }
 
-func TestPMKISANStatusAcceptsThePacksNameForTheRegistrationNumber(t *testing.T) {
-	request := strings.Replace(pkStatusRequest, `"applicantId"`, `"registrationNo"`, 1)
+func TestPMKISANStatusStillReadsTheEarlierApplicantIdName(t *testing.T) {
+	request := strings.Replace(pkStatusRequest, `"registrationNo"`, `"applicantId"`, 1)
 	p := newPKPortal(t, pkStatusAnswer)
 	if _, err := runPMKISAN(t, p, request); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
 	if p.sent["IdentityNo"] != pkRegistrationNo {
-		t.Errorf("portal received IdentityNo %v, want the registrationNo", p.sent["IdentityNo"])
+		t.Errorf("portal received IdentityNo %v, want the applicantId", p.sent["IdentityNo"])
 	}
 }
 
