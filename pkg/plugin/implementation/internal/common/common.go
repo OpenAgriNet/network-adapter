@@ -35,6 +35,26 @@ import (
 // still decides what the provider is asked for. Most capabilities need none.
 type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
 
+// Envelope wraps what a provider is sent and unwraps what it answers, for a
+// provider whose bodies are not plain JSON on the wire.
+//
+// A mapping cannot do this: JSONata has no cryptography, and a mapping file is
+// published, so it cannot hold the key or a credential that travels inside the
+// body. So the mapping produces and reads plain JSON, and the envelope works
+// on either side of it:
+//
+//	request half -> Seal -> HTTP -> Open -> response half
+//
+// Seal runs once per request, before the retry loop, so every attempt sends
+// the same sealed bytes. Open runs after the loop, so nothing it refuses is
+// retried. Errors from either reach the caller as returned, so an envelope
+// classifies its own failures (model.NewCodedErr) and keeps plaintext and key
+// material out of them.
+type Envelope interface {
+	Seal(ctx context.Context, mapped []byte) ([]byte, error)
+	Open(ctx context.Context, answer []byte) ([]byte, error)
+}
+
 // Config holds configuration parameters for the step.
 type Config struct {
 	// The capabilities this step answers to. A request for anything else
@@ -61,6 +81,14 @@ type Config struct {
 	// neither; absent means there is no second place.
 	FallbackProviderIDAt     string `yaml:"fallbackProviderIdAt" json:"fallbackProviderIdAt"`
 	FallbackCapabilityCodeAt string `yaml:"fallbackCapabilityCodeAt" json:"fallbackCapabilityCodeAt"`
+
+	// How each provider's bodies are wrapped on the wire, keyed by participant
+	// id like AuthByProvider. A provider not listed speaks plain JSON, which is
+	// every provider but the few that encrypt.
+	//
+	// Built by the domain package, which owns what the envelope is: common only
+	// calls it.
+	EnvelopeByProvider map[string]Envelope `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
@@ -235,6 +263,19 @@ func applyDefaults(cfg *Config) error {
 		profile.Provider = provider
 		if err := profile.validate(); err != nil {
 			return err
+		}
+	}
+
+	// An envelope for a provider the step does not serve is a typo applying to
+	// nothing -- and the provider it was meant for would be sent plaintext.
+	for provider, envelope := range cfg.EnvelopeByProvider {
+		if !served[provider] {
+			return fmt.Errorf(
+				"an envelope is configured for %q, which is not a provider in bindingKeys (%s)",
+				provider, strings.Join(cfg.BindingKeys, ", "))
+		}
+		if envelope == nil {
+			return fmt.Errorf("the envelope configured for %q is nil", provider)
 		}
 	}
 	return nil

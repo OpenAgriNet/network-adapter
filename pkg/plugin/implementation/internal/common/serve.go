@@ -149,14 +149,32 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// Resolved from the binding key, so a step serving several providers
 	// authenticates each as itself. Startup guarantees a profile per served
 	// provider; this guards a record arriving for an undeclared key.
-	auth, configured := s.auth[providerIDFrom(plan.BindingKey)]
+	provider := providerIDFrom(plan.BindingKey)
+	auth, configured := s.auth[provider]
 	if !configured {
 		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
+	}
+
+	// The provider's envelope, when it has one. Sealed once, outside the
+	// retry loop -- after the request half, so a refusal it raised under
+	// _error never reaches here -- and opened once after the loop, so the
+	// response half reads plain JSON.
+	envelope, wrapped := s.config.EnvelopeByProvider[provider]
+	if wrapped {
+		if upstreamRequest, err = envelope.Seal(ctx, upstreamRequest); err != nil {
+			return err
+		}
 	}
 
 	upstreamResponse, err := s.call(ctx, auth, plan.BaseURL, call, upstreamRequest)
 	if err != nil {
 		return err
+	}
+
+	if wrapped {
+		if upstreamResponse, err = envelope.Open(ctx, upstreamResponse); err != nil {
+			return err
+		}
 	}
 
 	answer, err := decodeBody(upstreamResponse)
