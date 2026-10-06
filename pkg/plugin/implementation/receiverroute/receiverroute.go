@@ -1,4 +1,4 @@
-// Package receivercheck sends a request to the participant it names, when that
+// Package receiverroute sends a request to the participant it names, when that
 // is not this one.
 //
 // The gap it fills is specific to federation. A binding key is
@@ -17,7 +17,7 @@
 // it belongs -- context.bppUri, which the consumer copied from the catalog it
 // chose -- so this step sends it there. No configured forwarding address: the
 // destination is published data and comes from the body.
-package receivercheck
+package receiverroute
 
 import (
 	"encoding/json"
@@ -43,7 +43,7 @@ type Step struct{ subscriberID string }
 func New(raw map[string]string) (*Step, error) {
 	subscriberID := strings.TrimSpace(raw["subscriberId"])
 	if subscriberID == "" {
-		return nil, fmt.Errorf("checkReceiver: subscriberId is required; " +
+		return nil, fmt.Errorf("routeByReceiver: subscriberId is required; " +
 			"without it this module cannot tell a request for itself from one for a peer")
 	}
 	return &Step{subscriberID: subscriberID}, nil
@@ -82,7 +82,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 		return err
 	}
 
-	log.Debugf(ctx, "checkReceiver: %s is not %s, forwarding to %s",
+	log.Debugf(ctx, "routeByReceiver: %s is not %s, forwarding to %s",
 		receiver, s.subscriberID, target)
 
 	// The network signs, not the participant the request names. Without this

@@ -1,4 +1,4 @@
-package receivercheck
+package receiverroute
 
 import (
 	"context"
