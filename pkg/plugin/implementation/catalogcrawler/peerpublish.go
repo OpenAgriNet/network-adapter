@@ -17,9 +17,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
-	"github.com/google/uuid"
+	"github.com/beckn/catalog-core/pkg/catalog"
+	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
 )
 
 // stagedStore is the queue half a cross-network crawl needs, declared at the
@@ -29,6 +29,13 @@ type stagedStore interface {
 	ClaimNextStaged(ctx context.Context) (*store.ClaimedStaged, error)
 	CompleteStaged(ctx context.Context, item *store.ClaimedStaged) error
 	RescheduleStaged(ctx context.Context, id, claimID string, nextAttemptAt time.Time) error
+}
+
+// catalogSink is the publish half, declared at the consumer -- the same shape
+// projectionStore and stagedStore follow. Satisfied by sink.DiscoverySink,
+// which is also what the local crawl publishes through.
+type catalogSink interface {
+	Send(ctx context.Context, entry catalog.CatalogEntry, content []byte) (crawlmanager.SinkOutcome, error)
 }
 
 // publishStaged drains the staged queue until there is nothing ready.
@@ -88,45 +95,35 @@ func (p *peerCrawl) publishOne(ctx context.Context, item *store.ClaimedStaged) {
 	}
 }
 
-// sendStaged publishes one catalog, split by size if it needs to be.
+// sendStaged publishes one catalog through the SAME sink the local crawl uses.
 //
-// BatchCatalog is the local crawl's own splitter, used here for the same
-// reason: a catalog larger than the push budget is sent as a lead batch and
-// then MERGE batches that fill in the rest, so no single request exceeds what
-// discovery will accept. Re-publishing stays idempotent because only the lead
-// batch carries the base mode.
+// Nothing here knows about batching, size ceilings or push bodies: Send splits
+// a catalog larger than the budget, stamps this deployment's identity, and
+// reports what discovery did with it. The only thing this path supplies that
+// the local one does not is the entry, because a discover answers with catalogs
+// and not with the index entry they came from.
 func (p *peerCrawl) sendStaged(ctx context.Context, item *store.ClaimedStaged) error {
-	batches, err := sink.BatchCatalog(item.Document, p.maxPushBytes, p.updateMode)
-	if err != nil {
-		return fmt.Errorf("splitting %s: %w", item.CatalogID, err)
+	// A synthetic entry carrying the two fields Send reads off one. Everything
+	// else on a CatalogEntry describes an index -- baseline files, versions,
+	// signatures -- and a crawled catalog has no index behind it.
+	entry := catalog.CatalogEntry{
+		CatalogID: item.CatalogID,
+		// Upper case: the enum is ["MASTER","REGULAR"] and the comparison is
+		// exact. A crawled catalog is never a master -- a master is a
+		// deployment's own shared definition, not something mirrored.
+		CatalogType: "REGULAR",
+		// What becomes visibleTo. The audience the discover ASKED for, because
+		// a discover response carries no visibleTo of its own: it is a publish
+		// directive and is never returned.
+		NetworkIDs: []string{item.Audience},
 	}
 
-	for _, batch := range batches {
-		body, err := sink.BuildPushBody(sink.PushMeta{
-			ParticipantID: p.subscriberID,
-			MessageID:     uuid.NewString(),
-			TransactionID: uuid.NewString(),
-			Timestamp:     time.Now().UTC().Format(time.RFC3339),
-			// discovery-service's /publish checks the body's action against the
-			// route, so this must say publish and not push.
-			Action:     "catalog/publish",
-			UpdateMode: batch.UpdateMode,
-			// Upper case: the enum is ["MASTER","REGULAR"] and the comparison
-			// is exact. A crawled catalog is never a master -- a master is a
-			// deployment's own shared definition, not something mirrored.
-			CatalogType: "REGULAR",
-			// The audience the discover ASKED for. A discover response carries
-			// no visibleTo of its own -- it is a publish directive and is never
-			// returned -- so what we asked for is the only thing the answer is
-			// known to be addressed to.
-			VisibleTo: []string{item.Audience},
-		}, batch.Doc)
-		if err != nil {
-			return fmt.Errorf("building a push for %s: %w", item.CatalogID, err)
-		}
-		if _, err := p.push.Push(ctx, p.pushEndpoint, body); err != nil {
-			return fmt.Errorf("pushing %s: %w", item.CatalogID, err)
-		}
+	outcome, err := p.sink.Send(ctx, entry, item.Document)
+	if err != nil {
+		return fmt.Errorf("publishing %s: %w", item.CatalogID, err)
+	}
+	if !outcome.Accepted {
+		return fmt.Errorf("discovery refused %s: %s", item.CatalogID, outcome.Reason)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package sink
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -138,5 +139,91 @@ func TestDiscoverySink_Send_RejectionIsReported(t *testing.T) {
 	}
 	if outcome.Accepted || !strings.Contains(outcome.Reason, "schema validation failed") {
 		t.Fatalf("outcome = %+v, want rejected with the response body as reason", outcome)
+	}
+}
+
+// The action is CONFIGURABLE, and its default is unchanged.
+//
+// Empty keeps "catalog/push", which is the push route's action and what every
+// existing caller already sends -- changing that default would break them. A
+// deployment whose endpoint is a different route sets it: discovery-service's
+// /publish looks the action up by what the BODY says and serves no action
+// named catalog/push, so an unset one is refused with CTX_ACTION_MISMATCH.
+func TestSendUsesTheConfiguredAction(t *testing.T) {
+	for name, configured := range map[string]string{
+		"default": "",
+		"publish": "catalog/publish",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Context struct {
+						Action string `json:"action"`
+					} `json:"context"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				got = body.Context.Action
+				_, _ = io.WriteString(w, `{}`)
+			}))
+			defer server.Close()
+
+			s := NewDiscoverySink(server.URL, "us", "https://us.example", 0, time.Second)
+			s.Action = configured
+			if _, err := s.Send(context.Background(),
+				catalog.CatalogEntry{CatalogID: "c1"}, []byte(`{"id":"c1"}`)); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+
+			want := configured
+			if want == "" {
+				want = "catalog/push"
+			}
+			if got != want {
+				t.Errorf("action = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// The lead batch's update mode is configurable, and defaults to FULL.
+func TestSendUsesTheConfiguredUpdateMode(t *testing.T) {
+	for name, configured := range map[string]string{
+		"default": "",
+		"merge":   UpdateModeMerge,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Message struct {
+						PublishDirectives []struct {
+							UpdateMode string `json:"updateMode"`
+						} `json:"publishDirectives"`
+					} `json:"message"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if len(body.Message.PublishDirectives) > 0 {
+					got = body.Message.PublishDirectives[0].UpdateMode
+				}
+				_, _ = io.WriteString(w, `{}`)
+			}))
+			defer server.Close()
+
+			s := NewDiscoverySink(server.URL, "us", "https://us.example", 0, time.Second)
+			s.UpdateMode = configured
+			if _, err := s.Send(context.Background(),
+				catalog.CatalogEntry{CatalogID: "c1"}, []byte(`{"id":"c1"}`)); err != nil {
+				t.Fatalf("Send: %v", err)
+			}
+
+			want := configured
+			if want == "" {
+				want = UpdateModeFull
+			}
+			if got != want {
+				t.Errorf("updateMode = %q, want %q", got, want)
+			}
+		})
 	}
 }

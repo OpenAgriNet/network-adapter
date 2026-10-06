@@ -16,6 +16,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
+	"github.com/beckn/catalog-core/pkg/catalog"
+	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
 )
 
 // stubSigner stands in for the Signer plugin. These tests are about what we send
@@ -60,6 +62,37 @@ func newFakeStaged() *fakeStaged {
 }
 
 func stagedKey(networkID, catalogID string) string { return networkID + "|" + catalogID }
+
+// recordingSink captures what was published, so a test can assert on the entry
+// the publisher built -- which is where visibleTo and the catalog type come
+// from now that Send does the rest.
+type recordingSink struct {
+	mu      sync.Mutex
+	entries []catalog.CatalogEntry
+	bodies  [][]byte
+	fail    error
+	refuse  string
+}
+
+func (r *recordingSink) Send(_ context.Context, entry catalog.CatalogEntry, content []byte) (crawlmanager.SinkOutcome, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.fail != nil {
+		return crawlmanager.SinkOutcome{}, r.fail
+	}
+	if r.refuse != "" {
+		return crawlmanager.SinkOutcome{Accepted: false, Reason: r.refuse}, nil
+	}
+	r.entries = append(r.entries, entry)
+	r.bodies = append(r.bodies, content)
+	return crawlmanager.SinkOutcome{Accepted: true}, nil
+}
+
+func (r *recordingSink) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.entries)
+}
 
 // failingPush is a discovery that will not take a push.
 type failingPush struct{}
@@ -130,6 +163,7 @@ func newPeerCrawl(t *testing.T, push catalogPusher) *peerCrawl {
 		push:         push,
 		pushEndpoint: "http://discovery.invalid/publish",
 		store:        newFakeStaged(),
+		sink:         &recordingSink{},
 		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
@@ -211,8 +245,8 @@ func TestCrawlPeerAsksForTheAudienceWeBelongTo(t *testing.T) {
 // crawl of us then matches it and re-imports its own catalogs, every pass.
 func TestCrawlPeerStampsTheAudienceItAskedFor(t *testing.T) {
 	server, _ := peerWith(t, 1)
-	push := &recordingPush{}
-	crawl := newPeerCrawl(t, push)
+	crawl := newPeerCrawl(t, &recordingPush{})
+	published := crawl.sink.(*recordingSink)
 
 	err := crawl.crawlPeer(context.Background(),
 		peerTarget{NetworkID: "maha.oan.local", DiscoveryURL: server.URL})
@@ -221,28 +255,18 @@ func TestCrawlPeerStampsTheAudienceItAskedFor(t *testing.T) {
 	}
 	crawl.publishStaged(context.Background())
 
-	// ONE push, not one per audience: both answers carry the same catalog id,
-	// so they are the same staged row.
-	if len(push.bodies) != 1 {
-		t.Fatalf("pushed %d catalogs, want 1 -- both audiences stage the same id", len(push.bodies))
+	// ONE publish, not one per audience: both answers carry the same catalog
+	// id, so they are the same staged row.
+	if published.count() != 1 {
+		t.Fatalf("published %d catalogs, want 1 -- both audiences stage the same id", published.count())
 	}
-
-	var pushed struct {
-		Message struct {
-			PublishDirectives []struct {
-				VisibleTo []string `json:"visibleTo"`
-			} `json:"publishDirectives"`
-		} `json:"message"`
+	entry := published.entries[0]
+	if len(entry.NetworkIDs) != 1 || entry.NetworkIDs[0] != testSubscriberID {
+		t.Errorf("networkIds = %v, want [%s] -- ours is asked last so it wins",
+			entry.NetworkIDs, testSubscriberID)
 	}
-	if err := json.Unmarshal(push.bodies[0], &pushed); err != nil {
-		t.Fatalf("push body is not JSON: %v", err)
-	}
-	if len(pushed.Message.PublishDirectives) != 1 {
-		t.Fatalf("got %d directives, want 1", len(pushed.Message.PublishDirectives))
-	}
-	audience := pushed.Message.PublishDirectives[0].VisibleTo
-	if len(audience) != 1 || audience[0] != testSubscriberID {
-		t.Errorf("visibleTo = %v, want [%s] -- ours is asked last so it wins", audience, testSubscriberID)
+	if entry.CatalogType != "REGULAR" {
+		t.Errorf("catalogType = %q, want REGULAR -- a crawled catalog is never a master", entry.CatalogType)
 	}
 }
 
@@ -290,18 +314,18 @@ func TestCrawlPeerKeepsTheProviderEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	push := &recordingPush{}
-	crawl := newPeerCrawl(t, push)
+	crawl := newPeerCrawl(t, &recordingPush{})
+	sent := crawl.sink.(*recordingSink)
 	if err := crawl.crawlPeer(context.Background(),
 		peerTarget{NetworkID: "maha.oan.local", DiscoveryURL: server.URL}); err != nil {
 		t.Fatalf("crawlPeer: %v", err)
 	}
 	crawl.publishStaged(context.Background())
 
-	if len(push.bodies) != 1 {
-		t.Fatalf("pushed %d bodies, want 1", len(push.bodies))
+	if sent.count() != 1 {
+		t.Fatalf("published %d catalogs, want 1", sent.count())
 	}
-	body := string(push.bodies[0])
+	body := string(sent.bodies[0])
 
 	// Verbatim, and never rewritten to point at us: the request goes from the
 	// originating adapter straight to the provider, so an adapter that pointed a
@@ -568,9 +592,9 @@ func TestCrawlStagesAndDoesNotPublish(t *testing.T) {
 // The worker publishes what was staged, stamps the audience the crawl asked
 // for, and settles the queue row.
 func TestPublishStagedSendsAndSettles(t *testing.T) {
-	push := &recordingPush{}
-	crawl := newPeerCrawl(t, push)
+	crawl := newPeerCrawl(t, &recordingPush{})
 	staged := crawl.store.(*fakeStaged)
+	published := crawl.sink.(*recordingSink)
 
 	if err := staged.StageAndEnqueue(context.Background(), store.StagedCatalog{
 		NetworkID: "maha.oan.local",
@@ -583,22 +607,15 @@ func TestPublishStagedSendsAndSettles(t *testing.T) {
 
 	crawl.publishStaged(context.Background())
 
-	if len(push.bodies) != 1 {
-		t.Fatalf("pushed %d bodies, want 1", len(push.bodies))
+	if published.count() != 1 {
+		t.Fatalf("published %d catalogs, want 1", published.count())
 	}
-	var pushed struct {
-		Message struct {
-			PublishDirectives []struct {
-				VisibleTo []string `json:"visibleTo"`
-			} `json:"publishDirectives"`
-		} `json:"message"`
+	entry := published.entries[0]
+	if len(entry.NetworkIDs) != 1 || entry.NetworkIDs[0] != testSubscriberID {
+		t.Errorf("networkIds = %v, want [%s]", entry.NetworkIDs, testSubscriberID)
 	}
-	if err := json.Unmarshal(push.bodies[0], &pushed); err != nil {
-		t.Fatalf("push body is not JSON: %v", err)
-	}
-	audience := pushed.Message.PublishDirectives[0].VisibleTo
-	if len(audience) != 1 || audience[0] != testSubscriberID {
-		t.Errorf("visibleTo = %v, want [%s]", audience, testSubscriberID)
+	if entry.CatalogID != "c1" {
+		t.Errorf("catalogId = %q, want c1", entry.CatalogID)
 	}
 	if len(staged.settled) != 1 {
 		t.Errorf("settled %d rows, want 1", len(staged.settled))
@@ -611,7 +628,8 @@ func TestPublishStagedSendsAndSettles(t *testing.T) {
 // A failed publish is rescheduled, not settled, and the content stays staged --
 // so the retry republishes rather than re-asking the network that owns it.
 func TestPublishStagedRetriesOnFailure(t *testing.T) {
-	crawl := newPeerCrawl(t, &failingPush{})
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.sink = &recordingSink{fail: errors.New("discovery is unwell")}
 	staged := crawl.store.(*fakeStaged)
 
 	if err := staged.StageAndEnqueue(context.Background(), store.StagedCatalog{

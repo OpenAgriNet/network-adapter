@@ -116,7 +116,12 @@ const (
 	defaultPeerRefresh = 15 * time.Minute
 
 	defaultFederationDomain = "agriculture"
-	defaultProtocolVersion  = "2.0.0"
+
+	// What discovery-service's /publish route takes. It checks the action the
+	// BODY carries against the actions it serves, and "catalog/push" -- the
+	// sink's own default, and the push route's action -- is not one of them.
+	actionCatalogPublish   = "catalog/publish"
+	defaultProtocolVersion = "2.0.0"
 )
 
 // Provider implements definition.CrawlerProvider.
@@ -170,6 +175,13 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 
 	src := buildSource(config, metadataLookup, log)
 	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgBppURI], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
+	// The action THIS deployment's endpoint takes. The sink defaults to
+	// "catalog/push", which is the push route's action and what a generic
+	// caller sends; discovery-service's /publish looks the action up by what
+	// the BODY says and serves no action of that name, so every push went out
+	// as a CTX_ACTION_MISMATCH. Set here rather than changing the sink's
+	// default, which other callers rely on.
+	snk.Action = actionCatalogPublish
 
 	// The same configured networks drive both registry-backed discovery
 	// (buildSource) and scope filtering (Params.Networks) -- one deployment
@@ -217,7 +229,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		registry:       registry,
 		log:            log,
 		st:             st,
-		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, st, log),
+		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, st, crossNetworkSink(snk, config), log),
 		peerRefresh:    durationSecondsOr(config[cfgFederationRefreshSec], defaultPeerRefresh),
 	}
 	return c, db.Close, nil
@@ -312,6 +324,19 @@ func (m multiSource) Discover(ctx context.Context) ([]crawlmanager.IndexRef, err
 	return refs, nil
 }
 
+// crossNetworkSink is the local sink with the cross-network crawl's own update
+// mode, sharing everything else.
+//
+// A COPY, not the same value: the local crawl publishes a catalog it resolved
+// in full, so FULL is right for it. A crawled catalog arrives a page at a time
+// and FULL would have the second page delete the first, so this half defaults
+// to MERGE. Endpoint, identity, byte ceiling and client are the same.
+func crossNetworkSink(local *sink.DiscoverySink, config map[string]string) *sink.DiscoverySink {
+	crossNetwork := *local
+	crossNetwork.UpdateMode = updateModeOr(config[cfgFederationUpdateMode])
+	return &crossNetwork
+}
+
 // newPeerCrawlFromConfig builds the federated half, or nil when this deployment
 // has none configured.
 //
@@ -323,7 +348,8 @@ func (m multiSource) Discover(ctx context.Context) ([]crawlmanager.IndexRef, err
 // they are FETCHED differs.
 func newPeerCrawlFromConfig(
 	ctx context.Context, config map[string]string, pushEndpoint string,
-	timeout time.Duration, projections projectionStore, staged stagedStore, log *slog.Logger,
+	timeout time.Duration, projections projectionStore, staged stagedStore,
+	catalogs catalogSink, log *slog.Logger,
 ) *peerCrawl {
 	networkID := strings.TrimSpace(config[cfgFederationNetworkID])
 	key := strings.TrimSpace(config[cfgFederationKey])
@@ -354,8 +380,6 @@ func newPeerCrawlFromConfig(
 		privateKey:   key,
 		keyID:        strings.TrimSpace(config[cfgFederationKeyID]),
 		pageSize:     int(int64Or(config[cfgFederationPageSize], defaultPeerPageSize)),
-		updateMode:   updateModeOr(config[cfgFederationUpdateMode]),
-		maxPushBytes: int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes),
 		publishRetry: durationSecondsOr(config[cfgFederationPublishRetrySec], defaultPublishRetry),
 		store:        staged,
 		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
@@ -367,6 +391,7 @@ func newPeerCrawlFromConfig(
 		schemaContext:   splitNonEmpty(config[cfgFederationSchemas]),
 		maxPages:        int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
 		client:          &http.Client{Timeout: timeout},
+		sink:            catalogs,
 		push:            sink.NewClient(timeout),
 		pushEndpoint:    pushEndpoint,
 		projections:     projections,

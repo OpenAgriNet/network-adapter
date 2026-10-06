@@ -106,14 +106,17 @@ type peerCrawl struct {
 	// can straddle a page boundary, which is why every page is accumulated
 	// before anything is pushed.
 	pageSize int
-	// updateMode is how a projection is published: FULL replaces, MERGE upserts.
-	updateMode   string
-	client       *http.Client
+	client   *http.Client
+	// sink is where a staged catalog is published -- the SAME sink the local
+	// crawl uses, so batching, size ceilings and identity stamping are not
+	// repeated here.
+	sink catalogSink
+	// push and pushEndpoint are for WITHDRAWALS only, which the sink cannot
+	// express: a withdrawal is a FULL publish carrying no resources, and the
+	// sink publishes with whatever mode it was configured with -- MERGE on this
+	// path, which would add nothing and delete nothing.
 	push         catalogPusher
 	pushEndpoint string
-	// maxPushBytes is the ceiling one push body may reach, the same one the
-	// local crawl's sink uses. 0 disables splitting.
-	maxPushBytes int64
 	// publishRetry is how long a failed publish waits before the queue offers
 	// it again.
 	publishRetry time.Duration
