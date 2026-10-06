@@ -234,8 +234,7 @@ func (r *stepRunner) dispatch(ctx context.Context, step Step) (any, error) {
 	// two locks, one race. Accepting the key and running sequentially would
 	// be worse: the file would state a parallelism that never happens.
 	if step.Concurrency > 1 {
-		return nil, fmt.Errorf("concurrency: %d is not supported; the JSONata evaluator this "+
-			"pipeline shares is not safe to run in parallel, so only 1 is honoured", step.Concurrency)
+		return nil, fmt.Errorf("concurrency: %d is not supported; only 1 is", step.Concurrency)
 	}
 	if step.As == "" {
 		return nil, fmt.Errorf("forEach needs `as:` to name the loop variable")
@@ -509,9 +508,8 @@ func (r *stepRunner) dedupe(step Step, rc *runContext) (any, error) {
 		}
 	}
 	if missing > 0 {
-		return nil, fmt.Errorf("dedupe on %q: %d of %d records carry no usable %q (absent, null or "+
-			"blank), and records with no identity cannot be deduplicated -- they would all "+
-			"collapse into one", step.With.Key, missing, len(records), step.With.Key)
+		return nil, fmt.Errorf("dedupe on %q: %d of %d records have no usable %q (absent, null or blank)",
+			step.With.Key, missing, len(records), step.With.Key)
 	}
 
 	seen := make(map[string]bool, len(records))
@@ -596,8 +594,7 @@ func (r *stepRunner) elseValue(step Step) (any, error) {
 	// would otherwise be looped over as characters, or fail much further on
 	// with an error that names neither this step nor its else branch.
 	if text, isText := resolved.(string); isText && text != "" {
-		return nil, fmt.Errorf("else.const %s resolved to the text %q, but a step's output "+
-			"must be a list of records; this file has no primitive to turn text into one",
+		return nil, fmt.Errorf("else.const %s resolved to the text %q; a step's output must be a list of records",
 			step.Else.Const, text)
 	}
 	return resolved, nil
@@ -1187,9 +1184,8 @@ func PublishCatalogs(ctx context.Context, spec Publish, resolved map[string]stri
 		}
 		if failed := collected[counter]; failed > threshold {
 			return result, fmt.Errorf(
-				"refusing to publish: %d of the collection failed (%s), above the %d this pipeline "+
-					"tolerates, and a partial collection will not be published as though it were whole "+
-					"(publish.refuseWhen: %s)", failed, counter, threshold, rule)
+				"refusing to publish: %s is %d, above the %d tolerated (publish.refuseWhen: %s)",
+				counter, failed, threshold, rule)
 		}
 	}
 
@@ -1359,8 +1355,7 @@ func retirement(spec RetireOld, resolved map[string]string) (*Retirement, error)
 	value, ok := resolved[strings.TrimSuffix(strings.TrimPrefix(enabled, "${inputs."), "}")]
 	if !ok {
 		return nil, fmt.Errorf(
-			"publish.retireOld.enabled is %q, but no such input is declared, so the retirement "+
-				"cannot be turned on or off; declare the input or remove the block", enabled)
+			"publish.retireOld.enabled is %q, but no such input is declared", enabled)
 	}
 	if !strings.EqualFold(value, "true") {
 		return nil, nil

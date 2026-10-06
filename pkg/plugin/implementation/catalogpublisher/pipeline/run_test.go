@@ -1786,6 +1786,45 @@ func TestRenderByOrdersWithinEachChunkWithoutMovingTheSplit(t *testing.T) {
 	}
 }
 
+// A group whose membership must not move between catalogIds is refused when
+// it would split, rather than split: under MERGE the records that moved leave
+// a stale copy behind in their old catalog. The rule is per record kind, so
+// the same catalog block can still split a group that is allowed to.
+func TestRefuseSplitWhenFailsALoudGroupThatWouldSplit(t *testing.T) {
+	records := []map[string]any{
+		{"stateCode": "MH", "kind": "direct", "marketId": 1.0},
+		{"stateCode": "MH", "kind": "direct", "marketId": 2.0},
+		{"stateCode": "MH", "kind": "direct", "marketId": 3.0},
+		{"stateCode": "KA", "kind": "onDemand", "marketId": 4.0},
+		{"stateCode": "KA", "kind": "onDemand", "marketId": 5.0},
+		{"stateCode": "KA", "kind": "onDemand", "marketId": 6.0},
+	}
+	build := func(t *testing.T, in []map[string]any) ([]BuiltCatalog, error) {
+		rc, cache := testBuildContext(t, nil)
+		catalog := simpleCatalog()
+		catalog.Chunk = Chunk{Budget: 2, Cost: "1", RefuseSplitWhen: "kind = 'direct'",
+			Slug: "${stateCode}${chunkIndex > 1 ? '-' & chunkIndex : ''}"}
+		catalog.Order = Order{By: "marketId", Direction: "asc"}
+		built, _, err := buildCatalogs(context.Background(), catalog, in, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
+		return built, err
+	}
+
+	if _, err := build(t, records[:3]); err == nil || !strings.Contains(err.Error(), "refuseSplitWhen") || !strings.Contains(err.Error(), `"MH"`) {
+		t.Fatalf("err = %v, want the direct group that would split refused, naming the group and the rule", err)
+	}
+	built, err := build(t, records[3:])
+	if err != nil {
+		t.Fatalf("a group the rule does not claim was refused: %v", err)
+	}
+	if len(built) != 2 {
+		t.Fatalf("built %d catalogs, want the onDemand group split in two", len(built))
+	}
+	// A direct group that fits is untouched.
+	if built, err = build(t, records[:2]); err != nil || len(built) != 1 {
+		t.Fatalf("a direct group within budget: built %d, err %v; want 1 catalog", len(built), err)
+	}
+}
+
 // Two markets with one name are ordered by the next key, numerically.
 func TestRenderByBreaksTiesOnTheNextKey(t *testing.T) {
 	records := []map[string]any{

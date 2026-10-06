@@ -1051,6 +1051,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Names each chunk, e.g. ${group}${chunkIndex > 1 ? '-' & chunkIndex : ''}. Chunk 1 keeps the bare group name so a group that stops splitting does not orphan its first catalog."
+        },
+        "refuseSplitWhen": {
+          "type": "string",
+          "minLength": 1,
+          "description": "JSONata over a group's first publishable record. When true and the group would need more than one chunk, the run fails instead of splitting. For groups whose membership must not move between catalogIds: under MERGE a moved resource leaves a stale copy in its old catalog."
         }
       }
     },

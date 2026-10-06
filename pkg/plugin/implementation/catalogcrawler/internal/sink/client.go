@@ -49,7 +49,15 @@ func (c *Client) logger() *slog.Logger {
 
 // NewClient builds a push transport with the given timeout.
 func NewClient(timeout time.Duration) *Client {
-	return &Client{hc: &http.Client{Timeout: timeout}}
+	return &Client{hc: &http.Client{
+		Timeout: timeout,
+		// A publish is a POST with a body, and Go turns a 301/302/303 POST into
+		// a body-less GET and follows it: the catalog is never sent, and an
+		// empty 200 from wherever it lands reads as an ack. The endpoint is
+		// operator-configured, so a redirect from it is a misconfiguration to
+		// report, not to follow -- the 3xx comes back as a non-ack.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 // Push POSTs a /publish body. 200 with an ACCEPTED on_publish verdict is an
@@ -206,7 +214,8 @@ const maxAnswerBytes = 1 << 20
 // carrying no results, is readable with an empty status.
 //
 // Every result is judged: an answer listing one ACCEPTED and one PARTIAL is a
-// PARTIAL, and reading only the first would call it a success.
+// PARTIAL, and reading only the first would call it a success. A result with
+// no status is MALFORMED, not an absence of a verdict.
 func verdict(body []byte) (status, reason string, readable bool) {
 	var answer struct {
 		Message struct {
@@ -235,6 +244,15 @@ func verdict(body []byte) (status, reason string, readable bool) {
 		reason = result.Reason
 		if reason == "" && len(result.Errors) > 0 {
 			reason = result.Errors[0].Message
+		}
+		// An entry with no status is not an ACCEPTED, and returning its empty
+		// status would read as "no verdict", an ack, and hide any PARTIAL
+		// listed after it.
+		if strings.TrimSpace(result.Status) == "" {
+			if reason == "" {
+				reason = "a result carries no status"
+			}
+			return "MALFORMED", reason, true
 		}
 		return result.Status, reason, true
 	}

@@ -43,7 +43,7 @@ func TestLoadSpecReadsEveryBlock(t *testing.T) {
 	if !ok {
 		t.Fatal("Inputs has no baseUrl")
 	}
-	if input.Flag != "base-url" || input.Env != "EXAMPLE_BASE_URL" || input.Default != "http://example.test" {
+	if input.Flag != "base-url" || input.Env != "EXAMPLE_BASE_URL" || input.Default != nil {
 		t.Errorf("Inputs[baseUrl] = %+v", input)
 	}
 

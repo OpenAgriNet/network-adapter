@@ -363,8 +363,7 @@ func asQuery(mapped []byte) (string, error) {
 // A path starting with "/" stays on the host the deployment configured.
 func checkCallPath(call, path string) error {
 	if !strings.HasPrefix(path, "/") {
-		return fmt.Errorf("%s: path %q must start with \"/\"; anything else appended to the upstream "+
-			"address can change the host the credential is sent to", call, path)
+		return fmt.Errorf("%s: path %q must start with \"/\"", call, path)
 	}
 	return nil
 }
@@ -599,13 +598,10 @@ func checkUpstreamScheme(baseURL string, allowCleartext bool) error {
 		return nil
 	}
 	if parsed.Scheme == "" {
-		return fmt.Errorf("the upstream address names no scheme; it must be https " +
-			"(the credential exchange and every token afterwards travel over it)")
+		return fmt.Errorf("the upstream address names no scheme; it must be https")
 	}
-	return fmt.Errorf("the upstream address uses %s; credentials and the token it returns would "+
-		"travel in cleartext. Use https, or -- if this upstream offers no TLS -- say so "+
-		"deliberately with `upstream.allowCleartext: true`, which is recorded in the pipeline "+
-		"file and warned about on every run", parsed.Scheme)
+	return fmt.Errorf("the upstream address uses %s, so credentials would travel in cleartext; "+
+		"use https, or set `upstream.allowCleartext: true` if the upstream has no TLS", parsed.Scheme)
 }
 
 // isLoopback reports whether a host is this machine.

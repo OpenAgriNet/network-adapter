@@ -94,10 +94,15 @@ response: |
        market's resources stay in catalog:mandi-price:<state>-current-<NN>
        whatever other markets do.
 
-       16 buckets keeps the largest state well under the 256-geometry cap
-       per catalog. CHANGING THIS NUMBER MOVES EVERY DIRECT RESOURCE; do it
-       only with a plan to deactivate the old catalogs. */
-    $bucket := $pad($string($number(_local.marketId) % 16), -2, "0");
+       64 buckets keeps the largest state under the 256-geometry cap per
+       catalog. Measured on 2026-10-06 over the 30-06 to 07-10 window, the
+       fullest bucket is Tamil Nadu's, at 209 (market, commodity) pairs; 16
+       buckets put 607 there and would have split it. The pipeline's
+       chunk.refuseSplitWhen fails the run if a Direct bucket ever does
+       exceed the cap, instead of splitting it.
+       CHANGING THIS NUMBER MOVES EVERY DIRECT RESOURCE; do it only with a
+       plan to deactivate the old catalogs. */
+    $bucket := $pad($string($number(_local.marketId) % 64), -2, "0");
 
     $exists($latest) ? [
       {

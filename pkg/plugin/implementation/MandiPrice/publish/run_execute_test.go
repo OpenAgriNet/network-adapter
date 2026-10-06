@@ -846,10 +846,10 @@ func TestRunBuildsBothModesFromOneRun(t *testing.T) {
 		slugs = append(slugs, slug)
 	}
 	sort.Strings(slugs)
-	// Direct catalogs are one per state and market bucket (marketId mod 16),
+	// Direct catalogs are one per state and market bucket (marketId mod 64),
 	// so a market's resources never move because another market came or
-	// went: 101 -> 05, 102 -> 06, 201 -> 09.
-	if got, want := strings.Join(slugs, ","), "KA,KA-current-09,MH,MH-current-05,MH-current-06"; got != want {
+	// went: 101 -> 37, 102 -> 38, 201 -> 09.
+	if got, want := strings.Join(slugs, ","), "KA,KA-current-09,MH,MH-current-37,MH-current-38"; got != want {
 		t.Fatalf("slugs = %s, want %s", got, want)
 	}
 
@@ -861,21 +861,21 @@ func TestRunBuildsBothModesFromOneRun(t *testing.T) {
 		t.Error("the OnDemand MH catalog lost its market resource for Pune")
 	}
 
-	direct := catalogs["MH-current-05"]
-	if got := direct["id"]; got != "catalog:mandi-price:MH-current-05" {
-		t.Errorf("Direct MH bucket 05 id = %v", got)
+	direct := catalogs["MH-current-37"]
+	if got := direct["id"]; got != "catalog:mandi-price:MH-current-37" {
+		t.Errorf("Direct MH bucket 37 id = %v", got)
 	}
-	if got := direct["descriptor"].(map[string]any)["code"]; got != "MANDI_PRICE_CURRENT_MH_05" {
-		t.Errorf("Direct MH bucket 05 descriptor.code = %v", got)
+	if got := direct["descriptor"].(map[string]any)["code"]; got != "MANDI_PRICE_CURRENT_MH_37" {
+		t.Errorf("Direct MH bucket 37 descriptor.code = %v", got)
 	}
 	// Listed with an end that outlasts the next daily run, as OnDemand is.
 	if _, ok := direct["validity"].(map[string]any); !ok {
 		t.Error("the Direct catalog carries no catalog-level validity")
 	}
 
-	// Pune onion priced, Pune potato reported nothing; Nashik is bucket 06.
+	// Pune onion priced, Pune potato reported nothing; Nashik is bucket 38.
 	resources := resourcesByID(direct)
-	for id, resource := range resourcesByID(catalogs["MH-current-06"]) {
+	for id, resource := range resourcesByID(catalogs["MH-current-38"]) {
 		resources[id] = resource
 	}
 	if len(resources) != 2 {
@@ -948,7 +948,7 @@ func TestRunBuildsOnlyDirectCatalogsInDirectMode(t *testing.T) {
 		slugs = append(slugs, catalog.Slug)
 	}
 	sort.Strings(slugs)
-	if got, want := strings.Join(slugs, ","), "KA-current-09,MH-current-05,MH-current-06"; got != want {
+	if got, want := strings.Join(slugs, ","), "KA-current-09,MH-current-37,MH-current-38"; got != want {
 		t.Fatalf("slugs = %s, want %s", got, want)
 	}
 }

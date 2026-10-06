@@ -104,8 +104,8 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	// config still carrying that is refused rather than left to fail at every
 	// send (publish bodies at /push, pipelines at .../push/publish).
 	if strings.HasSuffix(strings.TrimRight(discoveryURL, "/"), "/push") {
-		return nil, nil, fmt.Errorf("catalogcrawler: config %q is %q, a discovery /push address; it now names the "+
-			"provider adapter's /publish endpoint (e.g. http://<host>:<port>/publish)", cfgDiscoveryURL, discoveryURL)
+		return nil, nil, fmt.Errorf("catalogcrawler: config %q is %q, a discovery /push address; "+
+			"set it to the provider adapter's /publish (http://<host>:<port>/publish)", cfgDiscoveryURL, discoveryURL)
 	}
 
 	log := slog.New(log.NewSlogHandler())

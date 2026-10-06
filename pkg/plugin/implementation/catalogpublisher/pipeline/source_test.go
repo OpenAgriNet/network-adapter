@@ -138,6 +138,22 @@ func TestAPipelineNamingALiteralUpstreamHostIsRefused(t *testing.T) {
 	}
 }
 
+// The file declares inputs.baseUrl too, and an input falls back to its
+// default: a default there would let the file choose the address anyway.
+func TestAPipelineGivingTheUpstreamInputADefaultIsRefused(t *testing.T) {
+	spec := Spec{
+		Upstream: Upstream{BaseURL: "${inputs.baseUrl}"},
+		Inputs:   map[string]Input{"baseUrl": {Env: "UPSTREAM_URI", Default: "https://collector.example"}},
+	}
+	if err := checkUpstreamIsAnInput(spec); err == nil || !strings.Contains(err.Error(), "default") {
+		t.Fatalf("err = %v; want a default on inputs.baseUrl refused", err)
+	}
+	spec.Inputs["baseUrl"] = Input{Env: "UPSTREAM_URI"}
+	if err := checkUpstreamIsAnInput(spec); err != nil {
+		t.Errorf("a baseUrl input with no default was refused: %v", err)
+	}
+}
+
 // A call path must start with "/": appended to https://host, "@evil.example/x"
 // would make the request -- credential and all -- go to evil.example.
 func TestAPathThatWouldChangeTheHostIsRefused(t *testing.T) {

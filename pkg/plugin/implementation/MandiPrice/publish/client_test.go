@@ -224,6 +224,33 @@ func mandiErrorRules() []pipeline.ErrorRule {
 	}
 }
 
+// A commodity code listed twice for one market is one pair: two would be two
+// price calls and two Direct resources with the same id.
+func TestPricePairsKeepsOnePairPerCommodityCode(t *testing.T) {
+	mapper, mappingBase := testMapper(t)
+	markets := []any{
+		map[string]any{"marketId": 101.0, "marketName": "Pune", "stateCode": "MH", "stateName": "Maharashtra",
+			"districtId": 501.0, "districtName": "Pune", "latitude": 18.5, "longitude": 73.8,
+			"commodities": []any{
+				map[string]any{"code": 23.0, "name": "Onion"},
+				map[string]any{"code": 24.0, "name": "Potato"},
+				map[string]any{"code": 23.0, "name": "Onion (again)"},
+			}},
+	}
+	out, err := mapper.Transform(context.Background(), mappingBase+"/price-pairs.yaml",
+		definition.DirectionResponse, map[string]any{"response": markets})
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	var pairs []map[string]any
+	if err := json.Unmarshal(out, &pairs); err != nil {
+		t.Fatalf("unmarshal: %v (%s)", err, out)
+	}
+	if len(pairs) != 2 || pairs[0]["commodityCode"] != "23" || pairs[0]["commodityName"] != "Onion" || pairs[1]["commodityCode"] != "24" {
+		t.Fatalf("pairs = %v, want Onion/23 then Potato/24, the first listing of 23 kept", pairs)
+	}
+}
+
 // A market or commodity missing a code the price call needs is dropped from
 // the pairs, rather than reaching the call and failing it. Names that are
 // missing default to "", so a loop field is never absent.

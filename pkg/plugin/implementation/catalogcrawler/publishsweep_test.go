@@ -637,6 +637,18 @@ func TestPublishConfigRefusesTheRetiredBppURI(t *testing.T) {
 	}
 }
 
+// A crawl-only deployment (publishPipelines off) never builds a publish
+// context, so a leftover bppUri must not stop it starting.
+func TestPublishConfigIgnoresBppURIWhenNotPublishing(t *testing.T) {
+	cfg, err := publishConfigFrom(map[string]string{cfgBppURI: "https://x"})
+	if err != nil {
+		t.Fatalf("crawl-only config with bppUri refused: %v", err)
+	}
+	if cfg.enabled {
+		t.Fatal("publish sweep enabled without publishPipelines")
+	}
+}
+
 // The sweep's publish calls log through the crawler's logger, not the
 // process default, so they land with the rest of the crawler's lines.
 func TestPublishSweepSinkLogsThroughTheCrawlerLogger(t *testing.T) {

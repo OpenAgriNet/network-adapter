@@ -293,6 +293,13 @@ type Chunk struct {
 	Budget int    `yaml:"budget"`
 	Cost   string `yaml:"cost"`
 	Slug   string `yaml:"slug"`
+
+	// RefuseSplitWhen is a JSONata expression over a group's first publishable
+	// record. When it is true and the group would need more than one chunk,
+	// the run fails instead of splitting. For a group whose membership must
+	// not move between catalogs: under MERGE a resource that lands in another
+	// catalogId leaves a stale copy behind in the old one.
+	RefuseSplitWhen string `yaml:"refuseSplitWhen,omitempty"`
 }
 
 // Render is the mapping that turns a chunk into a catalog document.
@@ -646,8 +653,7 @@ func checkAPIVersionAgrees(document any, ref, path string) error {
 	if !known || declared == want {
 		return nil
 	}
-	return fmt.Errorf("%s declares apiVersion %q but schemaRef.uses %q, which expects apiVersion %q; "+
-		"the two must agree, because a reader cannot tell which one the engine obeys",
+	return fmt.Errorf("%s declares apiVersion %q but schemaRef.uses %q expects apiVersion %q",
 		path, declared, ref, want)
 }
 

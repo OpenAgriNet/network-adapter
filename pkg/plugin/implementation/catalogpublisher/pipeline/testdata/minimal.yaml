@@ -24,10 +24,10 @@ schedule:
   utcOffset: "+05:30"
 
 inputs:
+  # No default: the upstream address must come from the deployment.
   baseUrl:
     flag: base-url
     env: EXAMPLE_BASE_URL
-    default: http://example.test
   tokenUser:
     env: EXAMPLE_TOKEN_USER
   tokenSecret:

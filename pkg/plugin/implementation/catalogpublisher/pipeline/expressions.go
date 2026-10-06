@@ -470,8 +470,7 @@ func resolveInputsWith(spec Spec, lookup func(string) (string, bool), overrides 
 	// a working one.
 	utcOffset := strings.TrimSpace(spec.Schedule.UTCOffset)
 	if utcOffset == "" {
-		return nil, fmt.Errorf("the pipeline states no schedule.utcOffset, so \"today\" cannot be resolved; " +
-			"a date resolved in the wrong offset asks the upstream for the wrong day and still looks successful")
+		return nil, fmt.Errorf("the pipeline states no schedule.utcOffset, so relative dates such as \"today\" cannot be resolved")
 	}
 
 	resolved := make(map[string]string, len(inputs))

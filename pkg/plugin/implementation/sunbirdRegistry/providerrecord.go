@@ -396,9 +396,11 @@ func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, u
 		// The body can carry registry internals, so it is logged but never
 		// returned in the error -- and only its opening, because this runs on
 		// every lookup while the registry is failing, and a whole error page
-		// on every tick is noise that buries the status. A WARN, not an
-		// ERROR: it is the registry's fault, and the caller reports its own.
-		log.Warnf(ctx, "OAN registry search failed with status: %s, response: %s", resp.Status, util.Explain(respBody))
+		// on every tick is noise that buries the status. An ERROR: the lookup
+		// callers record the failure on a span and a metric but log nothing
+		// themselves, so this line is the only one a registry outage leaves
+		// for an alert to match.
+		log.Errorf(ctx, nil, "OAN registry search failed with status: %s, response: %s", resp.Status, util.Explain(respBody))
 		return nil, fmt.Errorf("%w: %s", errRegistryStatus, resp.Status)
 	}
 	return decodeRecords[T](respBody)

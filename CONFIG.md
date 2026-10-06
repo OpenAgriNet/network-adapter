@@ -364,8 +364,8 @@ plugins:
       dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
       networks: "example.network.production"
       discoveryPushUrl: "http://provider-adapter:9200/publish"
-      participantId: "bpp.example.org"
-      bppUri: "https://bpp.example.org"
+      participantId: "provider.example.org"
+      receiverId: "discovery.example.org"
 ```
 
 To also expose the on-demand HTTP trigger and status query for this crawler, add a module with handler type `catalogCrawl` — see [`catalogCrawl` handler type](#handler-type-catalogcrawl) below. That module takes no `plugins` of its own: both its `/trigger` and `/status` sub-endpoints call directly into this same running crawler instance.

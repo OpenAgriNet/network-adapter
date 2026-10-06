@@ -112,8 +112,8 @@
     }
   },
   {
-    "slug": "MH-current-05",
-    "catalogId": "catalog:mandi-price:MH-current-05",
+    "slug": "MH-current-37",
+    "catalogId": "catalog:mandi-price:MH-current-37",
     "content": {
       "context": {
         "action": "catalog/publish",
@@ -126,12 +126,12 @@
         "catalogs": [
           {
             "descriptor": {
-              "code": "MANDI_PRICE_CURRENT_MH_05",
+              "code": "MANDI_PRICE_CURRENT_MH_37",
               "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation.",
               "name": "Maharashtra current mandi prices",
               "shortDesc": "1 Direct price Resources for Maharashtra, one per market and commodity, each carrying its latest price."
             },
-            "id": "catalog:mandi-price:MH-current-05",
+            "id": "catalog:mandi-price:MH-current-37",
             "isActive": true,
             "provider": {
               "descriptor": {
@@ -209,7 +209,7 @@
         ],
         "publishDirectives": [
           {
-            "catalogId": "catalog:mandi-price:MH-current-05",
+            "catalogId": "catalog:mandi-price:MH-current-37",
             "catalogType": "REGULAR",
             "schemaTypes": [
               "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
@@ -224,8 +224,8 @@
     }
   },
   {
-    "slug": "MH-current-06",
-    "catalogId": "catalog:mandi-price:MH-current-06",
+    "slug": "MH-current-38",
+    "catalogId": "catalog:mandi-price:MH-current-38",
     "content": {
       "context": {
         "action": "catalog/publish",
@@ -238,12 +238,12 @@
         "catalogs": [
           {
             "descriptor": {
-              "code": "MANDI_PRICE_CURRENT_MH_06",
+              "code": "MANDI_PRICE_CURRENT_MH_38",
               "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation.",
               "name": "Maharashtra current mandi prices",
               "shortDesc": "1 Direct price Resources for Maharashtra, one per market and commodity, each carrying its latest price."
             },
-            "id": "catalog:mandi-price:MH-current-06",
+            "id": "catalog:mandi-price:MH-current-38",
             "isActive": true,
             "provider": {
               "descriptor": {
@@ -311,7 +311,7 @@
         ],
         "publishDirectives": [
           {
-            "catalogId": "catalog:mandi-price:MH-current-06",
+            "catalogId": "catalog:mandi-price:MH-current-38",
             "catalogType": "REGULAR",
             "schemaTypes": [
               "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"

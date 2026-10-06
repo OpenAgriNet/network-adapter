@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -195,6 +196,47 @@ func TestPush_JudgesTheOnPublishVerdict(t *testing.T) {
 				t.Fatalf("Reason = %q, want the status and the adapter's reason", out.Reason)
 			}
 		})
+	}
+}
+
+// A result entry with no status is not an ACCEPTED, and must not hide a
+// PARTIAL listed after it.
+func TestPush_ResultWithoutStatusIsNotAnAck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"results":[{"catalogId":"a"},{"catalogId":"b","status":"PARTIAL"}]}}`))
+	}))
+	defer srv.Close()
+	out, err := NewClient(5*time.Second).Push(context.Background(), srv.URL, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Acked || !strings.Contains(out.Reason, "MALFORMED") {
+		t.Fatalf("out = %+v, want a non-ack naming MALFORMED", out)
+	}
+}
+
+// A redirect from /publish must not turn the POST into a body-less GET whose
+// empty 200 reads as an ack: the 3xx is reported as a non-ack.
+func TestPush_RedirectIsNotFollowed(t *testing.T) {
+	var gets atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gets.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+	out, err := NewClient(5*time.Second).Push(context.Background(), srv.URL, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Acked || out.HTTPStatus != http.StatusFound {
+		t.Fatalf("out = %+v, want a non-ack carrying the 302", out)
+	}
+	if gets.Load() != 0 {
+		t.Fatalf("the redirect target was called %d times, want 0", gets.Load())
 	}
 }
 

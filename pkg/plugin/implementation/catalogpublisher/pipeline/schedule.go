@@ -164,8 +164,7 @@ var cronFields = []cronField{
 func parseCron(expr string) (cronSchedule, error) {
 	parts := strings.Fields(strings.TrimSpace(expr))
 	if len(parts) != len(cronFields) {
-		return cronSchedule{}, fmt.Errorf("cron %q has %d fields; a standard expression has %d "+
-			"(minute hour day-of-month month day-of-week), and the six-field seconds variant is not supported",
+		return cronSchedule{}, fmt.Errorf("cron %q has %d fields, want %d (minute hour day-of-month month day-of-week)",
 			expr, len(parts), len(cronFields))
 	}
 

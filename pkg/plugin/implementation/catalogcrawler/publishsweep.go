@@ -114,24 +114,24 @@ type publishConfig struct {
 func publishConfigFrom(config map[string]string) (publishConfig, error) {
 	if strings.TrimSpace(config[cfgPublishBindingKeys]) != "" {
 		return publishConfig{}, fmt.Errorf(
-			"catalogcrawler: config %q is retired; the registry now decides which capabilities publish. "+
-				"Remove it and set %q: \"true\" to sweep the registry",
+			"catalogcrawler: config %q is retired (the registry decides what publishes); remove it and set %q: \"true\"",
 			cfgPublishBindingKeys, cfgPublishPipelines)
 	}
 	if strings.TrimSpace(config[cfgPublishTickIntervalSec]) != "" {
 		return publishConfig{}, fmt.Errorf(
-			"catalogcrawler: config %q is retired; the publish sweep now runs on every catalog-sync tick. "+
-				"Remove it and set %q for the cadence",
+			"catalogcrawler: config %q is retired (the sweep runs on every catalog-sync tick); remove it and set %q",
 			cfgPublishTickIntervalSec, cfgCatalogIntervalSec)
-	}
-	if strings.TrimSpace(config[cfgBppURI]) != "" {
-		return publishConfig{}, fmt.Errorf(
-			"catalogcrawler: config %q is retired; a publish names its sender (%q) and receiver (%q), "+
-				"and the context has no URI field for either. Remove it",
-			cfgBppURI, cfgParticipantID, cfgReceiverID)
 	}
 	if config[cfgPublishPipelines] != "true" {
 		return publishConfig{}, nil
+	}
+	// Refused only when publishing is on: a crawl-only deployment never builds
+	// a publish context, so a leftover bppUri changes nothing there and must
+	// not stop it starting.
+	if strings.TrimSpace(config[cfgBppURI]) != "" {
+		return publishConfig{}, fmt.Errorf(
+			"catalogcrawler: config %q is retired (a publish names its sender %q and receiver %q); remove it",
+			cfgBppURI, cfgParticipantID, cfgReceiverID)
 	}
 	return publishConfig{
 		enabled: true,

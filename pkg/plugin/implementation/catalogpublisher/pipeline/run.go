@@ -781,6 +781,18 @@ func buildCatalogs(ctx context.Context, catalog Catalog, records []map[string]an
 		if err != nil {
 			return nil, counters, fmt.Errorf("group %q: %w", key, err)
 		}
+		if len(chunks) > 1 && catalog.Chunk.RefuseSplitWhen != "" {
+			refuse, err := catalogMatches(cache, scope, catalog.Chunk.RefuseSplitWhen, publishable[0])
+			if err != nil {
+				return nil, counters, fmt.Errorf("group %q: chunk.refuseSplitWhen: %w", key, err)
+			}
+			if refuse {
+				// A split moves records between catalogIds, which MERGE never
+				// cleans up; the fix is a wider grouping, not a split.
+				return nil, counters, fmt.Errorf("group %q needs %d catalogs (%d records, budget %d); "+
+					"chunk.refuseSplitWhen forbids splitting it", key, len(chunks), len(publishable), catalog.Chunk.Budget)
+			}
+		}
 
 		for index, chunk := range chunks {
 			// The split is settled; now the order a reader sees. Sorting a
@@ -808,13 +820,10 @@ func buildCatalogs(ctx context.Context, catalog Catalog, records []map[string]an
 				// index, while a folded one is two group names.
 				if previous == catalog.Slug {
 					return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q again; "+
-						"catalog.chunk.slug must include the chunk index, or every chunk of a split "+
-						"group is one catalogId and one file",
-						key, index+1, catalog.Slug)
+						"catalog.chunk.slug must include the chunk index", key, index+1, catalog.Slug)
 				}
-				return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q, which collides with %q; "+
-					"they differ only in case and are one file on a case-insensitive filesystem",
-					key, index+1, catalog.Slug, previous)
+				return nil, counters, fmt.Errorf("group %q: chunk %d renders the slug %q, which collides with %q "+
+					"on a case-insensitive filesystem", key, index+1, catalog.Slug, previous)
 			}
 			named[folded] = catalog.Slug
 
@@ -1287,9 +1296,6 @@ func safeSlug(slug, source string) error {
 	if slugShape.MatchString(slug) {
 		return nil
 	}
-	return fmt.Errorf("%s produced %q, which cannot be used as a catalog name: "+
-		"a name becomes a filename and must match %s. A slash is the danger -- it both "+
-		"writes outside the directory the publisher globs (so the catalog is built and "+
-		"never published) and, with enough ../ segments, outside the output directory "+
-		"entirely", source, slug, slugShape)
+	return fmt.Errorf("%s produced %q, which is not a safe catalog name: it becomes a filename and must match %s",
+		source, slug, slugShape)
 }

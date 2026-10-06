@@ -22,7 +22,14 @@ response: |
     $text := function($v) { $exists($v) ? $string($v) : "" };
     [response[$exists(stateCode) and $exists(marketId) and $exists(districtId)].(
       $m := $;
-      $m.commodities[$exists(code)].({
+      /* One pair per commodity CODE: a code listed twice for a market would be
+         two price calls and two Direct resources with the same id. The first
+         listing wins and the order is the upstream's. (A grouped object would
+         do it in fewer words, but iterates in no fixed order, and the order
+         of the pairs is the order of the price calls.) */
+      $filter($m.commodities[$exists(code)], function($c, $i, $all) {
+        $not($string($c.code) in $all[[0..($i - 1)]].$string(code))
+      }).({
         /* What the engine labels a loop item by in its log lines, so each
            price call's line names its market and commodity. */
         "code":          $string($m.marketId) & "/" & $string(code),

@@ -82,8 +82,7 @@ func checkPipelineURL(raw string) error {
 	parsed, err := url.Parse(trimmed)
 	if err != nil || trimmed == "" || parsed.Scheme == "" {
 		return crawler.PermanentFaultf(faultPipelineURL,
-			"the registry's publish mappings is %q; it must be the https URL of the pipeline "+
-				"file (e.g. https://raw.githubusercontent.com/<org>/<repo>/<ref>/.../publish/agmarknet.yaml)", raw)
+			"the registry's publish mappings is %q; it must be the https URL of a pipeline file", raw)
 	}
 	if parsed.Host == "" {
 		return crawler.PermanentFaultf(faultPipelineURL, "pipeline URL %q names no host", raw)
@@ -195,18 +194,32 @@ func parsePipeline(raw []byte, name string) (Spec, error) {
 // upstreamInputRef is the only upstream address a pipeline may state.
 const upstreamInputRef = "${inputs.baseUrl}"
 
+// upstreamInputName is the input that reference names.
+const upstreamInputName = "baseUrl"
+
 // checkUpstreamIsAnInput refuses a pipeline that names its upstream as a
 // literal host. The client is built from the resolved baseUrl input either
 // way; refusing the literal keeps the file from appearing to say otherwise,
 // and keeps "where do the credentials go" a deployment's decision.
 func checkUpstreamIsAnInput(spec Spec) error {
 	base := strings.TrimSpace(spec.Upstream.BaseURL)
-	if base == "" || base == upstreamInputRef {
+	if base == "" {
+		return nil
+	}
+	if base == upstreamInputRef {
+		// The reference alone is not enough: the file also declares the input,
+		// and an input falls back to its `default:`. A default here would let
+		// the file choose the address after all, whenever the deployment sets
+		// nothing. The address must come from the deployment or the run fails.
+		if input, ok := spec.Inputs[upstreamInputName]; ok && input.Default != nil {
+			return crawler.PermanentFaultf(faultPipelineSpec,
+				"inputs.%s declares a default (%v); the upstream address must come from the deployment (env or plugin config)",
+				upstreamInputName, input.Default)
+		}
 		return nil
 	}
 	return crawler.PermanentFaultf(faultPipelineSpec,
-		"upstream.baseUrl is %q; it must be %s, so the address credentials are sent to "+
-			"comes from the deployment (env or plugin config), not from the pipeline file", base, upstreamInputRef)
+		"upstream.baseUrl is %q; it must be %s, so the address comes from the deployment", base, upstreamInputRef)
 }
 
 // resolveMappingRef resolves a file's mapping reference against the file's
