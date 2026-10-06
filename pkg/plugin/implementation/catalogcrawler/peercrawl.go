@@ -118,12 +118,6 @@ type peerCrawl struct {
 	maxAttempts int
 	log         *slog.Logger
 
-	// projections records what we are holding from each peer, so it can be
-	// withdrawn later. Nil disables every purge path: a deployment whose store
-	// is unavailable keeps crawling rather than silently losing the ability to
-	// expire, and says so once at start-up.
-	projections projectionStore
-
 	// store is where a crawl puts the catalogs it fetched, and where the
 	// publisher reads them from. The same queue the local crawl uses, in a
 	// keyspace of its own -- see internal/store/networkqueue.go.
@@ -362,43 +356,9 @@ func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
 		seen = append(seen, ids...)
 	}
 
-	return p.reconcile(ctx, target, seen)
-}
-
-// reconcile records this pass's projections and withdraws the ones the peer
-// has dropped.
-//
-// Ordering: the fresh ids are recorded BEFORE the dropped ones are withdrawn.
-// The reverse order would, if the process died in between, leave a catalog
-// published to discovery with no row naming it -- unpurgeable for ever.
-func (p *peerCrawl) reconcile(ctx context.Context, target peerTarget, fresh []string) error {
-	if p.projections == nil {
-		return nil
-	}
-
-	held, err := p.projections.ProjectionsFor(ctx, target.NetworkID)
-	if err != nil {
-		return fmt.Errorf("list projections of %s: %w", target.NetworkID, err)
-	}
-
-	expiresAt := time.Now().Add(p.ttlFor(target))
-	if err := p.projections.RecordProjections(ctx, target.NetworkID, fresh, expiresAt); err != nil {
-		return fmt.Errorf("record projections of %s: %w", target.NetworkID, err)
-	}
-
-	p.purgeAll(ctx, target.NetworkID, missingFrom(held, fresh), "peer no longer publishes it")
+	p.log.DebugContext(ctx, "catalogcrawler: crawled a network",
+		"networkId", target.NetworkID, "catalogs", len(seen))
 	return nil
-}
-
-// ttlFor is the licence to apply to what this peer just returned.
-//
-// A peer whose record carries no ttl still gets a finite one. There is no state
-// in which a projection has no expiry: that is the whole obligation.
-func (p *peerCrawl) ttlFor(target peerTarget) time.Duration {
-	if target.ProjectionTtl > 0 {
-		return target.ProjectionTtl
-	}
-	return defaultProjectionTtl
 }
 
 // defaultProjectionTtl covers a registry record written before projectionTtl
@@ -428,13 +388,6 @@ func (p *peerCrawl) refreshEvery(ctx context.Context, configured time.Duration, 
 			return configured
 		}
 		p.crawlAll(ctx, found, "refresh")
-		// Only on a listing that SUCCEEDED. found is authoritative here --
-		// empty means every peer really was suspended, and purging everything
-		// is then correct. On the error path above it means nothing of the
-		// kind, which is why this is not inside crawlAll.
-		if p.projections != nil {
-			p.purgeUnadmitted(ctx, found)
-		}
 		return refreshInterval(configured, found)
 	}
 
@@ -474,21 +427,6 @@ func (p *peerCrawl) crawlAll(ctx context.Context, targets []peerTarget, runID st
 	// After every network rather than after each one, so a network that cannot
 	// be reached does not hold up publishing what the others gave us.
 	p.publishStaged(ctx)
-
-	if p.projections == nil {
-		return
-	}
-	// Expiry runs AFTER the crawl and regardless of how it went. It is not
-	// about any one peer -- it acts precisely on the peers that answered
-	// nothing -- so skipping it when a crawl failed would let a bad pass
-	// suspend every licence.
-	//
-	// Suspension is NOT swept here. It is driven by the admitted list, and
-	// crawlAll cannot tell an empty list ("every peer was suspended", purge
-	// everything) from an absent one ("the registry did not answer", purge
-	// nothing). Acting on that distinction belongs where the error is still in
-	// hand: refreshEvery.
-	p.purgeExpired(ctx, time.Now())
 }
 
 // trimmedURL is the peer's endpoint as published, with a stray trailing slash

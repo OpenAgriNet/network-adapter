@@ -23,7 +23,7 @@ import (
 )
 
 // stagedStore is the queue half a cross-network crawl needs, declared at the
-// consumer and satisfied implicitly -- the same shape projectionStore follows.
+// consumer and satisfied implicitly, the way this package's other ports are.
 type stagedStore interface {
 	StageAndEnqueue(ctx context.Context, staged store.StagedCatalog, discoverURL string) error
 	ClaimNextStaged(ctx context.Context) (*store.ClaimedStaged, error)
@@ -33,7 +33,7 @@ type stagedStore interface {
 }
 
 // catalogSink is the publish half, declared at the consumer -- the same shape
-// projectionStore and stagedStore follow. Satisfied by sink.DiscoverySink,
+// stagedStore follows. Satisfied by sink.DiscoverySink,
 // which is also what the local crawl publishes through.
 type catalogSink interface {
 	Send(ctx context.Context, entry catalog.CatalogEntry, content []byte) (crawlmanager.SinkOutcome, error)

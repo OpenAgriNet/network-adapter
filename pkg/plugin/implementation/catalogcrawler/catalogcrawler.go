@@ -229,7 +229,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		registry:       registry,
 		log:            log,
 		st:             st,
-		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, st, crossNetworkSink(snk, config), log),
+		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, crossNetworkSink(snk, config), log),
 		peerRefresh:    durationSecondsOr(config[cfgFederationRefreshSec], defaultPeerRefresh),
 	}
 	return c, db.Close, nil
@@ -348,7 +348,7 @@ func crossNetworkSink(local *sink.DiscoverySink, config map[string]string) *sink
 // they are FETCHED differs.
 func newPeerCrawlFromConfig(
 	ctx context.Context, config map[string]string, pushEndpoint string,
-	timeout time.Duration, projections projectionStore, staged stagedStore,
+	timeout time.Duration, staged stagedStore,
 	catalogs catalogSink, log *slog.Logger,
 ) *peerCrawl {
 	networkID := strings.TrimSpace(config[cfgFederationNetworkID])
@@ -396,7 +396,6 @@ func newPeerCrawlFromConfig(
 		sink:            catalogs,
 		push:            sink.NewClient(timeout),
 		pushEndpoint:    pushEndpoint,
-		projections:     projections,
 		log:             log,
 	}
 }

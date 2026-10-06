@@ -6,8 +6,7 @@
 -- those are one row: an Enqueue coalesces them into each other and a Complete
 -- overwrites the other's cursor. Silently, with no error anywhere.
 --
--- peer_projection (0008) already keys on (network_id, catalog_id) for exactly
--- this reason. These two tables now match it.
+-- So both are keyed on (network_id, catalog_id).
 --
 -- EMPTY STRING means this deployment's own crawl -- the local providers reached
 -- through a catalog index. It is deliberately not the configured network id: a
