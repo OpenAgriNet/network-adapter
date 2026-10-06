@@ -135,12 +135,25 @@ is free to take it.
 
 ### What a pack enforces, and what it cannot
 
-Neither pack composes `AgricultureResourceFields` any more: that field set is framed
-around a Resource that holds information, which a grievance is not. `informationMode` is
-now a pack-local field and stays required alongside `@type` and `scheme`;
-`subjectCategories` is gone, being a discovery category for the catalog resource rather
-than anything a per-case payload carries. Shape rules that hold in both directions live
-in the pack.
+Neither pack composes `AgricultureResourceFields`: that field set is framed around a
+Resource that holds information, which a grievance is not. `subjectCategories` is gone
+with it, being a discovery category for the catalog resource rather than anything a
+per-case payload carries.
+
+What they compose instead is **`GrievanceBase`**, in
+`api-schemas/Grievance/v0.1/attributes.yaml`. It owns the fields both packs share —
+`informationMode`, `provider`, `scheme`, `grievanceDescription`, `caseStatus`, `filedOn`,
+`caseRemark`, `remarkedOn` — together with `CaseStatusCode`, `CalendarDate` and
+`ProviderReference`. Each pack `allOf`-references it, pins its own `@type` and
+`scheme.code`, and adds what its portal has. The case-status vocabulary is therefore one
+list, not two kept in step by review.
+
+`Grievance/v0.1` is a file, not a pack: no `profile.json`, never indexed, and no payload
+ever declares `@type: openagrinet:GrievanceBase`. Two fields stay out of it — `@type`,
+which is the pack's identity, and `grievanceCategory`, which resolves to a different IRI
+per scheme over incompatible value spaces.
+
+Shape rules that hold in both directions live in the base or the pack.
 
 Per-action requirements do not, and cannot. One `@type` covers every action, so
 "`applicationNo` is required on `support` but not on `init`" is not expressible in a pack.
@@ -156,10 +169,13 @@ was always going to live.
 
 The validator resolves the payload's `@context` by string-swapping `context.jsonld` for
 `attributes.yaml` (`schemav2validator/extended_schema.go:545`) and fetching it, so what
-matters is the live file, not the working copy. **Both packs must be published to
+matters is the live file, not the working copy. **Both packs and
+`api-schemas/Grievance/v0.1/attributes.yaml` must be published to
 `openagrinet.github.io` before any of this runs**, and `openagrinet.github.io` must appear
 in `extendedSchema_allowedDomains` — it was added to `provider-adapter.yaml` for exactly
-this. A pack the validator cannot fetch fails every payload.
+this. A pack the validator cannot fetch fails every payload, and so does a pack whose
+base it cannot fetch: the `$ref` to `GrievanceBase` is relative, so it resolves against
+the same host and is subject to the same allow-list.
 
 ### `@type` must be a string, not an array
 
@@ -225,11 +241,11 @@ enforces`](#what-a-pack-enforces-and-what-it-cannot) records. A `pattern` on a d
 declared property has no such problem, and the six-digit rule is as enforced as it was
 when the field was a bare `otp`.
 
-Declaring it here rather than once network-wide follows the rule the rest of the pack
-follows: a grievance is one Provider's API surface, not a thing the network describes.
-PM-KISAN issues no challenge at all, so there is no second consumer to share with. The
-seam that remains is: the pack owns the shape and the format, the mapping guard owns which
-action must carry one.
+It stays in the pack rather than moving into `GrievanceBase` for the plainest of
+reasons: PM-KISAN issues no challenge at all, so there is no second consumer. The base
+holds what both packs have; a field only one portal has belongs to that pack. The seam is
+then: the pack owns the shape and the format, the mapping guard owns which action must
+carry one.
 
 One consequence for the adapter: the prerequisite hook switches on `challenge.method`
 rather than assuming. See [`support`](#2-support--the-challenge-plus-the-complaint-ticket-issued).
@@ -638,8 +654,8 @@ the mapping must not gate on it — read `responseDynamic` and test that directl
 
 `ComplaintDate` is already ISO, so `filedOn` needs no date conversion — unlike `support`,
 where the adapter generates the date. `caseStatus` splits in two: `name` carries
-`TicketStatus` verbatim, and `code` is the pack's `CaseStatusCode` the adapter maps
-that phrase to. The portal also returns `TicketStatusID`, an opaque internal key that is
+`TicketStatus` verbatim, and `code` is the `CaseStatusCode` from `GrievanceBase`
+that the adapter maps that phrase to. The portal also returns `TicketStatusID`, an opaque internal key that is
 not mapped at all.
 
 The mapping is a lookup, not a transformation. A phrase the lookup does not hold falls to
