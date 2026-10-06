@@ -72,10 +72,12 @@ request: |
 # the operator's log.
 #
 # Otherwise the lodge reply carries a flag and a message and nothing else -- no
-# case id, no date, no status -- so every value below is the caller's own,
-# echoed, or asserted: REGISTERED, filedOn as today's IST date (what a later
-# status matches on), and this portal as the source. There is no ticket number
-# to return: the portal issues none.
+# case id, no date, no status -- so nothing below comes from the portal.
+# orderId and descriptor are the caller's own, echoed; caseStatus (Registered,
+# the network's CaseStatusCode, with no name because the portal stated no
+# phrase) and filedOn (today's IST date, what a later status matches on) are
+# asserted; provider is the portal this mapping serves. There is no ticket
+# number to return: the portal issues none.
 #
 # A 4xx from the portal reaches this half with its status under _status. None
 # is known to mean anything the farmer can fix, so each is left to the
@@ -102,12 +104,12 @@ response: |
             "@context":        $ch.`@context`,
             "@type":           "openagrinet:PMKISANGrievance",
             "informationMode": "Direct",
+            "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
             "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-            "caseStatus": { "code": "REGISTERED", "name": "Registered" },
+            "caseStatus": { "code": "Registered" },
             /* IST, not UTC: a UTC date is yesterday for anything filed before
                05:30 IST, and status matches on this date. */
-            "filedOn": $now("[Y0001]-[M01]-[D01]", "+0530"),
-            "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
+            "filedOn": $now("[Y0001]-[M01]-[D01]", "+0530")
           }]
         }
       }
