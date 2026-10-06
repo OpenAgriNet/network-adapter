@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"sort"
@@ -138,12 +137,11 @@ func quietCrawl(projections projectionStore, pusher catalogPusher) *peerCrawl {
 	}
 }
 
-func catalogsNamed(ids ...string) []json.RawMessage {
-	documents := make([]json.RawMessage, 0, len(ids))
-	for _, id := range ids {
-		documents = append(documents, json.RawMessage(fmt.Sprintf(`{"id":%q}`, id)))
-	}
-	return documents
+// reconcile takes the ids a pass published, not the documents: each audience
+// releases its documents as it publishes them, so what reaches here does not
+// grow with the size of the peer.
+func catalogsNamed(ids ...string) []string {
+	return ids
 }
 
 // --- the six cases the plan tabulates -----------------------------------

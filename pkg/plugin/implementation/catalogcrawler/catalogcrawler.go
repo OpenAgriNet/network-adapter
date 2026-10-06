@@ -53,6 +53,7 @@ const (
 	cfgFederationMaxPages   = "federationMaxPages"
 	cfgFederationPageSize   = "federationPageSize"
 	cfgFederationUpdateMode = "federationUpdateMode"
+	cfgFederationBatchSize  = "federationBatchSize"
 	cfgFederationDomain     = "federationDomain"
 	cfgFederationIntent     = "federationIntent" // raw JSON: the Beckn intent sent to a peer
 	cfgFederationSchemas    = "federationSchemaContext"
@@ -101,6 +102,10 @@ const (
 	// A deployment that wants pages sets it; one that does not keeps the old
 	// single-request behaviour and the old failure mode with it.
 	defaultPeerPageSize = 0
+
+	// How many catalogs are held before they are published. 1 publishes each
+	// page as it arrives, which is the lowest memory this can run in.
+	defaultPeerBatchSize = 1
 
 	// A peer ROUTES on these two, so they are not cosmetic: a discover without
 	// them is refused before it reaches the peer's discovery service, with "no
@@ -351,6 +356,7 @@ func newPeerCrawlFromConfig(
 		keyID:        strings.TrimSpace(config[cfgFederationKeyID]),
 		pageSize:     int(int64Or(config[cfgFederationPageSize], defaultPeerPageSize)),
 		updateMode:   updateModeOr(config[cfgFederationUpdateMode]),
+		batchSize:    int(int64Or(config[cfgFederationBatchSize], defaultPeerBatchSize)),
 		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
 		// Empty: mirror everything the peer will give us. A deployment that
 		// wants less sets a jsonpath or spatial intent here.
@@ -661,18 +667,23 @@ func int64Or(s string, def int64) int64 {
 
 // updateModeOr resolves the push mode a crawl publishes its projections with.
 //
-// FULL by default, which is what this did before the mode was configurable:
-// the pushed document is the catalog's complete current content, so resources
-// it omits are meant to be gone. MERGE is for a deployment whose peers answer
-// in pieces -- an id-keyed upsert leaves untouched resources alone, at the cost
-// of never noticing a withdrawal.
+// MERGE by default, and that is about paging rather than preference. FULL means
+// "this document is the catalog's complete current set", so every page claims to
+// be the whole thing: a 1000-resource catalog fetched in two pages of 500 is
+// published twice, and the second FULL deletes the first 500. The catalog ends
+// up half its size with nothing reporting a problem.
 //
-// Anything unrecognised is FULL rather than an error. A crawl that refused to
-// start over a typo would take the whole federated half of a deployment down
-// for a value whose safe reading is the one it already had.
+// MERGE upserts by id, so a catalog split across pages reassembles correctly and
+// each page can be published and discarded. The cost is real and is the reason
+// FULL still exists: MERGE never deletes, so a resource the PEER has removed
+// stays in our mirror until the whole catalog expires or is withdrawn.
+//
+// Anything unrecognised is MERGE rather than an error. A crawl that refused to
+// start over a typo would take the whole federated half of a deployment down for
+// a value whose safe reading is the one it already had.
 func updateModeOr(raw string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), sink.UpdateModeMerge) {
-		return sink.UpdateModeMerge
+	if strings.EqualFold(strings.TrimSpace(raw), sink.UpdateModeFull) {
+		return sink.UpdateModeFull
 	}
-	return sink.UpdateModeFull
+	return sink.UpdateModeMerge
 }

@@ -391,7 +391,7 @@ func TestCrawlPeerFollowsPages(t *testing.T) {
 	crawl.pageSize = 2
 	crawl.maxPages = 5
 
-	got, err := crawl.fetch(context.Background(),
+	got, err := crawl.crawlAudience(context.Background(),
 		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha")
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -423,7 +423,7 @@ func TestCrawlPeerWithoutPageSizeAsksOnce(t *testing.T) {
 	crawl := newPeerCrawl(t, &recordingPush{})
 	crawl.pageSize = 0
 
-	if _, err := crawl.fetch(context.Background(),
+	if _, err := crawl.crawlAudience(context.Background(),
 		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha"); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -435,22 +435,50 @@ func TestCrawlPeerWithoutPageSizeAsksOnce(t *testing.T) {
 	}
 }
 
-// The push mode is configured, not fixed. FULL deletes the resources a payload
-// omits; MERGE upserts by id and leaves untouched ones alone.
+// The push mode is configured, and MERGE is the default because of PAGING.
+//
+// FULL means "this document is the catalog's complete current set", so every
+// page claims to be the whole thing: a 1000-resource catalog fetched in two
+// pages of 500 is published twice and the second deletes the first 500.
 func TestUpdateModeIsConfigured(t *testing.T) {
 	for raw, want := range map[string]string{
-		"":        sink.UpdateModeFull,
-		"FULL":    sink.UpdateModeFull,
-		"MERGE":   sink.UpdateModeMerge,
-		"merge":   sink.UpdateModeMerge,
-		" merge ": sink.UpdateModeMerge,
-		// Unrecognised is FULL, not an error: refusing to start over a typo
-		// would take the whole federated half down for a value whose safe
-		// reading is the one it already had.
-		"nonsense": sink.UpdateModeFull,
+		"":       sink.UpdateModeMerge,
+		"MERGE":  sink.UpdateModeMerge,
+		"FULL":   sink.UpdateModeFull,
+		"full":   sink.UpdateModeFull,
+		" full ": sink.UpdateModeFull,
+		// Unrecognised is MERGE, not an error: refusing to start over a typo
+		// would take the federated half down for a value whose safe reading is
+		// the one it already had.
+		"nonsense": sink.UpdateModeMerge,
 	} {
 		if got := updateModeOr(raw); got != want {
 			t.Errorf("updateModeOr(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// FULL cannot publish in batches, whatever the batch size says: every push
+// claims to be the complete set, so a second one deletes what the first wrote.
+// It holds everything instead and pays the memory.
+func TestFullModeHoldsEverything(t *testing.T) {
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.updateMode = sink.UpdateModeFull
+	crawl.batchSize = 1
+	if got := crawl.batchFor(); got != 0 {
+		t.Errorf("batchFor() = %d under FULL, want 0 (hold everything)", got)
+	}
+}
+
+// MERGE publishes in batches, and a batch size below 1 is a page at a time --
+// the lowest memory this can run in, not "hold everything".
+func TestMergeBatchSize(t *testing.T) {
+	for size, want := range map[int]int{0: 1, -5: 1, 1: 1, 25: 25} {
+		crawl := newPeerCrawl(t, &recordingPush{})
+		crawl.updateMode = sink.UpdateModeMerge
+		crawl.batchSize = size
+		if got := crawl.batchFor(); got != want {
+			t.Errorf("batchFor() with batchSize %d = %d, want %d", size, got, want)
 		}
 	}
 }
@@ -518,5 +546,85 @@ func TestContextURLOf(t *testing.T) {
 		if got := contextURLOf(pack); got != want {
 			t.Errorf("contextURLOf(%q) = %q, want %q", pack, got, want)
 		}
+	}
+}
+
+// Under MERGE a page is published and released as it arrives, so what the crawl
+// holds does not grow with the size of the peer.
+//
+// Asserted by WHEN the pushes happen, not just that they happen: a push
+// recorded while the peer is still being asked for more is the only evidence
+// that nothing is being accumulated.
+func TestMergePublishesWhilePagingNotAfter(t *testing.T) {
+	push := &recordingPush{}
+	var pushedByPage []int
+	page := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// How many pushes had happened by the time this page was asked for.
+		pushedByPage = append(pushedByPage, len(push.bodies))
+		if page++; page <= 3 {
+			_, _ = io.WriteString(w, `{"message":{"catalogs":[{"id":"c1"},{"id":"c2"}]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
+	}))
+	defer server.Close()
+
+	crawl := newPeerCrawl(t, push)
+	crawl.updateMode = sink.UpdateModeMerge
+	crawl.pageSize = 2
+	crawl.batchSize = 1
+	crawl.maxPages = 10
+
+	ids, err := crawl.crawlAudience(context.Background(),
+		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha")
+	if err != nil {
+		t.Fatalf("crawlAudience: %v", err)
+	}
+	if len(ids) != 6 {
+		t.Fatalf("returned %d ids, want 6", len(ids))
+	}
+	// Page 1 is asked for with nothing pushed; by page 2 the first page is
+	// already written. Accumulating would leave every entry at 0.
+	if len(pushedByPage) < 2 || pushedByPage[1] == 0 {
+		t.Errorf("pushes by page = %v; nothing was published before the crawl finished", pushedByPage)
+	}
+}
+
+// Under FULL nothing is published until every page is in, because a second FULL
+// push of the same catalog deletes what the first wrote.
+func TestFullPublishesOnlyAtTheEnd(t *testing.T) {
+	push := &recordingPush{}
+	var pushedByPage []int
+	page := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pushedByPage = append(pushedByPage, len(push.bodies))
+		if page++; page <= 3 {
+			_, _ = io.WriteString(w, `{"message":{"catalogs":[{"id":"c1"}]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
+	}))
+	defer server.Close()
+
+	crawl := newPeerCrawl(t, push)
+	crawl.updateMode = sink.UpdateModeFull
+	crawl.pageSize = 1
+	crawl.batchSize = 1 // ignored under FULL
+	crawl.maxPages = 10
+
+	if _, err := crawl.crawlAudience(context.Background(),
+		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha"); err != nil {
+		t.Fatalf("crawlAudience: %v", err)
+	}
+	for i, count := range pushedByPage {
+		if count != 0 {
+			t.Fatalf("page %d was asked for after %d pushes; FULL must publish only once every page is in", i, count)
+		}
+	}
+	if len(push.bodies) == 0 {
+		t.Error("nothing was published at all")
 	}
 }

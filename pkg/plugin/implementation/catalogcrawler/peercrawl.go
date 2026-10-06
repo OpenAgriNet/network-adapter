@@ -106,7 +106,13 @@ type peerCrawl struct {
 	// before anything is pushed.
 	pageSize int
 	// updateMode is how a projection is published: FULL replaces, MERGE upserts.
-	updateMode   string
+	updateMode string
+	// batchSize is how many catalogs are held before they are published.
+	//
+	// Only read under MERGE. FULL cannot publish in batches at all -- every
+	// push claims to be the catalog's complete set, so a second one deletes
+	// what the first wrote -- so it accumulates the whole peer regardless.
+	batchSize    int
 	client       *http.Client
 	push         catalogPusher
 	pushEndpoint string
@@ -170,34 +176,116 @@ func (p *peerCrawl) discoverBody(audience string, schemaContext []string) ([]byt
 	})
 }
 
-// fetch asks a peer for one audience, following pages until it runs out.
+// crawlAudience asks a peer for one audience and publishes what comes back,
+// returning the catalog ids it saw.
 //
-// Accumulated, never pushed per page. `limit` counts RESOURCES, so one
-// catalog's resources can straddle a page boundary -- and pushing page 1 with
-// updateMode FULL and then page 2 would delete what page 1 just wrote, because
-// FULL deletes the resources a payload omits.
-func (p *peerCrawl) fetch(ctx context.Context, target peerTarget, audience string) ([]json.RawMessage, error) {
+// Only IDS are returned. The documents are released as they are published, so
+// what this holds does not grow with the size of the peer -- which is the whole
+// reason it publishes here rather than handing a list back.
+//
+// Under MERGE it publishes in batches: an id-keyed upsert means a catalog split
+// across pages reassembles correctly, so a page can be written and dropped.
+//
+// Under FULL it cannot. Every FULL push claims to be the catalog's complete
+// current set, so publishing page 2 deletes what page 1 wrote -- a
+// 1000-resource catalog fetched in two pages of 500 would end up holding 500.
+// So FULL accumulates the whole peer before publishing anything, and pays the
+// memory for it.
+func (p *peerCrawl) crawlAudience(ctx context.Context, target peerTarget, audience string) ([]string, error) {
+	batch := newPushBatch(p, audience, p.batchFor())
+
 	if p.pageSize <= 0 {
 		// One request, no limit: what this did before paging, kept so a
 		// deployment that has not configured a page size is unaffected.
-		return p.fetchPage(ctx, target, audience, 0, 0)
+		got, err := p.fetchPage(ctx, target, audience, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		if err := batch.add(ctx, got); err != nil {
+			return nil, err
+		}
+		return batch.done(ctx)
 	}
 
-	var all []json.RawMessage
 	for page := 0; page < p.maxPages; page++ {
 		got, err := p.fetchPage(ctx, target, audience, p.pageSize, page*p.pageSize)
 		if err != nil {
 			return nil, err
 		}
-		all = append(all, got...)
+		if err := batch.add(ctx, got); err != nil {
+			return nil, err
+		}
 		// A page the peer could not fill is the last one. Discovery pages a
-		// RESOURCE list, so a short page in catalogs is not a reliable end
-		// marker -- but an empty one is, and so is one the peer truncated.
+		// RESOURCE list, so a short page in CATALOGS is not a reliable end
+		// marker -- but an empty one is.
 		if len(got) == 0 {
 			break
 		}
 	}
-	return all, nil
+	return batch.done(ctx)
+}
+
+// batchFor is how many catalogs may be held before they are published.
+//
+// Zero means "hold everything", which is what FULL requires and what a
+// misconfigured batch size should not silently become.
+func (p *peerCrawl) batchFor() int {
+	if p.updateMode == sink.UpdateModeFull {
+		return 0
+	}
+	if p.batchSize < 1 {
+		return 1
+	}
+	return p.batchSize
+}
+
+// pushBatch collects catalogs and publishes them once there are enough.
+//
+// size 0 holds everything until done, which is FULL's only correct shape.
+type pushBatch struct {
+	crawl    *peerCrawl
+	audience string
+	size     int
+	held     []json.RawMessage
+	ids      []string
+}
+
+func newPushBatch(crawl *peerCrawl, audience string, size int) *pushBatch {
+	return &pushBatch{crawl: crawl, audience: audience, size: size}
+}
+
+func (b *pushBatch) add(ctx context.Context, catalogs []json.RawMessage) error {
+	b.held = append(b.held, catalogs...)
+	if b.size > 0 && len(b.held) >= b.size {
+		return b.flush(ctx)
+	}
+	return nil
+}
+
+func (b *pushBatch) done(ctx context.Context) ([]string, error) {
+	if err := b.flush(ctx); err != nil {
+		return nil, err
+	}
+	return b.ids, nil
+}
+
+// flush publishes what is held and releases it, keeping only the ids.
+func (b *pushBatch) flush(ctx context.Context) error {
+	if len(b.held) == 0 {
+		return nil
+	}
+	if err := b.crawl.pushAll(ctx, b.audience, b.held); err != nil {
+		return err
+	}
+	fresh, unnamed := catalogIDsOf(b.held)
+	if unnamed > 0 {
+		b.crawl.log.WarnContext(ctx,
+			"catalogcrawler: peer returned catalogs with no id; they cannot be expired later",
+			"audience", b.audience, "count", unnamed)
+	}
+	b.ids = append(b.ids, fresh...)
+	b.held = nil
+	return nil
 }
 
 // fetchPage sends one signed discover and returns what the peer answered.
@@ -285,7 +373,9 @@ func authorization(subscriberID, keyID string, created, expires int64, signature
 // silence as a withdrawal would empty the cache on one timeout -- which is what
 // the ttl, and only the ttl, is allowed to do.
 func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
-	var seen []json.RawMessage
+	// IDS, not documents: each audience publishes and releases what it fetched,
+	// so this does not grow with the size of the peer.
+	var seen []string
 
 	// TWO calls, because context.networkId carries one value and we want two
 	// audiences:
@@ -303,14 +393,11 @@ func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
 	//
 	// Both collapse into one call once context.networkId can carry a list.
 	for _, audience := range []string{target.NetworkID, p.subscriberID} {
-		catalogs, err := p.fetch(ctx, target, audience)
+		ids, err := p.crawlAudience(ctx, target, audience)
 		if err != nil {
 			return err
 		}
-		if err := p.pushAll(ctx, audience, catalogs); err != nil {
-			return err
-		}
-		seen = append(seen, catalogs...)
+		seen = append(seen, ids...)
 	}
 
 	return p.reconcile(ctx, target, seen)
@@ -322,15 +409,9 @@ func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
 // Ordering: the fresh ids are recorded BEFORE the dropped ones are withdrawn.
 // The reverse order would, if the process died in between, leave a catalog
 // published to discovery with no row naming it -- unpurgeable for ever.
-func (p *peerCrawl) reconcile(ctx context.Context, target peerTarget, catalogs []json.RawMessage) error {
+func (p *peerCrawl) reconcile(ctx context.Context, target peerTarget, fresh []string) error {
 	if p.projections == nil {
 		return nil
-	}
-
-	fresh, unnamed := catalogIDsOf(catalogs)
-	if unnamed > 0 {
-		p.log.WarnContext(ctx, "catalogcrawler: peer returned catalogs with no id; they cannot be expired later",
-			"networkId", target.NetworkID, "count", unnamed)
 	}
 
 	held, err := p.projections.ProjectionsFor(ctx, target.NetworkID)
