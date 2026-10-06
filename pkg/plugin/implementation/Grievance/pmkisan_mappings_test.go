@@ -68,7 +68,7 @@ const pkSupportRequest = `{
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
-        "providerId": "pmkisan",
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" }
       }]
@@ -263,7 +263,7 @@ func runPMKISAN(t *testing.T, p *pkPortal, request string) ([]byte, error) {
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type",
 		// support composes no contract; its binding is on the channel.
-		FallbackProviderIDAt:     "message.support.channels[].providerId",
+		FallbackProviderIDAt:     "message.support.channels[].provider.id",
 		FallbackCapabilityCodeAt: "message.support.channels[].@type",
 		AuthByProvider: map[string]*common.AuthProfile{
 			"pmkisan": {Scheme: util.AuthSchemeNone},
