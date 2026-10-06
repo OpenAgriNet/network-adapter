@@ -9,7 +9,8 @@
 #                        the complaint is against
 #   descriptor.code      the category, G001-G010
 #   descriptor.longDesc  the farmer's own words
-#   channels[0]          the case record: @context, @type, scheme, providerId
+#   channels[0]          the case record: @context, @type, scheme, and the
+#                        provider to route to, provider.id
 #
 # This file speaks PLAINTEXT. The portal reads and writes only AES-256-GCM, so
 # the Grievance plugin's envelope adds the service token (TokenNo) and encrypts

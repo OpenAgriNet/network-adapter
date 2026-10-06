@@ -68,7 +68,7 @@ const pkSupportRequest = `{
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
-        "providerId": "pmkisan",
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" }
       }]
@@ -261,7 +261,7 @@ func runPMKISAN(t *testing.T, p *pkPortal, request string) ([]byte, error) {
 	step, closeStep, err := Grievance.New(context.Background(), registry, mapper, &Grievance.Config{
 		BindingKeys:      []string{pkBindingKey},
 		// status names the binding on its contract, support on its channel.
-		ProviderIDAt:     "message.contract.commitments[].offer.provider.id, message.support.channels[].providerId",
+		ProviderIDAt:     "message.contract.commitments[].offer.provider.id, message.support.channels[].provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type, message.support.channels[].@type",
 		AuthByProvider: map[string]*common.AuthProfile{
 			"pmkisan": {Scheme: util.AuthSchemeNone},

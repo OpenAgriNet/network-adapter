@@ -19,7 +19,7 @@ func bothSchemesConfig() map[string]string {
 	config := pmfbyConfig()
 	config["bindingKeys"] = pmfbyBindingKey + "," + pmkisanBindingKey
 	for key, value := range map[string]string{
-		"fallbackProviderIdAt":          "message.support.channels[].providerId",
+		"fallbackProviderIdAt":          "message.support.channels[].provider.id",
 		"fallbackCapabilityCodeAt":      "message.support.channels[].@type",
 		"authScheme-pmkisan":            "none",
 		"envelope-pmkisan":              "aesGcm",
