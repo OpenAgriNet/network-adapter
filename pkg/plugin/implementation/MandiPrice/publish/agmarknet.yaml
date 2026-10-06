@@ -104,7 +104,7 @@ inputs:
   mode:
     flag: publish-mode
     env: MANDI_PUBLISH_MODE
-    default: both
+    default: onDemand
     enum: [onDemand, direct, both]
   # The Direct price window: the last week, ending with the day that just
   # closed. A market that reported nothing in it has no Direct resource.
@@ -292,6 +292,27 @@ pipeline:
       mapping: mappings/market-tag.yaml
     out: onDemandRecords
 
+  # Each state's ISO 3166-2 code, from the table in mappings/state-iso.yaml
+  # (kept out of the catalog mapping). Joined onto the OnDemand and Direct
+  # records below as `isoStateCode`; a state the table does not know simply
+  # gets no ISO area.
+  - id: stateIso
+    uses: transform
+    with:
+      left: ${states}
+      mapping: mappings/state-iso.yaml
+    out: stateIso
+
+  - id: onDemandIso
+    uses: join
+    with:
+      left: ${onDemandRecords}
+      right: ${stateIso}
+      "on": stateCode
+      type: left
+      carry: [isoStateCode]
+    out: onDemandWithIso
+
   # Direct, step 1: every (market, commodity) the market traded in the
   # window, one record each -- the list the price lookup walks.
   - id: pricePairs
@@ -334,13 +355,24 @@ pipeline:
     onEmptyOutput: { record: emptyPrices }
     out: directRecords
 
+  - id: directIso
+    uses: join
+    when: "${inputs.mode} != 'onDemand'"
+    with:
+      left: ${directRecords}
+      right: ${stateIso}
+      "on": stateCode
+      type: left
+      carry: [isoStateCode]
+    out: directWithIso
+
   # Both: the two collections side by side. In onDemand or direct mode this
   # step does not run and the collection is whichever half ran last.
   - id: bothModes
     uses: concat
     when: "${inputs.mode} = 'both'"
     with:
-      of: ["${onDemandRecords}", "${directRecords}"]
+      of: ["${onDemandWithIso}", "${directWithIso}"]
     out: collection
 
 # ---------------------------------------------------------------------------

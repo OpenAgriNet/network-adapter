@@ -27,35 +27,13 @@ response: |
     $toRFC3339End := function($w) {
       $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T23:59:59' & _local.utcOffset
     };
-    /* Validity is the LISTING's, not the price window's. The window is the
-       day that just closed, so validity copied from it has already ended
-       when the catalog is published, and discovery hides an expired catalog
-       -- the whole listing would be invisible from the moment it arrives.
-       It starts with the window and runs two days past its end: past the
-       next daily run (which republishes and extends it) and one missed run. */
+    /* Window start to window end + 2 days (past the next daily run and one missed one); discovery hides a resource past its validity, not a catalog -- dev_docs/mandi-catalog-contents-and-reasons.md section 9, field optional per https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/README.md */
     $startDate := $toRFC3339Start(_local.windowFrom);
     $endDate := $fromMillis(
       $toMillis($toRFC3339End(_local.windowTo)) + 2 * 86400000,
       "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01][Z01:01]",
       $replace(_local.utcOffset, ":", "")
     );
-
-    /* Agmarknet state code -> ISO 3166-2:IN. Agmarknet's codes are its own
-       (measured: KK is Karnataka, MG is Meghalaya), so "IN-" & code would
-       publish wrong areas -- worse than none, because consumers trust the
-       codeScheme. A state not listed here carries NO ISO area. Codes come
-       from observed output; extend from the live master-state list. ISO's
-       2023 revision is used (Chhattisgarh IN-CG). */
-    $isoByAgmarknet := {
-      "CG": "IN-CG",
-      "KA": "IN-KA",
-      "KK": "IN-KA",
-      "MG": "IN-ML",
-      "MH": "IN-MH",
-      "MP": "IN-MP",
-      "TN": "IN-TN",
-      "UP": "IN-UP"
-    };
 
     /* No filtering and no sorting here. Which markets publish, and in what
        order, is the pipeline file's catalog block (exclude, order), applied
@@ -67,7 +45,7 @@ response: |
         $hasCoords := $exists($row.latitude) and $exists($row.longitude);
         $coords := [$row.longitude, $row.latitude];
 
-        $isoStateCode := $lookup($isoByAgmarknet, $row.stateCode);
+        $isoStateCode := $row.isoStateCode;
 
         /* market's properties are a CLOSED set in the MandiPrice schema
            (additionalProperties: false): marketCode, marketName, district,
@@ -134,9 +112,9 @@ response: |
               "Market"
             ],
             "source": {
-              "sourceId": "agmarknet",
-              "sourceName": "Agmarknet Vistaar",
-              "sourceUri": "https://agmarknet.gov.in/"
+              "sourceId": "source:agmarknet",
+              "sourceName": "AGMARKNET",
+              "sourceUri": "https://agmarknet.gov.in"
             },
             "market": $marketObj,
             "supportedCommodities": $sortedCommodities,
@@ -176,12 +154,7 @@ response: |
       $u = "Rs./Qtl" ? "quintal" : ($u = "Rs./Kg" ? "kg" : $u)
     };
 
-    /* Two days from when it was published, for the same reason as the
-       OnDemand listing above: the next daily run republishes it in place,
-       but only after its price calls finish, which takes a long time -- so
-       a validity of exactly one day would leave every price expired, and
-       hidden from discovery, for that whole gap every day. Two days covers
-       that and one missed run. */
+    /* Publish time + 2 days, so a price stays visible through the next run and one missed one and then expires; same source as above. */
     $validUntil := $fromMillis($toMillis(_local.generatedAt) + 2 * 86400000,
       "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
 
@@ -195,8 +168,9 @@ response: |
           "id": $row.resourceId,
           "descriptor": {
             "code": "MANDI_PRICE_OBSERVATION",
-            "name": $commodity & " prices at " & $market & " on " & $row.arrivalDate,
-            "shortDesc": "Minimum, maximum, and modal " & $lowercase($commodity) & " prices reported by " & $market & " for " & $row.arrivalDate & "."
+            "name": $commodity & " prices at " & $market,
+            "shortDesc": "Minimum, maximum, and modal " & $lowercase($commodity) & " prices for the latest arrival date.",
+            "longDesc": "The latest " & $lowercase($commodity) & " prices reported by " & $market & " to AGMARKNET. The arrival date they apply to is in arrivalDate."
           },
           "resourceAttributes": {
             "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
@@ -206,19 +180,31 @@ response: |
               "Market"
             ],
             "source": {
-              "sourceId": "agmarknet",
-              "sourceName": "Agmarknet Vistaar",
-              "sourceUri": "https://agmarknet.gov.in/"
+              "sourceId": "source:agmarknet",
+              "sourceName": "AGMARKNET",
+              "sourceUri": "https://agmarknet.gov.in"
             },
             "supportedCommodities": [
               {
                 "code": $string($row.commodityCode),
-                "name": $commodity
+                "name": $commodity,
+                "shortDesc": $commodity & " traded in agricultural produce markets."
               }
             ],
             "commodityGroup": $row.commodityGroup,
             "grade": $row.grade,
             "variety": $row.variety,
+            /* The same state area the OnDemand market carries, as the spec's
+               own Direct example does. Left out for a state the table does
+               not know: coverageAreas must not be empty when present. */
+            "coverageAreas": $exists($row.isoStateCode) ? [
+              {
+                "codeScheme": "ISO-3166-2",
+                "areaCode": $row.isoStateCode,
+                "areaLevel": "State",
+                "areaName": $trim($row.stateName)
+              }
+            ],
             /* Same closed set as the OnDemand market: marketCode,
                marketName, district, state, location. The state is its NAME
                here, as a Direct observation reads to a person. */

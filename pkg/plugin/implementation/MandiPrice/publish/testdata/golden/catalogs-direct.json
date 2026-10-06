@@ -33,8 +33,9 @@
               {
                 "descriptor": {
                   "code": "MANDI_PRICE_OBSERVATION",
-                  "name": "Onion prices at Hubli on 2026-08-31",
-                  "shortDesc": "Minimum, maximum, and modal onion prices reported by Hubli for 2026-08-31."
+                  "longDesc": "The latest onion prices reported by Hubli to AGMARKNET. The arrival date they apply to is in arrivalDate.",
+                  "name": "Onion prices at Hubli",
+                  "shortDesc": "Minimum, maximum, and modal onion prices for the latest arrival date."
                 },
                 "id": "resource:mandi-price:price:201:23",
                 "resourceAttributes": {
@@ -42,6 +43,14 @@
                   "@type": "openagrinet:MandiPrice",
                   "arrivalDate": "2026-08-31",
                   "commodityGroup": "Vegetables",
+                  "coverageAreas": [
+                    {
+                      "areaCode": "IN-KA",
+                      "areaLevel": "State",
+                      "areaName": "Karnataka",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
                   "generatedAt": "\u003ctimestamp\u003e",
                   "grade": "FAQ",
                   "informationMode": "Direct",
@@ -68,9 +77,9 @@
                     "unit": "quintal"
                   },
                   "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
                   },
                   "subjectCategories": [
                     "Market"
@@ -78,7 +87,8 @@
                   "supportedCommodities": [
                     {
                       "code": "23",
-                      "name": "Onion"
+                      "name": "Onion",
+                      "shortDesc": "Onion traded in agricultural produce markets."
                     }
                   ],
                   "validity": {
@@ -145,8 +155,9 @@
               {
                 "descriptor": {
                   "code": "MANDI_PRICE_OBSERVATION",
-                  "name": "Onion prices at Nashik on 2026-08-30",
-                  "shortDesc": "Minimum, maximum, and modal onion prices reported by Nashik for 2026-08-30."
+                  "longDesc": "The latest onion prices reported by Nashik to AGMARKNET. The arrival date they apply to is in arrivalDate.",
+                  "name": "Onion prices at Nashik",
+                  "shortDesc": "Minimum, maximum, and modal onion prices for the latest arrival date."
                 },
                 "id": "resource:mandi-price:price:102:23",
                 "resourceAttributes": {
@@ -154,6 +165,14 @@
                   "@type": "openagrinet:MandiPrice",
                   "arrivalDate": "2026-08-30",
                   "commodityGroup": "Vegetables",
+                  "coverageAreas": [
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
                   "generatedAt": "\u003ctimestamp\u003e",
                   "grade": "Non-FAQ",
                   "informationMode": "Direct",
@@ -170,9 +189,9 @@
                     "unit": "quintal"
                   },
                   "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
                   },
                   "subjectCategories": [
                     "Market"
@@ -180,7 +199,8 @@
                   "supportedCommodities": [
                     {
                       "code": "23",
-                      "name": "Onion"
+                      "name": "Onion",
+                      "shortDesc": "Onion traded in agricultural produce markets."
                     }
                   ],
                   "validity": {
@@ -193,8 +213,9 @@
               {
                 "descriptor": {
                   "code": "MANDI_PRICE_OBSERVATION",
-                  "name": "Onion prices at Pune on 2026-09-01",
-                  "shortDesc": "Minimum, maximum, and modal onion prices reported by Pune for 2026-09-01."
+                  "longDesc": "The latest onion prices reported by Pune to AGMARKNET. The arrival date they apply to is in arrivalDate.",
+                  "name": "Onion prices at Pune",
+                  "shortDesc": "Minimum, maximum, and modal onion prices for the latest arrival date."
                 },
                 "id": "resource:mandi-price:price:101:23",
                 "resourceAttributes": {
@@ -202,6 +223,14 @@
                   "@type": "openagrinet:MandiPrice",
                   "arrivalDate": "2026-09-01",
                   "commodityGroup": "Vegetables",
+                  "coverageAreas": [
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
                   "generatedAt": "\u003ctimestamp\u003e",
                   "grade": "FAQ",
                   "informationMode": "Direct",
@@ -228,9 +257,9 @@
                     "unit": "quintal"
                   },
                   "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
                   },
                   "subjectCategories": [
                     "Market"
@@ -238,7 +267,8 @@
                   "supportedCommodities": [
                     {
                       "code": "23",
-                      "name": "Onion"
+                      "name": "Onion",
+                      "shortDesc": "Onion traded in agricultural produce markets."
                     }
                   ],
                   "validity": {

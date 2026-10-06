@@ -53,6 +53,7 @@ var wantFiles = []string{
 	path.Join(mappingsDir, "master-markets.yaml"),
 	path.Join(mappingsDir, "market-commodity.yaml"),
 	path.Join(mappingsDir, "catalog.yaml"),
+	path.Join(mappingsDir, "state-iso.yaml"),
 }
 
 func TestFilesEmbedsThePipelineAndItsMappings(t *testing.T) {
@@ -101,7 +102,7 @@ func TestCatalogMappingNeitherFiltersSortsNorBuildsIds(t *testing.T) {
 // and MG is Meghalaya -- so "IN-" + code publishes wrong areas, which is worse
 // than none: consumers trust the codeScheme. Codes not listed get no ISO area.
 func TestCatalogMappingAreaCodeTable(t *testing.T) {
-	raw, err := Files.ReadFile(path.Join(mappingsDir, "catalog.yaml"))
+	raw, err := Files.ReadFile(path.Join(mappingsDir, "state-iso.yaml"))
 	if err != nil {
 		t.Fatalf("reading the mapping: %v", err)
 	}
@@ -116,5 +117,38 @@ func TestCatalogMappingAreaCodeTable(t *testing.T) {
 	}
 	if strings.Contains(mapping, `"IN-" & $uppercase`) {
 		t.Error("the mapping still derives ISO codes from Agmarknet codes")
+	}
+	// The catalog mapping no longer carries the table: it reads the joined
+	// isoStateCode.
+	catalog, err := Files.ReadFile(path.Join(mappingsDir, "catalog.yaml"))
+	if err != nil {
+		t.Fatalf("reading catalog.yaml: %v", err)
+	}
+	if strings.Contains(string(catalog), "isoByAgmarknet") {
+		t.Error("mappings/catalog.yaml still carries the Agmarknet -> ISO table")
+	}
+}
+
+// Agmarknet's 36 state codes (its master list, option 4, read 2026-10-06) each
+// have an ISO entry, and the ten whose ISO suffix is NOT the Agmarknet code
+// are spelled out: a default of "IN-" & code would publish IN-BI for Bihar.
+func TestCatalogMappingCoversEveryAgmarknetState(t *testing.T) {
+	raw, err := Files.ReadFile(path.Join(mappingsDir, "state-iso.yaml"))
+	if err != nil {
+		t.Fatalf("reading the mapping: %v", err)
+	}
+	mapping := string(raw)
+	for _, code := range strings.Fields("AN AP AR AS BI CG CH DD DL DN GJ GO HP HR JK JR KK KL LD MG MH MN MP MZ NG OR PB PC RJ SK TL TN TR UC UP WB") {
+		if !strings.Contains(mapping, `"`+code+`": "IN-`) {
+			t.Errorf("the table has no ISO entry for Agmarknet state %s", code)
+		}
+	}
+	for code, iso := range map[string]string{
+		"BI": "IN-BR", "DD": "IN-DH", "DN": "IN-DH", "GO": "IN-GA", "JR": "IN-JH",
+		"NG": "IN-NL", "OR": "IN-OD", "PC": "IN-PY", "TL": "IN-TS", "UC": "IN-UK",
+	} {
+		if !strings.Contains(mapping, `"`+code+`": "`+iso+`"`) {
+			t.Errorf("the table does not map %s -> %s", code, iso)
+		}
 	}
 }

@@ -213,7 +213,7 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 	}
 
 	wantStepIDs := []string{"states", "masterMarkets", "stateRows", "join", "coordinates", "dedupe",
-		"onDemand", "pricePairs", "prices", "bothModes"}
+		"onDemand", "stateIso", "onDemandIso", "pricePairs", "prices", "directIso", "bothModes"}
 	if got, want := len(spec.Pipeline), len(wantStepIDs); got != want {
 		t.Fatalf("len(Pipeline) = %d, want %d", got, want)
 	}
@@ -297,13 +297,24 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 	if onDemand.Uses != "transform" || onDemand.When != "" || onDemand.With.Mapping != "mappings/market-tag.yaml" {
 		t.Errorf("onDemand = %+v; want an unconditional transform through market-tag.yaml", onDemand)
 	}
+	// The ISO state code is joined onto the OnDemand records always, and onto
+	// the Direct ones only when they are built.
+	stateIso := spec.Pipeline[7]
+	if stateIso.Uses != "transform" || stateIso.When != "" || stateIso.With.Mapping != "mappings/state-iso.yaml" {
+		t.Errorf("stateIso = %+v; want an unconditional transform through state-iso.yaml", stateIso)
+	}
+	onDemandIso := spec.Pipeline[8]
+	if onDemandIso.Uses != "join" || onDemandIso.When != "" || onDemandIso.With.On != "stateCode" ||
+		fmt.Sprint(onDemandIso.With.Carry) != "[isoStateCode]" {
+		t.Errorf("onDemandIso = %+v; want an unconditional join carrying isoStateCode on stateCode", onDemandIso)
+	}
 	// The Direct half runs unless the mode is onDemand alone.
-	for _, i := range []int{7, 8} {
+	for _, i := range []int{9, 10, 11} {
 		if got, want := spec.Pipeline[i].When, "${inputs.mode} != 'onDemand'"; got != want {
 			t.Errorf("%s.When = %q, want %q", spec.Pipeline[i].ID, got, want)
 		}
 	}
-	prices := spec.Pipeline[8]
+	prices := spec.Pipeline[10]
 	if prices.Uses != "http.get" || prices.With.Path != "/v1/fetch-agmarknet-vistaar" ||
 		prices.With.Mapping != "mappings/market-price.yaml" || prices.ForEach != "${pricePairs}" {
 		t.Errorf("prices = %+v; want an http.get per price pair through market-price.yaml", prices)
@@ -313,9 +324,9 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 	if !prices.OnError["emptyResult"].Continue || !prices.OnError["transportError"].Continue {
 		t.Errorf("prices.OnError = %+v; want emptyResult and transportError both to continue", prices.OnError)
 	}
-	bothModes := spec.Pipeline[9]
+	bothModes := spec.Pipeline[12]
 	if bothModes.Uses != "concat" || bothModes.When != "${inputs.mode} = 'both'" ||
-		fmt.Sprint(bothModes.With.Of) != "[${onDemandRecords} ${directRecords}]" {
+		fmt.Sprint(bothModes.With.Of) != "[${onDemandWithIso} ${directWithIso}]" {
 		t.Errorf("bothModes = %+v; want a concat of the two halves when mode is both", bothModes)
 	}
 

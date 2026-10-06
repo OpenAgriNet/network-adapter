@@ -75,9 +75,9 @@
                     "state": "KA"
                   },
                   "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
                   },
                   "subjectCategories": [
                     "Market"
@@ -192,9 +192,9 @@
                     "state": "MH"
                   },
                   "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
                   },
                   "subjectCategories": [
                     "Market"
@@ -262,9 +262,9 @@
                     "state": "MH"
                   },
                   "source": {
-                    "sourceId": "agmarknet",
-                    "sourceName": "Agmarknet Vistaar",
-                    "sourceUri": "https://agmarknet.gov.in/"
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
                   },
                   "subjectCategories": [
                     "Market"
