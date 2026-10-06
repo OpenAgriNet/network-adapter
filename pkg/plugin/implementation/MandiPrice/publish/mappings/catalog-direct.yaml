@@ -138,10 +138,6 @@ response: |
         "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation."
       },
       "provider": $provider,
-      "validity": {
-        "startDate": _local.generatedAt,
-        "endDate": $validUntil
-      },
       "resources": $resources
     };
 

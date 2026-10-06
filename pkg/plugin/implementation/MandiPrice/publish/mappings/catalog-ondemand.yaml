@@ -153,10 +153,6 @@ response: |
         "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery."
       },
       "provider": $provider,
-      "validity": {
-        "startDate": $startDate,
-        "endDate": $endDate
-      },
       "resources": $resources
     };
 

@@ -170,6 +170,23 @@ func twoGoodStates() []upstreamState {
 // router and the expected catalog count all move together.
 func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 	t.Helper()
+	return fakeAgmarknetWith(t, states, defaultFixture)
+}
+
+// upstreamFixture is the data the fake serves besides the state list and the
+// per-state rows: the master markets (option 6), the price rows per
+// "marketId|commodityCode" pair, and the district each market is in.
+type upstreamFixture struct {
+	master    string
+	prices    map[string]string
+	districts map[string]string
+}
+
+// defaultFixture is the edge-case data most tests here assert against.
+var defaultFixture = upstreamFixture{master: masterMarketsBody, prices: pricesByPair, districts: districtByMarket}
+
+func fakeAgmarknetWith(t *testing.T, states []upstreamState, fixture upstreamFixture) *httptest.Server {
+	t.Helper()
 
 	byCode := make(map[string]upstreamState, len(states))
 	list := make([]map[string]any, 0, len(states))
@@ -205,7 +222,7 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 			case "4":
 				_, _ = w.Write(masterStatesBody)
 			case "6":
-				_, _ = w.Write([]byte(masterMarketsBody))
+				_, _ = w.Write([]byte(fixture.master))
 			default:
 				t.Errorf("master data called with option=%q, want 4 or 6", option)
 				http.Error(w, `{"error":"Option must be between 1 and 6"}`, http.StatusBadRequest)
@@ -232,7 +249,7 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 			// service -- just not the one it meant.
 			q := r.URL.Query()
 			market, commodity := q.Get("marketcode"), q.Get("commoditycode")
-			if want := districtByMarket[market]; q.Get("districtcode") != want {
+			if want := fixture.districts[market]; q.Get("districtcode") != want {
 				t.Errorf("price call for market %s sent districtcode %q, want %q", market, q.Get("districtcode"), want)
 			}
 			for _, name := range []string{"token", "statecode", "from_date", "to_date"} {
@@ -240,7 +257,7 @@ func fakeAgmarknet(t *testing.T, states []upstreamState) *httptest.Server {
 					t.Errorf("price call for %s|%s sent no %s", market, commodity, name)
 				}
 			}
-			body, ok := pricesByPair[market+"|"+commodity]
+			body, ok := fixture.prices[market+"|"+commodity]
 			if !ok {
 				http.Error(w, noDataBody, http.StatusBadRequest)
 				return
@@ -706,7 +723,8 @@ func (p refusingPublisher) Retire(_ context.Context, _ string, r pipeline.Retire
 //     MandiPrice schema, and the publish endpoint rejects the whole catalog
 //     over a property outside it (measured: "property \"districtId\" is
 //     unsupported", every catalog 400);
-//   - validity carries the schedule's offset (+05:30), not Z.
+//   - resource validity carries the schedule's offset (+05:30), not Z;
+//   - the catalog itself carries no validity (see the listing-validity test).
 func TestRunRendersTheCatalogContract(t *testing.T) {
 	states := append(twoGoodStates(), upstreamState{code: "ZZ", name: "Nowhere", rows: `[
   {"market_id":1001,"mkt_name":"Nowhere Market","state_code":"ZZ","state_name":"Nowhere",
@@ -728,9 +746,6 @@ func TestRunRendersTheCatalogContract(t *testing.T) {
 			t.Fatalf("%s: %v", catalog.Slug, err)
 		}
 		entry := doc["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)
-		if start := entry["validity"].(map[string]any)["startDate"].(string); !strings.HasSuffix(start, "+05:30") {
-			t.Errorf("%s: validity.startDate = %q, want the +05:30 offset", catalog.Slug, start)
-		}
 		for _, raw := range entry["resources"].([]any) {
 			attrs := raw.(map[string]any)["resourceAttributes"].(map[string]any)
 			market := attrs["market"].(map[string]any)
@@ -759,13 +774,12 @@ func TestRunRendersTheCatalogContract(t *testing.T) {
 	}
 }
 
-// A published market listing must be valid WHEN it is published, and stay
-// valid until the next daily run lands. Discovery hides a catalog whose
-// validity has ended, and the price window this pipeline queries is
-// yesterday -- so a validity copied from that window is already over at
-// publish, and the whole listing is invisible from the moment it arrives
-// (measured: catalog:mandi-price:UP, published 2026-09-30, valid to
-// 2026-09-29, discover returned nothing).
+// A published resource must be valid WHEN it is published, and stay valid until
+// the next daily run lands: discovery hides a RESOURCE past its validity (tested
+// 2026-10-06, dev_docs/mandi-catalog-contents-and-reasons.md section 9), and the
+// price window this pipeline queries is yesterday, so a validity copied from
+// that window is already over at publish. The CATALOG carries no validity: it
+// hid nothing in that test, and it is optional in the pack.
 func TestPublishedListingIsValidFromTheRunUntilAfterTheNextOne(t *testing.T) {
 	upstream := fakeAgmarknet(t, twoGoodStates())
 	now := firingTime(t)
@@ -794,8 +808,9 @@ func TestPublishedListingIsValidFromTheRunUntilAfterTheNextOne(t *testing.T) {
 			t.Fatalf("%s: %v", catalog.Slug, err)
 		}
 		entry := doc["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)
-		v := entry["validity"].(map[string]any)
-		check(catalog.Slug+" catalog", v["startDate"].(string), v["endDate"].(string))
+		if _, has := entry["validity"]; has {
+			t.Errorf("%s: the catalog carries a validity; only its resources should", catalog.Slug)
+		}
 		for _, raw := range entry["resources"].([]any) {
 			rv := raw.(map[string]any)["resourceAttributes"].(map[string]any)["validity"].(map[string]any)
 			check(catalog.Slug+" resource", rv["startsAt"].(string), rv["endsAt"].(string))
@@ -867,9 +882,9 @@ func TestRunBuildsBothModesFromOneRun(t *testing.T) {
 	if got := direct["descriptor"].(map[string]any)["code"]; got != "MANDI_PRICE_CURRENT_MH" {
 		t.Errorf("Direct MH descriptor.code = %v", got)
 	}
-	// Listed with an end that outlasts the next daily run, as OnDemand is.
-	if _, ok := direct["validity"].(map[string]any); !ok {
-		t.Error("the Direct catalog carries no catalog-level validity")
+	// The catalog carries no validity of its own; its resources do.
+	if _, has := direct["validity"]; has {
+		t.Error("the Direct catalog carries a catalog-level validity")
 	}
 
 	// Pune onion priced, Pune potato reported nothing; Nashik is in the same
