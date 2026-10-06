@@ -51,6 +51,10 @@ plugins=(
     "catalogpublisher"
     "catalogcrawler"
     "vcvalidator:validateVC"
+    # receivercheck builds as checkReceiver.so: the step is named for what it
+    # decides, not for the package it lives in, the same way vcvalidator above
+    # builds as validateVC.
+    "receivercheck:checkReceiver"
 )
 
 for entry in "${plugins[@]}"; do
