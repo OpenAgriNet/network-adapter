@@ -42,7 +42,8 @@ func RegisterHandler(crawler definition.Crawler) {
 
 // NewHandler builds the /crawl/* endpoint family. Sub-routes on the request
 // path stripped of cfg.BasePath: "trigger" -> the on-demand crawl trigger
-// (trigger.go), "status" -> the crawl/sync status query (status.go). Both
+// (trigger.go), "peers" -> the peer-network crawl (peercrawl.go), "status" ->
+// the crawl/sync status query (status.go). Both
 // explicit, rather than treating the bare path as the trigger, so neither
 // endpoint depends on how a bare-subtree-root request happens to redirect.
 func NewHandler(ctx context.Context, crawler definition.Crawler, cfg *handler.Config, moduleName string) (http.Handler, error) {
@@ -53,12 +54,30 @@ func NewHandler(ctx context.Context, crawler definition.Crawler, cfg *handler.Co
 	trigger := newTriggerHandler(crawler)
 	status := newStatusHandler(crawler, cfg)
 
+	// Peer crawling is not part of the Crawler contract -- it is asked for here
+	// and nowhere else, so the interface lives beside this endpoint rather than
+	// in the shared plugin definition. A Crawler that does not implement it
+	// simply does not serve the route, which is what the nil below means.
+	var peers http.Handler
+	if federated, ok := crawler.(peerCrawler); ok {
+		peers = newPeersHandler(federated)
+	}
+
 	log.Debugf(ctx, "catalogCrawl handler %s initialized", moduleName)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sub := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, cfg.BasePath), "/")
 		switch sub {
 		case "trigger":
 			trigger.ServeHTTP(w, r)
+		case "peers":
+			if peers == nil {
+				// Said plainly: the route exists in this build, but this
+				// crawler cannot answer it. A 404 would read as a typo.
+				http.Error(w, "this crawler does not implement peer crawling",
+					http.StatusNotImplemented)
+				return
+			}
+			peers.ServeHTTP(w, r)
 		case "status":
 			status.ServeHTTP(w, r)
 		default:

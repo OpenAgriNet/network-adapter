@@ -16,17 +16,21 @@ package catalogcrawler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/source"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/signer"
 	"github.com/beckn/catalog-core/pkg/catalog"
 	"github.com/beckn/catalog-core/pkg/catalog/crawler"
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
@@ -37,23 +41,41 @@ import (
 // matching onix's own config-key convention (e.g. schemaversionmediator's
 // fetchTimeout/artifactCacheTTL).
 const (
-	cfgDBDSN                = "dbDsn"
-	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
-	cfgStaticIndexURLs      = "staticIndexUrls" // comma-separated, optional fixed index URLs
-	cfgDiscoveryURL         = "discoveryPushUrl"
-	cfgParticipantID        = "participantId" // this deployment's own bppId
-	cfgBppURI               = "bppUri"        // this deployment's own bppUri
-	cfgFetchTimeoutSec      = "fetchTimeoutSeconds"
-	cfgMaxFetchBytes        = "maxFetchBytes"
-	cfgMaxDecompressed      = "maxDecompressedBytes"
-	cfgMaxPushBytes         = "maxPushBytes"
-	cfgIndexIntervalSec     = "indexIntervalSeconds"
-	cfgCatalogIntervalSec   = "catalogIntervalSeconds"
-	cfgAllowPrivateHosts    = "allowPrivateHosts"        // "true" to allow loopback/private fetch targets; tests only
-	cfgMaxAttempts          = "maxAttempts"              // transient-failure retries before parking; 0/unset => unlimited
-	cfgParkSweepIntervalSec = "parkSweepIntervalSeconds" // how often RequeueOrAbandonParked runs; 0/unset => DefaultParkSweepInterval (15m)
-	cfgParkOlderThanSec     = "parkOlderThanSeconds"     // how long a catalog must sit parked before this sweep touches it; 0/unset => act on anything parked
-	cfgMaxParkCount         = "maxParkCount"             // revivals allowed before abandoning a parked catalog; 0/unset => derived from the sweep interval and DefaultMaxParkRetryBudget (12h)
+	cfgDBDSN = "dbDsn"
+
+	// The federated half. Absent means this deployment crawls its own providers
+	// and nothing else, which is every deployment that has admitted no peers.
+	cfgFederationNetworkID = "federationNetworkId" // our own networkId, declared to a peer
+	cfgFederationKey       = "federationSigningKey"
+	// The id the registry filed our key under. It is the second component of
+	// the Authorization keyId, and the only way a peer can look the key up.
+	cfgFederationKeyID           = "federationKeyId"
+	cfgFederationMaxPages        = "federationMaxPages"
+	cfgFederationPageSize        = "federationPageSize"
+	cfgFederationUpdateMode      = "federationUpdateMode"
+	cfgFederationPublishRetrySec = "federationPublishRetrySeconds"
+	cfgFederationDomain          = "federationDomain"
+	cfgFederationIntent          = "federationIntent" // raw JSON: the Beckn intent sent to a peer
+	cfgFederationSchemas         = "federationSchemaContext"
+	cfgFederationRefreshSec      = "federationRefreshSeconds"
+	cfgFederationVersion         = "federationProtocolVersion"
+	cfgFederationWindowSec       = "federationSignatureWindowSeconds"
+	cfgNetworks                  = "networks"        // comma-separated networkIds for registry-backed discovery
+	cfgStaticIndexURLs           = "staticIndexUrls" // comma-separated, optional fixed index URLs
+	cfgDiscoveryURL              = "discoveryPushUrl"
+	cfgParticipantID             = "participantId" // this deployment's own bppId
+	cfgBppURI                    = "bppUri"        // this deployment's own bppUri
+	cfgFetchTimeoutSec           = "fetchTimeoutSeconds"
+	cfgMaxFetchBytes             = "maxFetchBytes"
+	cfgMaxDecompressed           = "maxDecompressedBytes"
+	cfgMaxPushBytes              = "maxPushBytes"
+	cfgIndexIntervalSec          = "indexIntervalSeconds"
+	cfgCatalogIntervalSec        = "catalogIntervalSeconds"
+	cfgAllowPrivateHosts         = "allowPrivateHosts"        // "true" to allow loopback/private fetch targets; tests only
+	cfgMaxAttempts               = "maxAttempts"              // transient-failure retries before parking; 0/unset => unlimited
+	cfgParkSweepIntervalSec      = "parkSweepIntervalSeconds" // how often RequeueOrAbandonParked runs; 0/unset => DefaultParkSweepInterval (15m)
+	cfgParkOlderThanSec          = "parkOlderThanSeconds"     // how long a catalog must sit parked before this sweep touches it; 0/unset => act on anything parked
+	cfgMaxParkCount              = "maxParkCount"             // revivals allowed before abandoning a parked catalog; 0/unset => derived from the sweep interval and DefaultMaxParkRetryBudget (12h)
 )
 
 const (
@@ -66,6 +88,40 @@ const (
 	// combined with the actual (possibly overridden) park-sweep interval
 	// via crawlmanager.DeriveMaxParkCount to compute Params.MaxParkCount.
 	DefaultMaxParkRetryBudget = 12 * time.Hour
+
+	// How long a signature sent to a peer stays valid, and how many pages are
+	// drained from one peer before the pass moves on.
+	//
+	// The window is short because a cross-network signature is a bearer token
+	// for its lifetime. The page cap exists so a peer that never returns an
+	// empty page cannot hold a pass open indefinitely.
+	defaultFederationWindow = 30 * time.Second
+	defaultPeerMaxPages     = 50
+
+	// 0 asks ONCE with no limit, which is what this did before paging existed.
+	// A deployment that wants pages sets it; one that does not keeps the old
+	// single-request behaviour and the old failure mode with it.
+	defaultPeerPageSize = 0
+
+	// How long a failed publish waits before the queue offers it again.
+	defaultPublishRetry = 30 * time.Second
+
+	// A peer ROUTES on these two, so they are not cosmetic: a discover without
+	// them is refused before it reaches the peer's discovery service, with "no
+	// routing rules found for domain" -- which names the field and not the
+	// caller, and so is a confusing way to learn this.
+	// How often peers are re-crawled. A cache nobody refreshes keeps serving
+	// what a peer has already withdrawn, which is the one thing a cache must
+	// not do. Set federationRefreshSeconds to 0 to disable it.
+	defaultPeerRefresh = 15 * time.Minute
+
+	defaultFederationDomain = "agriculture"
+
+	// What discovery-service's /publish route takes. It checks the action the
+	// BODY carries against the actions it serves, and "catalog/push" -- the
+	// sink's own default, and the push route's action -- is not one of them.
+	actionCatalogPublish   = "catalog/publish"
+	defaultProtocolVersion = "2.0.0"
 )
 
 // Provider implements definition.CrawlerProvider.
@@ -119,6 +175,13 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 
 	src := buildSource(config, metadataLookup, log)
 	snk := sink.NewDiscoverySink(discoveryURL, config[cfgParticipantID], config[cfgBppURI], int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes), fetchTimeout)
+	// The action THIS deployment's endpoint takes. The sink defaults to
+	// "catalog/push", which is the push route's action and what a generic
+	// caller sends; discovery-service's /publish looks the action up by what
+	// the BODY says and serves no action of that name, so every push went out
+	// as a CTX_ACTION_MISMATCH. Set here rather than changing the sink's
+	// default, which other callers rely on.
+	snk.Action = actionCatalogPublish
 
 	// The same configured networks drive both registry-backed discovery
 	// (buildSource) and scope filtering (Params.Networks) -- one deployment
@@ -163,8 +226,11 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		params:         params,
 		sched:          NewScheduler(params, schedCfg, log),
 		metadataLookup: metadataLookup,
+		registry:       registry,
 		log:            log,
 		st:             st,
+		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, crossNetworkSink(snk, config), log),
+		peerRefresh:    durationSecondsOr(config[cfgFederationRefreshSec], defaultPeerRefresh),
 	}
 	return c, db.Close, nil
 }
@@ -258,6 +324,82 @@ func (m multiSource) Discover(ctx context.Context) ([]crawlmanager.IndexRef, err
 	return refs, nil
 }
 
+// crossNetworkSink is the local sink with the cross-network crawl's own update
+// mode, sharing everything else.
+//
+// A COPY, not the same value: the local crawl publishes a catalog it resolved
+// in full, so FULL is right for it. A crawled catalog arrives a page at a time
+// and FULL would have the second page delete the first, so this half defaults
+// to MERGE. Endpoint, identity, byte ceiling and client are the same.
+func crossNetworkSink(local *sink.DiscoverySink, config map[string]string) *sink.DiscoverySink {
+	crossNetwork := *local
+	crossNetwork.UpdateMode = updateModeOr(config[cfgFederationUpdateMode])
+	return &crossNetwork
+}
+
+// newPeerCrawlFromConfig builds the federated half, or nil when this deployment
+// has none configured.
+//
+// Nil rather than a zero value: CrawlPeers refuses on nil and says why, which is
+// a better answer to an operator than a run id for a pass that visited nobody.
+//
+// It reuses the crawler's own HTTP client and its discovery push URL, because a
+// peer's catalogs go exactly where our own providers' catalogs go. Only the way
+// they are FETCHED differs.
+func newPeerCrawlFromConfig(
+	ctx context.Context, config map[string]string, pushEndpoint string,
+	timeout time.Duration, staged stagedStore,
+	catalogs catalogSink, log *slog.Logger,
+) *peerCrawl {
+	networkID := strings.TrimSpace(config[cfgFederationNetworkID])
+	key := strings.TrimSpace(config[cfgFederationKey])
+	if networkID == "" || key == "" {
+		return nil
+	}
+
+	// The signer is constructed here rather than injected, because
+	// CrawlerProvider.New takes no Signer and widening that contract for one
+	// consumer would touch every crawler deployment. It is a stateless helper --
+	// Sign is a pure function of the body, the key and the window -- so there is
+	// no instance to share and nothing to keep in step.
+	//
+	// Constructing it is still better than re-implementing the signing string
+	// here: that is a security primitive, and a second copy of one is a second
+	// thing to get subtly wrong.
+	signing, _, err := signer.New(ctx, &signer.Config{})
+	if err != nil {
+		log.Warn("catalogcrawler: federation is configured but the signer could not be built; peers will not be crawled",
+			"error", err)
+		return nil
+	}
+
+	return &peerCrawl{
+		signer:       signing,
+		localNetwork: networkID,
+		subscriberID: strings.TrimSpace(config[cfgParticipantID]),
+		privateKey:   key,
+		keyID:        strings.TrimSpace(config[cfgFederationKeyID]),
+		pageSize:     int(int64Or(config[cfgFederationPageSize], defaultPeerPageSize)),
+		publishRetry: durationSecondsOr(config[cfgFederationPublishRetrySec], defaultPublishRetry),
+		// The SAME budget the local crawl's syncs get, so one setting governs
+		// how patient this deployment is with a failing publish.
+		maxAttempts: int(int64Or(config[cfgMaxAttempts], 0)),
+		store:       staged,
+		window:      durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
+		// Empty: mirror everything the peer will give us. A deployment that
+		// wants less sets a jsonpath or spatial intent here.
+		domain:          stringOr(config[cfgFederationDomain], defaultFederationDomain),
+		protocolVersion: stringOr(config[cfgFederationVersion], defaultProtocolVersion),
+		intent:          federationIntent(config[cfgFederationIntent]),
+		maxPages:        int(int64Or(config[cfgFederationMaxPages], defaultPeerMaxPages)),
+		client:          &http.Client{Timeout: timeout},
+		sink:            catalogs,
+		push:            sink.NewClient(timeout),
+		pushEndpoint:    pushEndpoint,
+		log:             log,
+	}
+}
+
 // crawlerImpl implements definition.Crawler.
 type crawlerImpl struct {
 	params         crawlmanager.Params
@@ -270,14 +412,148 @@ type crawlerImpl struct {
 	// needs its own reporting query -- not part of crawlmanager.Store's
 	// narrow scheduler-facing surface.
 	st *store.Store
+
+	// registry is this crawler's own registry plugin instance -- the one its
+	// `registry:` config block already builds. Held as the narrow
+	// RegistryLookup and type-asserted when peers are listed, the way
+	// metadataLookup is obtained today.
+	//
+	// It is NOT metadataLookup. That is a RegistryMetadataLookup, which only
+	// dediregistry implements, so on an OAN deployment it is nil.
+	registry definition.RegistryLookup
+
+	// peers is nil when federation is not configured. CrawlPeers refuses rather
+	// than reporting an empty success.
+	peers *peerCrawl
+
+	// peerRefresh is how often peers are re-crawled. Zero disables it, leaving
+	// POST /crawl/peers as the only way a cache is ever refreshed.
+	peerRefresh time.Duration
+
+	// stopPeers ends the refresh loop. Nil when there is no loop.
+	stopPeers context.CancelFunc
+}
+
+// CrawlPeers runs one pass over every admitted peer network.
+//
+// Mirrors CrawlRegistry: one background run under the scheduler's own lifecycle,
+// a run id returned at once, the outcome observable through the logs.
+func (c *crawlerImpl) CrawlPeers(ctx context.Context) (string, error) {
+	// Nil when the deployment configured no federation, or when its registry
+	// plugin cannot list admitted peers. An error rather than a silent success:
+	// an operator who asked for a peer crawl and got a run id back would
+	// reasonably believe one happened.
+	if c.peers == nil {
+		return "", fmt.Errorf("catalogcrawler: federation is not configured; no peers to crawl")
+	}
+
+	targets, err := c.peerTargets(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	runID := uuid.NewString()
+	started := c.sched.RunOnce(func(ctx context.Context) {
+		c.peers.crawlAll(ctx, targets, runID)
+	})
+	if !started {
+		return "", fmt.Errorf("catalogcrawler: crawler is not running")
+	}
+	return runID, nil
+}
+
+// peerTargets lists the networks to crawl, from the registry.
+//
+// A registry that cannot answer yields no peers rather than an error: peer
+// crawling is an addition, and a deployment whose registry plugin does not
+// support it must keep crawling its own providers normally.
+// admittedPeerLookup is the slice of a registry plugin that lists the peer
+// networks an operator has admitted.
+//
+// Declared HERE, at the consumer, and not in pkg/plugin/definition beside the
+// shared lookups. Those are passed between core, the manager and several
+// plugins; this one is asked for in exactly one place -- the line below -- and
+// a federation concept in the shared contract package would be carried by every
+// deployment that never federates. Go satisfies interfaces implicitly, so the
+// registry plugin needs no import and no knowledge that this exists.
+//
+// It answers a different question from the shared lookups: not "what is this
+// sender's key", keyed by an inbound header, but "who have we agreed to deal
+// with", which has no caller and no key.
+type admittedPeerLookup interface {
+	// AdmittedPeers returns the ACTIVE peer networks. A suspended peer is
+	// omitted rather than returned with a status for the caller to check:
+	// deciding who we still deal with belongs in one place.
+	//
+	// It lists by role, which is NOT sufficient on its own -- this deployment's
+	// own network-layer adapter carries role "network" too -- so the caller
+	// drops itself below.
+	AdmittedPeers(ctx context.Context) ([]model.Subscription, error)
+}
+
+func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
+	lookup, ok := c.registry.(admittedPeerLookup)
+	if !ok {
+		c.log.WarnContext(ctx, "catalogcrawler: registry plugin cannot list admitted peers; none will be crawled")
+		return nil, nil
+	}
+
+	peers, err := lookup.AdmittedPeers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("catalogcrawler: list admitted peers: %w", err)
+	}
+
+	targets := make([]peerTarget, 0, len(peers))
+	for _, peer := range peers {
+		// The registry record's baseUrl holds what admission read out of the
+		// peer's services.discovery. A peer network has no other endpoint we
+		// call, so there is nothing else it could hold.
+		if peer.URL == "" {
+			continue
+		}
+		// Ourselves. Role "network" matches this deployment's own entry too,
+		// and the registry cannot tell which record is the caller's -- we can,
+		// from the network id we were configured with.
+		//
+		// A plain comparison, and it is only plain because a network is now ONE
+		// participant: our entry IS our network id. It used to register as
+		// "network.<networkId>", so comparing the network id matched nothing
+		// and the crawler cheerfully crawled itself.
+		if c.peers != nil && strings.EqualFold(peer.SubscriberID, c.peers.localNetwork) {
+			continue
+		}
+		targets = append(targets, peerTarget{
+			NetworkID:    peer.SubscriberID,
+			DiscoveryURL: trimmedURL(peer.URL),
+			// Declared by the peer and recorded at admission. Carried, not
+			// decided: nothing here may lengthen it.
+			ProjectionTtl: peer.ProjectionTtl,
+			// What the peer declared it can speak, as pack URLs. The crawl
+			// derives the context URLs it filters on from these.
+			SchemaPacks: peer.SchemaPacks,
+		})
+	}
+	return targets, nil
 }
 
 func (c *crawlerImpl) Start(ctx context.Context) error {
 	c.sched.Start(ctx)
+
+	if c.peers != nil && c.peerRefresh > 0 {
+		// Its own context, not the caller's: Start is handed a request-shaped
+		// context in some deployments, and a refresh loop that died with it
+		// would look like a cache that silently stopped updating.
+		loopCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		c.stopPeers = cancel
+		go c.peers.refreshEvery(loopCtx, c.peerRefresh, c.peerTargets)
+	}
 	return nil
 }
 
 func (c *crawlerImpl) Stop() error {
+	if c.stopPeers != nil {
+		c.stopPeers()
+	}
 	c.sched.Stop()
 	return nil
 }
@@ -356,6 +632,50 @@ func splitNonEmpty(s string) []string {
 	return out
 }
 
+// federationIntent is the Beckn intent a crawl sends a peer.
+//
+// Fully configurable: set federationIntent to any Beckn intent as raw JSON and
+// that is sent verbatim. The default below is a jsonpath filter matching every
+// catalog the peer is willing to show us.
+//
+// A filter alone is NOT enough. An intent that narrows nothing is refused --
+// "answered by reading every row" -- unless the request also carries a text
+// search, a spatial constraint, or a schemaContext. So this default is usable
+// only alongside federationSchemaContext, which is the natural pairing anyway:
+// a network mirrors the schemas it understands, not everything in existence.
+//
+// With neither configured the peer refuses, and the crawl says so rather than
+// quietly storing nothing.
+func federationIntent(configured string) map[string]any {
+	if trimmed := strings.TrimSpace(configured); trimmed != "" {
+		var intent map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &intent); err == nil {
+			return intent
+		}
+		// A malformed intent falls back to the default rather than failing
+		// start-up: the crawl is an addition, and refusing to boot over it would
+		// take the whole adapter down with it.
+	}
+	return map[string]any{
+		"filters": map[string]any{
+			"type": "jsonpath",
+			// PostgreSQL SQL/JSON path, NOT RFC 9535: the filter is written
+			// `? (...)` AFTER the subscript, and the expression must be rooted
+			// at $.catalogs, which is what resources.filter_doc holds. Both are
+			// refused outright rather than quietly matching nothing.
+			"expression": "$.catalogs[*] ? (exists(@.id))",
+		},
+	}
+}
+
+// stringOr returns the configured value, or a default when it is blank.
+func stringOr(value, def string) string {
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
+	}
+	return def
+}
+
 func durationSecondsOr(s string, def time.Duration) time.Duration {
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil || n <= 0 {
@@ -370,4 +690,27 @@ func int64Or(s string, def int64) int64 {
 		return def
 	}
 	return n
+}
+
+// updateModeOr resolves the push mode a crawl publishes its projections with.
+//
+// MERGE by default, and that is about paging rather than preference. FULL means
+// "this document is the catalog's complete current set", so every page claims to
+// be the whole thing: a 1000-resource catalog fetched in two pages of 500 is
+// published twice, and the second FULL deletes the first 500. The catalog ends
+// up half its size with nothing reporting a problem.
+//
+// MERGE upserts by id, so a catalog split across pages reassembles correctly and
+// each page can be published and discarded. The cost is real and is the reason
+// FULL still exists: MERGE never deletes, so a resource the PEER has removed
+// stays in our mirror until the whole catalog expires or is withdrawn.
+//
+// Anything unrecognised is MERGE rather than an error. A crawl that refused to
+// start over a typo would take the whole federated half of a deployment down for
+// a value whose safe reading is the one it already had.
+func updateModeOr(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), sink.UpdateModeFull) {
+		return sink.UpdateModeFull
+	}
+	return sink.UpdateModeMerge
 }

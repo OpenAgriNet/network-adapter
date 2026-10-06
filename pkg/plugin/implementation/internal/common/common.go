@@ -46,6 +46,20 @@ type Config struct {
 	// from the registry, so one step serving several needs nothing more.
 	BindingKeys []string `yaml:"bindingKeys" json:"bindingKeys"`
 
+	// SubscriberID is what THIS network registered as -- the participant id a
+	// request names when it wants this deployment to answer.
+	//
+	// Supplied by the handler from the module's own subscriberId, so no step
+	// configures it. A step that did would be restating what the module above
+	// it already declares.
+	//
+	// It must never come from the request. reqpreprocessor resolves the
+	// module's "own id" FROM THE BODY -- role bpp reads receiverId -- so
+	// comparing the receiver against that would compare the field with itself:
+	// always equal, every request answered here, and a request meant for
+	// another network answered with our data.
+	SubscriberID string `yaml:"subscriberId" json:"subscriberId"`
+
 	// Override where the two halves of a binding key sit in a payload. Absent
 	// means the Beckn v2 convention, which every deployment should use.
 	//

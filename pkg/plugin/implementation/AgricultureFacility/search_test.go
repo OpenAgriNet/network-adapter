@@ -54,6 +54,9 @@ func runSearchTimed(t *testing.T, types []string, cfg *AgricultureFacility.Confi
 	}}
 
 	cfg.BindingKeys = []string{shippedBindingKey}
+	// In a deployment the handler fills this from the module's own
+	// subscriberId; the fixture is addressed to it.
+	cfg.SubscriberID = testSubscriberID
 	// Auth is per provider, and a served provider without a block is refused at
 	// startup. POCRA needs no credential and says so.
 	if cfg.AuthByProvider == nil {

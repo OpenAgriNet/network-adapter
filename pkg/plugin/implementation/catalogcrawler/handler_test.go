@@ -13,9 +13,10 @@ import (
 // fakeCrawler is shared by trigger_test.go, status_test.go, and this
 // file's own dispatch tests.
 type fakeCrawler struct {
-	runID      string
-	err        error
-	gotNetwork []string
+	runID        string
+	err          error
+	gotNetwork   []string
+	peersCrawled bool
 
 	// statusRows/statusErr back Status; gotStatusSubscriber/gotStatusCatalog
 	// record its last call's arguments for assertions.
@@ -27,6 +28,17 @@ type fakeCrawler struct {
 
 func (f *fakeCrawler) Start(ctx context.Context) error { return nil }
 func (f *fakeCrawler) Stop() error                     { return nil }
+
+// CrawlPeers records that a peer pass was asked for. Separate from
+// CrawlRegistry because they are different passes over different inputs.
+func (f *fakeCrawler) CrawlPeers(context.Context) (string, error) {
+	f.peersCrawled = true
+	if f.err != nil {
+		return "", f.err
+	}
+	return "run-peers", nil
+}
+
 func (f *fakeCrawler) CrawlRegistry(ctx context.Context, networkIDs []string) (string, error) {
 	f.gotNetwork = networkIDs
 	if f.err != nil {

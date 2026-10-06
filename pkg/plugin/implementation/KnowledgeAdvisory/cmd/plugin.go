@@ -35,6 +35,10 @@ func (p knowledgeAdvisoryProvider) parseConfig(config map[string]string) (*Knowl
 		// this is a default rather than something to set.
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
+		// Who this deployment is, so the step can tell a request addressed to
+		// this network from one addressed to another. Not written in any
+		// config: the handler fills it from the module's own subscriberId.
+		SubscriberID: config["subscriberId"],
 	}
 
 	if raw, exists := config["maxResponseBytes"]; exists && raw != "" {

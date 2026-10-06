@@ -186,12 +186,26 @@ type Client struct {
 // documentation of what a provider expects; the adapter presents what its
 // operator configured.
 type participant struct {
-	ParticipantID string `json:"participantId"`
-	Type          string `json:"type"`
-	Role          string `json:"role"`
-	Status        string `json:"status"`
-	BaseURL       string `json:"baseUrl"`
-	Keys          []key  `json:"keys"`
+	ParticipantID string   `json:"participantId"`
+	Type          string   `json:"type"`
+	Role          roleList `json:"role"`
+	Status        string   `json:"status"`
+	BaseURL       string   `json:"baseUrl"`
+	Keys          []key    `json:"keys"`
+
+	// ProjectionTtl is in seconds, as the schema stores it. Zero means the
+	// record predates the field, NOT that the peer forbade caching -- a peer
+	// that forbids caching is refused at admission and never written here, so
+	// zero can only mean "not recorded".
+	ProjectionTtl int `json:"projectionTtl"`
+
+	// FederationRole is what this entry is IN RELATION TO US: self, source,
+	// requester or both. Empty on a record written before the field existed.
+	FederationRole string `json:"federationRole"`
+
+	// SchemaPacks is what a peer declared it can speak. Empty on a record
+	// written before the field existed, and on every non-peer participant.
+	SchemaPacks []string `json:"schemaPacks"`
 }
 
 // key is one published key. A participant publishes several -- separate signing
@@ -224,8 +238,61 @@ func (k key) isSigning() bool {
 	return k.Use == "" || strings.EqualFold(k.Use, useSign)
 }
 
+// eqFilter is one condition in a registry search.
+//
+// Eq matches a scalar field exactly. Contains matches a value INSIDE an array
+// field -- `eq` does not, which matters for role: a network that serves several
+// layers carries them as a list, and an exact match finds nothing.
+//
+// Both are omitempty so a filter sends only the condition it set.
+// roleList is the layers a participant serves.
+//
+// It decodes from EITHER a JSON string or an array of strings. A network that
+// serves several layers carries a list; older records carry a single string,
+// and both are in the registry at once because nothing rewrites a record just
+// to change its shape. Refusing one of them would make half the registry
+// unreadable for no gain.
+type roleList []string
+
+func (r *roleList) UnmarshalJSON(data []byte) error {
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		*r = list
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(data, &single); err != nil {
+		return fmt.Errorf("role is neither a string nor a list of strings: %w", err)
+	}
+	*r = roleList{single}
+	return nil
+}
+
+// has reports whether this participant serves a layer.
+func (r roleList) has(role string) bool {
+	for _, carried := range r {
+		if strings.EqualFold(carried, role) {
+			return true
+		}
+	}
+	return false
+}
+
+// primary is the one role to report where a single value is expected.
+//
+// Nothing downstream acts on it -- Subscriber.Type carries it and no code reads
+// it -- so the first entry is as good an answer as any, and an empty list is
+// reported as empty rather than guessed at.
+func (r roleList) primary() string {
+	if len(r) == 0 {
+		return ""
+	}
+	return r[0]
+}
+
 type eqFilter struct {
-	Eq string `json:"eq"`
+	Eq       string `json:"eq,omitempty"`
+	Contains string `json:"contains,omitempty"`
 }
 
 type searchRequest struct {
@@ -426,6 +493,51 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 	return results, nil
 }
 
+// AdmittedPeers lists the peer networks an operator has admitted.
+//
+// The interface this satisfies is declared by its consumer, the catalog
+// crawler, and satisfied implicitly -- nothing here imports it.
+//
+// Filtered on role, which is all the registry is asked for. Role alone also
+// matches this deployment's OWN network-layer adapter, so the caller drops
+// itself from the list -- it knows its own network id and the registry does
+// not, which is the only reason that check does not live here.
+func (c *Client) AdmittedPeers(ctx context.Context) ([]model.Subscription, error) {
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry admitted peers")
+	defer span.End()
+
+	// Contains, not Eq. A network's role is a LIST of the layers it serves, and
+	// an exact match against an array finds nothing. Verified against the live
+	// registry: `contains` matches both a list and an older plain-string role,
+	// so entries written either way are found and no migration is needed.
+	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
+		"role": {Contains: roleNetwork},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	peers := make([]model.Subscription, 0, len(participants))
+	for _, p := range participants {
+		if !strings.EqualFold(p.Status, statusActive) {
+			continue
+		}
+		// No key is resolved, and none is needed. The caller crawls a peer by
+		// POSTing a discover to its baseUrl, signed with OUR key -- a peer's
+		// own key matters when it calls US, which is a different path with its
+		// own lookup. Picking one here also meant SKIPPING a peer whose key had
+		// expired, quietly removing a network we could still crawl for a reason
+		// belonging to verification.
+		peers = append(peers, toSubscription(p, key{}, statusSubscribed))
+	}
+	return peers, nil
+}
+
+// roleNetwork is the registry role a peer network carries. Necessary for the
+// server-side filter, but NOT sufficient to identify a peer -- see AdmittedPeers.
+const roleNetwork = "network"
+
 // search asks the registry for the participant holding this business id, and
 // returns it only if it carries the key the caller asked about.
 //
@@ -556,7 +668,7 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 			// role is the Beckn role -- BAP, BPP or NETWORK. type is the
 			// registry's own discriminator (node or upstream) and means
 			// something else entirely, so it is not what a subscriber's Type is.
-			Type: p.Role,
+			Type: p.Role.primary(),
 		},
 		KeyID:            k.OSID,
 		SigningPublicKey: k.publicKey(),
@@ -564,6 +676,8 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		ValidFrom:        validFrom,
 		ValidUntil:       validUntil,
 		Status:           status,
+		ProjectionTtl:    time.Duration(p.ProjectionTtl) * time.Second,
+		SchemaPacks:      p.SchemaPacks,
 	}
 }
 

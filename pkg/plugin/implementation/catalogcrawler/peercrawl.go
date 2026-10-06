@@ -1,0 +1,512 @@
+package catalogcrawler
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
+	"github.com/google/uuid"
+)
+
+// Crawling a peer is not the same shape as crawling a provider.
+//
+// A provider publishes a catalog INDEX, and the engine fetches it, notices what
+// changed and stores it. A peer network publishes no such index: it is reached
+// the way any consumer reaches it, by POSTing a Beckn discover and keeping the
+// answer. That is why this is not another crawlmanager.Source -- a Source only
+// names URLs to GET, and there is nowhere in it to put a signed POST body.
+//
+// What is reused: the scheduler, the sink, and the signer. What is not: the
+// index fetch and its change detection, because there is no index.
+
+// peerTarget is one network to crawl: who it is, and the discovery endpoint it
+// published in its descriptor.
+//
+// A discovery URL, not a base URL. The peer declares a complete endpoint and we
+// use it verbatim; appending a path to it would be this adapter deciding the
+// peer's URL shape, which is the peer's to declare.
+type peerTarget struct {
+	NetworkID    string
+	DiscoveryURL string
+
+	// ProjectionTtl is how long this peer permits us to keep what it returns.
+	// The peer's declaration, read off its registry record -- not a local
+	// setting, because it is not ours to decide.
+	//
+	// Zero means a record written before the field existed, not "forever": the
+	// crawl falls back to the configured interval and the projection still
+	// expires, it is just not paced by the peer.
+	ProjectionTtl time.Duration
+
+	// SchemaPacks is what this peer declared it can speak, verbatim from its
+	// descriptor. Pack URLs -- each names a pack's attributes.yaml -- while a
+	// discover filters on the matching context.jsonld, so they are translated
+	// at crawl time rather than stored rewritten.
+	//
+	// Empty means the peer declared none, or the record predates the field. In
+	// both cases the crawl falls back to its configured schemaContext, which is
+	// what it used before a peer could say anything about this.
+	SchemaPacks []string
+}
+
+// catalogPusher is the push half of the sink, narrowed to what a peer crawl
+// needs so a test does not have to stand up an HTTP client.
+type catalogPusher interface {
+	Push(ctx context.Context, endpoint string, body []byte) (sink.BatchOutcome, error)
+}
+
+// requestSigner is the Signer plugin, narrowed the same way.
+type requestSigner interface {
+	Sign(ctx context.Context, body []byte, privateKeyBase64 string, createdAt, expiresAt int64) (string, error)
+}
+
+// peerCrawl holds what crawling peers needs. Built once at start-up and reused
+// for every pass, like the rest of the crawler's dependencies.
+//
+// It owns no database. The crawler's own store tracks index state for OUR
+// providers; a peer has no index, so there is nothing of that kind to track.
+// What a peer returns goes where every other catalog goes -- to
+// discovery-service, through the sink.
+type peerCrawl struct {
+	signer requestSigner
+	// localNetwork is our OWN networkId. It is not sent to a peer and not
+	// stamped on what we store -- a crawl names the peer in both places. It is
+	// kept so the crawler can drop ITSELF from the admitted-peer list, which
+	// carries role "network" for our own network-layer adapter too.
+	localNetwork    string
+	subscriberID    string // who we sign as
+	privateKey      string // the network's signing key
+	keyID           string // the id the registry filed that key under
+	window          time.Duration
+	domain          string // the Beckn domain a peer routes on
+	protocolVersion string
+
+	intent   map[string]any // configured: what breadth of catalog to mirror
+	maxPages int
+	// pageSize is the `limit` query parameter. 0 asks once with no limit.
+	//
+	// It counts RESOURCES, not catalogs -- discovery ranks resources, pages
+	// that list, then groups the page into catalogs. So one catalog's resources
+	// can straddle a page boundary, which is why every page is accumulated
+	// before anything is pushed.
+	pageSize int
+	client   *http.Client
+	// sink is where a staged catalog is published -- the SAME sink the local
+	// crawl uses, so batching, size ceilings and identity stamping are not
+	// repeated here.
+	sink catalogSink
+	// push and pushEndpoint are for WITHDRAWALS only, which the sink cannot
+	// express: a withdrawal is a FULL publish carrying no resources, and the
+	// sink publishes with whatever mode it was configured with -- MERGE on this
+	// path, which would add nothing and delete nothing.
+	push         catalogPusher
+	pushEndpoint string
+	// publishRetry is how long a failed publish waits before the queue offers
+	// it again.
+	publishRetry time.Duration
+	// maxAttempts is how many goes a publish gets before the row is parked.
+	// 0 is unlimited, matching what crawlmanager does with the same setting.
+	maxAttempts int
+	log         *slog.Logger
+
+	// store is where a crawl puts the catalogs it fetched, and where the
+	// publisher reads them from. The same queue the local crawl uses, in a
+	// keyspace of its own -- see internal/store/networkqueue.go.
+	//
+	// Nil disables the cross-network crawl entirely: without somewhere to put
+	// what it fetches it would be back to holding a whole network in memory.
+	store stagedStore
+}
+
+// discoverBody builds the Beckn discover sent to a peer.
+//
+// The intent is CONFIGURATION, not a constant: a deployment decides what breadth
+// of catalog it wants to mirror -- a jsonpath filter, a spatial bound, or
+// nothing at all for everything the peer will give us.
+func (p *peerCrawl) discoverBody(audience string, schemaContext []string) ([]byte, error) {
+	intent := p.intent
+	if intent == nil {
+		intent = map[string]any{}
+	}
+	return json.Marshal(map[string]any{
+		// The AUDIENCE this call asks for. visibleTo is an audience list and
+		// context.networkId can only carry ONE value, so a crawl that wants two
+		// audiences has to ask twice -- see crawlPeer.
+		//
+		// Whatever is asked for here is also what the answer is stamped with,
+		// because that is the only thing the answer is known to be addressed
+		// to. The discover response carries no visibleTo of its own.
+		"context": map[string]any{
+			"action": "discover",
+			// The peer routes on domain and version, so a discover missing
+			// either is refused before it reaches its discovery service -- with
+			// "no routing rules found for domain", which names the field and
+			// not the caller.
+			"domain":        p.domain,
+			"version":       p.protocolVersion,
+			"networkId":     audience,
+			"bapId":         p.subscriberID,
+			"messageId":     uuid.NewString(),
+			"schemaContext": schemaContext,
+			// One transaction per PAGE request, matching messageId. A crawl is
+			// not a conversation with the peer -- each page stands alone -- and
+			// a shared transactionId would claim a continuity that does not
+			// exist. Required, and refused with CTX_MISSING_FIELD if absent.
+			"transactionId": uuid.NewString(),
+			"timestamp":     time.Now().UTC().Format(time.RFC3339),
+		},
+		// No page. The Beckn discover schema has no paging member -- sending one
+		// is refused with "property \"page\" is unsupported at $.message" -- so a
+		// crawl asks ONCE and takes whatever the peer chooses to return.
+		//
+		// That is a real limitation, not a simplification: a peer with more
+		// catalogs than it returns in one response is partially mirrored, and
+		// nothing here can tell that it was. Paging across networks needs a
+		// protocol answer, not a client-side one.
+		"message": map[string]any{
+			"intent": intent,
+		},
+	})
+}
+
+// crawlAudience asks another network for one audience and STAGES what comes
+// back, returning the catalog ids it saw.
+//
+// Staged, not published. Each page is written to the crawler's own database and
+// released, so what this holds does not grow with the size of the network being
+// crawled -- and a publish that fails is retried from the staged copy by the
+// worker, under the same backoff, park and abandon rules the local crawl gets.
+//
+// The content has to be stored because a discover answers with the catalogs
+// themselves. The local crawl needs no equivalent: its queue rows name an index
+// URL, so crawlmanager re-fetches current content at claim time.
+func (p *peerCrawl) crawlAudience(ctx context.Context, target peerTarget, audience string) ([]string, error) {
+	var ids []string
+
+	stage := func(catalogs []json.RawMessage) error {
+		for _, document := range catalogs {
+			found, unnamed := catalogIDsOf([]json.RawMessage{document})
+			if unnamed > 0 || len(found) == 0 {
+				// Nothing could name it later, so it could never be expired or
+				// withdrawn. Dropped rather than staged under an invented id.
+				p.log.WarnContext(ctx, "catalogcrawler: catalog has no id; not staged",
+					"networkId", target.NetworkID)
+				continue
+			}
+			if err := p.store.StageAndEnqueue(ctx, store.StagedCatalog{
+				NetworkID: target.NetworkID,
+				CatalogID: found[0],
+				Audience:  audience,
+				Document:  document,
+			}, target.DiscoveryURL); err != nil {
+				return err
+			}
+			ids = append(ids, found[0])
+		}
+		return nil
+	}
+
+	if p.pageSize <= 0 {
+		// One request, no limit: what this did before paging, kept so a
+		// deployment that has not configured a page size is unaffected.
+		got, err := p.fetchPage(ctx, target, audience, 0, 0)
+		if err != nil {
+			return nil, err
+		}
+		return ids, stage(got)
+	}
+
+	for page := 0; page < p.maxPages; page++ {
+		got, err := p.fetchPage(ctx, target, audience, p.pageSize, page*p.pageSize)
+		if err != nil {
+			return nil, err
+		}
+		if err := stage(got); err != nil {
+			return nil, err
+		}
+		// A page the peer could not fill is the last one. Discovery pages a
+		// RESOURCE list, so a short page in CATALOGS is not a reliable end
+		// marker -- but an empty one is.
+		if len(got) == 0 {
+			break
+		}
+	}
+	return ids, nil
+}
+
+// fetchPage sends one signed discover and returns what the peer answered.
+func (p *peerCrawl) fetchPage(ctx context.Context, target peerTarget, audience string, limit, offset int) ([]json.RawMessage, error) {
+	body, err := p.discoverBody(audience, p.schemaContextsFor(target))
+	if err != nil {
+		return nil, fmt.Errorf("build discover for %s: %w", target.NetworkID, err)
+	}
+
+	// Paging lives on the QUERY STRING, not in the intent: the Beckn discover
+	// schema has no paging member and refuses one in the body.
+	endpoint := target.DiscoveryURL
+	if limit > 0 {
+		endpoint = withPage(endpoint, limit, offset)
+	}
+
+	// The same Signer every other outbound call uses. There is no
+	// federation-specific signature: a cross-network discover is an ordinary
+	// signed Beckn call whose sender happens to be a network.
+	now := time.Now()
+	created, expires := now.Unix(), now.Add(p.window).Unix()
+	signature, err := p.signer.Sign(ctx, body, p.privateKey, created, expires)
+	if err != nil {
+		return nil, fmt.Errorf("sign discover for %s: %w", target.NetworkID, err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", authorization(p.subscriberID, p.keyID, created, expires, signature))
+
+	response, err := p.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("discover %s: %w", target.NetworkID, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("discover %s: %s", target.NetworkID, response.Status)
+	}
+
+	// Each catalog is kept as raw JSON and pushed exactly as the peer published
+	// it. Decoding into a struct of our own would silently drop every field this
+	// adapter does not happen to model -- and what a peer may publish is
+	// governed by the schema packs it declared, not by our idea of a catalog.
+	var answer struct {
+		Message struct {
+			Catalogs []json.RawMessage `json:"catalogs"`
+		} `json:"message"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", target.NetworkID, err)
+	}
+	return answer.Message.Catalogs, nil
+}
+
+// authorization builds the header a signed Beckn call carries.
+//
+// The Signer plugin returns the signature and nothing else -- deliberately, it
+// does one cryptographic job -- so the envelope around it is the caller's to
+// build. Every signed request in this system carries the same shape, and this
+// is the one place outside the handler's sign step that has to produce it,
+// because a crawl is a background pass rather than a request moving through a
+// module.
+//
+// keyId is "<who>|<which key>|<algorithm>". Both halves matter: WHO lets a peer
+// know who is asking, and WHICH KEY lets it pick the right one from among what
+// we published. Sending the bare signature -- which this did until now -- left
+// a peer holding something it could not attribute to anybody, and so could not
+// verify even in principle.
+func authorization(subscriberID, keyID string, created, expires int64, signature string) string {
+	return fmt.Sprintf(
+		`Signature keyId="%s|%s|ed25519",algorithm="ed25519",created="%d",expires="%d",`+
+			`headers="(created) (expires) digest",signature="%s"`,
+		subscriberID, keyID, created, expires, signature)
+}
+
+// crawlPeer asks one network, stages what it returns, and withdraws what it has
+// stopped returning.
+//
+// The withdrawal half only runs after a SUCCESSFUL fetch. A peer that could not
+// be reached has told us nothing about what it still publishes, and treating
+// silence as a withdrawal would empty the cache on one timeout -- which is what
+// the ttl, and only the ttl, is allowed to do.
+func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
+	// IDS, not documents: each audience stages and releases what it fetched, so
+	// this does not grow with the size of the network being crawled.
+	var seen []string
+
+	// TWO calls, because context.networkId carries one value and we want two
+	// audiences:
+	//
+	//   the peer's own id  -- what the peer owns. A catalog published with no
+	//                         declared audience is filled with its own network,
+	//                         so this is how its own catalogue is reached.
+	//   our id             -- what the peer's publishers chose to share WITH US
+	//                         by naming us in publishDirectives.visibleTo.
+	//
+	// Ordered deliberately. A catalog in BOTH answers is staged twice under the
+	// same key, and the second write decides what it is addressed to. Ours
+	// going last means our copy ends up addressed to us -- which is what stops
+	// the other network's own crawl of US matching it and re-importing its own
+	// catalogs.
+	//
+	// Both collapse into one call once context.networkId can carry a list.
+	for _, audience := range []string{target.NetworkID, p.subscriberID} {
+		ids, err := p.crawlAudience(ctx, target, audience)
+		if err != nil {
+			return err
+		}
+		seen = append(seen, ids...)
+	}
+
+	p.log.DebugContext(ctx, "catalogcrawler: crawled a network",
+		"networkId", target.NetworkID, "catalogs", len(seen))
+	return nil
+}
+
+// defaultProjectionTtl covers a registry record written before projectionTtl
+// existed. Deliberately short: an unknown licence is not a long one.
+const defaultProjectionTtl = time.Hour
+
+// refreshEvery re-crawls every peer on an interval until ctx is cancelled.
+//
+// Without this a crawled catalogue is frozen at whatever the peer said once:
+// a resource it has since withdrawn keeps being served by us, which is the one
+// thing a cache must not do. The interval is how stale we are willing to be.
+//
+// The first pass runs immediately, so a restart does not leave the cache empty
+// for a whole interval.
+func (p *peerCrawl) refreshEvery(ctx context.Context, configured time.Duration, targets func(context.Context) ([]peerTarget, error)) {
+	// A TIMER re-armed each pass, not a fixed ticker. The interval depends on
+	// what the peers declared, and the peers are only known once a pass has
+	// listed them -- a peer admitted later with a shorter ttl has to be able to
+	// speed the loop up, or its data lapses between passes.
+	run := func() time.Duration {
+		found, err := targets(ctx)
+		if err != nil {
+			p.log.ErrorContext(ctx, "catalogcrawler: listing peers for refresh", "error", err)
+			// Still a pass: expiry does not depend on the registry answering,
+			// and a registry outage must not suspend every licence.
+			p.crawlAll(ctx, nil, "refresh")
+			return configured
+		}
+		p.crawlAll(ctx, found, "refresh")
+		return refreshInterval(configured, found)
+	}
+
+	next := run()
+
+	timer := time.NewTimer(next)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			timer.Reset(run())
+		}
+	}
+}
+
+// crawlAll visits every peer in one pass.
+//
+// A failure is logged and skipped, never returned. One network being briefly
+// unreachable is routine and must not leave every other peer's cache stale --
+// which is the whole of what "failures remain peer-scoped" means in practice.
+// It is a function of its own, and not a closure inside CrawlPeers, so this can
+// be tested without a scheduler.
+func (p *peerCrawl) crawlAll(ctx context.Context, targets []peerTarget, runID string) {
+	for _, target := range targets {
+		if err := p.crawlPeer(ctx, target); err != nil {
+			p.log.ErrorContext(ctx, "catalogcrawler: peer crawl failed",
+				"runId", runID, "networkId", target.NetworkID, "error", err)
+		}
+	}
+
+	// Drains what the pass staged, and anything an earlier pass left behind:
+	// a publish that failed is still queued, with its content, and this is
+	// where it is tried again.
+	//
+	// After every network rather than after each one, so a network that cannot
+	// be reached does not hold up publishing what the others gave us.
+	p.publishStaged(ctx)
+}
+
+// trimmedURL is the peer's endpoint as published, with a stray trailing slash
+// removed so two records that differ only by it do not look like two peers.
+func trimmedURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+// withPage puts limit and offset on a discover URL.
+//
+// Discovery reads paging off the query string rather than the intent, because
+// the Beckn discover schema has no paging member and refuses one in the body.
+//
+// An unparseable URL is returned untouched rather than refused: the request is
+// about to be made against it anyway, and failing there says what is wrong with
+// the registry's baseUrl far better than a paging helper can.
+func withPage(raw string, limit, offset int) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	query := parsed.Query()
+	query.Set("limit", strconv.Itoa(limit))
+	if offset > 0 {
+		query.Set("offset", strconv.Itoa(offset))
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+// packContextFile is what a schema pack URL's last segment becomes.
+//
+// A pack names its attributes.yaml -- the pack definition -- while a message is
+// interpreted against the JSON-LD context beside it. The architecture document
+// defines both and keeps them separate: SchemaRegistry.schemaUrl is the
+// attributes.yaml, and context.schemaContext is "an array of JSON-LD context
+// URIs used to interpret the message schema".
+const packContextFile = "context.jsonld"
+
+// schemaContextsFor is what a discover to this network filters on.
+//
+// Its OWN declaration, translated: a pack URL names the pack's attributes.yaml
+// while a discover filters on the context.jsonld beside it.
+//
+// Nothing else. A network that declared no schemaPacks is asked with no schema
+// filter, and what it does with that is its decision -- a peer refusing an
+// unnarrowed filter is a clearer signal than us quietly substituting a list it
+// never agreed to.
+func (p *peerCrawl) schemaContextsFor(target peerTarget) []string {
+	return contextsOf(target.SchemaPacks)
+}
+
+// contextsOf translates pack URLs into the context URLs a discover filters on,
+// dropping any that name no file.
+func contextsOf(packs []string) []string {
+	contexts := make([]string, 0, len(packs))
+	for _, pack := range packs {
+		if context := contextURLOf(pack); context != "" {
+			contexts = append(contexts, context)
+		}
+	}
+	return contexts
+}
+
+// contextURLOf turns a schema pack URL into the context URL beside it.
+//
+// Only the final segment changes -- the capability and version in the path are
+// the part that identifies the schema, and they are kept exactly as the peer
+// published them. A URL that names no file is left alone and dropped by the
+// caller, because guessing at a shape we do not recognise would send a peer a
+// filter it cannot match and report that as "nothing found".
+func contextURLOf(pack string) string {
+	parsed, err := url.Parse(strings.TrimSpace(pack))
+	if err != nil || parsed.Path == "" {
+		return ""
+	}
+	cut := strings.LastIndex(parsed.Path, "/")
+	if cut < 0 || cut == len(parsed.Path)-1 {
+		return ""
+	}
+	parsed.Path = parsed.Path[:cut+1] + packContextFile
+	return parsed.String()
+}

@@ -31,6 +31,35 @@ type DiscoverySink struct {
 	MaxDocBytes   int64  // 0 => no batching
 	Client        *Client
 	Now           func() time.Time // nil => time.Now
+
+	// Action is the Beckn action the receiving route expects.
+	//
+	// Empty keeps "catalog/push", which is what the push route takes and what
+	// every existing caller already sends. A deployment whose endpoint is a
+	// different route sets this -- discovery-service's /publish takes
+	// "catalog/publish" and refuses a mismatch with CTX_ACTION_MISMATCH,
+	// because it looks the action up by what the BODY says.
+	Action string
+
+	// UpdateMode is the mode a catalog's lead batch is published with.
+	//
+	// Empty keeps FULL: the pushed document is the catalog's complete current
+	// content, so a resource it omits is meant to be gone. MERGE is for a
+	// caller whose source answers in pieces, where FULL would delete most of a
+	// catalog on every pass.
+	//
+	// Only the LEAD batch uses it. A catalog too large for one push is split by
+	// BatchCatalog into a lead and then MERGE batches regardless, so re-pushing
+	// stays idempotent either way.
+	UpdateMode string
+}
+
+// updateMode is the configured lead-batch mode, or FULL.
+func (d *DiscoverySink) updateMode() string {
+	if d.UpdateMode == "" {
+		return UpdateModeFull
+	}
+	return d.UpdateMode
 }
 
 // NewDiscoverySink builds a DiscoverySink. timeout bounds each batch's push.
@@ -47,7 +76,7 @@ func (d *DiscoverySink) now() time.Time {
 
 // Send implements crawlmanager.Sink.
 func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, content []byte) (crawlmanager.SinkOutcome, error) {
-	batches, err := BatchCatalog(content, d.MaxDocBytes, UpdateModeFull)
+	batches, err := BatchCatalog(content, d.MaxDocBytes, d.updateMode())
 	if err != nil {
 		return crawlmanager.SinkOutcome{}, fmt.Errorf("catalogcrawler: batching %s: %w", entry.CatalogID, err)
 	}
@@ -60,6 +89,7 @@ func (d *DiscoverySink) Send(ctx context.Context, entry catalog.CatalogEntry, co
 			MessageID:     uuid.NewString(),
 			TransactionID: uuid.NewString(),
 			Timestamp:     d.now().UTC().Format(time.RFC3339),
+			Action:        d.Action,
 			UpdateMode:    batch.UpdateMode,
 			CatalogType:   entry.CatalogType,
 			VisibleTo:     entry.NetworkIDs,

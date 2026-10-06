@@ -46,6 +46,11 @@ const shippedBindingKey = "mausamgram|openagrinet:WeatherObservation"
 const shippedMapping = "weather-observation.select.yaml"
 
 // selectRequest is the verbatim /select captured from the network.
+// testSubscriberID is who the module answering these requests is. The capability
+// step refuses a request that names a different receiver, so the fixtures below
+// name this one -- that is the ordinary case, a request addressed to us.
+const testSubscriberID = "provider-network-vistaar.da.gov.in"
+
 const selectRequest = `{
   "context": { "version": "2.0.0", "action": "select",
     "networkId": "da.gov.in/vistaar",
@@ -147,7 +152,8 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 
 	step, closeStep, err := WeatherObservation.New(context.Background(), registry, mapper,
 		&WeatherObservation.Config{
-			BindingKeys: []string{shippedBindingKey},
+			SubscriberID: testSubscriberID,
+			BindingKeys:  []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing
 			// no credential, and that is declared rather than defaulted.
 			AuthByProvider: map[string]*common.AuthProfile{

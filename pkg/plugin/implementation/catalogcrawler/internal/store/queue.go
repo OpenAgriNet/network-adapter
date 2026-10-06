@@ -40,9 +40,9 @@ func (s *Store) Enqueue(ctx context.Context, item crawlmanager.QueueItem) error 
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO crawler_queue
-		   (catalog_id, index_url, from_version, to_version, entry_version, op, status, attempts, next_attempt_at, claimed_at, claim_id, enqueued_at)
-		 VALUES ($1,$2,0,0,0,$3,'queued',0, now(), NULL, NULL, now())
-		 ON CONFLICT (catalog_id) DO UPDATE SET
+		   (network_id, catalog_id, index_url, from_version, to_version, entry_version, op, status, attempts, next_attempt_at, claimed_at, claim_id, enqueued_at)
+		 VALUES ($1,$2,$3,0,0,0,$4,'queued',0, now(), NULL, NULL, now())
+		 ON CONFLICT (network_id, catalog_id) DO UPDATE SET
 		   index_url    = EXCLUDED.index_url,
 		   op           = EXCLUDED.op,
 		   status       = CASE WHEN crawler_queue.claimed_at IS NULL THEN 'queued' ELSE crawler_queue.status END,
@@ -50,7 +50,7 @@ func (s *Store) Enqueue(ctx context.Context, item crawlmanager.QueueItem) error 
 		   next_attempt_at = CASE WHEN crawler_queue.claimed_at IS NULL THEN now() ELSE crawler_queue.next_attempt_at END,
 		   parked_at    = CASE WHEN crawler_queue.claimed_at IS NULL THEN NULL ELSE crawler_queue.parked_at END,
 		   abandoned_at = CASE WHEN crawler_queue.claimed_at IS NULL THEN NULL ELSE crawler_queue.abandoned_at END`,
-		item.CatalogID, item.IndexURL, op)
+		localNetwork, item.CatalogID, item.IndexURL, op)
 	if err != nil {
 		return fmt.Errorf("store: Enqueue: %w", err)
 	}
@@ -60,6 +60,11 @@ func (s *Store) Enqueue(ctx context.Context, item crawlmanager.QueueItem) error 
 // ClaimNext atomically claims the next ready item -- unclaimed OR past its
 // lease (reclaiming a crashed worker's row), and past its backoff -- using
 // FOR UPDATE SKIP LOCKED, stamping a fresh claim_id.
+//
+// Scoped to THIS deployment's own rows. crawlmanager drives this, and what it
+// does with a claimed item is re-fetch the catalog's index URL -- which only
+// an index-sourced row has. A cross-network row carries a discover endpoint
+// and its content is staged, so it is claimed by its own worker instead.
 func (s *Store) ClaimNext(ctx context.Context) (*crawlmanager.ClaimedItem, error) {
 	var (
 		it           crawlmanager.ClaimedItem
@@ -70,14 +75,15 @@ func (s *Store) ClaimNext(ctx context.Context) (*crawlmanager.ClaimedItem, error
 		    SET claimed_at = now(), status = 'in_progress', claim_id = gen_random_uuid()
 		  WHERE id = (
 		    SELECT id FROM crawler_queue
-		     WHERE (claimed_at IS NULL OR claimed_at < now() - $1::interval)
+		     WHERE network_id = $2
+		       AND (claimed_at IS NULL OR claimed_at < now() - $1::interval)
 		       AND next_attempt_at <= now()
 		     ORDER BY next_attempt_at
 		     FOR UPDATE SKIP LOCKED
 		     LIMIT 1)
 		 RETURNING id, claim_id, catalog_id, index_url, op, attempts,
 		   (SELECT participant_id FROM crawler_index WHERE crawler_index.index_url = crawler_queue.index_url)`,
-		claimLease.String()).
+		claimLease.String(), localNetwork).
 		Scan(&it.ID, &cid, &it.CatalogID, &it.IndexURL, &op, &it.Attempts, &pid)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -230,7 +236,7 @@ func (s *Store) Complete(ctx context.Context, id, claimID string, cursor crawlma
 	}
 	defer tx.Rollback() //nolint:errcheck // best-effort rollback if commit not reached
 
-	if err := upsertCatalog(ctx, tx, cursor); err != nil {
+	if err := upsertCatalog(ctx, tx, localNetwork, cursor); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM crawler_queue WHERE id = $1 AND claim_id = $2`, id, claimID); err != nil {

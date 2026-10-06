@@ -11,6 +11,7 @@ package sink
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Discovery /push update modes (beckn-discovr publishDirectives.updateMode).
@@ -35,6 +36,18 @@ type PushMeta struct {
 	// own schema-type resolution checks this FIRST, before falling back to
 	// each resource's own resourceAttributes["@type"]. Omitted when empty.
 	SchemaContext []string
+
+	// Action is the Beckn action the receiving route expects. Empty keeps the
+	// existing "catalog/push", so no current caller changes behaviour.
+	Action string
+}
+
+// actionOr defaults the push action to what the push route has always taken.
+func actionOr(action string) string {
+	if strings.TrimSpace(action) != "" {
+		return action
+	}
+	return "catalog/push"
 }
 
 // BuildPushBody builds the Discovery /push request body: a Beckn
@@ -59,7 +72,11 @@ func BuildPushBody(meta PushMeta, catalog []byte) ([]byte, error) {
 	}
 
 	context := map[string]any{
-		"action":        "catalog/push",
+		// The action the RECEIVING endpoint expects. "catalog/push" is what the
+		// push route takes; discovery-service's /publish takes
+		// "catalog/publish" and refuses a mismatch with CTX_ACTION_MISMATCH --
+		// it checks the body's action against the route.
+		"action":        actionOr(meta.Action),
 		"bppId":         meta.ParticipantID,
 		"bppUri":        meta.BppURI,
 		"messageId":     meta.MessageID,

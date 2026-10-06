@@ -33,6 +33,23 @@ type Subscription struct {
 	Updated            time.Time `json:"updated,omitzero" format:"date-time"`
 	Nonce              string    `json:"nonce,omitzero"`
 	NetworkMemberships []string  `json:"network_memberships,omitempty"`
+
+	// ProjectionTtl is how long this peer network permits us to keep what we
+	// crawled from it. Set only on an admitted peer; zero on every ordinary
+	// participant, which caches nothing.
+	//
+	// A Duration here and SECONDS in the registry: the unit conversion happens
+	// once, where the record is read, rather than at every use.
+	ProjectionTtl time.Duration `json:"projection_ttl,omitzero"`
+
+	// SchemaPacks is what this peer network declared it can speak, verbatim
+	// from its descriptor. Set only on an admitted peer.
+	//
+	// Pack URLs, not context URLs: a pack names its attributes.yaml, while a
+	// message is interpreted against the matching context.jsonld. The crawler
+	// derives one from the other rather than storing a rewritten copy, so our
+	// record keeps agreeing with the document it was read from.
+	SchemaPacks []string `json:"schema_packs,omitempty"`
 }
 
 // nonUsableKeySubscriptionStatuses are the Subscription.Status values that mean a

@@ -79,7 +79,8 @@ func TestTwoProvidersOnOneStepAuthenticateDifferently(t *testing.T) {
 	defer headerProvider.Close()
 
 	cfg := &Config{
-		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
+		SubscriberID: testSubscriberID,
+		BindingKeys:  []string{"alpha|" + capability, "beta|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
 			"alpha": {Scheme: util.AuthSchemeQuery, QueryName: "token", QueryValueEnv: "TEST_PP_QUERY_TOKEN"},
 			"beta":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-Api-Key", HeaderValueEnv: "TEST_PP_HEADER_TOKEN"},
@@ -154,7 +155,8 @@ func TestTwoOAuth2ProvidersDoNotShareAToken(t *testing.T) {
 	defer providerB.Close()
 
 	cfg := &Config{
-		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
+		SubscriberID: testSubscriberID,
+		BindingKeys:  []string{"alpha|" + capability, "beta|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
 			"alpha": {Scheme: util.AuthSchemeOAuth2, TokenURL: issuerA.URL,
 				ClientIDEnv: "TEST_PP_ID_A", ClientSecretEnv: "TEST_PP_SECRET_A"},
@@ -213,7 +215,8 @@ func TestRedactionCoversEveryProvidersSecret(t *testing.T) {
 
 	const capability = "openagrinet:KnowledgeAdvisory"
 	cfg := &Config{
-		BindingKeys: []string{"alpha|" + capability, "beta|" + capability},
+		SubscriberID: testSubscriberID,
+		BindingKeys:  []string{"alpha|" + capability, "beta|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
 			"alpha": {Scheme: util.AuthSchemeHeader, HeaderName: "X-A", HeaderValueEnv: "TEST_PP_RED_A"},
 			"beta":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-B", HeaderValueEnv: "TEST_PP_RED_B"},
@@ -246,7 +249,8 @@ func TestRedactionSortsAcrossProvidersNotWithinOne(t *testing.T) {
 
 	const capability = "openagrinet:KnowledgeAdvisory"
 	cfg := &Config{
-		BindingKeys: []string{"shorty|" + capability, "longy|" + capability},
+		SubscriberID: testSubscriberID,
+		BindingKeys:  []string{"shorty|" + capability, "longy|" + capability},
 		AuthByProvider: map[string]*AuthProfile{
 			"shorty": {Scheme: util.AuthSchemeHeader, HeaderName: "X-S", HeaderValueEnv: "TEST_PP_SHORT"},
 			"longy":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-L", HeaderValueEnv: "TEST_PP_LONG"},

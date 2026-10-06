@@ -77,8 +77,14 @@ const declaredContext = "https://raw.githubusercontent.com/OpenAgriNet/network-s
 // than repeating the literal.
 const callerMessageID = "a1b2c3d4-e5f6-4789-abcd-ef1234567890"
 
+// testSubscriberID is who the module answering these requests is. The capability
+// step refuses a request that names a different receiver, so the fixture below
+// names this one -- that is the ordinary case, a request addressed to us.
+const testSubscriberID = "provider-network-oan.dev"
+
 const selectRequest = `{
   "context": { "version": "2.0.0", "action": "select",
+    "bppId": "provider-network-oan.dev",
     "networkId": "oan-dev",
     "transactionId": "f9e8d7c6-b5a4-4321-9876-543210fedcba",
     "messageId": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
@@ -257,7 +263,8 @@ func runSelect(t *testing.T, request string) (sent map[string]any, answer map[st
 
 	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
 		&AgricultureFacility.Config{
-			BindingKeys: []string{shippedBindingKey},
+			SubscriberID: testSubscriberID,
+			BindingKeys:  []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.
 			AuthByProvider: map[string]*common.AuthProfile{
 				strings.Split(shippedBindingKey, "|")[0]: {Scheme: util.AuthSchemeNone},
@@ -911,7 +918,8 @@ func runAgainst(t *testing.T, request, providerBody string) map[string]any {
 
 	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
 		&AgricultureFacility.Config{
-			BindingKeys: []string{shippedBindingKey},
+			SubscriberID: testSubscriberID,
+			BindingKeys:  []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.
 			AuthByProvider: map[string]*common.AuthProfile{
 				strings.Split(shippedBindingKey, "|")[0]: {Scheme: util.AuthSchemeNone},
@@ -1384,7 +1392,8 @@ func runSplitSearch(t *testing.T, types []string, byCode map[string]string) (map
 
 	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
 		&AgricultureFacility.Config{
-			BindingKeys: []string{shippedBindingKey},
+			SubscriberID: testSubscriberID,
+			BindingKeys:  []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.
 			AuthByProvider: map[string]*common.AuthProfile{
 				strings.Split(shippedBindingKey, "|")[0]: {Scheme: util.AuthSchemeNone},
