@@ -3,16 +3,19 @@ package catalogcrawler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
 )
 
 // stubSigner stands in for the Signer plugin. These tests are about what we send
@@ -41,6 +44,76 @@ func (r *recordingPush) Push(_ context.Context, _ string, body []byte) (sink.Bat
 // belongs to.
 const testSubscriberID = "network.bharatvistar.oan.local"
 
+// fakeStaged is the queue, in memory: the same stage-then-publish shape the
+// postgres one has, with enough of the claim semantics to drive the worker.
+type fakeStaged struct {
+	mu      sync.Mutex
+	staged  map[string]store.StagedCatalog // keyed network|catalog
+	queued  []string                       // keys, in enqueue order
+	claimed map[string]bool
+	settled []string
+	retried []string
+}
+
+func newFakeStaged() *fakeStaged {
+	return &fakeStaged{staged: map[string]store.StagedCatalog{}, claimed: map[string]bool{}}
+}
+
+func stagedKey(networkID, catalogID string) string { return networkID + "|" + catalogID }
+
+// failingPush is a discovery that will not take a push.
+type failingPush struct{}
+
+func (failingPush) Push(_ context.Context, _ string, _ []byte) (sink.BatchOutcome, error) {
+	return sink.BatchOutcome{}, errors.New("discovery is unwell")
+}
+
+func (f *fakeStaged) StageAndEnqueue(_ context.Context, sc store.StagedCatalog, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := stagedKey(sc.NetworkID, sc.CatalogID)
+	if _, seen := f.staged[key]; !seen {
+		f.queued = append(f.queued, key)
+	}
+	f.staged[key] = sc // re-staging overwrites, as the real one does
+	return nil
+}
+
+func (f *fakeStaged) ClaimNextStaged(_ context.Context) (*store.ClaimedStaged, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, key := range f.queued {
+		if f.claimed[key] {
+			continue
+		}
+		f.claimed[key] = true
+		return &store.ClaimedStaged{ID: key, ClaimID: "claim", StagedCatalog: f.staged[key]}, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeStaged) CompleteStaged(_ context.Context, item *store.ClaimedStaged) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.staged, item.ID)
+	f.settled = append(f.settled, item.ID)
+	return nil
+}
+
+func (f *fakeStaged) RescheduleStaged(_ context.Context, id, _ string, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retried = append(f.retried, id)
+	return nil
+}
+
+// stagedCount is how many documents are being held.
+func (f *fakeStaged) stagedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.staged)
+}
+
 func newPeerCrawl(t *testing.T, push catalogPusher) *peerCrawl {
 	t.Helper()
 	return &peerCrawl{
@@ -56,6 +129,7 @@ func newPeerCrawl(t *testing.T, push catalogPusher) *peerCrawl {
 		client:       http.DefaultClient,
 		push:         push,
 		pushEndpoint: "http://discovery.invalid/publish",
+		store:        newFakeStaged(),
 		log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
@@ -129,53 +203,46 @@ func TestCrawlPeerAsksForTheAudienceWeBelongTo(t *testing.T) {
 	}
 }
 
-// Each push is stamped with the audience its call ASKED for.
+// A catalog in BOTH audiences' answers is staged under ONE key, and the last
+// write decides what it is addressed to.
 //
-// The discover response carries no visibleTo -- it is a publish-side directive
-// and is never returned -- so what we asked for is the only thing the answer is
-// known to be addressed to.
-//
-// Order matters and is asserted: the peer's own id is asked first and ours
-// second, so a catalog in BOTH answers ends up addressed to US. Reverse them
-// and our copy is labelled with the peer's id, which the peer's own crawl of us
-// then matches -- it re-imports its own catalogs from us, on every pass.
+// Ours is asked second on purpose, so our copy ends up addressed to US. The
+// other way round it carries the other network's id -- and that network's own
+// crawl of us then matches it and re-imports its own catalogs, every pass.
 func TestCrawlPeerStampsTheAudienceItAskedFor(t *testing.T) {
 	server, _ := peerWith(t, 1)
 	push := &recordingPush{}
+	crawl := newPeerCrawl(t, push)
 
-	err := newPeerCrawl(t, push).crawlPeer(context.Background(),
+	err := crawl.crawlPeer(context.Background(),
 		peerTarget{NetworkID: "maha.oan.local", DiscoveryURL: server.URL})
 	if err != nil {
 		t.Fatalf("crawlPeer: %v", err)
 	}
+	crawl.publishStaged(context.Background())
 
-	// Two calls, so this peer's one catalog is pushed once per audience.
-	if len(push.bodies) != 2 {
-		t.Fatalf("pushed %d catalogs, want 2 -- one per audience", len(push.bodies))
+	// ONE push, not one per audience: both answers carry the same catalog id,
+	// so they are the same staged row.
+	if len(push.bodies) != 1 {
+		t.Fatalf("pushed %d catalogs, want 1 -- both audiences stage the same id", len(push.bodies))
 	}
 
-	want := []string{"maha.oan.local", testSubscriberID}
-	for i, body := range push.bodies {
-		// The AUDIENCE specifically, not the body as a whole: our own id also
-		// appears as bppId, and legitimately -- we are the one publishing into
-		// our own discovery. Only visibleTo says who may see it.
-		var pushed struct {
-			Message struct {
-				PublishDirectives []struct {
-					VisibleTo []string `json:"visibleTo"`
-				} `json:"publishDirectives"`
-			} `json:"message"`
-		}
-		if err := json.Unmarshal(body, &pushed); err != nil {
-			t.Fatalf("push %d is not JSON: %v", i, err)
-		}
-		if len(pushed.Message.PublishDirectives) != 1 {
-			t.Fatalf("push %d: got %d directives, want 1", i, len(pushed.Message.PublishDirectives))
-		}
-		audience := pushed.Message.PublishDirectives[0].VisibleTo
-		if len(audience) != 1 || audience[0] != want[i] {
-			t.Errorf("push %d: visibleTo = %v, want [%s]", i, audience, want[i])
-		}
+	var pushed struct {
+		Message struct {
+			PublishDirectives []struct {
+				VisibleTo []string `json:"visibleTo"`
+			} `json:"publishDirectives"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(push.bodies[0], &pushed); err != nil {
+		t.Fatalf("push body is not JSON: %v", err)
+	}
+	if len(pushed.Message.PublishDirectives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(pushed.Message.PublishDirectives))
+	}
+	audience := pushed.Message.PublishDirectives[0].VisibleTo
+	if len(audience) != 1 || audience[0] != testSubscriberID {
+		t.Errorf("visibleTo = %v, want [%s] -- ours is asked last so it wins", audience, testSubscriberID)
 	}
 }
 
@@ -224,10 +291,12 @@ func TestCrawlPeerKeepsTheProviderEndpoint(t *testing.T) {
 	defer server.Close()
 
 	push := &recordingPush{}
-	if err := newPeerCrawl(t, push).crawlPeer(context.Background(),
+	crawl := newPeerCrawl(t, push)
+	if err := crawl.crawlPeer(context.Background(),
 		peerTarget{NetworkID: "maha.oan.local", DiscoveryURL: server.URL}); err != nil {
 		t.Fatalf("crawlPeer: %v", err)
 	}
+	crawl.publishStaged(context.Background())
 
 	if len(push.bodies) != 1 {
 		t.Fatalf("pushed %d bodies, want 1", len(push.bodies))
@@ -458,28 +527,128 @@ func TestUpdateModeIsConfigured(t *testing.T) {
 	}
 }
 
-// FULL cannot publish in batches, whatever the batch size says: every push
-// claims to be the complete set, so a second one deletes what the first wrote.
-// It holds everything instead and pays the memory.
-func TestFullModeHoldsEverything(t *testing.T) {
-	crawl := newPeerCrawl(t, &recordingPush{})
-	crawl.updateMode = sink.UpdateModeFull
-	crawl.batchSize = 1
-	if got := crawl.batchFor(); got != 0 {
-		t.Errorf("batchFor() = %d under FULL, want 0 (hold everything)", got)
+// A crawl STAGES and does not publish. What it holds is one page; the worker
+// publishes from the database afterwards.
+//
+// Asserted by the push count being zero while content is staged -- the only
+// evidence that nothing is being accumulated and sent in one go.
+func TestCrawlStagesAndDoesNotPublish(t *testing.T) {
+	push := &recordingPush{}
+	page := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if page++; page <= 2 {
+			_, _ = io.WriteString(w, `{"message":{"catalogs":[{"id":"c1"},{"id":"c2"}]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
+	}))
+	defer server.Close()
+
+	crawl := newPeerCrawl(t, push)
+	crawl.pageSize = 2
+	staged := crawl.store.(*fakeStaged)
+
+	ids, err := crawl.crawlAudience(context.Background(),
+		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha")
+	if err != nil {
+		t.Fatalf("crawlAudience: %v", err)
+	}
+	if len(ids) != 4 {
+		t.Fatalf("returned %d ids across pages, want 4", len(ids))
+	}
+	if len(push.bodies) != 0 {
+		t.Errorf("crawl pushed %d bodies; staging must not publish", len(push.bodies))
+	}
+	// c1 and c2, restaged on the second page under the same keys.
+	if got := staged.stagedCount(); got != 2 {
+		t.Errorf("staged %d catalogs, want 2 (the same ids restaged)", got)
 	}
 }
 
-// MERGE publishes in batches, and a batch size below 1 is a page at a time --
-// the lowest memory this can run in, not "hold everything".
-func TestMergeBatchSize(t *testing.T) {
-	for size, want := range map[int]int{0: 1, -5: 1, 1: 1, 25: 25} {
-		crawl := newPeerCrawl(t, &recordingPush{})
-		crawl.updateMode = sink.UpdateModeMerge
-		crawl.batchSize = size
-		if got := crawl.batchFor(); got != want {
-			t.Errorf("batchFor() with batchSize %d = %d, want %d", size, got, want)
-		}
+// The worker publishes what was staged, stamps the audience the crawl asked
+// for, and settles the queue row.
+func TestPublishStagedSendsAndSettles(t *testing.T) {
+	push := &recordingPush{}
+	crawl := newPeerCrawl(t, push)
+	staged := crawl.store.(*fakeStaged)
+
+	if err := staged.StageAndEnqueue(context.Background(), store.StagedCatalog{
+		NetworkID: "maha.oan.local",
+		CatalogID: "c1",
+		Audience:  testSubscriberID,
+		Document:  json.RawMessage(`{"id":"c1"}`),
+	}, "http://maha.invalid/discover"); err != nil {
+		t.Fatalf("StageAndEnqueue: %v", err)
+	}
+
+	crawl.publishStaged(context.Background())
+
+	if len(push.bodies) != 1 {
+		t.Fatalf("pushed %d bodies, want 1", len(push.bodies))
+	}
+	var pushed struct {
+		Message struct {
+			PublishDirectives []struct {
+				VisibleTo []string `json:"visibleTo"`
+			} `json:"publishDirectives"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(push.bodies[0], &pushed); err != nil {
+		t.Fatalf("push body is not JSON: %v", err)
+	}
+	audience := pushed.Message.PublishDirectives[0].VisibleTo
+	if len(audience) != 1 || audience[0] != testSubscriberID {
+		t.Errorf("visibleTo = %v, want [%s]", audience, testSubscriberID)
+	}
+	if len(staged.settled) != 1 {
+		t.Errorf("settled %d rows, want 1", len(staged.settled))
+	}
+	if staged.stagedCount() != 0 {
+		t.Error("the staged document was not released after publishing")
+	}
+}
+
+// A failed publish is rescheduled, not settled, and the content stays staged --
+// so the retry republishes rather than re-asking the network that owns it.
+func TestPublishStagedRetriesOnFailure(t *testing.T) {
+	crawl := newPeerCrawl(t, &failingPush{})
+	staged := crawl.store.(*fakeStaged)
+
+	if err := staged.StageAndEnqueue(context.Background(), store.StagedCatalog{
+		NetworkID: "maha.oan.local", CatalogID: "c1", Audience: "a",
+		Document: json.RawMessage(`{"id":"c1"}`),
+	}, "http://maha.invalid/discover"); err != nil {
+		t.Fatalf("StageAndEnqueue: %v", err)
+	}
+
+	crawl.publishStaged(context.Background())
+
+	if len(staged.retried) != 1 {
+		t.Errorf("rescheduled %d rows, want 1", len(staged.retried))
+	}
+	if len(staged.settled) != 0 {
+		t.Errorf("settled %d rows; a failed publish must not settle", len(staged.settled))
+	}
+	if staged.stagedCount() != 1 {
+		t.Error("the staged document was released despite the publish failing")
+	}
+}
+
+// A queue row whose content is gone is settled, not retried for ever.
+func TestPublishStagedDropsAnEmptyRow(t *testing.T) {
+	crawl := newPeerCrawl(t, &recordingPush{})
+	staged := crawl.store.(*fakeStaged)
+
+	if err := staged.StageAndEnqueue(context.Background(), store.StagedCatalog{
+		NetworkID: "maha.oan.local", CatalogID: "c1", Audience: "a",
+	}, "http://maha.invalid/discover"); err != nil {
+		t.Fatalf("StageAndEnqueue: %v", err)
+	}
+
+	crawl.publishStaged(context.Background())
+
+	if len(staged.settled) != 1 {
+		t.Errorf("settled %d rows, want 1 -- an empty row must not be claimed for ever", len(staged.settled))
 	}
 }
 
@@ -546,85 +715,5 @@ func TestContextURLOf(t *testing.T) {
 		if got := contextURLOf(pack); got != want {
 			t.Errorf("contextURLOf(%q) = %q, want %q", pack, got, want)
 		}
-	}
-}
-
-// Under MERGE a page is published and released as it arrives, so what the crawl
-// holds does not grow with the size of the peer.
-//
-// Asserted by WHEN the pushes happen, not just that they happen: a push
-// recorded while the peer is still being asked for more is the only evidence
-// that nothing is being accumulated.
-func TestMergePublishesWhilePagingNotAfter(t *testing.T) {
-	push := &recordingPush{}
-	var pushedByPage []int
-	page := 0
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// How many pushes had happened by the time this page was asked for.
-		pushedByPage = append(pushedByPage, len(push.bodies))
-		if page++; page <= 3 {
-			_, _ = io.WriteString(w, `{"message":{"catalogs":[{"id":"c1"},{"id":"c2"}]}}`)
-			return
-		}
-		_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
-	}))
-	defer server.Close()
-
-	crawl := newPeerCrawl(t, push)
-	crawl.updateMode = sink.UpdateModeMerge
-	crawl.pageSize = 2
-	crawl.batchSize = 1
-	crawl.maxPages = 10
-
-	ids, err := crawl.crawlAudience(context.Background(),
-		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha")
-	if err != nil {
-		t.Fatalf("crawlAudience: %v", err)
-	}
-	if len(ids) != 6 {
-		t.Fatalf("returned %d ids, want 6", len(ids))
-	}
-	// Page 1 is asked for with nothing pushed; by page 2 the first page is
-	// already written. Accumulating would leave every entry at 0.
-	if len(pushedByPage) < 2 || pushedByPage[1] == 0 {
-		t.Errorf("pushes by page = %v; nothing was published before the crawl finished", pushedByPage)
-	}
-}
-
-// Under FULL nothing is published until every page is in, because a second FULL
-// push of the same catalog deletes what the first wrote.
-func TestFullPublishesOnlyAtTheEnd(t *testing.T) {
-	push := &recordingPush{}
-	var pushedByPage []int
-	page := 0
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pushedByPage = append(pushedByPage, len(push.bodies))
-		if page++; page <= 3 {
-			_, _ = io.WriteString(w, `{"message":{"catalogs":[{"id":"c1"}]}}`)
-			return
-		}
-		_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
-	}))
-	defer server.Close()
-
-	crawl := newPeerCrawl(t, push)
-	crawl.updateMode = sink.UpdateModeFull
-	crawl.pageSize = 1
-	crawl.batchSize = 1 // ignored under FULL
-	crawl.maxPages = 10
-
-	if _, err := crawl.crawlAudience(context.Background(),
-		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha"); err != nil {
-		t.Fatalf("crawlAudience: %v", err)
-	}
-	for i, count := range pushedByPage {
-		if count != 0 {
-			t.Fatalf("page %d was asked for after %d pushes; FULL must publish only once every page is in", i, count)
-		}
-	}
-	if len(push.bodies) == 0 {
-		t.Error("nothing was published at all")
 	}
 }

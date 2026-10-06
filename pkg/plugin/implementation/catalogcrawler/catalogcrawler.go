@@ -49,33 +49,33 @@ const (
 	cfgFederationKey       = "federationSigningKey"
 	// The id the registry filed our key under. It is the second component of
 	// the Authorization keyId, and the only way a peer can look the key up.
-	cfgFederationKeyID      = "federationKeyId"
-	cfgFederationMaxPages   = "federationMaxPages"
-	cfgFederationPageSize   = "federationPageSize"
-	cfgFederationUpdateMode = "federationUpdateMode"
-	cfgFederationBatchSize  = "federationBatchSize"
-	cfgFederationDomain     = "federationDomain"
-	cfgFederationIntent     = "federationIntent" // raw JSON: the Beckn intent sent to a peer
-	cfgFederationSchemas    = "federationSchemaContext"
-	cfgFederationRefreshSec = "federationRefreshSeconds"
-	cfgFederationVersion    = "federationProtocolVersion"
-	cfgFederationWindowSec  = "federationSignatureWindowSeconds"
-	cfgNetworks             = "networks"        // comma-separated networkIds for registry-backed discovery
-	cfgStaticIndexURLs      = "staticIndexUrls" // comma-separated, optional fixed index URLs
-	cfgDiscoveryURL         = "discoveryPushUrl"
-	cfgParticipantID        = "participantId" // this deployment's own bppId
-	cfgBppURI               = "bppUri"        // this deployment's own bppUri
-	cfgFetchTimeoutSec      = "fetchTimeoutSeconds"
-	cfgMaxFetchBytes        = "maxFetchBytes"
-	cfgMaxDecompressed      = "maxDecompressedBytes"
-	cfgMaxPushBytes         = "maxPushBytes"
-	cfgIndexIntervalSec     = "indexIntervalSeconds"
-	cfgCatalogIntervalSec   = "catalogIntervalSeconds"
-	cfgAllowPrivateHosts    = "allowPrivateHosts"        // "true" to allow loopback/private fetch targets; tests only
-	cfgMaxAttempts          = "maxAttempts"              // transient-failure retries before parking; 0/unset => unlimited
-	cfgParkSweepIntervalSec = "parkSweepIntervalSeconds" // how often RequeueOrAbandonParked runs; 0/unset => DefaultParkSweepInterval (15m)
-	cfgParkOlderThanSec     = "parkOlderThanSeconds"     // how long a catalog must sit parked before this sweep touches it; 0/unset => act on anything parked
-	cfgMaxParkCount         = "maxParkCount"             // revivals allowed before abandoning a parked catalog; 0/unset => derived from the sweep interval and DefaultMaxParkRetryBudget (12h)
+	cfgFederationKeyID           = "federationKeyId"
+	cfgFederationMaxPages        = "federationMaxPages"
+	cfgFederationPageSize        = "federationPageSize"
+	cfgFederationUpdateMode      = "federationUpdateMode"
+	cfgFederationPublishRetrySec = "federationPublishRetrySeconds"
+	cfgFederationDomain          = "federationDomain"
+	cfgFederationIntent          = "federationIntent" // raw JSON: the Beckn intent sent to a peer
+	cfgFederationSchemas         = "federationSchemaContext"
+	cfgFederationRefreshSec      = "federationRefreshSeconds"
+	cfgFederationVersion         = "federationProtocolVersion"
+	cfgFederationWindowSec       = "federationSignatureWindowSeconds"
+	cfgNetworks                  = "networks"        // comma-separated networkIds for registry-backed discovery
+	cfgStaticIndexURLs           = "staticIndexUrls" // comma-separated, optional fixed index URLs
+	cfgDiscoveryURL              = "discoveryPushUrl"
+	cfgParticipantID             = "participantId" // this deployment's own bppId
+	cfgBppURI                    = "bppUri"        // this deployment's own bppUri
+	cfgFetchTimeoutSec           = "fetchTimeoutSeconds"
+	cfgMaxFetchBytes             = "maxFetchBytes"
+	cfgMaxDecompressed           = "maxDecompressedBytes"
+	cfgMaxPushBytes              = "maxPushBytes"
+	cfgIndexIntervalSec          = "indexIntervalSeconds"
+	cfgCatalogIntervalSec        = "catalogIntervalSeconds"
+	cfgAllowPrivateHosts         = "allowPrivateHosts"        // "true" to allow loopback/private fetch targets; tests only
+	cfgMaxAttempts               = "maxAttempts"              // transient-failure retries before parking; 0/unset => unlimited
+	cfgParkSweepIntervalSec      = "parkSweepIntervalSeconds" // how often RequeueOrAbandonParked runs; 0/unset => DefaultParkSweepInterval (15m)
+	cfgParkOlderThanSec          = "parkOlderThanSeconds"     // how long a catalog must sit parked before this sweep touches it; 0/unset => act on anything parked
+	cfgMaxParkCount              = "maxParkCount"             // revivals allowed before abandoning a parked catalog; 0/unset => derived from the sweep interval and DefaultMaxParkRetryBudget (12h)
 )
 
 const (
@@ -103,9 +103,8 @@ const (
 	// single-request behaviour and the old failure mode with it.
 	defaultPeerPageSize = 0
 
-	// How many catalogs are held before they are published. 1 publishes each
-	// page as it arrives, which is the lowest memory this can run in.
-	defaultPeerBatchSize = 1
+	// How long a failed publish waits before the queue offers it again.
+	defaultPublishRetry = 30 * time.Second
 
 	// A peer ROUTES on these two, so they are not cosmetic: a discover without
 	// them is refused before it reaches the peer's discovery service, with "no
@@ -218,7 +217,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		registry:       registry,
 		log:            log,
 		st:             st,
-		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, log),
+		peers:          newPeerCrawlFromConfig(ctx, config, discoveryURL, fetchTimeout, st, st, log),
 		peerRefresh:    durationSecondsOr(config[cfgFederationRefreshSec], defaultPeerRefresh),
 	}
 	return c, db.Close, nil
@@ -324,7 +323,7 @@ func (m multiSource) Discover(ctx context.Context) ([]crawlmanager.IndexRef, err
 // they are FETCHED differs.
 func newPeerCrawlFromConfig(
 	ctx context.Context, config map[string]string, pushEndpoint string,
-	timeout time.Duration, projections projectionStore, log *slog.Logger,
+	timeout time.Duration, projections projectionStore, staged stagedStore, log *slog.Logger,
 ) *peerCrawl {
 	networkID := strings.TrimSpace(config[cfgFederationNetworkID])
 	key := strings.TrimSpace(config[cfgFederationKey])
@@ -356,7 +355,9 @@ func newPeerCrawlFromConfig(
 		keyID:        strings.TrimSpace(config[cfgFederationKeyID]),
 		pageSize:     int(int64Or(config[cfgFederationPageSize], defaultPeerPageSize)),
 		updateMode:   updateModeOr(config[cfgFederationUpdateMode]),
-		batchSize:    int(int64Or(config[cfgFederationBatchSize], defaultPeerBatchSize)),
+		maxPushBytes: int64Or(config[cfgMaxPushBytes], defaultMaxPushBytes),
+		publishRetry: durationSecondsOr(config[cfgFederationPublishRetrySec], defaultPublishRetry),
+		store:        staged,
 		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
 		// Empty: mirror everything the peer will give us. A deployment that
 		// wants less sets a jsonpath or spatial intent here.

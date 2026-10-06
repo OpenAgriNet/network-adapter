@@ -16,6 +16,17 @@ import (
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
 )
 
+// localNetwork is the network_id every row of THIS deployment's own crawl
+// carries -- the providers reached through a catalog index.
+//
+// Empty rather than the configured network id, for two reasons: a migration
+// cannot know that id, so backfilling existing rows with it is impossible; and
+// crawlmanager's Store interface identifies a catalog by id ALONE, so every
+// method the library calls has to resolve to one row without being told which
+// network. Scoping them all to "" does that, and leaves every non-empty
+// network_id to the cross-network crawl, which always passes one explicitly.
+const localNetwork = ""
+
 // GetCatalogCursor returns a catalog's stored cursor, and whether it has ever
 // been synced.
 func (s *Store) GetCatalogCursor(ctx context.Context, catalogID string) (crawlmanager.CatalogCursor, bool, error) {
@@ -27,7 +38,8 @@ func (s *Store) GetCatalogCursor(ctx context.Context, catalogID string) (crawlma
 		status   sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT index_url, participant_id, version, entry_version, status FROM crawler_catalog WHERE catalog_id=$1`, catalogID).
+		`SELECT index_url, participant_id, version, entry_version, status
+		   FROM crawler_catalog WHERE network_id=$1 AND catalog_id=$2`, localNetwork, catalogID).
 		Scan(&indexURL, &pid, &v, &ev, &status)
 	if err == sql.ErrNoRows {
 		return crawlmanager.CatalogCursor{}, false, nil
@@ -47,7 +59,8 @@ func (s *Store) GetCatalogCursor(ctx context.Context, catalogID string) (crawlma
 func (s *Store) GetCatalogEnvelope(ctx context.Context, catalogID string) (descriptor, provider json.RawMessage, catalogType, participantID string, ok bool, err error) {
 	var d, p, ct, pid sql.NullString
 	err = s.db.QueryRowContext(ctx,
-		`SELECT descriptor, provider, catalog_type, participant_id FROM crawler_catalog WHERE catalog_id=$1`, catalogID).
+		`SELECT descriptor, provider, catalog_type, participant_id
+		   FROM crawler_catalog WHERE network_id=$1 AND catalog_id=$2`, localNetwork, catalogID).
 		Scan(&d, &p, &ct, &pid)
 	if err == sql.ErrNoRows {
 		return nil, nil, "", "", false, nil
@@ -71,15 +84,15 @@ func (s *Store) GetCatalogEnvelope(ctx context.Context, catalogID string) (descr
 // describes this catalog's current state and would otherwise report a
 // resolved failure as still-current to a status query. Runs standalone or
 // inside Complete's transaction via execer.
-func upsertCatalog(ctx context.Context, ex execer, c crawlmanager.CatalogCursor) error {
+func upsertCatalog(ctx context.Context, ex execer, networkID string, c crawlmanager.CatalogCursor) error {
 	status := "active"
 	if c.Retired {
 		status = "retired"
 	}
 	_, err := ex.ExecContext(ctx,
-		`INSERT INTO crawler_catalog (catalog_id, index_url, participant_id, version, entry_version, status, descriptor, provider, catalog_type, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
-		 ON CONFLICT (catalog_id) DO UPDATE SET
+		`INSERT INTO crawler_catalog (network_id, catalog_id, index_url, participant_id, version, entry_version, status, descriptor, provider, catalog_type, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+		 ON CONFLICT (network_id, catalog_id) DO UPDATE SET
 		   index_url      = EXCLUDED.index_url,
 		   participant_id = EXCLUDED.participant_id,
 		   version        = EXCLUDED.version,
@@ -90,7 +103,7 @@ func upsertCatalog(ctx context.Context, ex execer, c crawlmanager.CatalogCursor)
 		   provider       = COALESCE(EXCLUDED.provider, crawler_catalog.provider),
 		   catalog_type   = COALESCE(EXCLUDED.catalog_type, crawler_catalog.catalog_type),
 		   updated_at     = now()`,
-		c.CatalogID, nullStr(c.IndexURL), nullStr(c.ParticipantID), c.Version, c.EntryVersion, status,
+		networkID, c.CatalogID, nullStr(c.IndexURL), nullStr(c.ParticipantID), c.Version, c.EntryVersion, status,
 		nullBytes(c.Descriptor), nullBytes(c.Provider), nullStr(c.CatalogType))
 	if err != nil {
 		return fmt.Errorf("store: upsertCatalog: %w", err)
@@ -104,14 +117,14 @@ func upsertCatalog(ctx context.Context, ex execer, c crawlmanager.CatalogCursor)
 // NULL version.
 func (s *Store) RecordFailure(ctx context.Context, report crawlmanager.PassReport) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO crawler_catalog (catalog_id, index_url, participant_id, status, reason, updated_at)
-		 VALUES ($1,$2,$3,'active',$4, now())
-		 ON CONFLICT (catalog_id) DO UPDATE SET
+		`INSERT INTO crawler_catalog (network_id, catalog_id, index_url, participant_id, status, reason, updated_at)
+		 VALUES ($1,$2,$3,$4,'active',$5, now())
+		 ON CONFLICT (network_id, catalog_id) DO UPDATE SET
 		   index_url      = EXCLUDED.index_url,
 		   participant_id = EXCLUDED.participant_id,
 		   reason         = EXCLUDED.reason,
 		   updated_at     = now()`, // version/status deliberately not touched
-		report.CatalogID, nullStr(report.IndexURL), nullStr(report.ParticipantID), nullStr(report.Error))
+		localNetwork, report.CatalogID, nullStr(report.IndexURL), nullStr(report.ParticipantID), nullStr(report.Error))
 	if err != nil {
 		return fmt.Errorf("store: RecordFailure: %w", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/sink"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/catalogcrawler/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -106,16 +107,16 @@ type peerCrawl struct {
 	// before anything is pushed.
 	pageSize int
 	// updateMode is how a projection is published: FULL replaces, MERGE upserts.
-	updateMode string
-	// batchSize is how many catalogs are held before they are published.
-	//
-	// Only read under MERGE. FULL cannot publish in batches at all -- every
-	// push claims to be the catalog's complete set, so a second one deletes
-	// what the first wrote -- so it accumulates the whole peer regardless.
-	batchSize    int
+	updateMode   string
 	client       *http.Client
 	push         catalogPusher
 	pushEndpoint string
+	// maxPushBytes is the ceiling one push body may reach, the same one the
+	// local crawl's sink uses. 0 disables splitting.
+	maxPushBytes int64
+	// publishRetry is how long a failed publish waits before the queue offers
+	// it again.
+	publishRetry time.Duration
 	log          *slog.Logger
 
 	// projections records what we are holding from each peer, so it can be
@@ -123,6 +124,14 @@ type peerCrawl struct {
 	// is unavailable keeps crawling rather than silently losing the ability to
 	// expire, and says so once at start-up.
 	projections projectionStore
+
+	// store is where a crawl puts the catalogs it fetched, and where the
+	// publisher reads them from. The same queue the local crawl uses, in a
+	// keyspace of its own -- see internal/store/networkqueue.go.
+	//
+	// Nil disables the cross-network crawl entirely: without somewhere to put
+	// what it fetches it would be back to holding a whole network in memory.
+	store stagedStore
 }
 
 // discoverBody builds the Beckn discover sent to a peer.
@@ -176,23 +185,42 @@ func (p *peerCrawl) discoverBody(audience string, schemaContext []string) ([]byt
 	})
 }
 
-// crawlAudience asks a peer for one audience and publishes what comes back,
-// returning the catalog ids it saw.
+// crawlAudience asks another network for one audience and STAGES what comes
+// back, returning the catalog ids it saw.
 //
-// Only IDS are returned. The documents are released as they are published, so
-// what this holds does not grow with the size of the peer -- which is the whole
-// reason it publishes here rather than handing a list back.
+// Staged, not published. Each page is written to the crawler's own database and
+// released, so what this holds does not grow with the size of the network being
+// crawled -- and a publish that fails is retried from the staged copy by the
+// worker, under the same backoff, park and abandon rules the local crawl gets.
 //
-// Under MERGE it publishes in batches: an id-keyed upsert means a catalog split
-// across pages reassembles correctly, so a page can be written and dropped.
-//
-// Under FULL it cannot. Every FULL push claims to be the catalog's complete
-// current set, so publishing page 2 deletes what page 1 wrote -- a
-// 1000-resource catalog fetched in two pages of 500 would end up holding 500.
-// So FULL accumulates the whole peer before publishing anything, and pays the
-// memory for it.
+// The content has to be stored because a discover answers with the catalogs
+// themselves. The local crawl needs no equivalent: its queue rows name an index
+// URL, so crawlmanager re-fetches current content at claim time.
 func (p *peerCrawl) crawlAudience(ctx context.Context, target peerTarget, audience string) ([]string, error) {
-	batch := newPushBatch(p, audience, p.batchFor())
+	var ids []string
+
+	stage := func(catalogs []json.RawMessage) error {
+		for _, document := range catalogs {
+			found, unnamed := catalogIDsOf([]json.RawMessage{document})
+			if unnamed > 0 || len(found) == 0 {
+				// Nothing could name it later, so it could never be expired or
+				// withdrawn. Dropped rather than staged under an invented id.
+				p.log.WarnContext(ctx, "catalogcrawler: catalog has no id; not staged",
+					"networkId", target.NetworkID)
+				continue
+			}
+			if err := p.store.StageAndEnqueue(ctx, store.StagedCatalog{
+				NetworkID: target.NetworkID,
+				CatalogID: found[0],
+				Audience:  audience,
+				Document:  document,
+			}, target.DiscoveryURL); err != nil {
+				return err
+			}
+			ids = append(ids, found[0])
+		}
+		return nil
+	}
 
 	if p.pageSize <= 0 {
 		// One request, no limit: what this did before paging, kept so a
@@ -201,10 +229,7 @@ func (p *peerCrawl) crawlAudience(ctx context.Context, target peerTarget, audien
 		if err != nil {
 			return nil, err
 		}
-		if err := batch.add(ctx, got); err != nil {
-			return nil, err
-		}
-		return batch.done(ctx)
+		return ids, stage(got)
 	}
 
 	for page := 0; page < p.maxPages; page++ {
@@ -212,7 +237,7 @@ func (p *peerCrawl) crawlAudience(ctx context.Context, target peerTarget, audien
 		if err != nil {
 			return nil, err
 		}
-		if err := batch.add(ctx, got); err != nil {
+		if err := stage(got); err != nil {
 			return nil, err
 		}
 		// A page the peer could not fill is the last one. Discovery pages a
@@ -222,70 +247,7 @@ func (p *peerCrawl) crawlAudience(ctx context.Context, target peerTarget, audien
 			break
 		}
 	}
-	return batch.done(ctx)
-}
-
-// batchFor is how many catalogs may be held before they are published.
-//
-// Zero means "hold everything", which is what FULL requires and what a
-// misconfigured batch size should not silently become.
-func (p *peerCrawl) batchFor() int {
-	if p.updateMode == sink.UpdateModeFull {
-		return 0
-	}
-	if p.batchSize < 1 {
-		return 1
-	}
-	return p.batchSize
-}
-
-// pushBatch collects catalogs and publishes them once there are enough.
-//
-// size 0 holds everything until done, which is FULL's only correct shape.
-type pushBatch struct {
-	crawl    *peerCrawl
-	audience string
-	size     int
-	held     []json.RawMessage
-	ids      []string
-}
-
-func newPushBatch(crawl *peerCrawl, audience string, size int) *pushBatch {
-	return &pushBatch{crawl: crawl, audience: audience, size: size}
-}
-
-func (b *pushBatch) add(ctx context.Context, catalogs []json.RawMessage) error {
-	b.held = append(b.held, catalogs...)
-	if b.size > 0 && len(b.held) >= b.size {
-		return b.flush(ctx)
-	}
-	return nil
-}
-
-func (b *pushBatch) done(ctx context.Context) ([]string, error) {
-	if err := b.flush(ctx); err != nil {
-		return nil, err
-	}
-	return b.ids, nil
-}
-
-// flush publishes what is held and releases it, keeping only the ids.
-func (b *pushBatch) flush(ctx context.Context) error {
-	if len(b.held) == 0 {
-		return nil
-	}
-	if err := b.crawl.pushAll(ctx, b.audience, b.held); err != nil {
-		return err
-	}
-	fresh, unnamed := catalogIDsOf(b.held)
-	if unnamed > 0 {
-		b.crawl.log.WarnContext(ctx,
-			"catalogcrawler: peer returned catalogs with no id; they cannot be expired later",
-			"audience", b.audience, "count", unnamed)
-	}
-	b.ids = append(b.ids, fresh...)
-	b.held = nil
-	return nil
+	return ids, nil
 }
 
 // fetchPage sends one signed discover and returns what the peer answered.
@@ -365,7 +327,7 @@ func authorization(subscriberID, keyID string, created, expires int64, signature
 		subscriberID, keyID, created, expires, signature)
 }
 
-// crawlPeer asks one peer, stores what it returns, and withdraws what it has
+// crawlPeer asks one network, stages what it returns, and withdraws what it has
 // stopped returning.
 //
 // The withdrawal half only runs after a SUCCESSFUL fetch. A peer that could not
@@ -373,8 +335,8 @@ func authorization(subscriberID, keyID string, created, expires int64, signature
 // silence as a withdrawal would empty the cache on one timeout -- which is what
 // the ttl, and only the ttl, is allowed to do.
 func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
-	// IDS, not documents: each audience publishes and releases what it fetched,
-	// so this does not grow with the size of the peer.
+	// IDS, not documents: each audience stages and releases what it fetched, so
+	// this does not grow with the size of the network being crawled.
 	var seen []string
 
 	// TWO calls, because context.networkId carries one value and we want two
@@ -386,10 +348,11 @@ func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
 	//   our id             -- what the peer's publishers chose to share WITH US
 	//                         by naming us in publishDirectives.visibleTo.
 	//
-	// Ordered deliberately. A catalog in BOTH answers is pushed twice, and the
-	// second push decides what it is stamped with. Ours going last means our
-	// copy ends up addressed to us -- which is what stops the peer's own crawl
-	// of US matching it and re-importing its own catalogs.
+	// Ordered deliberately. A catalog in BOTH answers is staged twice under the
+	// same key, and the second write decides what it is addressed to. Ours
+	// going last means our copy ends up addressed to us -- which is what stops
+	// the other network's own crawl of US matching it and re-importing its own
+	// catalogs.
 	//
 	// Both collapse into one call once context.networkId can carry a list.
 	for _, audience := range []string{target.NetworkID, p.subscriberID} {
@@ -442,61 +405,6 @@ func (p *peerCrawl) ttlFor(target peerTarget) time.Duration {
 // defaultProjectionTtl covers a registry record written before projectionTtl
 // existed. Deliberately short: an unknown licence is not a long one.
 const defaultProjectionTtl = time.Hour
-
-// pushAll sends one peer's catalogs on, through the same sink our own crawled
-// catalogs go through.
-//
-// UpdateModeFull, one catalog at a time: a peer that has withdrawn resources
-// must not keep them alive in our cache by omitting them.
-//
-// VisibleTo is the SOURCE network, so a crawled catalog stays labelled as whose
-// it is. We hold a copy; we do not become its owner.
-//
-// Stamping our OWN id here would say "this is visible to us" about a fact that
-// is really "this belongs to Maha" -- one field carrying two unrelated things,
-// and overwriting the one it is named for. It would also make a third network
-// asking us for OUR catalogs unable to tell a copy from an original.
-//
-// Keeping the owner is what makes "answer with your own data only" true by
-// construction: a peer asks us for a specific owner, so copies of a third
-// network's data cannot match. It is a Beckn field doing the work, which is why
-// this needs no origin column of its own.
-//
-// A local search carries no network id at all, so it is unaffected: it still
-// sees everything we hold, ours and crawled alike.
-func (p *peerCrawl) pushAll(ctx context.Context, audience string, catalogs []json.RawMessage) error {
-	for _, document := range catalogs {
-		meta := sink.PushMeta{
-			ParticipantID: p.subscriberID,
-			MessageID:     uuid.NewString(),
-			TransactionID: uuid.NewString(),
-			Timestamp:     time.Now().UTC().Format(time.RFC3339),
-			// discovery-service's /publish checks the body's action against the
-			// route, so this must say publish and not push.
-			Action: "catalog/publish",
-			// Configured. FULL replaces, so a resource the peer dropped is
-			// deleted here too; MERGE upserts by id and never notices one.
-			UpdateMode: p.updateMode,
-			// Upper case: the enum is ["MASTER","REGULAR"] and the comparison is
-			// exact. A crawled catalog is never a master -- a master is a
-			// deployment's own shared definition, not something mirrored.
-			CatalogType: "REGULAR",
-			// Whatever this call ASKED for. The discover response carries no
-			// visibleTo of its own -- it is a publish-side directive and is
-			// never returned -- so the audience we asked for is the only thing
-			// the answer is known to be addressed to.
-			VisibleTo: []string{audience},
-		}
-		body, err := sink.BuildPushBody(meta, document)
-		if err != nil {
-			return fmt.Errorf("build push body for %s: %w", audience, err)
-		}
-		if _, err := p.push.Push(ctx, p.pushEndpoint, body); err != nil {
-			return fmt.Errorf("push %s: %w", audience, err)
-		}
-	}
-	return nil
-}
 
 // refreshEvery re-crawls every peer on an interval until ctx is cancelled.
 //
@@ -559,6 +467,15 @@ func (p *peerCrawl) crawlAll(ctx context.Context, targets []peerTarget, runID st
 				"runId", runID, "networkId", target.NetworkID, "error", err)
 		}
 	}
+
+	// Drains what the pass staged, and anything an earlier pass left behind:
+	// a publish that failed is still queued, with its content, and this is
+	// where it is tried again.
+	//
+	// After every network rather than after each one, so a network that cannot
+	// be reached does not hold up publishing what the others gave us.
+	p.publishStaged(ctx)
+
 	if p.projections == nil {
 		return
 	}
