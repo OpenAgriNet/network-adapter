@@ -54,13 +54,13 @@ re-path into the channel:
 
 ```yaml
 # support step only
-providerIdAt:     "message.support.channels[].providerId"
+providerIdAt:     "message.support.channels[].provider.id"
 capabilityCodeAt: "message.support.channels[].@type"
 ```
 
 `Support` itself is sealed at three fields and none names a participant, but `channels` is
 an array of `Attributes` — the spec's extensibility container, `additionalProperties: true`
-— so the pack puts `providerId` there. `scheme.code` is not a substitute: it names a scheme
+— so the pack puts `provider` there. `scheme.code` is not a substitute: it names a scheme
 rather than a participant, and reads `PMFBY` where the registry holds `pmfby`.
 
 An earlier draft named the provider statically in the step config instead, which would have
@@ -85,7 +85,7 @@ was blocking turned out not to be a change at all.
    `grievanceDescription` → `descriptor.longDesc`, each recorded in that field's
    `x-beckn-path`. Their `x-oan-pii` and `no-log`/`no-trace` markings stayed with them, and
    `registrationNo` lost the `writeOnly`/`no-echo` it carried while it had nowhere to land.
-4. ~~**Adapter**~~ — none needed. Pathing `providerId` through the channel uses the
+4. ~~**Adapter**~~ — none needed. Pathing `provider.id` through the channel uses the
    both-halves-pathed case `BindingPaths` already accepts, so this flow requires no code
    change and nothing blocks the registry row below.
 5. **Registry** — add the `support` step with the routing shown above. `init` and `status`
@@ -204,6 +204,7 @@ POST /support
         "@context": "…/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
         "informationMode": "OnDemand",
+        "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } },
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "applicantPhone": "9876543210",
         "cropYear": "2026",
@@ -229,7 +230,7 @@ a message. Only `ticket-no` becomes a value you can read, as `ticketNo` — the 
 farmer quotes back. `ticket-id` is the portal's own row id and is dropped. The success flag
 decides whether this is an ACK at all; it is not a case status.
 The message is the portal's own and is never returned — it may hold a stack trace or an
-internal hostname. `caseStatus`, `filedOn` and `source` are **not in the reply**; the adapter
+internal hostname. `caseStatus`, `filedOn` and `provider` are **not in the reply**; the adapter
 asserts them, and the pack README says so. The `descriptor` is the caller's own words echoed
 back, not portal data.
 
@@ -253,7 +254,7 @@ back, not portal data.
           "ticketNo": "100626000099001",
           "caseStatus": { "code": "Registered" },
           "filedOn": "2026-09-28",
-          "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
+          "provider": { "id": "pmfby", "descriptor": { "name": "PMFBY Grievance Portal" } }
         }
       ]
     }
@@ -341,8 +342,7 @@ the complaint, so it stays in attributes; it is absent while nothing has been re
         "season": "Kharif",
         "caseStatus": { "code": "UnderReview", "name": "Open" },
         "filedOn": "2026-09-28",
-        "caseRemark": "Claim file reopened, awaiting surveyor report.",
-        "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
+        "caseRemark": "Claim file reopened, awaiting surveyor report."
       }
     }]
   }}
@@ -376,7 +376,8 @@ the response mapping, so nothing on this page shows it.
 ## 1 — `support`: lodge the grievance
 
 `descriptor.code` is one of the pack's ten codes; `G003` is *Installment not received*.
-`orderId` is the registration number; `channels[0]` carries nothing but the scheme.
+`orderId` is the registration number; `channels[0]` carries the provider and the scheme and
+nothing else.
 
 ```json
 POST /support
@@ -400,6 +401,7 @@ POST /support
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "OnDemand",
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" }
       }]
     }
@@ -412,7 +414,7 @@ ticket: PMFBY returns one on the channel and PM-KISAN issues none. The
 portal's lodge reply is `{ Responce, message }` and nothing more: `Responce` becomes the
 ACK, `message` is logged redacted and never returned. So **nothing below comes from the
 portal** — `descriptor` is the caller's own words echoed back, `caseStatus` and `filedOn`
-are the adapter's assertions, `source` is configuration.
+are the adapter's assertions, `provider` is the registry entry the adapter routed to.
 
 ```json
 {
@@ -432,7 +434,7 @@ are the adapter's assertions, `source` is configuration.
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "caseStatus": { "code": "Registered" },
         "filedOn": "2026-09-28",
-        "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } }
       }]
     }
   }
@@ -515,8 +517,7 @@ five of the record's fourteen fields survive. The record carries no category, so
         "caseStatus": { "code": "Replied" },
         "filedOn": "2026-09-28",
         "remarkedOn": "2026-10-01",
-        "caseRemark": "Instalment released on 2026-10-01, credited to the linked account.",
-        "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
+        "caseRemark": "Instalment released on 2026-10-01, credited to the linked account."
       }
     }]
   }}
