@@ -120,7 +120,10 @@ type peerCrawl struct {
 	// publishRetry is how long a failed publish waits before the queue offers
 	// it again.
 	publishRetry time.Duration
-	log          *slog.Logger
+	// maxAttempts is how many goes a publish gets before the row is parked.
+	// 0 is unlimited, matching what crawlmanager does with the same setting.
+	maxAttempts int
+	log         *slog.Logger
 
 	// projections records what we are holding from each peer, so it can be
 	// withdrawn later. Nil disables every purge path: a deployment whose store

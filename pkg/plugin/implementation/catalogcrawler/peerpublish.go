@@ -29,6 +29,7 @@ type stagedStore interface {
 	ClaimNextStaged(ctx context.Context) (*store.ClaimedStaged, error)
 	CompleteStaged(ctx context.Context, item *store.ClaimedStaged) error
 	RescheduleStaged(ctx context.Context, id, claimID string, nextAttemptAt time.Time) error
+	ParkStaged(ctx context.Context, id, claimID string) error
 }
 
 // catalogSink is the publish half, declared at the consumer -- the same shape
@@ -78,20 +79,41 @@ func (p *peerCrawl) publishOne(ctx context.Context, item *store.ClaimedStaged) {
 	if err := p.sendStaged(ctx, item); err != nil {
 		p.log.ErrorContext(ctx, "catalogcrawler: publishing a crawled catalog failed",
 			"networkId", item.NetworkID, "catalogId", item.CatalogID, "error", err)
-		// Rescheduled, not parked. A publish fails for reasons that pass --
-		// discovery restarting, a connection reset -- and the content is still
-		// staged, so the retry costs nothing but the push. The park sweep is
-		// what eventually gives up on a row that keeps coming back.
-		if err := p.store.RescheduleStaged(ctx, item.ID, item.ClaimID,
-			time.Now().Add(p.retryDelay())); err != nil {
-			p.log.ErrorContext(ctx, "catalogcrawler: rescheduling a staged catalog failed", "error", err)
-		}
+		p.settleFailure(ctx, item)
 		return
 	}
 
 	if err := p.store.CompleteStaged(ctx, item); err != nil {
 		p.log.ErrorContext(ctx, "catalogcrawler: settling a published catalog failed",
 			"networkId", item.NetworkID, "catalogId", item.CatalogID, "error", err)
+	}
+}
+
+// settleFailure releases a failed publish, retrying it until it has had enough
+// goes and parking it after that.
+//
+// Rescheduled first, because a publish fails for reasons that pass -- discovery
+// restarting, a connection reset -- and the content is still staged, so a retry
+// costs nothing but the push.
+//
+// Parked once maxAttempts is spent, which is what stops a catalog discovery
+// will never accept being republished every pass for ever. A parked row is not
+// claimable until the queue's own sweep revives it, on its own slow cadence --
+// the same treatment, and the same sweep, the local crawl's failures get.
+//
+// 0 means unlimited, matching what crawlmanager does with the same setting.
+func (p *peerCrawl) settleFailure(ctx context.Context, item *store.ClaimedStaged) {
+	if p.maxAttempts > 0 && item.Attempts+1 >= p.maxAttempts {
+		p.log.WarnContext(ctx, "catalogcrawler: parking a crawled catalog after repeated publish failures",
+			"networkId", item.NetworkID, "catalogId", item.CatalogID, "attempts", item.Attempts+1)
+		if err := p.store.ParkStaged(ctx, item.ID, item.ClaimID); err != nil {
+			p.log.ErrorContext(ctx, "catalogcrawler: parking a staged catalog failed", "error", err)
+		}
+		return
+	}
+	if err := p.store.RescheduleStaged(ctx, item.ID, item.ClaimID,
+		time.Now().Add(p.retryDelay())); err != nil {
+		p.log.ErrorContext(ctx, "catalogcrawler: rescheduling a staged catalog failed", "error", err)
 	}
 }
 

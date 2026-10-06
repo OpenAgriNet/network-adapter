@@ -55,6 +55,10 @@ type fakeStaged struct {
 	claimed map[string]bool
 	settled []string
 	retried []string
+	parked  []string
+	// attempts is what a claimed row reports as its prior failure count, so a
+	// test can drive the publisher to the end of its budget.
+	attempts int
 }
 
 func newFakeStaged() *fakeStaged {
@@ -120,7 +124,9 @@ func (f *fakeStaged) ClaimNextStaged(_ context.Context) (*store.ClaimedStaged, e
 			continue
 		}
 		f.claimed[key] = true
-		return &store.ClaimedStaged{ID: key, ClaimID: "claim", StagedCatalog: f.staged[key]}, nil
+		return &store.ClaimedStaged{
+			ID: key, ClaimID: "claim", Attempts: f.attempts, StagedCatalog: f.staged[key],
+		}, nil
 	}
 	return nil, nil
 }
@@ -137,6 +143,13 @@ func (f *fakeStaged) RescheduleStaged(_ context.Context, id, _ string, _ time.Ti
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retried = append(f.retried, id)
+	return nil
+}
+
+func (f *fakeStaged) ParkStaged(_ context.Context, id, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.parked = append(f.parked, id)
 	return nil
 }
 
@@ -733,5 +746,66 @@ func TestContextURLOf(t *testing.T) {
 		if got := contextURLOf(pack); got != want {
 			t.Errorf("contextURLOf(%q) = %q, want %q", pack, got, want)
 		}
+	}
+}
+
+// A publish that keeps failing is PARKED once its attempts are spent, not
+// retried for ever.
+//
+// A parked row is not claimable until the queue's own sweep revives it, which
+// is the same treatment the local crawl's failures get -- and without it a
+// catalog discovery will never accept is republished on every pass, for ever.
+func TestPublishStagedParksWhenAttemptsAreSpent(t *testing.T) {
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.sink = &recordingSink{fail: errors.New("discovery is unwell")}
+	crawl.maxAttempts = 3
+	staged := crawl.store.(*fakeStaged)
+
+	if err := staged.StageAndEnqueue(context.Background(), store.StagedCatalog{
+		NetworkID: "maha.oan.local", CatalogID: "c1", Audience: "a",
+		Document: json.RawMessage(`{"id":"c1"}`),
+	}, "http://maha.invalid/discover"); err != nil {
+		t.Fatalf("StageAndEnqueue: %v", err)
+	}
+
+	// Two goes behind it: this attempt is the third and last.
+	staged.attempts = 2
+	crawl.publishStaged(context.Background())
+
+	if len(staged.parked) != 1 {
+		t.Errorf("parked %d rows, want 1 once the budget is spent", len(staged.parked))
+	}
+	if len(staged.retried) != 0 {
+		t.Errorf("rescheduled %d rows; the budget was spent", len(staged.retried))
+	}
+	// The content stays: the sweep may revive this row, and it would have
+	// nothing to publish if the document had been dropped.
+	if staged.stagedCount() != 1 {
+		t.Error("the staged document was released when the row was parked")
+	}
+}
+
+// 0 attempts means unlimited, matching what crawlmanager does with the same
+// setting -- a deployment that has not set one is never parked.
+func TestPublishStagedNeverParksWithoutABudget(t *testing.T) {
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.sink = &recordingSink{fail: errors.New("discovery is unwell")}
+	crawl.maxAttempts = 0
+	staged := crawl.store.(*fakeStaged)
+
+	if err := staged.StageAndEnqueue(context.Background(), store.StagedCatalog{
+		NetworkID: "maha.oan.local", CatalogID: "c1", Audience: "a",
+		Document: json.RawMessage(`{"id":"c1"}`),
+	}, "http://maha.invalid/discover"); err != nil {
+		t.Fatalf("StageAndEnqueue: %v", err)
+	}
+	staged.attempts = 99
+	crawl.publishStaged(context.Background())
+
+	if len(staged.parked) != 0 {
+		t.Errorf("parked %d rows; 0 means unlimited", len(staged.parked))
+	}
+	if len(staged.retried) != 1 {
+		t.Errorf("rescheduled %d rows, want 1", len(staged.retried))
 	}
 }

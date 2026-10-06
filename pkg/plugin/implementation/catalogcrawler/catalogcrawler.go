@@ -381,8 +381,11 @@ func newPeerCrawlFromConfig(
 		keyID:        strings.TrimSpace(config[cfgFederationKeyID]),
 		pageSize:     int(int64Or(config[cfgFederationPageSize], defaultPeerPageSize)),
 		publishRetry: durationSecondsOr(config[cfgFederationPublishRetrySec], defaultPublishRetry),
-		store:        staged,
-		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
+		// The SAME budget the local crawl's syncs get, so one setting governs
+		// how patient this deployment is with a failing publish.
+		maxAttempts: int(int64Or(config[cfgMaxAttempts], 0)),
+		store:       staged,
+		window:      durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
 		// Empty: mirror everything the peer will give us. A deployment that
 		// wants less sets a jsonpath or spatial intent here.
 		domain:          stringOr(config[cfgFederationDomain], defaultFederationDomain),
