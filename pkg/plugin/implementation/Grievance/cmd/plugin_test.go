@@ -32,7 +32,7 @@ const (
 	providerIDAt     = "message.contract.commitments[].offer.provider.id"
 	capabilityCodeAt = "message.contract.commitments[].commitmentAttributes.@type"
 
-	fallbackProviderIDAt     = "message.support.channels[].providerId"
+	fallbackProviderIDAt     = "message.support.channels[].provider.id"
 	fallbackCapabilityCodeAt = "message.support.channels[].@type"
 )
 
