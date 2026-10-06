@@ -1,5 +1,5 @@
-// Package receivercheck refuses a request that names somebody else as the
-// participant who should answer it.
+// Package receivercheck sends a request to the participant it names, when that
+// is not this one.
 //
 // The gap it fills is specific to federation. A binding key is
 // "<providerParticipantId>|<capability>", so it names the UPSTREAM provider and
@@ -12,13 +12,21 @@
 // answered at all, and here a step did. "Nobody here serves that" and "somebody
 // here serves that, but it was not addressed to us" are different failures, and
 // only the first was covered.
+//
+// The answer to the second is not a refusal. The request already carries where
+// it belongs -- context.bppUri, which the consumer copied from the catalog it
+// chose -- so this step sends it there. No configured forwarding address: the
+// destination is published data and comes from the body.
 package receivercheck
 
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 
+	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 )
 
@@ -41,14 +49,19 @@ func New(raw map[string]string) (*Step, error) {
 	return &Step{subscriberID: subscriberID}, nil
 }
 
-// Run passes a request addressed to this module through untouched, and refuses
-// every other one.
+// Run lets a request addressed to this module through untouched, and sends
+// every other one to the participant it names.
 //
 // Doing nothing on a match IS the convention the provider steps follow: a step
 // recognises its own work and otherwise lets the chain continue. So a request
 // for us takes exactly the path it took before this step existed.
+//
+// It makes no HTTP call itself. Setting ctx.Route is how every handler-to-
+// handler hop in this adapter is expressed -- addRoute does only this -- and
+// the proxy that follows the step chain performs the call and returns the
+// answer to the original caller.
 func (s *Step) Run(ctx *model.StepContext) error {
-	receiver := receiverOf(ctx.Body)
+	receiver := contextValue(ctx.Body, "bpp_id", "bppId", "receiverId")
 
 	// Refused rather than assumed. The whole decision rests on this field, and
 	// guessing is worse than saying so: guessing "ours" is what lets a peer's
@@ -64,33 +77,68 @@ func (s *Step) Run(ctx *model.StepContext) error {
 		return nil
 	}
 
-	// 404 rather than 403, and deliberately: this is not a permission the
-	// caller might be granted, it is the wrong address. It also matches the
-	// handler's own "serves no capability matching the request", so a caller
-	// that reached the wrong network sees one shape of answer either way.
-	//
-	// The message names both ends because the fix is the caller's: a select
-	// carries context.bppUri from the catalog it chose, and arriving here with
-	// somebody else's receiver means those two disagree.
-	return model.NewNotFoundErr("", fmt.Errorf(
-		"this request is addressed to %s, but this is %s; "+
-			"route it to the participant named in the catalog's bppUri",
-		receiver, s.subscriberID))
+	target, err := s.destination(ctx.Body, receiver)
+	if err != nil {
+		return err
+	}
+
+	log.Debugf(ctx, "checkReceiver: %s is not %s, forwarding to %s",
+		receiver, s.subscriberID, target)
+
+	ctx.Route = &model.Route{TargetType: "url", URL: target}
+	return nil
 }
 
-// receiverOf reads who the request expects to answer it.
+// destination builds the URL a request for another participant is sent to.
 //
-// The same alias chain the rest of the adapter uses -- snake_case first, then
-// camelCase, then the Beckn v2 name -- so a payload in any of the three
-// spellings is understood identically.
-func receiverOf(body []byte) string {
+// The address is NOT configured anywhere. It is context.bppUri, which the
+// consumer copied from the catalog it chose, so a catalog crawled from a peer
+// carries that peer's own published address and this step needs to know
+// nothing about who the peers are.
+func (s *Step) destination(body []byte, receiver string) (*url.URL, error) {
+	raw := contextValue(body, "bpp_uri", "bppUri", "receiverUri")
+	if raw == "" {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"the request is for %s rather than %s, but names no context.bppUri, "+
+				"so there is no address to send it to", receiver, s.subscriberID))
+	}
+
+	target, err := url.Parse(raw)
+	if err != nil || target.Host == "" {
+		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf(
+			"context.bppUri %q is not a URL this request can be sent to", raw))
+	}
+
+	// The action has to survive the hop: the proxy replaces the request URL
+	// with the route's outright, so a bare bppUri would arrive at the peer's
+	// mount point with no endpoint left on it.
+	action := contextValue(body, "action")
+	if action == "" {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"the request is for %s rather than %s, but names no context.action, "+
+				"so there is no endpoint to send it to", receiver, s.subscriberID))
+	}
+	if target.Path == "" {
+		target.Path = "/"
+	}
+	target.Path = path.Join(target.Path, action)
+	return target, nil
+}
+
+// contextValue reads the first of the named context fields that carries a
+// value.
+//
+// The keys are passed as an alias chain -- snake_case first, then camelCase,
+// then the Beckn v2 name -- which is the order the rest of the adapter uses, so
+// a payload in any of the three spellings is understood identically.
+func contextValue(body []byte, keys ...string) string {
 	var payload struct {
 		Context map[string]any `json:"context"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return ""
 	}
-	for _, key := range []string{"bpp_id", "bppId", "receiverId"} {
+	for _, key := range keys {
 		if value, ok := payload.Context[key].(string); ok {
 			if trimmed := strings.TrimSpace(value); trimmed != "" {
 				return trimmed
