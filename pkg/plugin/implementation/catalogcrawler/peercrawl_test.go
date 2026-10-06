@@ -454,3 +454,69 @@ func TestUpdateModeIsConfigured(t *testing.T) {
 		}
 	}
 }
+
+// A peer declares what it can speak; the crawl asks for exactly that.
+//
+// Translated at crawl time, not at admission: the registry record keeps
+// agreeing with the descriptor it was read from.
+func TestSchemaContextComesFromThePeersDeclaration(t *testing.T) {
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.schemaContext = []string{"https://configured.example/schema/Fallback/v0.1/context.jsonld"}
+
+	got := crawl.schemaContextsFor(peerTarget{SchemaPacks: []string{
+		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/WeatherObservation/v0.1/attributes.yaml",
+		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/api-schemas/PMFBYGrievance/v0.1/attributes.yaml",
+	}})
+
+	want := []string{
+		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/schema/WeatherObservation/v0.1/context.jsonld",
+		"https://raw.githubusercontent.com/OpenAgriNet/network-specs/main/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("context %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// A peer that declared nothing is crawled exactly as it was before a peer could
+// say anything about this.
+func TestSchemaContextFallsBackToConfig(t *testing.T) {
+	configured := []string{"https://configured.example/schema/Fallback/v0.1/context.jsonld"}
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.schemaContext = configured
+
+	for name, target := range map[string]peerTarget{
+		"none":       {},
+		"empty":      {SchemaPacks: []string{}},
+		"unusable":   {SchemaPacks: []string{"", "   "}},
+		"noFilePart": {SchemaPacks: []string{"https://example.test/"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := crawl.schemaContextsFor(target)
+			if len(got) != 1 || got[0] != configured[0] {
+				t.Errorf("got %v, want the configured %v", got, configured)
+			}
+		})
+	}
+}
+
+// Only the final segment changes. The capability and version in the path are
+// what identify the schema, and are kept exactly as the peer published them.
+func TestContextURLOf(t *testing.T) {
+	for pack, want := range map[string]string{
+		"https://x.test/schema/Weather/v0.1/attributes.yaml": "https://x.test/schema/Weather/v0.1/context.jsonld",
+		"https://x.test/a/b/c.yml":                           "https://x.test/a/b/context.jsonld",
+		// Nothing to replace, so nothing is guessed.
+		"https://x.test/": "",
+		"":                "",
+		"   ":             "",
+	} {
+		if got := contextURLOf(pack); got != want {
+			t.Errorf("contextURLOf(%q) = %q, want %q", pack, got, want)
+		}
+	}
+}

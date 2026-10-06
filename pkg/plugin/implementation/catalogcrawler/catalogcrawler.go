@@ -495,6 +495,9 @@ func (c *crawlerImpl) peerTargets(ctx context.Context) ([]peerTarget, error) {
 			// Declared by the peer and recorded at admission. Carried, not
 			// decided: nothing here may lengthen it.
 			ProjectionTtl: peer.ProjectionTtl,
+			// What the peer declared it can speak, as pack URLs. The crawl
+			// derives the context URLs it filters on from these.
+			SchemaPacks: peer.SchemaPacks,
 		})
 	}
 	return targets, nil

@@ -186,12 +186,12 @@ type Client struct {
 // documentation of what a provider expects; the adapter presents what its
 // operator configured.
 type participant struct {
-	ParticipantID string `json:"participantId"`
-	Type          string `json:"type"`
+	ParticipantID string   `json:"participantId"`
+	Type          string   `json:"type"`
 	Role          roleList `json:"role"`
-	Status        string `json:"status"`
-	BaseURL       string `json:"baseUrl"`
-	Keys          []key  `json:"keys"`
+	Status        string   `json:"status"`
+	BaseURL       string   `json:"baseUrl"`
+	Keys          []key    `json:"keys"`
 
 	// ProjectionTtl is in seconds, as the schema stores it. Zero means the
 	// record predates the field, NOT that the peer forbade caching -- a peer
@@ -202,6 +202,10 @@ type participant struct {
 	// FederationRole is what this entry is IN RELATION TO US: self, source,
 	// requester or both. Empty on a record written before the field existed.
 	FederationRole string `json:"federationRole"`
+
+	// SchemaPacks is what a peer declared it can speak. Empty on a record
+	// written before the field existed, and on every non-peer participant.
+	SchemaPacks []string `json:"schemaPacks"`
 }
 
 // key is one published key. A participant publishes several -- separate signing
@@ -673,6 +677,7 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		ValidUntil:       validUntil,
 		Status:           status,
 		ProjectionTtl:    time.Duration(p.ProjectionTtl) * time.Second,
+		SchemaPacks:      p.SchemaPacks,
 	}
 }
 

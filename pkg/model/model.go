@@ -41,6 +41,15 @@ type Subscription struct {
 	// A Duration here and SECONDS in the registry: the unit conversion happens
 	// once, where the record is read, rather than at every use.
 	ProjectionTtl time.Duration `json:"projection_ttl,omitzero"`
+
+	// SchemaPacks is what this peer network declared it can speak, verbatim
+	// from its descriptor. Set only on an admitted peer.
+	//
+	// Pack URLs, not context URLs: a pack names its attributes.yaml, while a
+	// message is interpreted against the matching context.jsonld. The crawler
+	// derives one from the other rather than storing a rewritten copy, so our
+	// record keeps agreeing with the document it was read from.
+	SchemaPacks []string `json:"schema_packs,omitempty"`
 }
 
 // nonUsableKeySubscriptionStatuses are the Subscription.Status values that mean a
@@ -395,7 +404,6 @@ type StepContext struct {
 	MessageID            string // Message ID parsed from context.messageId in the request body
 	InboundAuthSignature string // Raw Base64 signature from the inbound Authorization header's signature="..." attribute
 	IsCallerHandler      bool   // True when the handler is a Caller (outbound); false for Receiver (inbound)
-
 
 	// ResponseBody, when non-empty, is written as the synchronous response in
 	// place of the generated ACK envelope. It is how a step that has already

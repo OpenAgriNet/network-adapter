@@ -45,6 +45,16 @@ type peerTarget struct {
 	// crawl falls back to the configured interval and the projection still
 	// expires, it is just not paced by the peer.
 	ProjectionTtl time.Duration
+
+	// SchemaPacks is what this peer declared it can speak, verbatim from its
+	// descriptor. Pack URLs -- each names a pack's attributes.yaml -- while a
+	// discover filters on the matching context.jsonld, so they are translated
+	// at crawl time rather than stored rewritten.
+	//
+	// Empty means the peer declared none, or the record predates the field. In
+	// both cases the crawl falls back to its configured schemaContext, which is
+	// what it used before a peer could say anything about this.
+	SchemaPacks []string
 }
 
 // catalogPusher is the push half of the sink, narrowed to what a peer crawl
@@ -114,7 +124,7 @@ type peerCrawl struct {
 // The intent is CONFIGURATION, not a constant: a deployment decides what breadth
 // of catalog it wants to mirror -- a jsonpath filter, a spatial bound, or
 // nothing at all for everything the peer will give us.
-func (p *peerCrawl) discoverBody(audience string) ([]byte, error) {
+func (p *peerCrawl) discoverBody(audience string, schemaContext []string) ([]byte, error) {
 	intent := p.intent
 	if intent == nil {
 		intent = map[string]any{}
@@ -138,7 +148,7 @@ func (p *peerCrawl) discoverBody(audience string) ([]byte, error) {
 			"networkId":     audience,
 			"bapId":         p.subscriberID,
 			"messageId":     uuid.NewString(),
-			"schemaContext": p.schemaContext,
+			"schemaContext": schemaContext,
 			// One transaction per PAGE request, matching messageId. A crawl is
 			// not a conversation with the peer -- each page stands alone -- and
 			// a shared transactionId would claim a continuity that does not
@@ -192,7 +202,7 @@ func (p *peerCrawl) fetch(ctx context.Context, target peerTarget, audience strin
 
 // fetchPage sends one signed discover and returns what the peer answered.
 func (p *peerCrawl) fetchPage(ctx context.Context, target peerTarget, audience string, limit, offset int) ([]json.RawMessage, error) {
-	body, err := p.discoverBody(audience)
+	body, err := p.discoverBody(audience, p.schemaContextsFor(target))
 	if err != nil {
 		return nil, fmt.Errorf("build discover for %s: %w", target.NetworkID, err)
 	}
@@ -509,5 +519,60 @@ func withPage(raw string, limit, offset int) string {
 		query.Set("offset", strconv.Itoa(offset))
 	}
 	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+// packContextFile is what a schema pack URL's last segment becomes.
+//
+// A pack names its attributes.yaml -- the pack definition -- while a message is
+// interpreted against the JSON-LD context beside it. The architecture document
+// defines both and keeps them separate: SchemaRegistry.schemaUrl is the
+// attributes.yaml, and context.schemaContext is "an array of JSON-LD context
+// URIs used to interpret the message schema".
+const packContextFile = "context.jsonld"
+
+// schemaContextsFor is what a discover to this peer filters on.
+//
+// The peer's own declaration where it made one, and our configured list
+// otherwise. A peer that declared nothing is crawled exactly as it was before
+// it could say anything about this.
+//
+// Translated here rather than stored translated: the registry record keeps
+// agreeing with the descriptor it was read from, and a change to this mapping
+// does not need every admitted peer re-admitted.
+func (p *peerCrawl) schemaContextsFor(target peerTarget) []string {
+	if len(target.SchemaPacks) == 0 {
+		return p.schemaContext
+	}
+
+	contexts := make([]string, 0, len(target.SchemaPacks))
+	for _, pack := range target.SchemaPacks {
+		if context := contextURLOf(pack); context != "" {
+			contexts = append(contexts, context)
+		}
+	}
+	if len(contexts) == 0 {
+		return p.schemaContext
+	}
+	return contexts
+}
+
+// contextURLOf turns a schema pack URL into the context URL beside it.
+//
+// Only the final segment changes -- the capability and version in the path are
+// the part that identifies the schema, and they are kept exactly as the peer
+// published them. A URL that names no file is left alone and dropped by the
+// caller, because guessing at a shape we do not recognise would send a peer a
+// filter it cannot match and report that as "nothing found".
+func contextURLOf(pack string) string {
+	parsed, err := url.Parse(strings.TrimSpace(pack))
+	if err != nil || parsed.Path == "" {
+		return ""
+	}
+	cut := strings.LastIndex(parsed.Path, "/")
+	if cut < 0 || cut == len(parsed.Path)-1 {
+		return ""
+	}
+	parsed.Path = parsed.Path[:cut+1] + packContextFile
 	return parsed.String()
 }
