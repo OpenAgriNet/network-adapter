@@ -1,6 +1,8 @@
 // Package Grievance serves the network's grievance capabilities: filing a
 // grievance against a government scheme and checking on it. Provider details
 // live in the registry, the mappings and the adapter config, not here.
+// Encrypted bodies (PM-KISAN) are handled by a per-provider envelope; see
+// envelope.go. Mappings always see plain JSON.
 package Grievance
 
 import (
