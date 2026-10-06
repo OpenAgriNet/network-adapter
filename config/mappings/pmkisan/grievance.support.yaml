@@ -1,0 +1,115 @@
+# PM-KISAN, openagrinet:PMKISANGrievance, support -> POST /LodgeGrievance.
+# Both directions, one file.
+#
+# Step one of two: lodge the grievance. A support request composes no
+# contract, so everything is read off message.support:
+#
+#   orderId              the farmer's PM-KISAN registration number -- both the
+#                        identity the portal authenticates on and the enrolment
+#                        the complaint is against
+#   descriptor.code      the category, G001-G010
+#   descriptor.longDesc  the farmer's own words
+#   channels[0]          the case record: @context, @type, scheme, providerId
+#
+# This file speaks PLAINTEXT. The portal reads and writes only AES-256-GCM, so
+# the Grievance plugin's envelope adds the service token (TokenNo) and encrypts
+# what the request half produces, and decrypts the answer before the response
+# half reads it. Neither the token nor the cipher can live here -- this file is
+# published.
+
+# required holds format checks, which return SCH_INVALID_FORMAT and let an
+# absent field pass. A missing field is refused by the request half under
+# _error, which can name SCH_REQUIRED_FIELD_MISSING.
+required:
+  - check: |
+      (
+        $id := beckn.message.support.orderId;
+        /* ASCII letters and digits only. The portal accepts native-script
+           digits and forwards them unconverted, so they are refused here. No
+           length rule: eleven characters is the documented shape, but nothing
+           upstream enforces it. */
+        $not($exists($id)) or ($type($id) = "string" and $exists($match($id, /^[A-Za-z0-9]+$/)[0]))
+      )
+    message: "orderId must be the registration number: ASCII letters and digits only"
+  - check: |
+      (
+        $code := beckn.message.support.descriptor.code;
+        $not($exists($code))
+          or $code in ["G001", "G002", "G003", "G004", "G005", "G006", "G007", "G008", "G009", "G010"]
+      )
+    message: "descriptor.code must be a PM-KISAN grievance category, G001 to G010"
+  - check: |
+      (
+        $d := beckn.message.support.descriptor.longDesc;
+        /* Measured after trimming, because the portal trims before it
+           measures: ten spaces would pass an untrimmed check here and fail
+           there. */
+        $not($exists($d)) or ($type($d) = "string" and $length($trim($d)) >= 10)
+      )
+    message: "descriptor.longDesc must describe the problem in at least 10 characters"
+
+# The plaintext /LodgeGrievance takes. TokenNo is added by the envelope.
+request: |
+  (
+    $s := beckn.message.support;
+    $complete := $exists($s.orderId) and $exists($s.descriptor.code) and $exists($s.descriptor.longDesc);
+    $not($complete)
+    ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                    "message": "lodging a grievance needs orderId (the registration number), descriptor.code and descriptor.longDesc" } }
+    : {
+      "Type":                 "Reg_No_Details",
+      "IdentityNo":           $s.orderId,
+      "GrievanceType":        $s.descriptor.code,
+      "GrievanceDescription": $trim($s.descriptor.longDesc)
+    }
+  )
+
+# The portal says no inside a 200: a success flag that reads "False". It is
+# misspelled, and not consistently -- Responce and Rsponce both occur, and
+# status/Status in places -- so every spelling is read, case-insensitively. An
+# ABSENT flag is success on this endpoint, so only an explicit false refuses.
+# The portal's own message is never returned: what it says about why is for
+# the operator's log.
+#
+# Otherwise the lodge reply carries a flag and a message and nothing else -- no
+# case id, no date, no status -- so every value below is the caller's own,
+# echoed, or asserted: REGISTERED, filedOn as today's IST date (what a later
+# status matches on), and this portal as the source. There is no ticket number
+# to return: the portal issues none.
+#
+# A 4xx from the portal reaches this half with its status under _status. None
+# is known to mean anything the farmer can fix, so each is left to the
+# adapter's 502.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    $false := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
+    $refused := $false(response.Responce) or $false(response.Rsponce)
+      or $false(response.status) or $false(response.Status);
+    $s := beckn.message.support;
+    $ch := $s.channels[0];
+    $refused
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN did not accept the grievance" } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_support", "timestamp": $now() }]),
+      "message": {
+        "support": {
+          "orderId":    $s.orderId,
+          "descriptor": $s.descriptor,
+          "channels": [{
+            "@context":        $ch.`@context`,
+            "@type":           "openagrinet:PMKISANGrievance",
+            "informationMode": "Direct",
+            "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+            "caseStatus": { "code": "REGISTERED", "name": "Registered" },
+            /* IST, not UTC: a UTC date is yesterday for anything filed before
+               05:30 IST, and status matches on this date. */
+            "filedOn": $now("[Y0001]-[M01]-[D01]", "+0530"),
+            "source": { "sourceId": "pmkisan", "sourceName": "PM-KISAN Grievance Portal" }
+          }]
+        }
+      }
+    }
+  )

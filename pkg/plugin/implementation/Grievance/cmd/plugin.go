@@ -50,11 +50,20 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 		cfg.MaxResponseBytes = value
 	}
 
+	// A provider whose bodies are encrypted declares its envelope in its own
+	// block, beside its auth. Taken out first: the credential parser refuses
+	// any per-provider setting it does not know.
+	envelopes, rest, err := Grievance.ParseEnvelopes(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg.EnvelopeByProvider = envelopes
+
 	// One credential profile per provider, read from the flattened
 	// authScheme-<participantId> settings. Shared with the other capability
 	// plugins: each used to copy the same field list, so a scheme added in one
 	// had to be remembered in three.
-	auth, err := common.ParseProviderAuth(config)
+	auth, err := common.ParseProviderAuth(rest)
 	if err != nil {
 		return nil, err
 	}

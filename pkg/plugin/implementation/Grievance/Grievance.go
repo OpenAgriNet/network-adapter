@@ -5,6 +5,12 @@
 // -- endpoints, field names, how it says "no", how it authenticates -- is the
 // registry's, the mapping's and the adapter config's, so nothing here names a
 // provider. Like MandiPrice, this package is a name over internal/common.
+//
+// It also owns the one thing a mapping cannot express for some portals: an
+// encrypted body. PM-KISAN reads and writes only AES-256-GCM, with its service
+// token inside the plaintext, so a provider can declare an envelope in its
+// config block (see envelope.go). The mappings read and write plain JSON
+// either way.
 package Grievance
 
 import (
