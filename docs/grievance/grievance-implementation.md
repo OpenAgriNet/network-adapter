@@ -1,10 +1,11 @@
 # Grievance — Implementation
 
-Date: 2026-09-28 · Revised: 2026-09-30 · Status: draft · Internal
+Date: 2026-09-28 · Revised: 2026-10-06 · Status: draft · Internal
 
 The adapter's side of the grievance capability: why the Beckn actions are what they are,
-the capability packs, the JSONata mappings and guards for both providers, the PM-KISAN
-envelope blocker, and what is still open.
+how a caller discovers the two desks in the first place, the capability packs, the
+JSONata mappings and guards for both providers, the PM-KISAN envelope blocker, and what
+is still open.
 
 Not caller-facing — the call sequence and the Beckn payloads are covered earlier.
 
@@ -38,7 +39,13 @@ onto `Contract`'s own `required: [commitments]`, so a status payload carries bot
 **PMFBY needs three actions, PM-KISAN two.** PMFBY's portal issues an OTP, so `init` has
 a job to do: ask for one, and give the farmer time to read it before `support`. PM-KISAN's
 `/LodgeGrievance` asks for no OTP, so there is nothing for an `init` leg to do and the
-flow starts at `support`.
+flow starts at `support`. Which of the two a caller is looking at is published rather
+than assumed — see [`Discovery`](#discovery-how-a-caller-finds-any-of-this).
+
+**`discover` comes before all of them, and is answered from a catalog, not a portal.**
+The two catalogs are published once and indexed; no grievance call reaches a portal
+until the caller has chosen a desk. That is also the only leg in this design that
+touches neither upstream, which is why it needs no mapping file and no JSONata.
 
 **`contract.id` is not the case identifier.** It is a UUID minted by the caller and echoed on
 every later action; `Contract.id` is `format: uuid` and a portal's ticket number is not one.
@@ -54,6 +61,165 @@ which is why `status` has to carry `case.filedOn`.
 
 **All calls are synchronous** — `init` returns `on_init` in the HTTP 200, not an `Ack`.
 No callbacks.
+
+## Discovery: how a caller finds any of this
+
+Every leg above starts from identifiers the caller is assumed to already hold —
+`off:pmfby:grievance`, `res:pmfby:grievance`, and the participant id `pmfby` that
+routes the call. Nothing in this design publishes them, so an experience layer has
+no way to learn them except by being told out of band. This section is the leg that
+closes that: two catalogs the adapter publishes once, and the `discover` a caller
+issues to find them.
+
+It answers three questions and is not meant to answer more.
+
+**Who to call.** `bppId` on the `on_discover` context names the adapter, whose address
+the registry resolves. `provider.id` becomes `offer.provider.id` on `init` and `status`
+and `channels[].provider.id` on `support`. It is also half the binding key, so the
+identifier the caller discovers is the identifier the adapter routes on — the same
+string, not two that have to be kept in step.
+
+**What to send.** `resourceAttributes.@context` dereferences to the pack, by the
+same `context.jsonld` → `attributes.yaml` swap the validator uses. The pack is the
+complete statement of what every later attribute object may carry — which fields
+exist, which are required, which value spaces are closed — so a caller that can
+fetch and read it needs nothing else to construct a payload. This is why the packs
+exist at all, and discovery is what makes them reachable without a human handing
+over a URL.
+
+**Which legs exist.** Covered by `challengeMethods` below.
+
+### The two payloads live in the use-case document
+
+`catalog/publish` for both providers, the `discover` request, and the JSONPath filter
+forms are in `grievance-usecase.md` under "Step 0". They are caller-facing, like every
+other payload on that page, and this one is not.
+
+What is settled there and assumed here: one catalog per provider, one resource and one
+offer in each, the resource and offer ids being the ones the transaction legs already
+quote, and the declaration riding in `resources[].resourceAttributes`. Discovery filters
+are JSONPath evaluated over the indexed catalog and only `resourceAttributes` is
+reachable from an expression, which is what fixes where the two fields below have to sit:
+there, or nowhere selectable.
+
+### Deciding the flow: `challengeMethods`
+
+An experience layer has to choose between `init` → `support` → `status` and
+`support` → `status` before it sends anything, and nothing published today tells
+it which. The difference is the OTP, so the declaration names the mechanisms the
+portal issues:
+
+```yaml
+challengeMethods:
+  type: array
+  uniqueItems: true
+  items: { type: string, enum: [SMS_OTP] }    # pinned per pack
+```
+
+Non-empty means `init` comes first, and the array names the challenge to expect, so
+the caller branches on a method rather than assuming six digits — the same rule
+`on_init` already states for `challengeIssued.method`. Empty means `support` is
+the first call.
+
+A list rather than a boolean, for the reason the `challenge` object already gives:
+a portal that adds a second mechanism widens the enum, and a caller reading the
+list keeps working. A boolean would say an OTP is needed and leave the caller to
+discover which kind by sending one and being refused. The items enum is pinned per
+pack to exactly what that portal issues — `[SMS_OTP]` on PMFBY — so the declaration
+cannot advertise a mechanism the adapter has no prerequisite hook for.
+
+The field sits in `GrievanceBase` rather than in the PMFBY pack, which is the
+opposite of where `challenge` itself sits, and deliberately. `challenge` is a
+field only one portal has, so it belongs to that portal's pack. `challengeMethods`
+is the question *every* pack has to answer, including by answering "none" — a pack
+that cannot state it is a pack a caller cannot plan against. PM-KISAN answers with
+an empty list, which is also what marks its catalog entry as a declaration; see
+"What the packs must add".
+
+### What a request must carry is not published
+
+The packs state what a *response* must carry — PMFBY's `Direct` gate requires
+`case.ticketNo`, `case.status` and `case.filedOn`, PM-KISAN's requires the latter
+two. What a *request* must carry is enforced by the mapping guards, which are
+adapter-internal. So a caller reading both packs cannot tell that a PMFBY read is
+keyed on a ticket number and a phone while a PM-KISAN read is keyed on a
+registration number and a date.
+
+An earlier revision published a `caseLookup` enum in the catalog to close that gap.
+It was dropped: the value named a strategy rather than the fields, so a caller still
+needed a hard-coded table to turn `ByTicketNoAndPhone` into `case.ticketNo` and
+`applicantPhone` — the same branch it would write on `@type`, one field further away.
+And it answered the question for `status` only, while `support` has the larger gap.
+
+The requirement is documented instead, in the use-case document's "What each call
+must carry". Publishing it properly means a per-action annotation on the packs —
+`x-oan-required-by-action`, covering every action rather than one — which is listed
+in Open and not yet decided.
+
+### Why the catalog entry reuses the transaction `@type`
+
+Because the network has already settled this. `schema/index.md` records that the
+schemas formerly named `AgricultureCapability`, `AdvisoryCapability` and
+`WeatherAdvisoryCapability` are **retired**, and that a capability declaration is
+now the corresponding active pack in `OnDemand` mode. `WeatherAdvisory`'s own
+README states it plainly: `OnDemand` is the capability declaration, `Direct` is the
+place-specific advisory, and there is no separate `WeatherAdvisoryCapability`
+schema.
+
+Grievance follows it exactly. `informationMode: OnDemand` on a catalog entry is not
+a stretched reading of "the ask" — a declaration is what a caller may ask for, and
+the field already means direction rather than Beckn action. One `@type`, one
+`@context`, one `attributes.yaml`: the caller resolves the same pack for discovery
+and for every call that follows, which is the property worth protecting. A separate
+`PMFBYGrievanceCapability` would double the packs and make the discovery pack and
+the transaction pack two things that must be kept in agreement by hand.
+
+One live example contradicts this — `discovery-service/examples/01-publish-weather-advisory.json`
+still publishes `@type: openagrinet:WeatherAdvisoryCapability` against a context
+URL for a schema that no longer exists. It predates the retirement. Worth fixing
+there, and worth not copying here.
+
+### What the packs must add
+
+Four changes, all in the schemas, none in adapter code:
+
+1. **`GrievanceBase`** gains `challengeMethods`, optional, described as
+   declaration-only — it appears on a catalog entry and on no transaction payload.
+2. **PMFBY** pins `challengeMethods` to `minItems: 1` with `items.enum: [SMS_OTP]`.
+3. **PM-KISAN** pins it to `maxItems: 0`: the field is present and empty, which is
+   the honest statement that the portal issues no challenge.
+4. **Both** gain one branch in the "every payload must be about something" gate:
+
+   ```yaml
+   - anyOf:
+       - required: [grievance]
+       - required: [case]
+       - required: [enrolmentId]
+       - required: [challengeMethods]   # a catalog entry: declares, asks nothing
+       # ... plus challengeIssued and applicantPhone on PMFBY
+   ```
+
+   Without it a catalog entry fails validation, because it carries none of the
+   things a transaction payload is about. This is why PM-KISAN publishes an empty
+   array rather than omitting the field: grievance uses `OnDemand` for both the
+   declaration and the ask, unlike `WeatherAdvisory` where `OnDemand` is the
+   declaration and nothing else, so the declaration needs a field of its own to be
+   told apart from a request.
+
+Each pack also gains one example, `examples/on-demand-capability.json`, holding the
+`resourceAttributes` object alone. Pack examples are bare attribute objects, which is
+why the `catalog/publish` envelope around it is not one: the envelope is a payload and
+lives in the use-case document, the declaration inside it is validated by the pack like
+every other example.
+
+### Where it binds
+
+`resources[].resourceAttributes.@type` is the adapter's own default binding path —
+`common.BecknV2` points at it, and it is the one the domain capabilities use
+unchanged. The grievance transaction legs are the exception, overriding
+`capabilityCodeAt` to reach `commitmentAttributes` and `channels`. So the catalog
+leg is the single grievance payload that needs no override: a declaration really is
+a resource, which is what the default assumes, and only a lodged grievance is not.
 
 ## How the adapter works
 
@@ -1179,8 +1345,14 @@ No error path carries `challenge.value`, `enrolmentId`, or the service token.
 ## What gets added
 
 ```
+network-specs/api-schemas/Grievance/v0.1/                + challengeMethods
 network-specs/api-schemas/PMFBYGrievance/v0.1/           (published; must be live first)
 network-specs/api-schemas/PMKISANGrievance/v0.1/         (published; must be live first)
+  each pack: a pin for challengeMethods, one anyOf branch,
+             one examples/on-demand-capability.json
+
+catalogs: 2 × catalog/publish, submitted once to the discovery service
+          (documents, not config -- the publisher takes them over HTTP)
 
 beckn-onix/config/mappings/pmfby/grievance.{init,support,status}.yaml
 beckn-onix/config/mappings/pmkisan/grievance.{support,status}.yaml
@@ -1207,9 +1379,21 @@ packs, so the mappings differ only in their guards and key names.
 adapter code rather than adding a provider beside the existing ones. Everything else is
 configuration and mapping files. PMFBY needs none of it and can ship first.
 
+**Discovery adds no adapter code either.** The two catalogs are documents submitted to
+the discovery service, the declaration they carry is validated by the packs like any
+other payload, and the binding path a catalog entry uses is the adapter default that
+already exists. Nothing in `pkg/plugin/implementation/Grievance/` answers a `discover`.
+
 ## Open
 
 ### Blocking
+
+- **PMFBY `init` has no guard.** `grievance.init.yaml` carries no `required:` block, and
+  the pack's top-level `anyOf` is satisfied by `enrolmentId` alone. A payload with an
+  enrolment and no `applicantPhone` therefore passes validation and the mapping emits
+  `{"mobile": null, "otpType": "SMS"}` to the portal. Add the one check —
+  `$exists($ca.applicantPhone)` — before `init` is wired. The use-case document already
+  lists `applicantPhone` as required on `init`.
 
 - **Is PMFBY's `responseDynamic` an object or an array?** This is what is left of the
   case-read question, and it is the only open item on the PMFBY mapping. The reply carries
@@ -1226,6 +1410,14 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
   this page recorded these names as unverifiable; that search had covered only the
   checked-out working tree.
 
+- **The adapter's own network identity is not fixed.** Every catalog names the adapter in
+  `senderId`, and a caller resolves its address from the registry under that id. The
+  payloads in the use-case document use `grievance.adapter.openagrinet.org`, which is a
+  placeholder: the registry block on that same page records the two *upstream* hosts and
+  says nothing about the adapter's own.
+  The discovery service's `receiverId` is a placeholder for the same reason. Both must be settled before a catalog is published, because a published
+  catalog is what callers route on and correcting one means republishing.
+
 - **PMFBY publishes no OTP expiry.** `getOtp` answers `{status, data, error}` and nothing
   more, so `challengeIssued.expiresAt` is a configured TTL the adapter asserts. Confirm
   the real window with PMFBY and set `PMFBY_OTP_TTL_SECONDS` from it.
@@ -1240,6 +1432,24 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
   change and there is no cheaper place to put it. PMFBY is unaffected and can ship first.
 
 ### Applies to both providers
+
+- **Publish what each action requires, or keep it documentation?** The packs state what a
+  *response* must carry; what a *request* must carry lives only in the mapping guards and
+  in the use-case document's "What each call must carry". A published annotation —
+  `x-oan-required-by-action`, listing the mandatory fields per action per pack — would let
+  a caller generate its payloads instead of reading prose, and would cover `support` as
+  well as `status`. It is a new vendor keyword the validator does not read, so it is
+  documentation either way; the question is whether it belongs in the pack. Undecided.
+
+- **Every `/catalog/*` path in v2.0.0 is marked `deprecated: true`, with no replacement
+  named.** All seven — `publish`, `on_publish`, `push`, `subscription`, `pull`,
+  `on_pull`, `search` — carry the flag, as do `CatalogPublishAction` and
+  `CatalogOnPublishAction`. `/discover` and `/on_discover` do not, so the retrieval half
+  of this design is on current surface and only the publishing half is flagged. Nothing
+  in the spec says what supersedes it, and the discovery service implements
+  `catalog/publish` and ships working examples for it, so that is what this design uses.
+  Goes to the network's spec authority with the other deviations: either the flag is
+  stale and should be cleared, or there is a successor action nobody here has seen.
 
 - **The `x-oan-pii` markings are not enforced.** Each pack now marks its personal-data
   fields with a `class` and a `handling` list, but `x-` keys are inert to the validator.
@@ -1274,6 +1484,15 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
   to find it. Both mappings above therefore shift before truncating, with
   `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`. What remains open is
   only the premise: confirm with both portals that they record dates in IST.
+
+- **The filing vocabulary is not published in the catalog, and for now need not be.**
+  A caller rendering a category picker needs the list of categories the portal accepts.
+  PM-KISAN's is a closed enum in its pack, so fetching `attributes.yaml` already yields
+  it. PMFBY has no published list at all — see its own Open entry below — so there is
+  nothing to declare and a `grievanceCategories` field would carry one hard-coded pair.
+  The day PMFBY publishes its list it goes in the pack as an enum, exactly as
+  PM-KISAN's did, and the catalog still carries nothing: the pack is already the
+  machine-readable answer and a second copy in the catalog could only drift from it.
 
 - **Terminal statuses — ask both portals for their full status vocabulary.** Neither
   documents which values close a case, so every commitment sits at `ACTIVE` and
