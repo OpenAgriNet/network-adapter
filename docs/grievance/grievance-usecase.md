@@ -740,7 +740,7 @@ data is, who we call, and how.
 // with a token sent back as a bare Authorization header -- no "Bearer".
 // The OTP pair lives under /api/v1 on the policy realm and has its own login
 // at POST /api/v2/external/service/login. The two tokens are not
-// interchangeable, so the action paths above are written full from the host.
+// interchangeable, so every action path below is written full from the host.
 
 { "ProviderSchema": {
   "bindingKey":     "pmfby|openagrinet:PMFBYGrievance",
@@ -749,16 +749,16 @@ data is, who we call, and how.
   "status": "active",
   "actions": [
     { "action": "init",    "method": "POST", "path": "/api/v1/services/nic/getOtp",
-      // on the PMFBY core realm, not FGMS -- see the baseUrl note below
+      // on the PMFBY core realm, not FGMS -- see the note above
       "mappings": "mappings/pmfby/grievance.init.yaml",
       "timeoutMs": 20000, "status": "active" },
-    { "action": "support", "method": "POST", "path": "/AddKRPHNCIPGrievenceSupportTicket",
+    { "action": "support", "method": "POST", "path": "/krphapi/FGMS/AddKRPHNCIPGrievenceSupportTicket",
       "mappings": "mappings/pmfby/grievance.support.yaml",
       "providerIdAt":     "message.support.channels[].provider.id",  // [] is the grammar's
                                                                       // only plural: no index
       "capabilityCodeAt": "message.support.channels[].@type",
       "timeoutMs": 30000, "status": "active" },
-    { "action": "status",  "method": "POST", "path": "/GetGrievenceTicketsStatus",
+    { "action": "status",  "method": "POST", "path": "/krphapi/FGMS/GetGrievenceTicketsStatus",
       "mappings": "mappings/pmfby/grievance.status.yaml",
       "timeoutMs": 30000, "retryMax": 2, "status": "active" }
   ] } }
