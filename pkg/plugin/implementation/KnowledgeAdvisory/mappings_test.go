@@ -42,8 +42,14 @@ const shippedBindingKey = "knowledge-provider|" + shippedCapability
 // selectRequest is a KnowledgeAdvisory select in OnDemand mode: it carries the
 // topics to search for and the languages it can read, and no advisory of its
 // own -- the pack's OnDemand branch requires exactly those two.
+// testSubscriberID is who the module answering these requests is. The capability
+// step refuses a request that names a different receiver, so the fixtures below
+// name this one -- that is the ordinary case, a request addressed to us.
+const testSubscriberID = "provider-network-oan.dev"
+
 const selectRequest = `{
   "context": { "version": "2.0.0", "action": "select",
+    "bppId": "provider-network-oan.dev",
     "networkId": "oan-dev",
     "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
     "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
@@ -214,7 +220,8 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 
 	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), registry, mapper,
 		&KnowledgeAdvisory.Config{
-			BindingKeys: []string{shippedBindingKey},
+			SubscriberID: testSubscriberID,
+			BindingKeys:  []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing
 			// no credential, and that is declared rather than defaulted.
 			AuthByProvider: map[string]*common.AuthProfile{

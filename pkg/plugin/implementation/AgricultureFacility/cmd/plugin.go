@@ -35,6 +35,10 @@ func (p agriFacilityProvider) parseConfig(config map[string]string) (*Agricultur
 		// this is a default rather than something to set.
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
+		// Who this deployment is, so the step can tell a request addressed to
+		// this network from one addressed to another. Not written in any
+		// config: the handler fills it from the module's own subscriberId.
+		SubscriberID: config["subscriberId"],
 		// Absent means the Beckn v2 convention. See
 		// AgricultureFacility.DefaultFacilityTypesAt.
 		FacilityTypesAt: config["facilityTypesAt"],

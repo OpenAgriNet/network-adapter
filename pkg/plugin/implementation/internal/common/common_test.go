@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -53,6 +54,11 @@ const testBindingKey = "mausamgram|openagrinet:WeatherObservation"
 // provider, so a step config needs a profile under this key.
 const testProvider = "mausamgram"
 
+// testSubscriberID is who this module is -- what a request names when it wants
+// this deployment to answer. In a deployment the handler fills it from the
+// module's own subscriberId.
+const testSubscriberID = "oan.test"
+
 // setProviderAuth gives every provider this config serves the same profile.
 // Keyed off
 // BindingKeys rather than a constant, so a test that serves a different
@@ -78,8 +84,9 @@ func authForTestProvider(a AuthProfile) map[string]*AuthProfile {
 func stepWithProviderAuth(a AuthProfile) *Step {
 	a.Provider = testProvider
 	return &Step{
-		config: &Config{BindingKeys: []string{testBindingKey}, AuthByProvider: authForTestProvider(a)},
-		auth:   map[string]*authenticator{testProvider: {cfg: a}},
+		config: &Config{BindingKeys: []string{testBindingKey}, SubscriberID: testSubscriberID,
+			AuthByProvider: authForTestProvider(a)},
+		auth: map[string]*authenticator{testProvider: {cfg: a}},
 	}
 }
 
@@ -141,7 +148,7 @@ func testPlan(baseURL, method string) *model.ProviderRecord {
 func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper definition.Mapper, tweak ...func(*Config)) *Step {
 	t.Helper()
 
-	cfg := &Config{BindingKeys: []string{testBindingKey}}
+	cfg := &Config{BindingKeys: []string{testBindingKey}, SubscriberID: testSubscriberID}
 	for _, apply := range tweak {
 		apply(cfg)
 	}
@@ -159,10 +166,52 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	return step
 }
 
+// runStep runs a request that IS addressed to this module.
+//
+// The tests here are about the binding and the upstream call, and their bodies
+// carry only the message those read. Run refuses a body that names no receiver,
+// so one is added -- naming us, because that is the case every test below is
+// about. The addressing decision itself has its own tests, in
+// routeelsewhere_test.go, which build their bodies in full.
 func runStep(t *testing.T, step *Step, body string) (*model.StepContext, error) {
 	t.Helper()
-	ctx := &model.StepContext{Context: t.Context(), Body: []byte(body)}
+	ctx := &model.StepContext{Context: t.Context(), Body: []byte(addressedToUs(body))}
 	return ctx, step.Run(ctx)
+}
+
+// addressedToUs names this module as the receiver, leaving a body that already
+// says who it is for -- or one that is not a JSON object at all, which several
+// tests pass deliberately -- untouched.
+func addressedToUs(body string) string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return body
+	}
+	becknContext := map[string]any{}
+	if raw, present := payload["context"]; present {
+		if err := json.Unmarshal(raw, &becknContext); err != nil {
+			return body
+		}
+	}
+	for _, named := range []string{"receiverId", "bppId", "bpp_id"} {
+		if _, set := becknContext[named]; set {
+			return body
+		}
+	}
+	becknContext["receiverId"] = testSubscriberID
+	if _, set := becknContext["action"]; !set {
+		becknContext["action"] = "select"
+	}
+	merged, err := json.Marshal(becknContext)
+	if err != nil {
+		return body
+	}
+	payload["context"] = merged
+	whole, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return string(whole)
 }
 
 // --- construction -----------------------------------------------------------
@@ -687,9 +736,9 @@ func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
 		name string
 		cfg  *Config
 	}{
-		{"no queryName", &Config{BindingKeys: []string{testBindingKey},
+		{"no queryName", &Config{BindingKeys: []string{testBindingKey}, SubscriberID: testSubscriberID,
 			AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeQuery, QueryValueEnv: "TEST_MANDI_TOKEN"})}},
-		{"no queryValueEnv", &Config{BindingKeys: []string{testBindingKey},
+		{"no queryValueEnv", &Config{BindingKeys: []string{testBindingKey}, SubscriberID: testSubscriberID,
 			AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeQuery, QueryName: "token"})}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1099,6 +1148,7 @@ func TestNewRefusesAHalfConfiguredOverride(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{
+		SubscriberID:   testSubscriberID,
 		BindingKeys:    []string{testBindingKey},
 		ProviderIDAt:   "who.provider",
 		AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeNone}),
@@ -1846,7 +1896,7 @@ func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
 	step, closer, err := New(context.Background(),
 		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
-		&Config{BindingKeys: []string{testBindingKey},
+		&Config{BindingKeys: []string{testBindingKey}, SubscriberID: testSubscriberID,
 			AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeNone})})
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)

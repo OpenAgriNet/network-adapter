@@ -42,6 +42,7 @@ type Config struct {
 	BindingKeys      []string `yaml:"bindingKeys" json:"bindingKeys"`
 	ProviderIDAt     string   `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string   `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
+	SubscriberID     string   `yaml:"subscriberId" json:"subscriberId"`
 	MaxResponseBytes int64    `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 
 	// AuthByProvider carries one credential profile per provider, keyed by
@@ -84,6 +85,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		BindingKeys:      cfg.BindingKeys,
 		ProviderIDAt:     cfg.ProviderIDAt,
 		CapabilityCodeAt: cfg.CapabilityCodeAt,
+		SubscriberID:     cfg.SubscriberID,
 		MaxResponseBytes: cfg.MaxResponseBytes,
 		AuthByProvider:   cfg.AuthByProvider,
 	}

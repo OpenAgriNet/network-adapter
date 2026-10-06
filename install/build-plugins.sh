@@ -51,10 +51,6 @@ plugins=(
     "catalogpublisher"
     "catalogcrawler"
     "vcvalidator:validateVC"
-    # receiverroute builds as routeByReceiver.so: the step is named for what it
-    # decides, not for the package it lives in, the same way vcvalidator above
-    # builds as validateVC.
-    "receiverroute:routeByReceiver"
 )
 
 for entry in "${plugins[@]}"; do

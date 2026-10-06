@@ -688,6 +688,12 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 
 	// Load plugin-based steps
 	for _, c := range cfg.Plugins.Steps {
+		// A step that needs to know who this deployment is gets it from the
+		// module, not from its own config. The identity a module answers as is
+		// already declared once as subscriberId, and a step repeating it is a
+		// second copy that can disagree -- a step that silently answers in the
+		// wrong name. An explicit value in the step's own config still wins.
+		c.Config = withSubscriberDefault(c.Config, cfg.SubscriberID)
 		step, err := mgr.Step(ctx, &c)
 		if err != nil {
 			return fmt.Errorf("failed to initialize plugin step %s: %w", c.ID, err)
@@ -707,6 +713,12 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 			return fmt.Errorf("provider step %q is configured more than once; "+
 				"a step serving several capabilities lists them in its own config", c.ID)
 		}
+		// A step that needs to know who this deployment is gets it from the
+		// module, not from its own config. The identity a module answers as is
+		// already declared once as subscriberId, and a step repeating it is a
+		// second copy that can disagree -- a step that silently answers in the
+		// wrong name. An explicit value in the step's own config still wins.
+		c.Config = withSubscriberDefault(c.Config, cfg.SubscriberID)
 		step, err := h.loadProviderStep(ctx, mgr, &c)
 		if err != nil {
 			return err
@@ -904,4 +916,24 @@ func errString(e error) string {
 		return ""
 	}
 	return e.Error()
+}
+
+// withSubscriberDefault lets a step inherit the module's own subscriberId.
+//
+// Only fills an absent key, so a step that genuinely answers for something else
+// can still say so. A step with no config block at all gets a map holding just
+// this, rather than nothing: a capability step refuses to run without an
+// identity, and "the config block was empty" is not a reason to answer in the
+// wrong name.
+func withSubscriberDefault(config map[string]string, subscriberID string) map[string]string {
+	if subscriberID == "" {
+		return config
+	}
+	if config == nil {
+		return map[string]string{"subscriberId": subscriberID}
+	}
+	if _, set := config["subscriberId"]; !set {
+		config["subscriberId"] = subscriberID
+	}
+	return config
 }

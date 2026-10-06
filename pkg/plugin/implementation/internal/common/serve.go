@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
 	"slices"
 	"strings"
 
@@ -29,6 +31,13 @@ func (s *Step) Run(ctx *model.StepContext) error {
 	// discard, and answer in somebody else's name while doing it.
 	if ctx.Route != nil {
 		return nil
+	}
+
+	// Is this ours to answer at all? Asked BEFORE the binding, and that
+	// ordering is the whole point -- see routeElsewhere.
+	routed, err := s.routeElsewhere(ctx)
+	if err != nil || routed {
+		return err
 	}
 
 	binding, err := BindingFrom(s.paths, ctx.Body)
@@ -207,4 +216,139 @@ func decodeBody(body []byte) (any, error) {
 		return nil, fmt.Errorf("could not read JSON: %w", err)
 	}
 	return decoded, nil
+}
+
+// routeElsewhere sends a request addressed to another network to that network,
+// and reports whether it did.
+//
+// Here rather than in a step of its own, so that a deployment gets it by
+// serving capabilities at all -- there is no list to leave it out of.
+//
+// BEFORE the binding check, and that ordering is the whole point. A binding key
+// is "<providerParticipantId>|<capability>", so it names the UPSTREAM provider
+// and not the network fronting it. Two networks that both front the same
+// upstream therefore hold the SAME binding keys -- the ordinary case, not a
+// misconfiguration -- and a select meant for one of them, arriving here, would
+// match one of ours and be answered with OUR data under their name.
+//
+// The handler's own 404 does not catch that: it fires when NOTHING answered,
+// and here something did. "Nobody here serves that" and "somebody here serves
+// that, but it was not addressed to us" are different failures.
+//
+// It makes no HTTP call. Setting ctx.Route is how every handler-to-handler hop
+// in this adapter is expressed, and the proxy that follows the step chain
+// performs the call and returns the answer to the original caller.
+func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
+	// Without an identity this cannot tell our own request from anyone else's,
+	// and guessing "ours" is the failure this exists to prevent. The handler
+	// supplies it from the module's own subscriberId, so an empty one means a
+	// module that declared none.
+	if s.config.SubscriberID == "" {
+		return false, fmt.Errorf(
+			"this module cannot tell whether a request is its own to answer: " +
+				"it has no subscriberId")
+	}
+
+	becknContext, err := contextOf(ctx.Body)
+	if err != nil {
+		return false, err
+	}
+
+	receiver := contextValue(becknContext, "bpp_id", "bppId", "receiverId")
+	if receiver == "" {
+		// Refused rather than assumed. The whole decision rests on this field,
+		// and guessing "ours" is what lets another network's request be
+		// answered with our data.
+		return false, model.NewBadReqErr("", fmt.Errorf(
+			"the request names no receiver, so there is nothing to decide by: "+
+				"set context.receiverId to the participant that should answer "+
+				"(this module is %s)", s.config.SubscriberID))
+	}
+	if strings.EqualFold(receiver, s.config.SubscriberID) {
+		return false, nil // ours: carry on into the binding check below
+	}
+
+	target, err := destinationOf(becknContext, receiver, s.config.SubscriberID)
+	if err != nil {
+		return false, err
+	}
+
+	// The network signs, not the participant the request names. Without this
+	// the sign step would sign as the OTHER network: reqpreprocessor resolves
+	// the module's own id from the body, which on this path is somebody else,
+	// and the keyset lookup fails with "failed to get signing key".
+	ctx.SubID = s.config.SubscriberID
+	ctx.Route = &model.Route{TargetType: "url", URL: target}
+
+	log.Debugf(ctx, "%s is not %s; sending it to %s",
+		receiver, s.config.SubscriberID, target)
+	return true, nil
+}
+
+// destinationOf builds the URL a request for another participant is sent to.
+//
+// The address is NOT configured anywhere. It is context.bppUri, which the
+// consumer copied from the catalog it chose, so a catalog crawled from another
+// network carries that network's own published address and nothing here needs
+// to know who the peers are.
+func destinationOf(becknContext map[string]any, receiver, us string) (*url.URL, error) {
+	raw := contextValue(becknContext, "bpp_uri", "bppUri", "receiverUri")
+	if raw == "" {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"the request is for %s rather than %s, but names no context.bppUri, "+
+				"so there is no address to send it to", receiver, us))
+	}
+
+	target, err := url.Parse(raw)
+	if err != nil || target.Host == "" {
+		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf(
+			"context.bppUri %q is not a URL this request can be sent to", raw))
+	}
+
+	// The action has to survive the hop: the proxy replaces the request URL
+	// with the route's outright, so a bare bppUri would arrive at the other
+	// network's mount point with no endpoint left on it.
+	action := contextValue(becknContext, "action")
+	if action == "" {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"the request is for %s rather than %s, but names no context.action, "+
+				"so there is no endpoint to send it to", receiver, us))
+	}
+	if target.Path == "" {
+		target.Path = "/"
+	}
+	target.Path = path.Join(target.Path, action)
+	return target, nil
+}
+
+// contextOf reads the request's Beckn context.
+//
+// A body that is not JSON is reported as unreadable rather than as "names no
+// receiver": this check runs before the binding, so it is the first thing to
+// see a malformed body and the first chance to say what is actually wrong.
+func contextOf(body []byte) (map[string]any, error) {
+	var payload struct {
+		Context map[string]any `json:"context"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT",
+			fmt.Errorf("payload could not be read: %w", err))
+	}
+	return payload.Context, nil
+}
+
+// contextValue reads the first of the named context fields that carries a value.
+//
+// The keys are passed as an alias chain -- snake_case first, then camelCase,
+// then the Beckn v2 name -- which is the order the rest of the adapter uses, so
+// a payload in any of the three spellings is understood identically.
+func contextValue(becknContext map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := becknContext[key].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }

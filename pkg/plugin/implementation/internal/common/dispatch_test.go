@@ -22,7 +22,7 @@ const dispatchMappingRef = "https://m.example.com/mausamgram/weather-observation
 // Kept minimal on purpose: this test is about which step claims a request, not
 // about what any of them would do with it.
 const dispatchRequest = `{
-  "context": { "version": "2.0.0", "action": "select" },
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "oan.test" },
   "message": { "contract": { "commitments": [ {
     "resources": [ { "resourceAttributes": { "@type": "openagrinet:WeatherObservation" } } ],
     "offer": { "provider": { "id": "mausamgram" } }
@@ -82,6 +82,9 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 			nil,
 			&common.Config{
 				BindingKeys: []string{bindingKey},
+				// Both steps answer for the same deployment -- the dispatch
+				// under test is between capabilities, not between networks.
+				SubscriberID: "oan.test",
 				// Auth is per provider, so each step declares its own even
 				// when neither upstream needs a credential.
 				AuthByProvider: map[string]*common.AuthProfile{

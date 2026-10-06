@@ -46,10 +46,16 @@ const shippedBindingKey = "agmarknet|" + shippedCapability
 // selectRequest is a MandiPrice select in OnDemand mode: it names the market and
 // commodity it wants prices for, and carries no prices of its own -- the pack
 // forbids that combination.
+// testSubscriberID is who the module answering these requests is. The capability
+// step refuses a request that names a different receiver, so the fixtures below
+// name this one -- that is the ordinary case, a request addressed to us.
+const testSubscriberID = "provider-network-oan.dev"
+
 const selectRequest = `{
   "context": {
     "version": "2.0.0",
     "action": "select",
+    "bppId": "provider-network-oan.dev",
     "networkId": "oan-dev",
     "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
     "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
@@ -195,7 +201,8 @@ func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map
 
 	step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
 		&MandiPrice.Config{
-			BindingKeys: []string{shippedBindingKey},
+			SubscriberID: testSubscriberID,
+			BindingKeys:  []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing
 			// no credential, and that is declared rather than defaulted.
 			AuthByProvider: map[string]*common.AuthProfile{
@@ -456,7 +463,8 @@ func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 			}}
 			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
 				&MandiPrice.Config{
-					BindingKeys: []string{shippedBindingKey},
+					SubscriberID: testSubscriberID,
+					BindingKeys:  []string{shippedBindingKey},
 					// Auth is per provider; these upstreams are stubs needing
 					// no credential, and that is declared rather than defaulted.
 					AuthByProvider: map[string]*common.AuthProfile{
@@ -772,7 +780,8 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			}}
 			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
 				&MandiPrice.Config{
-					BindingKeys: []string{shippedBindingKey},
+					SubscriberID: testSubscriberID,
+					BindingKeys:  []string{shippedBindingKey},
 					// Auth is per provider; these upstreams are stubs needing
 					// no credential, and that is declared rather than defaulted.
 					AuthByProvider: map[string]*common.AuthProfile{
