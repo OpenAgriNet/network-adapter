@@ -30,7 +30,7 @@ added at its top level — but nothing needs to be. `channels` takes the pack's 
 object whole, `orderId` takes the enrolment the complaint is against, and `descriptor`
 takes the category and the farmer's words. A `SupportAction` payload carries no `contract`,
 so the provider half of the binding key cannot be read from where the other actions keep
-it; the channel carries `providerId` instead, and no adapter change is needed.
+it; the channel carries `provider` instead, and no adapter change is needed.
 `StatusAction`, by contrast, composes a full `Contract` — `required: [id]` is `allOf`-ed
 onto `Contract`'s own `required: [commitments]`, so a status payload carries both — and
 `commitmentAttributes` is reachable there exactly as it is under `select`.
@@ -75,15 +75,18 @@ domain capabilities, which remain on `resourceAttributes`.
 The `support` step re-paths both halves into the channel:
 
 ```yaml
-providerIdAt:     message.support.channels[].providerId
+providerIdAt:     message.support.channels[].provider.id
 capabilityCodeAt: message.support.channels[].@type
 ```
 
 `Support` itself is sealed at three fields and none of them names a participant,
 but `channels` is an array of `Attributes`, which is the spec's extensibility
-container and is `additionalProperties: true`. The pack puts `providerId` there.
-`scheme.code` is not a substitute: it names a scheme rather than a participant,
-and it reads `PMFBY` against a registry holding `pmfby`.
+container and is `additionalProperties: true`. The pack puts `provider` there,
+a Beckn `Provider` narrowed to a reference. The path then ends in `.provider.id`
+exactly as the Beckn v2 default does — `BindingPaths` walks dotted segments past
+a `[]`, so this is the default's own grammar pointed at a different container,
+not a special case. `scheme.code` is not a substitute: it names a scheme rather
+than a participant, and it reads `PMFBY` against a registry holding `pmfby`.
 
 Keeping the provider on a payload path rather than naming it statically in
 config buys two things. `BindingPaths` already accepts both halves pathed, so
@@ -105,7 +108,7 @@ it is the part worth reviewing.
 
 Each provider has its own published pack. Payloads carry that pack's `@type` and
 `@context`, and the binding key is built from them and the provider id — the latter read
-from the contract on `init` and `status`, and from the channel's `providerId` on
+from the contract on `init` and `status`, and from the channel's `provider.id` on
 `support`. Either way the key comes out the same, so all three legs resolve to the same
 registry record and the same credential profile.
 
@@ -113,7 +116,7 @@ registry record and the same credential profile.
 |---|---|---|
 | Pack | `api-schemas/PMFBYGrievance/v0.1` | `api-schemas/PMKISANGrievance/v0.1` |
 | `@type` | `openagrinet:PMFBYGrievance` | `openagrinet:PMKISANGrievance` |
-| `providerId` (on `support` only) | `pmfby` | `pmkisan` |
+| `provider.id` (on `support` only) | `pmfby` | `pmkisan` |
 | Binding key | `pmfby\|openagrinet:PMFBYGrievance` | `pmkisan\|openagrinet:PMKISANGrievance` |
 
 ### Why a pack at all
@@ -169,13 +172,13 @@ request 404s. Filed as a separate bug; grievance payloads use the string form.
 
 **PMFBY** — `applicantPhone` is an Indian mobile series, `season` is one of three names,
 `cropYear` is four digits, and `grievanceCategory.code` is the dotted pair the adapter
-splits on. `challenge` is the shared `Challenge` narrowed to `method: SMS_OTP` and a
-six-digit `value`, and is `writeOnly` as a whole object. Its `Direct` branch requires
-`ticketNo`, `caseStatus`, `filedOn` and `source`.
+splits on. `challenge` is declared in the pack itself — `method: SMS_OTP`, a six-digit
+`value`, nothing else accepted — and is `writeOnly` as a whole object. Its `Direct` branch requires
+`ticketNo`, `caseStatus` and `filedOn`.
 
 **PM-KISAN** — the identity (`registrationNo`), the category, the
 description, and the case fields the portal returns. Its `Direct` branch requires
-`caseStatus`, `filedOn` and `source`; there is no ticket number to require. Its categories
+`caseStatus` and `filedOn`; there is no ticket number to require. Its categories
 are a real, closed, ten-value vocabulary, so they are declared as an enum rather than left
 to a guard.
 
@@ -184,48 +187,49 @@ The JSON key is `grievanceCategory` in both packs, but it resolves to
 the other. The two schemes publish incompatible value spaces — a dotted `3.10` against that
 closed list — so one IRI could not hold both.
 
-### The challenge is shared, and narrowed
+### The challenge is PMFBY's own
 
-`challenge` and `challengeIssued` are not PMFBY's. They are defined once, network-wide, in
-`schema/AgricultureResource/v0.1/attributes.yaml` alongside `SourceReference` and
-`IdentifiedDescriptor`, and the pack references and narrows them:
+`challenge` and `challengeIssued` are declared inline in
+`api-schemas/PMFBYGrievance/v0.1/attributes.yaml`. Neither is defined in a domain schema,
+and neither is shared with another pack:
 
 ```yaml
 challenge:
-  allOf:
-    - $ref: ".../AgricultureResource/v0.1/attributes.yaml#/components/schemas/Challenge"
-    - not: { required: [txnId] }
-      properties:
-        method: { enum: [SMS_OTP] }
-        value:  { pattern: "^[0-9]{6}$" }
+  type: object
+  writeOnly: true
+  required: [method, value]
+  additionalProperties: false
+  properties:
+    method: { type: string, enum: [SMS_OTP] }
+    value:  { type: string, pattern: "^[0-9]{6}$", writeOnly: true }
 ```
 
-Three things follow, and they are the reason for the shape.
+Three things follow.
 
-**Adding a mechanism to the network is one edit.** `ChallengeMethod` is a single enum in a
-single shared file — `SMS_OTP`, `AADHAAR_OTP`, `DEVICE_TOKEN` today. Every pack on the
-network sees a new entry the moment it is added. No pack has to change to *permit* one.
+**The pack advertises exactly what the Provider accepts.** `SMS_OTP` and nothing else —
+it does not claim to take a device token it has no prerequisite for. A second mechanism is
+paid for by the pack that wants it: widen the `enum` and pin the new format in the same
+edit.
 
-**Nothing is permitted by accident.** Being in the shared enum does not make a Provider
-accept it. A pack accepts only what it narrows to, so PMFBY's published schema advertises
-`SMS_OTP` and nothing else — it does not claim to take a device token it has no
-prerequisite for. The cost of the second mechanism is paid by the pack that wants it: it
-widens its own `enum` and pins the new format at the same time. Narrowing cuts both ways:
-the shared `Challenge` offers a `txnId` for mechanisms whose upstream issues a correlator,
-and PMFBY refuses it, because it binds the challenge to the phone number alone. A field the
-adapter would ignore is better rejected than accepted in silence.
+**Nothing travels that the adapter would ignore.** `additionalProperties: false` refuses
+every key not named here, which is both stricter and shorter than refusing them one at a
+time. An earlier draft composed a network-wide `Challenge` that carried a `txnId` for
+mechanisms whose upstream issues a correlator, and spent a `not: { required: [txnId] }` to
+refuse it. PMFBY binds the challenge to the phone number alone, so the field is now simply
+never defined.
 
-**Enforcement survives the move.** This matters because the obvious alternative does not
-work here. A single `Challenge` with `if method = X then value matches Y` would validate
-nothing: the extended-schema validator parses `if/then` and never evaluates it, which is
-the same limitation [`What a pack enforces`](#what-a-pack-enforces-and-what-it-cannot)
-records. `allOf` it *does* evaluate — the packs already compose through it — so a format
-pinned in a narrowing is genuinely checked. The six-digit rule is as enforced after this
-change as it was when the field was a bare `otp` with a pattern.
+**The format rule is genuinely enforced.** A single `Challenge` with `if method = X then
+value matches Y` would validate nothing: the extended-schema validator parses `if/then`
+and never evaluates it, which is the same limitation [`What a pack
+enforces`](#what-a-pack-enforces-and-what-it-cannot) records. A `pattern` on a directly
+declared property has no such problem, and the six-digit rule is as enforced as it was
+when the field was a bare `otp`.
 
-The seam, then, is: the shared file owns the *shape* and the vocabulary of mechanisms; the
-pack owns *which* mechanisms and *what format*; the mapping guard owns *which action must
-carry one*. Each rule sits at the narrowest scope that can still enforce it.
+Declaring it here rather than once network-wide follows the rule the rest of the pack
+follows: a grievance is one Provider's API surface, not a thing the network describes.
+PM-KISAN issues no challenge at all, so there is no second consumer to share with. The
+seam that remains is: the pack owns the shape and the format, the mapping guard owns which
+action must carry one.
 
 One consequence for the adapter: the prerequisite hook switches on `challenge.method`
 rather than assuming. See [`support`](#2-support--the-challenge-plus-the-complaint-ticket-issued).
@@ -433,7 +437,7 @@ category code or the complaint text on this leg — `x-beckn-path` records where
 lands, but the validator only reads `channels[]`. The category-code pattern here is
 therefore not a repeat of the pack's: on `support` it is the enforcement.
 
-No guard checks `providerId`, and none should: the binding key is built before the mapper
+No guard checks `provider`, and none should: the binding key is built before the mapper
 runs, so a payload missing it never reaches a guard — it is refused as unroutable.
 
 #### Two upstream calls, one Beckn action
@@ -524,7 +528,8 @@ field in `on_support` comes from one of four places:
   grievance is registered by definition). No `name` accompanies it: the portal said
   nothing, and an absent `name` is how a caller tells an inferred status from a quoted
   one. `filedOn` restates the `complaint_date` the request just generated, not a value
-  the portal echoed — an IST calendar date. `source` is a constant naming the upstream.
+  the portal echoed — an IST calendar date. `provider` names the portal the adapter routed
+  to, taken from the registry entry.
 - **Changed** — `informationMode`, `OnDemand` → `Direct`.
 - **Echoed from the request** — `scheme`, and nothing else.
 
@@ -633,7 +638,7 @@ the mapping must not gate on it — read `responseDynamic` and test that directl
 
 `ComplaintDate` is already ISO, so `filedOn` needs no date conversion — unlike `support`,
 where the adapter generates the date. `caseStatus` splits in two: `name` carries
-`TicketStatus` verbatim, and `code` is the network's `CaseStatusCode` the adapter maps
+`TicketStatus` verbatim, and `code` is the pack's `CaseStatusCode` the adapter maps
 that phrase to. The portal also returns `TicketStatusID`, an opaque internal key that is
 not mapped at all.
 
@@ -685,7 +690,7 @@ today everything maps to `ACTIVE`. See Open.
 | `challengeIssued` | `on_init` only — `method` is the constant `SMS_OTP`, `sentTo` is the masked request phone, `expiresAt` is the reply's `valid_for` seconds from now. All three are required; `txnId` is refused |
 | `informationMode` | not sent; `OnDemand` on requests, `Direct` on responses that carry a real case |
 | `scheme` | not sent; echoed unchanged, it identifies the scheme |
-| `source` | not sent; a mapping constant naming the upstream portal |
+| `provider` | not sent; the registry entry the adapter routed to. Returned on `on_support` only -- on a contract leg `commitments[].offer.provider` carries it |
 | — | `complaint_date` = `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`, generated in IST — the farmer does not backdate |
 | — | `receipt_source_id` = `134306` (provider constant) |
 | consumed | `status` — drives `caseStatus` on `support` and the error path on both legs; not surfaced as a field |
@@ -814,7 +819,8 @@ number unchanged, where PMFBY's would carry a ticket. Provenance of each field i
   `Responce` is not `"False"`, with no `name`: the portal said nothing, and the absent
   `name` is how a caller tells an inferred status from a quoted one. `filedOn` is
   `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`, generated in IST,
-  because the portal returns no date. `source` is a constant naming the upstream.
+  because the portal returns no date. `provider` names the portal the adapter routed to,
+  taken from the registry entry.
 - **Changed** — `informationMode`, `OnDemand` → `Direct`.
 - **Echoed from the request** — `scheme` on the channel, and `orderId` and `descriptor` on
   the support object itself. The description is echoed so this response has the same shape
@@ -971,14 +977,14 @@ capped at 2000 characters by the pack, being unvalidated upstream free text.
 |---|---|
 | `registrationNo` | `IdentityNo` — the registration number, sent as it arrived. It rides in `support.orderId` on the lodge leg and in `commitmentAttributes` on the read |
 | action | selects the `Type` suffix: `_Details` on `support`, `_Status` on `status` |
-| `grievanceCategory.code` | `GrievanceType` (`G001`–`G010`, verbatim) |
+| `grievanceCategory.code` | `GrievanceType` (`G001`–`G010`, verbatim) — **outbound only**. `Reg_No_Status` returns no category, so a case read cannot populate it and the field is absent from a PM-KISAN `on_status`. PMFBY round-trips its category; this one does not |
 | `grievanceDescription` | `GrievanceDescription` out; `GrievanceDescription` in on `status` |
 | `caseStatus` | `code` only: `Registered` on `support` unless `Responce` is `"False"`; on `status`, `GrievanceStatus` into `name` with the mapped `CaseStatusCode` in `code`, falling back to `Replied`/`UnderReview` from `OfficerReply` when the portal publishes no status |
 | `filedOn` | sent on `status` and matched against `GrievanceDate`; generated on `support`, which returns no date |
 | `caseRemark`, `remarkedOn` | `OfficerReply`, `OfficeReplyDate` — omitted when null. The network does not adopt the portal's field name; the portal itself is inconsistent about the author (`OfficeReplyDate`, not `OfficerReplyDate`) |
 | `informationMode` | not sent; `OnDemand` on requests, `Direct` on responses |
 | `scheme` | not sent; echoed unchanged |
-| `source` | not sent; a mapping constant naming the upstream portal |
+| `provider` | not sent; the registry entry the adapter routed to. Returned on `on_support` only -- on a contract leg `commitments[].offer.provider` carries it |
 | — | `TokenNo` = the portal's static service token, from the prerequisite |
 | consumed | `Responce` — drives `caseStatus`, the empty-result path, and the error path |
 | dropped | `Reg_No` — returned on every `status` record and discarded; it appears in no field and in no id |
@@ -1183,6 +1189,12 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
   the same day. If the portal has an internal grievance id it does not currently return,
   asking for it in the response would close the collision and give the pack a real case
   identifier; see `grievance-id` below.
+- **Category is write-only** — `Reg_No_Status` returns fourteen fields and `GrievanceType`
+  is not among them, so a grievance the network filed under `G003` comes back with no
+  category at all. The adapter will not infer one: a category reconstructed from a remark would be a
+  guess wearing a governed code. Ask PM-KISAN whether the case read can return
+  `GrievanceType`; if it can, the field round-trips as it does on PMFBY and the
+  `on_status` payload gains it with no schema change — the pack already defines it.
 - **`grievance-id`** — the v1 adapter reads a `grievance-id` tag, but nothing in the portal
   client produces one and no sample response exists in the tree. If it turns out to be
   portal-issued, it replaces `filedOn` as the `status` discriminator and the pack needs a
