@@ -425,8 +425,14 @@ catalog:
     # for Direct.
     resourceId: resource:mandi-price:${resourceKey}
 
+  # One mapping per kind of catalog, picked by the records' own `kind` field
+  # (set by market-tag.yaml and market-price.yaml): OnDemand and Direct share an
+  # envelope and little else, so each has its own file.
   render:
-    mapping: mappings/catalog.yaml
+    mappingByField: kind
+    mappings:
+      onDemand: mappings/catalog-ondemand.yaml
+      direct: mappings/catalog-direct.yaml
     local:
       participantId: ${inputs.participantId}
       networkId: ${inputs.networkId}

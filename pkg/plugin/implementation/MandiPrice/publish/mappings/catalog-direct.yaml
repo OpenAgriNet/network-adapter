@@ -1,0 +1,175 @@
+# Agmarknet Vistaar per-state catalog publisher mapping, Direct kind.
+#
+# Turns one chunk of a state's price records into a complete Beckn
+# catalog/publish payload: one resource per (market, commodity), carrying its
+# latest price (catalog:mandi-price:MH-current). The records come from
+# mappings/market-price.yaml. The pipeline's catalog.render picks this file for
+# records whose `kind` is direct; the OnDemand kind is
+# mappings/catalog-ondemand.yaml. The two share an envelope and a provider but
+# nothing else, so each is kept whole rather than parameterised.
+#
+# Two vocabularies for validity:
+#   catalog-level validity: startDate / endDate (Beckn envelope)
+#   resourceAttributes validity: startsAt / endsAt (OpenAgriNet schema pack)
+#
+# JSONata collapses single-element sequences at every level, so the outer
+# resources array and the inner supportedCommodities array are both explicitly
+# wrapped in [...] so a single item never becomes a bare object.
+
+response: |
+  (
+    /* The units Agmarknet reports, in the pack's words. Anything else is
+       passed through as reported rather than guessed: Rs./Qtl and Rs./Kg
+       differ by a factor of a hundred. */
+    $unitOf := function($u) {
+      $u = "Rs./Qtl" ? "quintal" : ($u = "Rs./Kg" ? "kg" : $u)
+    };
+
+    /* Publish time + 2 days, so a price stays visible through the next run and one missed one and then expires; same source as above. */
+    $validUntil := $fromMillis($toMillis(_local.generatedAt) + 2 * 86400000,
+      "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
+
+    $makePriceResource := function($row) {
+      (
+        $hasCoords := $exists($row.latitude) and $exists($row.longitude);
+        $market := $trim($row.marketName);
+        $commodity := $trim($row.commodityName);
+
+        {
+          "id": $row.resourceId,
+          "descriptor": {
+            "code": "MANDI_PRICE_OBSERVATION",
+            "name": $commodity & " prices at " & $market & " on " & $row.arrivalDate,
+            "shortDesc": "Minimum, maximum, and modal " & $lowercase($commodity) & " prices for the latest arrival date.",
+            "longDesc": "The latest " & $lowercase($commodity) & " prices reported by " & $market & " to AGMARKNET. The arrival date they apply to is in arrivalDate."
+          },
+          "resourceAttributes": {
+            "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+            "@type": "openagrinet:MandiPrice",
+            "informationMode": "Direct",
+            "subjectCategories": [
+              "Market"
+            ],
+            "source": {
+              "sourceId": "source:agmarknet",
+              "sourceName": "AGMARKNET",
+              "sourceUri": "https://agmarknet.gov.in"
+            },
+            "supportedCommodities": [
+              {
+                "code": $string($row.commodityCode),
+                "name": $commodity,
+                "shortDesc": $commodity & " traded in agricultural produce markets."
+              }
+            ],
+            "commodityGroup": $row.commodityGroup,
+            "grade": $row.grade,
+            "variety": $row.variety,
+            /* The same state area the OnDemand market carries, as the spec's
+               own Direct example does. Left out for a state the table does
+               not know: coverageAreas must not be empty when present. */
+            "coverageAreas": $exists($row.isoStateCode) ? [
+              {
+                "codeScheme": "ISO-3166-2",
+                "areaCode": $row.isoStateCode,
+                "areaLevel": "State",
+                "areaName": $trim($row.stateName)
+              }
+            ],
+            /* Same closed set as the OnDemand market: marketCode,
+               marketName, district, state, location. The state is its NAME
+               here, as a Direct observation reads to a person. */
+            "market": $merge([
+              {
+                "marketName": $market,
+                "district": $trim($row.districtName),
+                "state": $trim($row.stateName),
+                "marketCode": $string($row.marketId)
+              },
+              $hasCoords ? {
+                "location": {
+                  "geo": {
+                    "type": "Point",
+                    "coordinates": [$row.longitude, $row.latitude]
+                  }
+                }
+              } : {}
+            ]),
+            "arrivalDate": $row.arrivalDate,
+            "prices": {
+              "minimum": $row.minPrice,
+              "maximum": $row.maxPrice,
+              "modal": $row.modalPrice,
+              "currency": "INR",
+              "unit": $unitOf($row.priceUnit)
+            },
+            "generatedAt": _local.generatedAt,
+            "validity": {
+              "startsAt": _local.generatedAt,
+              "endsAt": $validUntil
+            }
+          }
+        }
+      )
+    };
+
+    $provider := {
+      "id": _local.participantId,
+      "descriptor": {
+        "code": "AGMARKNET",
+        "name": "Agmarknet Vistaar",
+        "shortDesc": "Provider of live agricultural market price information."
+      }
+    };
+
+    $resources := [ $map(response, $makePriceResource) ];
+
+    /* MH-current is MANDI_PRICE_CURRENT_MH; a split state's
+       MH-current-2 is MANDI_PRICE_CURRENT_MH_2. */
+    $directCode := "MANDI_PRICE_CURRENT_" & $replace($replace(_local.catalogSlug, "-current", ""), "-", "_");
+
+    $catalog := {
+      "id": _local.catalogId,
+      "isActive": true,
+      "descriptor": {
+        "code": $directCode,
+        "name": _local.stateName & " current mandi prices",
+        "shortDesc": $string($count($resources)) & " Direct price Resources for " & _local.stateName & ", one per market and commodity, each carrying its latest price.",
+        "longDesc": "Each Resource carries the most recent minimum, maximum, and modal prices reported by AGMARKNET for one commodity at one market. Republishing overwrites it in place: arrivalDate and prices are fields, not identity. Published so Direct results can be discovered and filtered without a select round trip; the primary flow remains OnDemand discovery followed by a live provider invocation."
+      },
+      "provider": $provider,
+      "validity": {
+        "startDate": _local.generatedAt,
+        "endDate": $validUntil
+      },
+      "resources": $resources
+    };
+
+    {
+      "context": {
+        "action": "catalog/publish",
+        "version": "2.0.0",
+        "transactionId": _local.transactionId,
+        "messageId": _local.messageId,
+        "timestamp": _local.generatedAt
+      },
+      "message": {
+        "catalogs": [
+          $catalog
+        ],
+        "publishDirectives": [
+          {
+            "catalogId": _local.catalogId,
+            "catalogType": "REGULAR",
+            "updateMode": "MERGE",
+            "visibleTo": [
+              _local.networkId
+            ],
+            "schemaTypes": [
+              "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
+            ]
+          }
+        ]
+      }
+    }
+  )

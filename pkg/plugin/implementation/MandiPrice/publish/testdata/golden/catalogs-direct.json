@@ -23,7 +23,7 @@
             "isActive": true,
             "provider": {
               "descriptor": {
-                "code": "AGMARKNET-01",
+                "code": "AGMARKNET",
                 "name": "Agmarknet Vistaar",
                 "shortDesc": "Provider of live agricultural market price information."
               },
@@ -34,7 +34,7 @@
                 "descriptor": {
                   "code": "MANDI_PRICE_OBSERVATION",
                   "longDesc": "The latest onion prices reported by Hubli to AGMARKNET. The arrival date they apply to is in arrivalDate.",
-                  "name": "Onion prices at Hubli",
+                  "name": "Onion prices at Hubli on 2026-08-31",
                   "shortDesc": "Minimum, maximum, and modal onion prices for the latest arrival date."
                 },
                 "id": "resource:mandi-price:price:201:23",
@@ -145,7 +145,7 @@
             "isActive": true,
             "provider": {
               "descriptor": {
-                "code": "AGMARKNET-01",
+                "code": "AGMARKNET",
                 "name": "Agmarknet Vistaar",
                 "shortDesc": "Provider of live agricultural market price information."
               },
@@ -156,7 +156,7 @@
                 "descriptor": {
                   "code": "MANDI_PRICE_OBSERVATION",
                   "longDesc": "The latest onion prices reported by Nashik to AGMARKNET. The arrival date they apply to is in arrivalDate.",
-                  "name": "Onion prices at Nashik",
+                  "name": "Onion prices at Nashik on 2026-08-30",
                   "shortDesc": "Minimum, maximum, and modal onion prices for the latest arrival date."
                 },
                 "id": "resource:mandi-price:price:102:23",
@@ -214,7 +214,7 @@
                 "descriptor": {
                   "code": "MANDI_PRICE_OBSERVATION",
                   "longDesc": "The latest onion prices reported by Pune to AGMARKNET. The arrival date they apply to is in arrivalDate.",
-                  "name": "Onion prices at Pune",
+                  "name": "Onion prices at Pune on 2026-09-01",
                   "shortDesc": "Minimum, maximum, and modal onion prices for the latest arrival date."
                 },
                 "id": "resource:mandi-price:price:101:23",

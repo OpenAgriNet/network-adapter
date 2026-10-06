@@ -3,7 +3,7 @@
 # Kept in its own file so the catalog mapping does not carry it and so it is
 # maintained in one place. The pipeline runs it over the state list (one record
 # per Agmarknet state) and joins the result onto every market and price record
-# as `isoStateCode`; catalog.yaml turns that into the resource's state area.
+# as `isoStateCode`; catalog-ondemand.yaml and catalog-direct.yaml turn that into the resource's state area.
 #
 # Agmarknet's codes are its own, and a default of "IN-" & code is WRONG for 10
 # of its 36 states (BI is IN-BR, GO is IN-GA, JR is IN-JH, NG is IN-NL, OR is

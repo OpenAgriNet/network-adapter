@@ -52,7 +52,8 @@ var wantFiles = []string{
 	path.Join(mappingsDir, "master-states.yaml"),
 	path.Join(mappingsDir, "master-markets.yaml"),
 	path.Join(mappingsDir, "market-commodity.yaml"),
-	path.Join(mappingsDir, "catalog.yaml"),
+	path.Join(mappingsDir, "catalog-ondemand.yaml"),
+	path.Join(mappingsDir, "catalog-direct.yaml"),
 	path.Join(mappingsDir, "state-iso.yaml"),
 }
 
@@ -76,23 +77,25 @@ func TestFilesEmbedsThePipelineAndItsMappings(t *testing.T) {
 // either rule here drifts from the first -- and drops markets silently, where
 // the file's exclude names every drop.
 func TestCatalogMappingNeitherFiltersSortsNorBuildsIds(t *testing.T) {
-	raw, err := Files.ReadFile(path.Join(mappingsDir, "catalog.yaml"))
-	if err != nil {
-		t.Fatalf("reading the mapping: %v", err)
-	}
-	mapping := string(raw)
-	for _, banned := range []string{
-		"$isPublishable", "publishWithoutGeometry", // a second exclude rule
-		"$sortedMarkets", "$a.marketId", // a second order rule
-		`"catalog:mandi-price:" &`, `"resource:mandi-price:market:" &`, // ids built by hand
-	} {
-		if strings.Contains(mapping, banned) {
-			t.Errorf("mappings/catalog.yaml still contains %q", banned)
+	for _, file := range []string{"catalog-ondemand.yaml", "catalog-direct.yaml"} {
+		raw, err := Files.ReadFile(path.Join(mappingsDir, file))
+		if err != nil {
+			t.Fatalf("reading the mapping: %v", err)
 		}
-	}
-	for _, want := range []string{"_local.catalogId", "$row.resourceId"} {
-		if !strings.Contains(mapping, want) {
-			t.Errorf("mappings/catalog.yaml does not use the engine-supplied %s", want)
+		mapping := string(raw)
+		for _, banned := range []string{
+			"$isPublishable", "publishWithoutGeometry", // a second exclude rule
+			"$sortedMarkets", "$a.marketId", // a second order rule
+			`"catalog:mandi-price:" &`, `"resource:mandi-price:market:" &`, // ids built by hand
+		} {
+			if strings.Contains(mapping, banned) {
+				t.Errorf("mappings/%s still contains %q", file, banned)
+			}
+		}
+		for _, want := range []string{"_local.catalogId", "$row.resourceId"} {
+			if !strings.Contains(mapping, want) {
+				t.Errorf("mappings/%s does not use the engine-supplied %s", file, want)
+			}
 		}
 	}
 }
@@ -120,12 +123,14 @@ func TestCatalogMappingAreaCodeTable(t *testing.T) {
 	}
 	// The catalog mapping no longer carries the table: it reads the joined
 	// isoStateCode.
-	catalog, err := Files.ReadFile(path.Join(mappingsDir, "catalog.yaml"))
-	if err != nil {
-		t.Fatalf("reading catalog.yaml: %v", err)
-	}
-	if strings.Contains(string(catalog), "isoByAgmarknet") {
-		t.Error("mappings/catalog.yaml still carries the Agmarknet -> ISO table")
+	for _, file := range []string{"catalog-ondemand.yaml", "catalog-direct.yaml"} {
+		catalog, err := Files.ReadFile(path.Join(mappingsDir, file))
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		if strings.Contains(string(catalog), "isoByAgmarknet") {
+			t.Errorf("mappings/%s still carries the Agmarknet -> ISO table", file)
+		}
 	}
 }
 

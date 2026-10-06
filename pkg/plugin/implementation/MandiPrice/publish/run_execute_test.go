@@ -146,7 +146,7 @@ var pricesByPair = map[string]string{
 
 // districtByMarket is the district each fixture market is in, so the fake can
 // refuse a price call carrying the wrong district code.
-var districtByMarket = map[string]string{"101": "501", "102": "502", "201": "601"}
+var districtByMarket = map[string]string{"101": "501", "102": "502", "201": "601", "1001": "9001"}
 
 // twoGoodStates is the healthy fixture every case below starts from and then
 // breaks in one specific way.
@@ -981,6 +981,82 @@ func TestOnDemandModeMakesNoPriceCalls(t *testing.T) {
 	}
 	if priceCalls != 0 {
 		t.Errorf("onDemand mode made %d price calls, want 0", priceCalls)
+	}
+}
+
+// The OnDemand resources do not publish historicalDataAvailable, historyPeriod or
+// updateFrequency: none could be verified in a way worth asserting (see
+// dev_docs/mandi-catalog-contents-and-reasons.md sections 10-11). Add one back
+// only with a measurement and a test of its own.
+func TestOnDemandResourceDescriptorNamesTheMarket(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: modeEnv(upstream.URL, "onDemand"), Now: firingTime(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Pune is market 101: code MANDI_PRICE_MARKET_<marketId>, name "<market> mandi prices".
+	resource := resourcesByID(catalogBySlug(t, report)["MH"])["resource:mandi-price:market:101"]
+	descriptor, _ := resource["descriptor"].(map[string]any)
+	if descriptor["code"] != "MANDI_PRICE_MARKET_101" || descriptor["name"] != "Pune mandi prices" {
+		t.Errorf("Pune descriptor = %v, want code MANDI_PRICE_MARKET_101 and name \"Pune mandi prices\"", descriptor)
+	}
+}
+
+// Catalog and resource descriptor codes: OnDemand catalogs are MANDI_PRICE_MARKET_<STATE>
+// (a split state continues as _2), Direct catalogs MANDI_PRICE_CURRENT_<STATE>, and a
+// Direct resource is MANDI_PRICE_OBSERVATION named with its arrival date.
+func TestDescriptorCodesFollowTheNamingScheme(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: modeEnv(upstream.URL, "both"), Now: firingTime(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	catalogs := catalogBySlug(t, report)
+	code := func(entry map[string]any) any { return entry["descriptor"].(map[string]any)["code"] }
+	if got := code(catalogs["MH"]); got != "MANDI_PRICE_MARKET_MH" {
+		t.Errorf("OnDemand MH catalog code = %v, want MANDI_PRICE_MARKET_MH", got)
+	}
+	if got := code(catalogs["MH-current"]); got != "MANDI_PRICE_CURRENT_MH" {
+		t.Errorf("Direct MH catalog code = %v, want MANDI_PRICE_CURRENT_MH", got)
+	}
+	for id, resource := range resourcesByID(catalogs["MH-current"]) {
+		d := resource["descriptor"].(map[string]any)
+		name, _ := d["name"].(string)
+		if d["code"] != "MANDI_PRICE_OBSERVATION" || !strings.Contains(name, " prices at ") || !strings.Contains(name, " on 20") {
+			t.Errorf("%s descriptor = %v, want code MANDI_PRICE_OBSERVATION and a name like %q", id, d, "Onion prices at Pune on 2026-09-01")
+		}
+	}
+}
+
+func TestOnDemandResourcesPublishNoHistoryOrUpdateClaims(t *testing.T) {
+	upstream := fakeAgmarknet(t, twoGoodStates())
+	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
+		Record: publishingRecord(), Pipeline: Pipeline(),
+		Lookup: modeEnv(upstream.URL, "onDemand"), Now: firingTime(t), OutDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	checked := 0
+	for slug, catalog := range catalogBySlug(t, report) {
+		for id, resource := range resourcesByID(catalog) {
+			attrs := resource["resourceAttributes"].(map[string]any)
+			for _, field := range []string{"historicalDataAvailable", "historyPeriod", "updateFrequency"} {
+				if _, has := attrs[field]; has {
+					t.Errorf("%s %s publishes %s", slug, id, field)
+				}
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no OnDemand resource was checked")
 	}
 }
 

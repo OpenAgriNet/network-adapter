@@ -1008,14 +1008,57 @@
         "render": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "mapping"
+          "oneOf": [
+            {
+              "required": [
+                "mapping"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "mappingByField"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "mappings"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "mappingByField",
+                "mappings"
+              ],
+              "not": {
+                "required": [
+                  "mapping"
+                ]
+              }
+            }
           ],
           "properties": {
             "mapping": {
               "type": "string",
               "minLength": 1,
-              "description": "The JSONata mapping that turns a chunk into a catalog document."
+              "description": "The JSONata mapping that turns a chunk into a catalog document. Use this, or mappingByField with mappings, not both."
+            },
+            "mappingByField": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The record field that says which kind of catalog a chunk is (for example kind). A chunk's kind is its first record's value; a group is always one kind."
+            },
+            "mappings": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "For each value of mappingByField, the JSONata mapping that renders a chunk of that kind. A kind with no entry is an error."
             },
             "local": {
               "type": "object",

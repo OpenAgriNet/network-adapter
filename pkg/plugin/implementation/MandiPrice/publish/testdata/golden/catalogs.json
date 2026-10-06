@@ -14,7 +14,7 @@
         "catalogs": [
           {
             "descriptor": {
-              "code": "AGMARKNET-KA",
+              "code": "MANDI_PRICE_MARKET_KA",
               "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery.",
               "name": "Agmarknet mandi markets — Karnataka",
               "shortDesc": "Markets in Karnataka, their locations, and what each trades"
@@ -23,7 +23,7 @@
             "isActive": true,
             "provider": {
               "descriptor": {
-                "code": "AGMARKNET-01",
+                "code": "AGMARKNET",
                 "name": "Agmarknet Vistaar",
                 "shortDesc": "Provider of live agricultural market price information."
               },
@@ -32,9 +32,9 @@
             "resources": [
               {
                 "descriptor": {
-                  "code": "201",
+                  "code": "MANDI_PRICE_MARKET_201",
                   "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Hubli. The result uses the same MandiPrice type in Direct information mode.",
-                  "name": "Hubli",
+                  "name": "Hubli mandi prices",
                   "shortDesc": "Mandi prices at Hubli, Dharwad, Karnataka"
                 },
                 "id": "resource:mandi-price:market:201",
@@ -62,8 +62,6 @@
                       "codeScheme": "ISO-3166-2"
                     }
                   ],
-                  "historicalDataAvailable": true,
-                  "historyPeriod": "P1Y",
                   "informationMode": "OnDemand",
                   "languages": [
                     "en"
@@ -93,7 +91,6 @@
                     "Maximum",
                     "Modal"
                   ],
-                  "updateFrequency": "P1D",
                   "validity": {
                     "endsAt": "2026-09-22T23:59:59+05:30",
                     "startsAt": "2026-09-20T00:00:00+05:30"
@@ -138,7 +135,7 @@
         "catalogs": [
           {
             "descriptor": {
-              "code": "AGMARKNET-MH",
+              "code": "MANDI_PRICE_MARKET_MH",
               "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery.",
               "name": "Agmarknet mandi markets — Maharashtra",
               "shortDesc": "Markets in Maharashtra, their locations, and what each trades"
@@ -147,7 +144,7 @@
             "isActive": true,
             "provider": {
               "descriptor": {
-                "code": "AGMARKNET-01",
+                "code": "AGMARKNET",
                 "name": "Agmarknet Vistaar",
                 "shortDesc": "Provider of live agricultural market price information."
               },
@@ -156,9 +153,9 @@
             "resources": [
               {
                 "descriptor": {
-                  "code": "102",
+                  "code": "MANDI_PRICE_MARKET_102",
                   "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Nashik. The result uses the same MandiPrice type in Direct information mode.",
-                  "name": "Nashik",
+                  "name": "Nashik mandi prices",
                   "shortDesc": "Mandi prices at Nashik, Nashik, Maharashtra"
                 },
                 "id": "resource:mandi-price:market:102",
@@ -179,8 +176,6 @@
                       "codeScheme": "ISO-3166-2"
                     }
                   ],
-                  "historicalDataAvailable": true,
-                  "historyPeriod": "P1Y",
                   "informationMode": "OnDemand",
                   "languages": [
                     "en"
@@ -210,7 +205,6 @@
                     "Maximum",
                     "Modal"
                   ],
-                  "updateFrequency": "P1D",
                   "validity": {
                     "endsAt": "2026-09-22T23:59:59+05:30",
                     "startsAt": "2026-09-20T00:00:00+05:30"
@@ -219,9 +213,9 @@
               },
               {
                 "descriptor": {
-                  "code": "101",
+                  "code": "MANDI_PRICE_MARKET_101",
                   "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Pune. The result uses the same MandiPrice type in Direct information mode.",
-                  "name": "Pune",
+                  "name": "Pune mandi prices",
                   "shortDesc": "Mandi prices at Pune, Pune, Maharashtra"
                 },
                 "id": "resource:mandi-price:market:101",
@@ -249,8 +243,6 @@
                       "codeScheme": "ISO-3166-2"
                     }
                   ],
-                  "historicalDataAvailable": true,
-                  "historyPeriod": "P1Y",
                   "informationMode": "OnDemand",
                   "languages": [
                     "en"
@@ -284,7 +276,6 @@
                     "Maximum",
                     "Modal"
                   ],
-                  "updateFrequency": "P1D",
                   "validity": {
                     "endsAt": "2026-09-22T23:59:59+05:30",
                     "startsAt": "2026-09-20T00:00:00+05:30"

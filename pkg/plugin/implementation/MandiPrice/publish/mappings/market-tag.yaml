@@ -1,7 +1,7 @@
 # Tags each market as an OnDemand record, so one catalog block can tell it
 # apart from a Direct price record when both are in the same collection.
 #
-#   kind          onDemand | direct -- which document catalog.yaml renders
+#   kind          onDemand | direct -- which document catalog-ondemand.yaml or catalog-direct.yaml renders
 #   catalogGroup  what the catalog block groups by. For a market it is the
 #                 state code alone, so the OnDemand catalog keeps the id it has
 #                 always had (catalog:mandi-price:MH).

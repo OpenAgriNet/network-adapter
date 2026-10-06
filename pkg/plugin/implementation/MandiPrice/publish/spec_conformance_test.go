@@ -77,11 +77,11 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 			Format:  "dd-MM-yyyy",
 			Default: "yesterday",
 		},
-		// Both catalogs by default, from one run; either alone on request.
+		// Market information (onDemand) by default; direct, or both from one run, on request.
 		"mode": {
 			Flag:    "publish-mode",
 			Env:     "MANDI_PUBLISH_MODE",
-			Default: "both",
+			Default: "onDemand",
 			Enum:    []string{"onDemand", "direct", "both"},
 		},
 		// The Direct price window: the last week, ending with the day that
@@ -336,8 +336,20 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 	if got, want := spec.Catalog.Chunk.Budget, 256; got != want {
 		t.Errorf("Catalog.Chunk.Budget = %d, want %d", got, want)
 	}
-	if got, want := spec.Catalog.Render.Mapping, "mappings/catalog.yaml"; got != want {
-		t.Errorf("Catalog.Render.Mapping = %q, want %q", got, want)
+	// One render mapping per kind of catalog, picked by the records' kind.
+	if got, want := spec.Catalog.Render.MappingByField, "kind"; got != want {
+		t.Errorf("Catalog.Render.MappingByField = %q, want %q", got, want)
+	}
+	if got, want := spec.Catalog.Render.Mapping, ""; got != want {
+		t.Errorf("Catalog.Render.Mapping = %q, want it empty (one mapping per kind instead)", got)
+	}
+	for kind, want := range map[string]string{
+		"onDemand": "mappings/catalog-ondemand.yaml",
+		"direct":   "mappings/catalog-direct.yaml",
+	} {
+		if got := spec.Catalog.Render.Mappings[kind]; got != want {
+			t.Errorf("Catalog.Render.Mappings[%q] = %q, want %q", kind, got, want)
+		}
 	}
 
 	if got, want := spec.Publish.URL, "${inputs.publishUrl}/publish"; got != want {
@@ -388,7 +400,7 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 		"tokenSecret":   "secret",                      // secret, env only
 		"baseUrl":       "http://upstream.test:8080",   // env beats default
 		"participantId": "",                            // no default; the run refuses it
-		"mode":          "both",                        // both catalogs unless asked otherwise
+		"mode":          "onDemand",                    // market information only unless asked otherwise
 	} {
 		if got[key] != want {
 			t.Errorf("%s = %q, want %q", key, got[key], want)

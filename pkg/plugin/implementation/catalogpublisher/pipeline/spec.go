@@ -303,9 +303,17 @@ type Chunk struct {
 }
 
 // Render is the mapping that turns a chunk into a catalog document.
+//
+// One mapping for every catalog (Mapping), or one per kind of catalog:
+// MappingByField names the record field that says which kind a chunk is, and
+// Mappings maps each value of it to the mapping that renders it. A chunk's
+// kind is its first record's value; a group is always one kind. A file names
+// one form or the other, not both.
 type Render struct {
-	Mapping string            `yaml:"mapping"`
-	Local   map[string]string `yaml:"local,omitempty"`
+	Mapping        string            `yaml:"mapping,omitempty"`
+	MappingByField string            `yaml:"mappingByField,omitempty"`
+	Mappings       map[string]string `yaml:"mappings,omitempty"`
+	Local          map[string]string `yaml:"local,omitempty"`
 }
 
 // Publish is where catalog files go, under what safety rule.

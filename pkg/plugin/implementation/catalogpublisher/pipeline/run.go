@@ -732,8 +732,8 @@ func buildCatalogs(ctx context.Context, catalog Catalog, records []map[string]an
 	if catalog.GroupBy == "" {
 		return nil, counters, fmt.Errorf("the catalog block names no groupBy field")
 	}
-	if catalog.Render.Mapping == "" {
-		return nil, counters, fmt.Errorf("the catalog block names no render mapping")
+	if err := checkRender(catalog.Render); err != nil {
+		return nil, counters, err
 	}
 	if catalog.Identity.CatalogID == "" {
 		return nil, counters, fmt.Errorf("the catalog block names no identity.catalogId: a catalog with no id cannot be published")
@@ -1068,6 +1068,48 @@ func catalogCost(expr string, record map[string]any, cache *exprCache) (int, err
 	return int(number), nil
 }
 
+// checkRender refuses a render block that names no mapping, or names both
+// forms: which one a chunk used would then depend on reading order.
+func checkRender(render Render) error {
+	byField := render.MappingByField != "" || len(render.Mappings) > 0
+	switch {
+	case render.Mapping == "" && !byField:
+		return fmt.Errorf("the catalog block names no render mapping")
+	case render.Mapping != "" && byField:
+		return fmt.Errorf("render names both `mapping` and `mappingByField`/`mappings`; use one form")
+	case byField && (render.MappingByField == "" || len(render.Mappings) == 0):
+		return fmt.Errorf("render.mappingByField and render.mappings go together: name the field and a mapping for each of its values")
+	}
+	return nil
+}
+
+// renderMappingFor picks the mapping that renders this chunk: the single one, or
+// the one for its kind. The kind is the first record's value of the field, and a
+// kind with no mapping is an error naming the kinds there are -- a catalog
+// rendered by the wrong mapping would publish the wrong shape.
+func renderMappingFor(render Render, chunk []map[string]any) (string, error) {
+	if render.MappingByField == "" {
+		return render.Mapping, nil
+	}
+	var kind string
+	if len(chunk) > 0 {
+		if value, ok := chunk[0][render.MappingByField]; ok && value != nil {
+			kind = fmt.Sprint(value)
+		}
+	}
+	mapping, ok := render.Mappings[kind]
+	if !ok || mapping == "" {
+		kinds := make([]string, 0, len(render.Mappings))
+		for known := range render.Mappings {
+			kinds = append(kinds, known)
+		}
+		sort.Strings(kinds)
+		return "", fmt.Errorf("render.mappingByField %q: this chunk's value is %q, which has no render mapping (have: %s)",
+			render.MappingByField, kind, strings.Join(kinds, ", "))
+	}
+	return mapping, nil
+}
+
 // catalogRender names one chunk and turns it into a document.
 func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 	index int, key string, scope *runContext, cache *exprCache,
@@ -1115,8 +1157,13 @@ func catalogRender(ctx context.Context, catalog Catalog, chunk []map[string]any,
 	// `_local`.
 	input := map[string]any{"response": chunk, "_local": local}
 
+	renderMapping, err := renderMappingFor(catalog.Render, chunk)
+	if err != nil {
+		return BuiltCatalog{}, err
+	}
+
 	// Resolved against the pipeline file's URL, as interpreter.go's mappingRef.
-	ref, err := resolveMappingRef(mappingBase, catalog.Render.Mapping)
+	ref, err := resolveMappingRef(mappingBase, renderMapping)
 	if err != nil {
 		return BuiltCatalog{}, err
 	}

@@ -966,6 +966,70 @@ func simpleCatalog() Catalog {
 	}
 }
 
+// A render block may name one mapping per KIND of catalog: the chunk's first
+// record's `kind` picks which renders it.
+func TestRenderMappingByFieldPicksTheMappingForTheChunksKind(t *testing.T) {
+	rc, cache := testBuildContext(t, nil)
+	mapper := &echoMapper{}
+	catalog := simpleCatalog()
+	catalog.GroupBy = "group"
+	catalog.Chunk = Chunk{Slug: "${group}"}
+	catalog.Render = Render{MappingByField: "kind", Mappings: map[string]string{
+		"onDemand": "mappings/ondemand.yaml",
+		"direct":   "mappings/direct.yaml",
+	}}
+	records := []map[string]any{
+		{"group": "MH", "kind": "onDemand", "id": 1.0},
+		{"group": "MH-direct", "kind": "direct", "id": 2.0},
+	}
+	if _, _, err := buildCatalogs(context.Background(), catalog, records, rc, cache, mapper, "http://mappings/pipeline.yaml"); err != nil {
+		t.Fatalf("buildCatalogs: %v", err)
+	}
+	got := strings.Join(mapper.refs, ",")
+	if got != "http://mappings/mappings/direct.yaml,http://mappings/mappings/ondemand.yaml" &&
+		got != "http://mappings/mappings/ondemand.yaml,http://mappings/mappings/direct.yaml" {
+		t.Fatalf("mappings used = %s, want one of each", got)
+	}
+	// Each group went through ITS kind's mapping, not the other's.
+	for _, ref := range mapper.refs {
+		if !strings.HasSuffix(ref, "ondemand.yaml") && !strings.HasSuffix(ref, "direct.yaml") {
+			t.Errorf("unexpected mapping %s", ref)
+		}
+	}
+}
+
+func TestRenderMappingByFieldRefusesAKindWithNoMapping(t *testing.T) {
+	rc, cache := testBuildContext(t, nil)
+	catalog := simpleCatalog()
+	catalog.Render = Render{MappingByField: "kind", Mappings: map[string]string{"onDemand": "mappings/ondemand.yaml"}}
+	_, _, err := buildCatalogs(context.Background(), catalog,
+		[]map[string]any{{"stateCode": "MH", "kind": "direct"}}, rc, cache, &echoMapper{}, "http://mappings/pipeline.yaml")
+	if err == nil || !strings.Contains(err.Error(), `"direct"`) || !strings.Contains(err.Error(), "onDemand") {
+		t.Fatalf("err = %v, want the unmapped kind refused, naming it and the kinds there are", err)
+	}
+}
+
+func TestRenderRefusesNoMappingOrBothForms(t *testing.T) {
+	for name, render := range map[string]Render{
+		"none":              {},
+		"both":              {Mapping: "a.yaml", MappingByField: "kind", Mappings: map[string]string{"x": "b.yaml"}},
+		"field without map": {MappingByField: "kind"},
+		"map without field": {Mappings: map[string]string{"x": "b.yaml"}},
+	} {
+		if err := checkRender(render); err == nil {
+			t.Errorf("%s: checkRender accepted %+v", name, render)
+		}
+	}
+	for name, render := range map[string]Render{
+		"single":  {Mapping: "a.yaml"},
+		"by kind": {MappingByField: "kind", Mappings: map[string]string{"x": "b.yaml"}},
+	} {
+		if err := checkRender(render); err != nil {
+			t.Errorf("%s: checkRender refused %+v: %v", name, render, err)
+		}
+	}
+}
+
 func TestBuildCatalogsGroupsByTheNamedField(t *testing.T) {
 	rc, cache := testBuildContext(t, nil)
 	mapper := &echoMapper{}
