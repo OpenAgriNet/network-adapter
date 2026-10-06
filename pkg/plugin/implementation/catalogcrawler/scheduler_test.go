@@ -255,6 +255,7 @@ func TestAfterCatalogSyncRidesTheSyncTicker(t *testing.T) {
 func TestAfterCatalogSyncDoesNotBlockSyncAndStopWaitsForIt(t *testing.T) {
 	store := &fakeStore{}
 	release := make(chan struct{})
+	started := make(chan struct{})
 	var finished atomic.Bool
 	sched := NewScheduler(
 		crawlmanager.Params{Source: &countingSource{}, Store: store, Fetcher: noopFetcher()},
@@ -263,6 +264,7 @@ func TestAfterCatalogSyncDoesNotBlockSyncAndStopWaitsForIt(t *testing.T) {
 	var once sync.Once
 	if err := sched.AfterCatalogSync(func(ctx context.Context) {
 		once.Do(func() {
+			close(started)
 			<-release
 			finished.Store(true)
 		})
@@ -280,6 +282,15 @@ func TestAfterCatalogSyncDoesNotBlockSyncAndStopWaitsForIt(t *testing.T) {
 			t.Fatal("catalog sync stalled behind a running after-sync job")
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+
+	// Stop only has a job to wait for once the hook has started: a Stop that
+	// lands between the sync drain and the hook launch correctly launches
+	// nothing.
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the after-sync job never started")
 	}
 
 	stopped := make(chan struct{})
