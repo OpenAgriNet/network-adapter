@@ -129,13 +129,17 @@ func TestCrawlPeerAsksForTheAudienceWeBelongTo(t *testing.T) {
 	}
 }
 
-// A crawled catalogue stays labelled as the SOURCE network's. We hold a copy;
-// we do not become its owner.
+// Each push is stamped with the audience its call ASKED for.
 //
-// This is what makes "answer with your own data only" true by construction: a
-// peer asks us for a specific owner, so copies of a third network's data cannot
-// match. Stamping our own id here would relabel Maha's catalog as ours.
-func TestCrawlPeerKeepsTheSourceNetworkOnWhatItStores(t *testing.T) {
+// The discover response carries no visibleTo -- it is a publish-side directive
+// and is never returned -- so what we asked for is the only thing the answer is
+// known to be addressed to.
+//
+// Order matters and is asserted: the peer's own id is asked first and ours
+// second, so a catalog in BOTH answers ends up addressed to US. Reverse them
+// and our copy is labelled with the peer's id, which the peer's own crawl of us
+// then matches -- it re-imports its own catalogs from us, on every pass.
+func TestCrawlPeerStampsTheAudienceItAskedFor(t *testing.T) {
 	server, _ := peerWith(t, 1)
 	push := &recordingPush{}
 
@@ -145,29 +149,33 @@ func TestCrawlPeerKeepsTheSourceNetworkOnWhatItStores(t *testing.T) {
 		t.Fatalf("crawlPeer: %v", err)
 	}
 
-	if len(push.bodies) != 1 {
-		t.Fatalf("pushed %d catalogs, want 1", len(push.bodies))
-	}
-	// The AUDIENCE specifically, not the body as a whole: our own id also
-	// appears as bppId, and legitimately -- we are the one publishing into our
-	// own discovery. Only visibleTo says whose catalog it is.
-	var pushed struct {
-		Message struct {
-			PublishDirectives []struct {
-				VisibleTo []string `json:"visibleTo"`
-			} `json:"publishDirectives"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(push.bodies[0], &pushed); err != nil {
-		t.Fatalf("push body is not JSON: %v", err)
-	}
-	if len(pushed.Message.PublishDirectives) != 1 {
-		t.Fatalf("got %d directives, want 1", len(pushed.Message.PublishDirectives))
+	// Two calls, so this peer's one catalog is pushed once per audience.
+	if len(push.bodies) != 2 {
+		t.Fatalf("pushed %d catalogs, want 2 -- one per audience", len(push.bodies))
 	}
 
-	audience := pushed.Message.PublishDirectives[0].VisibleTo
-	if len(audience) != 1 || audience[0] != "maha.oan.local" {
-		t.Errorf("visibleTo = %v, want only the network that owns it", audience)
+	want := []string{"maha.oan.local", testSubscriberID}
+	for i, body := range push.bodies {
+		// The AUDIENCE specifically, not the body as a whole: our own id also
+		// appears as bppId, and legitimately -- we are the one publishing into
+		// our own discovery. Only visibleTo says who may see it.
+		var pushed struct {
+			Message struct {
+				PublishDirectives []struct {
+					VisibleTo []string `json:"visibleTo"`
+				} `json:"publishDirectives"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(body, &pushed); err != nil {
+			t.Fatalf("push %d is not JSON: %v", i, err)
+		}
+		if len(pushed.Message.PublishDirectives) != 1 {
+			t.Fatalf("push %d: got %d directives, want 1", i, len(pushed.Message.PublishDirectives))
+		}
+		audience := pushed.Message.PublishDirectives[0].VisibleTo
+		if len(audience) != 1 || audience[0] != want[i] {
+			t.Errorf("push %d: visibleTo = %v, want [%s]", i, audience, want[i])
+		}
 	}
 }
 
@@ -356,5 +364,93 @@ func TestTheAuthorizationShapeMatchesTheSignStep(t *testing.T) {
 		`headers="(created) (expires) digest",signature="c2ln"`
 	if got != want {
 		t.Fatalf("header mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// Paging is on the QUERY STRING, because the Beckn discover schema has no
+// paging member and a peer refuses one in the body.
+//
+// Every page is accumulated before anything is pushed. `limit` counts
+// RESOURCES, so one catalog's resources can straddle a page boundary -- pushing
+// page 1 with updateMode FULL and then page 2 would delete what page 1 wrote.
+func TestCrawlPeerFollowsPages(t *testing.T) {
+	var queries []string
+	page := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		// Two full pages, then an empty one that ends the loop.
+		if page++; page <= 2 {
+			_, _ = io.WriteString(w, `{"message":{"catalogs":[{"id":"c1"},{"id":"c2"}]}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"message":{"catalogs":[]}}`)
+	}))
+	defer server.Close()
+
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.pageSize = 2
+	crawl.maxPages = 5
+
+	got, err := crawl.fetch(context.Background(),
+		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d catalogs across pages, want 4", len(got))
+	}
+	want := []string{"limit=2", "limit=2&offset=2", "limit=2&offset=4"}
+	if len(queries) != len(want) {
+		t.Fatalf("made %d requests (%v), want %d", len(queries), queries, len(want))
+	}
+	for i, q := range queries {
+		if q != want[i] {
+			t.Errorf("request %d query = %q, want %q", i, q, want[i])
+		}
+	}
+}
+
+// An unconfigured page size asks ONCE with no limit, which is what this did
+// before paging existed. A deployment that has not opted in is unaffected.
+func TestCrawlPeerWithoutPageSizeAsksOnce(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		_, _ = io.WriteString(w, `{"message":{"catalogs":[{"id":"c1"}]}}`)
+	}))
+	defer server.Close()
+
+	crawl := newPeerCrawl(t, &recordingPush{})
+	crawl.pageSize = 0
+
+	if _, err := crawl.fetch(context.Background(),
+		peerTarget{NetworkID: "maha", DiscoveryURL: server.URL}, "maha"); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(queries) != 1 {
+		t.Fatalf("made %d requests, want 1", len(queries))
+	}
+	if queries[0] != "" {
+		t.Errorf("query = %q, want no paging parameters", queries[0])
+	}
+}
+
+// The push mode is configured, not fixed. FULL deletes the resources a payload
+// omits; MERGE upserts by id and leaves untouched ones alone.
+func TestUpdateModeIsConfigured(t *testing.T) {
+	for raw, want := range map[string]string{
+		"":        sink.UpdateModeFull,
+		"FULL":    sink.UpdateModeFull,
+		"MERGE":   sink.UpdateModeMerge,
+		"merge":   sink.UpdateModeMerge,
+		" merge ": sink.UpdateModeMerge,
+		// Unrecognised is FULL, not an error: refusing to start over a typo
+		// would take the whole federated half down for a value whose safe
+		// reading is the one it already had.
+		"nonsense": sink.UpdateModeFull,
+	} {
+		if got := updateModeOr(raw); got != want {
+			t.Errorf("updateModeOr(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }

@@ -51,6 +51,8 @@ const (
 	// the Authorization keyId, and the only way a peer can look the key up.
 	cfgFederationKeyID      = "federationKeyId"
 	cfgFederationMaxPages   = "federationMaxPages"
+	cfgFederationPageSize   = "federationPageSize"
+	cfgFederationUpdateMode = "federationUpdateMode"
 	cfgFederationDomain     = "federationDomain"
 	cfgFederationIntent     = "federationIntent" // raw JSON: the Beckn intent sent to a peer
 	cfgFederationSchemas    = "federationSchemaContext"
@@ -94,6 +96,11 @@ const (
 	// empty page cannot hold a pass open indefinitely.
 	defaultFederationWindow = 30 * time.Second
 	defaultPeerMaxPages     = 50
+
+	// 0 asks ONCE with no limit, which is what this did before paging existed.
+	// A deployment that wants pages sets it; one that does not keeps the old
+	// single-request behaviour and the old failure mode with it.
+	defaultPeerPageSize = 0
 
 	// A peer ROUTES on these two, so they are not cosmetic: a discover without
 	// them is refused before it reaches the peer's discovery service, with "no
@@ -342,6 +349,8 @@ func newPeerCrawlFromConfig(
 		subscriberID: strings.TrimSpace(config[cfgParticipantID]),
 		privateKey:   key,
 		keyID:        strings.TrimSpace(config[cfgFederationKeyID]),
+		pageSize:     int(int64Or(config[cfgFederationPageSize], defaultPeerPageSize)),
+		updateMode:   updateModeOr(config[cfgFederationUpdateMode]),
 		window:       durationSecondsOr(config[cfgFederationWindowSec], defaultFederationWindow),
 		// Empty: mirror everything the peer will give us. A deployment that
 		// wants less sets a jsonpath or spatial intent here.
@@ -645,4 +654,22 @@ func int64Or(s string, def int64) int64 {
 		return def
 	}
 	return n
+}
+
+// updateModeOr resolves the push mode a crawl publishes its projections with.
+//
+// FULL by default, which is what this did before the mode was configurable:
+// the pushed document is the catalog's complete current content, so resources
+// it omits are meant to be gone. MERGE is for a deployment whose peers answer
+// in pieces -- an id-keyed upsert leaves untouched resources alone, at the cost
+// of never noticing a withdrawal.
+//
+// Anything unrecognised is FULL rather than an error. A crawl that refused to
+// start over a typo would take the whole federated half of a deployment down
+// for a value whose safe reading is the one it already had.
+func updateModeOr(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), sink.UpdateModeMerge) {
+		return sink.UpdateModeMerge
+	}
+	return sink.UpdateModeFull
 }

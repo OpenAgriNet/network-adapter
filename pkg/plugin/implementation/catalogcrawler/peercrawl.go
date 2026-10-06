@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,10 +88,19 @@ type peerCrawl struct {
 	schemaContext []string
 	intent        map[string]any // configured: what breadth of catalog to mirror
 	maxPages      int
-	client        *http.Client
-	push          catalogPusher
-	pushEndpoint  string
-	log           *slog.Logger
+	// pageSize is the `limit` query parameter. 0 asks once with no limit.
+	//
+	// It counts RESOURCES, not catalogs -- discovery ranks resources, pages
+	// that list, then groups the page into catalogs. So one catalog's resources
+	// can straddle a page boundary, which is why every page is accumulated
+	// before anything is pushed.
+	pageSize int
+	// updateMode is how a projection is published: FULL replaces, MERGE upserts.
+	updateMode   string
+	client       *http.Client
+	push         catalogPusher
+	pushEndpoint string
+	log          *slog.Logger
 
 	// projections records what we are holding from each peer, so it can be
 	// withdrawn later. Nil disables every purge path: a deployment whose store
@@ -103,26 +114,19 @@ type peerCrawl struct {
 // The intent is CONFIGURATION, not a constant: a deployment decides what breadth
 // of catalog it wants to mirror -- a jsonpath filter, a spatial bound, or
 // nothing at all for everything the peer will give us.
-func (p *peerCrawl) discoverBody(target peerTarget) ([]byte, error) {
+func (p *peerCrawl) discoverBody(audience string) ([]byte, error) {
 	intent := p.intent
 	if intent == nil {
 		intent = map[string]any{}
 	}
 	return json.Marshal(map[string]any{
-		// OUR network id, because visibleTo is an AUDIENCE and this asks for the
-		// audience we belong to: give us what you decided to share WITH US.
+		// The AUDIENCE this call asks for. visibleTo is an audience list and
+		// context.networkId can only carry ONE value, so a crawl that wants two
+		// audiences has to ask twice -- see crawlPeer.
 		//
-		// The alternative -- asking with the peer's own id -- returns everything
-		// the peer owns, because a catalog with no declared audience is filled
-		// with its own network. That reads the peer's data by ownership and
-		// leaves its publishers no say in it. Asking as ourselves puts the
-		// decision where it belongs: a publisher that wants us to see a catalog
-		// names us in publishDirectives.visibleTo, and one that does not, does
-		// not.
-		//
-		// The cost is that admission alone shares nothing. A peer whose
-		// publishers have not named us answers with an empty list, and that is
-		// a correct answer rather than a broken crawl.
+		// Whatever is asked for here is also what the answer is stamped with,
+		// because that is the only thing the answer is known to be addressed
+		// to. The discover response carries no visibleTo of its own.
 		"context": map[string]any{
 			"action": "discover",
 			// The peer routes on domain and version, so a discover missing
@@ -131,7 +135,7 @@ func (p *peerCrawl) discoverBody(target peerTarget) ([]byte, error) {
 			// not the caller.
 			"domain":        p.domain,
 			"version":       p.protocolVersion,
-			"networkId":     p.subscriberID,
+			"networkId":     audience,
 			"bapId":         p.subscriberID,
 			"messageId":     uuid.NewString(),
 			"schemaContext": p.schemaContext,
@@ -156,11 +160,48 @@ func (p *peerCrawl) discoverBody(target peerTarget) ([]byte, error) {
 	})
 }
 
+// fetch asks a peer for one audience, following pages until it runs out.
+//
+// Accumulated, never pushed per page. `limit` counts RESOURCES, so one
+// catalog's resources can straddle a page boundary -- and pushing page 1 with
+// updateMode FULL and then page 2 would delete what page 1 just wrote, because
+// FULL deletes the resources a payload omits.
+func (p *peerCrawl) fetch(ctx context.Context, target peerTarget, audience string) ([]json.RawMessage, error) {
+	if p.pageSize <= 0 {
+		// One request, no limit: what this did before paging, kept so a
+		// deployment that has not configured a page size is unaffected.
+		return p.fetchPage(ctx, target, audience, 0, 0)
+	}
+
+	var all []json.RawMessage
+	for page := 0; page < p.maxPages; page++ {
+		got, err := p.fetchPage(ctx, target, audience, p.pageSize, page*p.pageSize)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, got...)
+		// A page the peer could not fill is the last one. Discovery pages a
+		// RESOURCE list, so a short page in catalogs is not a reliable end
+		// marker -- but an empty one is, and so is one the peer truncated.
+		if len(got) == 0 {
+			break
+		}
+	}
+	return all, nil
+}
+
 // fetchPage sends one signed discover and returns what the peer answered.
-func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMessage, error) {
-	body, err := p.discoverBody(target)
+func (p *peerCrawl) fetchPage(ctx context.Context, target peerTarget, audience string, limit, offset int) ([]json.RawMessage, error) {
+	body, err := p.discoverBody(audience)
 	if err != nil {
 		return nil, fmt.Errorf("build discover for %s: %w", target.NetworkID, err)
+	}
+
+	// Paging lives on the QUERY STRING, not in the intent: the Beckn discover
+	// schema has no paging member and refuses one in the body.
+	endpoint := target.DiscoveryURL
+	if limit > 0 {
+		endpoint = withPage(endpoint, limit, offset)
 	}
 
 	// The same Signer every other outbound call uses. There is no
@@ -173,7 +214,7 @@ func (p *peerCrawl) fetch(ctx context.Context, target peerTarget) ([]json.RawMes
 		return nil, fmt.Errorf("sign discover for %s: %w", target.NetworkID, err)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target.DiscoveryURL, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -234,14 +275,35 @@ func authorization(subscriberID, keyID string, created, expires int64, signature
 // silence as a withdrawal would empty the cache on one timeout -- which is what
 // the ttl, and only the ttl, is allowed to do.
 func (p *peerCrawl) crawlPeer(ctx context.Context, target peerTarget) error {
-	catalogs, err := p.fetch(ctx, target)
-	if err != nil {
-		return err
+	var seen []json.RawMessage
+
+	// TWO calls, because context.networkId carries one value and we want two
+	// audiences:
+	//
+	//   the peer's own id  -- what the peer owns. A catalog published with no
+	//                         declared audience is filled with its own network,
+	//                         so this is how its own catalogue is reached.
+	//   our id             -- what the peer's publishers chose to share WITH US
+	//                         by naming us in publishDirectives.visibleTo.
+	//
+	// Ordered deliberately. A catalog in BOTH answers is pushed twice, and the
+	// second push decides what it is stamped with. Ours going last means our
+	// copy ends up addressed to us -- which is what stops the peer's own crawl
+	// of US matching it and re-importing its own catalogs.
+	//
+	// Both collapse into one call once context.networkId can carry a list.
+	for _, audience := range []string{target.NetworkID, p.subscriberID} {
+		catalogs, err := p.fetch(ctx, target, audience)
+		if err != nil {
+			return err
+		}
+		if err := p.pushAll(ctx, audience, catalogs); err != nil {
+			return err
+		}
+		seen = append(seen, catalogs...)
 	}
-	if err := p.pushAll(ctx, target, catalogs); err != nil {
-		return err
-	}
-	return p.reconcile(ctx, target, catalogs)
+
+	return p.reconcile(ctx, target, seen)
 }
 
 // reconcile records this pass's projections and withdraws the ones the peer
@@ -311,7 +373,7 @@ const defaultProjectionTtl = time.Hour
 //
 // A local search carries no network id at all, so it is unaffected: it still
 // sees everything we hold, ours and crawled alike.
-func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []json.RawMessage) error {
+func (p *peerCrawl) pushAll(ctx context.Context, audience string, catalogs []json.RawMessage) error {
 	for _, document := range catalogs {
 		meta := sink.PushMeta{
 			ParticipantID: p.subscriberID,
@@ -320,20 +382,26 @@ func (p *peerCrawl) pushAll(ctx context.Context, target peerTarget, catalogs []j
 			Timestamp:     time.Now().UTC().Format(time.RFC3339),
 			// discovery-service's /publish checks the body's action against the
 			// route, so this must say publish and not push.
-			Action:     "catalog/publish",
-			UpdateMode: sink.UpdateModeFull,
+			Action: "catalog/publish",
+			// Configured. FULL replaces, so a resource the peer dropped is
+			// deleted here too; MERGE upserts by id and never notices one.
+			UpdateMode: p.updateMode,
 			// Upper case: the enum is ["MASTER","REGULAR"] and the comparison is
 			// exact. A crawled catalog is never a master -- a master is a
 			// deployment's own shared definition, not something mirrored.
 			CatalogType: "REGULAR",
-			VisibleTo:   []string{target.NetworkID},
+			// Whatever this call ASKED for. The discover response carries no
+			// visibleTo of its own -- it is a publish-side directive and is
+			// never returned -- so the audience we asked for is the only thing
+			// the answer is known to be addressed to.
+			VisibleTo: []string{audience},
 		}
 		body, err := sink.BuildPushBody(meta, document)
 		if err != nil {
-			return fmt.Errorf("build push body for %s: %w", target.NetworkID, err)
+			return fmt.Errorf("build push body for %s: %w", audience, err)
 		}
 		if _, err := p.push.Push(ctx, p.pushEndpoint, body); err != nil {
-			return fmt.Errorf("push %s: %w", target.NetworkID, err)
+			return fmt.Errorf("push %s: %w", audience, err)
 		}
 	}
 	return nil
@@ -420,4 +488,26 @@ func (p *peerCrawl) crawlAll(ctx context.Context, targets []peerTarget, runID st
 // removed so two records that differ only by it do not look like two peers.
 func trimmedURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+// withPage puts limit and offset on a discover URL.
+//
+// Discovery reads paging off the query string rather than the intent, because
+// the Beckn discover schema has no paging member and refuses one in the body.
+//
+// An unparseable URL is returned untouched rather than refused: the request is
+// about to be made against it anyway, and failing there says what is wrong with
+// the registry's baseUrl far better than a paging helper can.
+func withPage(raw string, limit, offset int) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	query := parsed.Query()
+	query.Set("limit", strconv.Itoa(limit))
+	if offset > 0 {
+		query.Set("offset", strconv.Itoa(offset))
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
