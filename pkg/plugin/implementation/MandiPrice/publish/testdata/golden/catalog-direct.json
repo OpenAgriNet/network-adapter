@@ -91,10 +91,6 @@
                       "shortDesc": "Onion traded in agricultural produce markets."
                     }
                   ],
-                  "validity": {
-                    "endsAt": "\u003ctimestamp + 2 days\u003e",
-                    "startsAt": "\u003ctimestamp\u003e"
-                  },
                   "variety": "Unhali"
                 }
               },
@@ -159,10 +155,6 @@
                       "shortDesc": "Onion traded in agricultural produce markets."
                     }
                   ],
-                  "validity": {
-                    "endsAt": "\u003ctimestamp + 2 days\u003e",
-                    "startsAt": "\u003ctimestamp\u003e"
-                  },
                   "variety": "Unhali"
                 }
               },
@@ -227,10 +219,6 @@
                       "shortDesc": "Onion traded in agricultural produce markets."
                     }
                   ],
-                  "validity": {
-                    "endsAt": "\u003ctimestamp + 2 days\u003e",
-                    "startsAt": "\u003ctimestamp\u003e"
-                  },
                   "variety": "Red"
                 }
               },
@@ -295,10 +283,6 @@
                       "shortDesc": "Onion traded in agricultural produce markets."
                     }
                   ],
-                  "validity": {
-                    "endsAt": "\u003ctimestamp + 2 days\u003e",
-                    "startsAt": "\u003ctimestamp\u003e"
-                  },
                   "variety": "Other"
                 }
               }

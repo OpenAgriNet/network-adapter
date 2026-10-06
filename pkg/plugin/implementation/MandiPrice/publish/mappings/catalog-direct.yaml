@@ -8,9 +8,7 @@
 # mappings/catalog-ondemand.yaml. The two share an envelope and a provider but
 # nothing else, so each is kept whole rather than parameterised.
 #
-# Two vocabularies for validity:
-#   catalog-level validity: startDate / endDate (Beckn envelope)
-#   resourceAttributes validity: startsAt / endsAt (OpenAgriNet schema pack)
+# No validity anywhere: neither the catalog nor its resources carry one.
 #
 # JSONata collapses single-element sequences at every level, so the outer
 # resources array and the inner supportedCommodities array are both explicitly
@@ -24,10 +22,6 @@ response: |
     $unitOf := function($u) {
       $u = "Rs./Qtl" ? "quintal" : ($u = "Rs./Kg" ? "kg" : $u)
     };
-
-    /* Publish time + 2 days, so a price stays visible through the next run and one missed one and then expires; same source as above. */
-    $validUntil := $fromMillis($toMillis(_local.generatedAt) + 2 * 86400000,
-      "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
 
     $makePriceResource := function($row) {
       (
@@ -103,11 +97,7 @@ response: |
               "currency": "INR",
               "unit": $unitOf($row.priceUnit)
             },
-            "generatedAt": _local.generatedAt,
-            "validity": {
-              "startsAt": _local.generatedAt,
-              "endsAt": $validUntil
-            }
+            "generatedAt": _local.generatedAt
           }
         }
       )

@@ -7,9 +7,7 @@
 # is mappings/catalog-direct.yaml. The two share an envelope and a provider but
 # nothing else, so each is kept whole rather than parameterised.
 #
-# Two vocabularies for validity:
-#   catalog-level validity: startDate / endDate (Beckn envelope)
-#   resourceAttributes validity: startsAt / endsAt (OpenAgriNet schema pack)
+# No validity anywhere: neither the catalog nor its resources carry one.
 #
 # JSONata collapses single-element sequences at every level, so the outer
 # resources array and the inner supportedCommodities array are both explicitly
@@ -17,20 +15,6 @@
 
 response: |
   (
-    $toRFC3339Start := function($w) {
-      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T00:00:00' & _local.utcOffset
-    };
-    $toRFC3339End := function($w) {
-      $contains($w, 'T') ? $w : $substring($w, 6, 4) & '-' & $substring($w, 3, 2) & '-' & $substring($w, 0, 2) & 'T23:59:59' & _local.utcOffset
-    };
-    /* Window start to window end + 2 days (past the next daily run and one missed one); discovery hides a resource past its validity, not a catalog -- dev_docs/mandi-catalog-contents-and-reasons.md section 9, field optional per https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/README.md */
-    $startDate := $toRFC3339Start(_local.windowFrom);
-    $endDate := $fromMillis(
-      $toMillis($toRFC3339End(_local.windowTo)) + 2 * 86400000,
-      "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01][Z01:01]",
-      $replace(_local.utcOffset, ":", "")
-    );
-
     /* No filtering and no sorting here. Which markets publish, and in what
        order, is the pipeline file's catalog block (exclude, order), applied
        by the engine before this runs; a second copy of either rule would
@@ -122,10 +106,6 @@ response: |
             "languages": [
               "en"
             ],
-            "validity": {
-              "startsAt": $startDate,
-              "endsAt": $endDate
-            },
             "coverageAreas": $coverageAreas
           }
         }

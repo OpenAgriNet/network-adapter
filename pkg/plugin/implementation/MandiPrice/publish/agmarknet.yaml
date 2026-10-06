@@ -438,12 +438,7 @@ catalog:
       networkId: ${inputs.networkId}
       catalogSlug: ${slug}
       stateName: ${group.stateName}
-      windowFrom: ${inputs.fromDate}
-      windowTo: ${inputs.toDate}
       generatedAt: ${now.rfc3339}
-      # The schedule zone's offset, so validity timestamps built from the
-      # dd-MM-yyyy window say which day they mean (+05:30, not Z).
-      utcOffset: ${schedule.utcOffset}
       transactionId: ${uuid}
       messageId: ${uuid}
 

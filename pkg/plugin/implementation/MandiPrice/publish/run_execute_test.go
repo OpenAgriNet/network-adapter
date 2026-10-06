@@ -723,8 +723,7 @@ func (p refusingPublisher) Retire(_ context.Context, _ string, r pipeline.Retire
 //     MandiPrice schema, and the publish endpoint rejects the whole catalog
 //     over a property outside it (measured: "property \"districtId\" is
 //     unsupported", every catalog 400);
-//   - resource validity carries the schedule's offset (+05:30), not Z;
-//   - the catalog itself carries no validity (see the listing-validity test).
+//   - neither the catalog nor its resources carry a validity (see the validity test).
 func TestRunRendersTheCatalogContract(t *testing.T) {
 	states := append(twoGoodStates(), upstreamState{code: "ZZ", name: "Nowhere", rows: `[
   {"market_id":1001,"mkt_name":"Nowhere Market","state_code":"ZZ","state_name":"Nowhere",
@@ -764,8 +763,8 @@ func TestRunRendersTheCatalogContract(t *testing.T) {
 			if iso != wantISO[catalog.Slug] {
 				t.Errorf("%s: ISO area = %q, want %q", catalog.Slug, iso, wantISO[catalog.Slug])
 			}
-			if start := attrs["validity"].(map[string]any)["startsAt"].(string); !strings.HasSuffix(start, "+05:30") {
-				t.Errorf("%s: resource validity.startsAt = %q, want +05:30", catalog.Slug, start)
+			if _, has := attrs["validity"]; has {
+				t.Errorf("%s: a resource carries a validity", catalog.Slug)
 			}
 		}
 	}
@@ -774,47 +773,34 @@ func TestRunRendersTheCatalogContract(t *testing.T) {
 	}
 }
 
-// A published resource must be valid WHEN it is published, and stay valid until
-// the next daily run lands: discovery hides a RESOURCE past its validity (tested
-// 2026-10-06, dev_docs/mandi-catalog-contents-and-reasons.md section 9), and the
-// price window this pipeline queries is yesterday, so a validity copied from
-// that window is already over at publish. The CATALOG carries no validity: it
-// hid nothing in that test, and it is optional in the pack.
-func TestPublishedListingIsValidFromTheRunUntilAfterTheNextOne(t *testing.T) {
+// Nothing published carries a validity: not the catalog, not its resources.
+// (Both are optional in the pack. Discovery acts on a resource's validity, so
+// without one a published price stays discoverable until it is republished or
+// the catalog is deleted: dev_docs/mandi-catalog-contents-and-reasons.md
+// section 9.)
+func TestPublishedCatalogsAndResourcesCarryNoValidity(t *testing.T) {
 	upstream := fakeAgmarknet(t, twoGoodStates())
-	now := firingTime(t)
 	report, err := pipeline.Run(context.Background(), pipeline.RunOptions{
 		Record: publishingRecord(), Pipeline: Pipeline(),
-		Lookup: fakeUpstreamEnv(upstream.URL), Now: now, OutDir: t.TempDir(),
+		Lookup: modeEnv(upstream.URL, "both"), Now: firingTime(t), OutDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	check := func(where, from, to string) {
-		t.Helper()
-		start, err1 := time.Parse(time.RFC3339, from)
-		end, err2 := time.Parse(time.RFC3339, to)
-		if err1 != nil || err2 != nil {
-			t.Fatalf("%s: validity %q..%q is not RFC 3339", where, from, to)
+	checked := 0
+	for slug, entry := range catalogBySlug(t, report) {
+		if _, has := entry["validity"]; has {
+			t.Errorf("%s: the catalog carries a validity", slug)
 		}
-		if start.After(now) || !end.After(now.Add(24*time.Hour)) {
-			t.Errorf("%s: validity %s..%s; want it to start by the run (%s) and last beyond the next daily run",
-				where, from, to, now.Format(time.RFC3339))
+		for id, resource := range resourcesByID(entry) {
+			if _, has := resource["resourceAttributes"].(map[string]any)["validity"]; has {
+				t.Errorf("%s %s: the resource carries a validity", slug, id)
+			}
+			checked++
 		}
 	}
-	for _, catalog := range report.Catalogs {
-		var doc map[string]any
-		if err := json.Unmarshal(catalog.Content, &doc); err != nil {
-			t.Fatalf("%s: %v", catalog.Slug, err)
-		}
-		entry := doc["message"].(map[string]any)["catalogs"].([]any)[0].(map[string]any)
-		if _, has := entry["validity"]; has {
-			t.Errorf("%s: the catalog carries a validity; only its resources should", catalog.Slug)
-		}
-		for _, raw := range entry["resources"].([]any) {
-			rv := raw.(map[string]any)["resourceAttributes"].(map[string]any)["validity"].(map[string]any)
-			check(catalog.Slug+" resource", rv["startsAt"].(string), rv["endsAt"].(string))
-		}
+	if checked == 0 {
+		t.Fatal("no resource was checked")
 	}
 }
 
@@ -923,14 +909,10 @@ func TestRunBuildsBothModesFromOneRun(t *testing.T) {
 	if _, ok := market["location"]; !ok {
 		t.Error("Pune has a coordinate, so its Direct resource must carry a location")
 	}
-	// Valid for two days from when it was generated: past the next daily
-	// run, which republishes it in place, and one missed run.
-	validity := attrs["validity"].(map[string]any)
-	starts, err1 := time.Parse(time.RFC3339, validity["startsAt"].(string))
-	ends, err2 := time.Parse(time.RFC3339, validity["endsAt"].(string))
-	if err1 != nil || err2 != nil || validity["startsAt"] != attrs["generatedAt"] || ends.Sub(starts) != 48*time.Hour {
-		t.Errorf("validity = %v, generatedAt = %v; want startsAt = generatedAt and endsAt two days later",
-			validity, attrs["generatedAt"])
+	// No validity: a resource is published with the moment it was generated and
+	// nothing else about its lifetime.
+	if _, has := attrs["validity"]; has {
+		t.Errorf("the Pune Direct resource carries a validity: %v", attrs["validity"])
 	}
 
 	nashik := resources["resource:mandi-price:price:102:23"]["resourceAttributes"].(map[string]any)
