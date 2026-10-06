@@ -109,16 +109,20 @@ func (p *peerCrawl) discoverBody(target peerTarget) ([]byte, error) {
 		intent = map[string]any{}
 	}
 	return json.Marshal(map[string]any{
-		// The PEER's network id, because this names WHOSE CATALOGS we want --
-		// not who is asking.
+		// OUR network id, because visibleTo is an AUDIENCE and this asks for the
+		// audience we belong to: give us what you decided to share WITH US.
 		//
-		// A peer's database holds its own catalogs and copies of what it crawled
-		// from elsewhere. Asking as ourselves would match whatever that peer
-		// labelled for us, which includes nothing useful and excludes what we
-		// came for. Asking for the peer's own id returns the peer's own data and
-		// leaves a third network's copies behind -- which is the contract's
-		// "answer with your own data only", enforced by the question rather than
-		// by trusting the answer.
+		// The alternative -- asking with the peer's own id -- returns everything
+		// the peer owns, because a catalog with no declared audience is filled
+		// with its own network. That reads the peer's data by ownership and
+		// leaves its publishers no say in it. Asking as ourselves puts the
+		// decision where it belongs: a publisher that wants us to see a catalog
+		// names us in publishDirectives.visibleTo, and one that does not, does
+		// not.
+		//
+		// The cost is that admission alone shares nothing. A peer whose
+		// publishers have not named us answers with an empty list, and that is
+		// a correct answer rather than a broken crawl.
 		"context": map[string]any{
 			"action": "discover",
 			// The peer routes on domain and version, so a discover missing
@@ -127,7 +131,7 @@ func (p *peerCrawl) discoverBody(target peerTarget) ([]byte, error) {
 			// not the caller.
 			"domain":        p.domain,
 			"version":       p.protocolVersion,
-			"networkId":     target.NetworkID,
+			"networkId":     p.subscriberID,
 			"bapId":         p.subscriberID,
 			"messageId":     uuid.NewString(),
 			"schemaContext": p.schemaContext,

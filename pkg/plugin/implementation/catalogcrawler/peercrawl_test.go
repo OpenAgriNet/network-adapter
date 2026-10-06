@@ -37,12 +37,16 @@ func (r *recordingPush) Push(_ context.Context, _ string, body []byte) (sink.Bat
 	return sink.BatchOutcome{Acked: true}, nil
 }
 
+// Who we are, as the peer sees us. The discover asks for the audience this id
+// belongs to.
+const testSubscriberID = "network.bharatvistar.oan.local"
+
 func newPeerCrawl(t *testing.T, push catalogPusher) *peerCrawl {
 	t.Helper()
 	return &peerCrawl{
 		signer:       stubSigner{},
 		localNetwork: "bharatvistar.oan.local",
-		subscriberID: "network.bharatvistar.oan.local",
+		subscriberID: testSubscriberID,
 		privateKey:   "test-key",
 		window:       time.Minute,
 		intent:       map[string]any{},
@@ -98,14 +102,14 @@ func TestCrawlPeerSendsASignedDiscover(t *testing.T) {
 	}
 }
 
-// Our OWN network id goes in the context, not the peer's. It is what the peer
-// scopes its answer by, and so what keeps a third network's cached rows out of
-// what we receive.
-// The discover names WHOSE CATALOGS we want, not who is asking.
+// The discover names the AUDIENCE we belong to: give us what you decided to
+// share with us.
 //
-// A peer's database holds its own catalogs and copies of what it crawled
-// elsewhere. Naming the peer is what leaves those copies behind.
-func TestCrawlPeerAsksForThePeersOwnCatalogs(t *testing.T) {
+// visibleTo is an audience list, so our own id is what a peer's publisher names
+// to share a catalog with us. Asking with the PEER's id instead would return
+// everything it owns -- a catalog with no declared audience is filled with its
+// own network -- and leave its publishers no say in what we take.
+func TestCrawlPeerAsksForTheAudienceWeBelongTo(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -117,8 +121,11 @@ func TestCrawlPeerAsksForThePeersOwnCatalogs(t *testing.T) {
 		crawlPeer(context.Background(), peerTarget{NetworkID: "maha", DiscoveryURL: server.URL})
 
 	envelope, _ := body["context"].(map[string]any)
-	if envelope["networkId"] != "maha" {
-		t.Fatalf("networkId = %v, want the peer we are asking", envelope["networkId"])
+	// Deliberately NOT "maha". A test asserting the peer's id would pass while
+	// the crawl took everything that peer holds regardless of who its
+	// publishers meant it for.
+	if envelope["networkId"] != testSubscriberID {
+		t.Fatalf("networkId = %v, want our own id %q", envelope["networkId"], testSubscriberID)
 	}
 }
 
