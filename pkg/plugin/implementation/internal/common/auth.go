@@ -118,7 +118,7 @@ func (a *AuthProfile) validate() error {
 		}
 	case util.AuthSchemeTokenQuery, util.AuthSchemeTokenHeader:
 		// Every one of these is required, and none can be defaulted: the JSON
-		// keys, the response key and the parameter name are all this
+		// keys, the response key and the parameter or header name are all this
 		// provider's spelling, and guessing any of them sends a malformed
 		// request whose rejection says nothing about the cause.
 		if a.TokenURL == "" || a.TokenUserField == "" || a.TokenUserEnv == "" ||

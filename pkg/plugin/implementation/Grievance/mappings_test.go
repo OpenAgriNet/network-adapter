@@ -618,6 +618,9 @@ func TestSupport_SecondChannel_Returns400WithoutCallingPMFBY(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
 	_, err := h.send(t, raw)
 	assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
+	if !strings.Contains(err.Error(), "2 channels") {
+		t.Errorf("error %q should say \"2 channels\" so the caller can act on it", err)
+	}
 	if h.pmfby.calls[insertPath] != 0 {
 		t.Error("PMFBY was called for a request naming two channels")
 	}
