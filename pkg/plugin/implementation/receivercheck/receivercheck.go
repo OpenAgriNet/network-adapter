@@ -85,6 +85,20 @@ func (s *Step) Run(ctx *model.StepContext) error {
 	log.Debugf(ctx, "checkReceiver: %s is not %s, forwarding to %s",
 		receiver, s.subscriberID, target)
 
+	// The network signs, not the participant the request names. Without this
+	// the sign step would sign as the PEER: reqpreprocessor resolves the
+	// module's own id from the body (role bpp reads receiverId), which on this
+	// path is somebody else, and the keyset lookup fails with "failed to get
+	// signing key".
+	//
+	// Set here rather than by dropping reqpreprocessor, which would also take
+	// transaction_id off every log line on this module -- the handler sets
+	// messageId itself but nothing else sets txnID.
+	//
+	// Only on this branch. A request for us keeps the id reqpreprocessor
+	// resolved, which under one identity is this same string anyway.
+	ctx.SubID = s.subscriberID
+
 	ctx.Route = &model.Route{TargetType: "url", URL: target}
 	return nil
 }

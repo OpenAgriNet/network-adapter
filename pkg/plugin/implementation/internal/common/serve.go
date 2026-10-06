@@ -22,6 +22,15 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
+	// An earlier step has already decided this request belongs somewhere else.
+	// A step list runs every step regardless, so without this the binding would
+	// still match -- a binding key names the upstream provider, not the network
+	// -- and we would call that upstream for an answer the proxy is about to
+	// discard, and answer in somebody else's name while doing it.
+	if ctx.Route != nil {
+		return nil
+	}
+
 	binding, err := BindingFrom(s.paths, ctx.Body)
 	if errors.Is(err, errNoBinding) {
 		return nil

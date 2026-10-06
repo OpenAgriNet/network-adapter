@@ -71,6 +71,9 @@ func TestOursPassesThrough(t *testing.T) {
 			if ctx.Route != nil {
 				t.Fatalf("Route: want nil for our own request, got %#v", ctx.Route)
 			}
+			if ctx.SubID != "" {
+				t.Errorf("SubID: want it left alone for our own request, got %q", ctx.SubID)
+			}
 		})
 	}
 }
@@ -103,6 +106,10 @@ func TestPeersRequestGoesToItsBppUri(t *testing.T) {
 			}
 			if got := ctx.Route.URL.String(); got != tc.want {
 				t.Errorf("URL: want %q, got %q", tc.want, got)
+			}
+			// The network signs, not the peer the request names.
+			if ctx.SubID != us {
+				t.Errorf("SubID: want %q so the sign step signs as us, got %q", us, ctx.SubID)
 			}
 		})
 	}
@@ -162,5 +169,9 @@ func TestDoesNotCompareAgainstContextSubID(t *testing.T) {
 	}
 	if ctx.Route == nil {
 		t.Fatal("a peer's request was served locally; the check is reading its own id from the body")
+	}
+	if ctx.SubID != us {
+		t.Fatalf("SubID: want %q, got %q -- the forwarded request would be signed as the peer, "+
+			"and the keyset lookup would fail", us, ctx.SubID)
 	}
 }
