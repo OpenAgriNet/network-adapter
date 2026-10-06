@@ -22,21 +22,33 @@ This page is the sequence of execution — the calls in order, and the payloads 
 
 ## One rule for where every field sits
 
-**`descriptor` is the complaint. Attributes are the caller and the case record.**
+**The band a field sits in says who wrote it.**
 
-`Support` carries a `descriptor`, and so does `Contract` — so the same rule holds on every
-leg, and a reader who learns it once can read any example on this page.
+Everything the grievance is about travels in the attributes, on every leg, so a reader who
+learns the four bands once can read any example on this page.
 
-| | holds | on `support` | on `init` / `status` |
-|---|---|---|---|
-| `orderId` | the enrolment the complaint is against | `applicationNo` on PMFBY, the registration number on PM-KISAN — echoed unchanged on the reply | — (`Contract` has no `orderId`) |
-| `descriptor` | the complaint: category `code`/`name`, the farmer's words in `longDesc` | `support.descriptor` | `contract.descriptor` |
-| `provider` | the portal — filed with on the way in, came from on the way out | in the attributes, because a `SupportAction` has no `Contract` | `commitments[].offer.provider`; the attributes do **not** repeat it |
-| attributes | who is asking, and what the case record says | `channels`, selected by `@type` | `commitmentAttributes` |
+| band | holds | written by |
+|---|---|---|
+| top level | who is asking and about what: `informationMode`, `provider`, `scheme`, `enrolmentId`, and the PMFBY-only `applicantPhone`, `cropYear`, `season` | the caller |
+| `grievance` | what the farmer submitted: `category`, `subCategory`, `description` | the farmer |
+| `case` | what the portal has on file, the stamps it applied included: `ticketNo`, `status`, `filedOn`, `remark` | the portal |
+| `challenge` | proof of the phone number, on the way in only — PMFBY only | the caller |
+| `challengeIssued` | the acknowledgement of that proof, on the way out only — PMFBY only | the portal |
 
-`descriptor` is absent where there is nothing to describe: `init` asks for a challenge before
-the farmer has stated anything, and a `status` request names a ticket rather than restating
-the case.
+Nothing rides in a Beckn `descriptor`. An earlier draft put the complaint there, which read
+well and checked nothing: a `Descriptor` is three free-text strings, so the category, the
+sub-category and the farmer's words all validated as any string at all. As attribute fields
+each one has bounds the pack can hold.
+
+| | on `support` | on `init` / `status` |
+|---|---|---|
+| the bands above | `support.channels[0]`, selected by `@type` | `commitmentAttributes` |
+| `orderId` | `enrolmentId`, echoed unchanged on the reply | — (`Contract` has no `orderId`) |
+| `provider` | in the attributes, because a `SupportAction` has no `Contract` | `commitments[].offer.provider`; the attributes do **not** repeat it |
+
+A band is absent when there is nothing in it. `init` asks for a challenge before the farmer
+has stated anything, so it carries no `grievance`; an ask carries no `case`, because only the
+portal writes one.
 
 One field covers both directions because on a grievance they are always the same party, and
 it is the same shape in both places — `{ "id": …, "descriptor": { "name": … } }` — so
@@ -65,16 +77,17 @@ Editable source is `grievance-flow.excalidraw`, which opens at
 [excalidraw.com](https://excalidraw.com). Re-export both `grievance-flow.svg` and
 `grievance-flow.png` after any change.
 
-The OTP never reaches the lodge call and is never returned. PMFBY's ticket is not the
-`orderId`: it arrives separately, in `ticketNo` on the channel. PM-KISAN issues no ticket at
-all, which is why its case is read back by identity and the date it was filed.
+The OTP never reaches the lodge call and is never returned. Neither portal's ticket is the
+`orderId`: it arrives separately, in `case.ticketNo` on the channel. Both portals issue one on a
+lodge. The difference is on the read — PMFBY takes the ticket number back, PM-KISAN has no
+per-grievance endpoint, so its case is read back by identity and the date it was filed.
 
 ---
 
 ## Reading `code` and `name`
 
-Three fields below are a `code` + `name` pair: `scheme`, `grievanceCategory` and
-`caseStatus`. They all follow one rule.
+Three fields below are a `code` + `name` pair: `scheme`, `grievance.category` and
+`case.status`. They all follow one rule.
 
 - **`code` is the network's word.** It comes from a list this network governs.
   Branch on it.
@@ -85,14 +98,14 @@ Three fields below are a `code` + `name` pair: `scheme`, `grievanceCategory` and
   code rather than quoting a phrase. That is information, not an omission.
 
 One field looks exactly like these and is not: a commitment's `status.descriptor`.
-It is a `Descriptor` too, and it sits in the same payload as `caseStatus`.
+It sits in the same payload as `case.status`.
 
-It answers a different question. `caseStatus` says how the grievance is going.
+It answers a different question. `case.status` says how the grievance is going.
 `status.descriptor.code` is Beckn's own contract lifecycle — `DRAFT` while a
 challenge is outstanding, `ACTIVE` from the moment the grievance is lodged — and
 nothing the portal reports ever moves it.
 
-So: `caseStatus` to tell the farmer anything; `status.descriptor` never.
+So: `case.status` to tell the farmer anything; `status.descriptor` never.
 
 ---
 
@@ -103,7 +116,7 @@ So: `caseStatus` to tell the farmer anything; `status.descriptor` never.
 **Request**
 
 - Carries the farmer's phone in `applicantPhone`, and nothing else.
-- No `descriptor`: the farmer has not stated a complaint yet.
+- No `grievance` band: the farmer has not stated a complaint yet.
 - Commitment status is `DRAFT`. The caller mints `contract.id` here and reuses it on `status`.
 
 ```json
@@ -144,8 +157,9 @@ POST /init
 - Branch on `method`; do not hard-code "six digits". `AADHAAR_OTP` and `DEVICE_TOKEN` are in
   the same enum, and a portal that starts offering one answers with that method instead.
 - `informationMode` is still `OnDemand`, even on a reply. `Direct` means a real case, and
-  the pack requires `ticketNo`, `caseStatus` and `filedOn` wherever `Direct` appears — an
-  acknowledgement has none of them.
+  wherever `Direct` appears the PMFBY pack requires a `case` band carrying `ticketNo`,
+  `status` and `filedOn` — an acknowledgement has none of them. (PM-KISAN's pack requires
+  `status` and `filedOn` only; see its own section.)
 
 ```json
 "commitmentAttributes": {
@@ -166,10 +180,10 @@ POST /init
 **Request**
 
 - Same `transactionId`, new `messageId`. No contract travels; a `SupportAction` composes none.
-- `orderId` is `applicationNo` — the enrolment the complaint is against.
-- `descriptor` is the whole complaint. `code` is load-bearing: `3.10` is the portal's
-  category and sub-category joined by a dot, and the adapter splits it there into two
-  upstream fields.
+- `orderId` is `enrolmentId` — the enrolment the complaint is against.
+- The `grievance` band is the whole complaint, and it is two separate fields rather than one
+  joined string: `category.code` and `subCategory.code` go to two upstream fields, so the
+  adapter reads each one instead of splitting a `3.10` apart.
 - `channels[0]` carries the `provider` to route to, what identifies the farmer, and the OTP
   in `challenge`.
 - Exactly one channel. The adapter refuses a second: one request, one upstream call.
@@ -185,11 +199,6 @@ POST /support
   "message": {
     "support": {
       "orderId": "KA2026KH00123456",
-      "descriptor": {
-        "code": "3.10",
-        "name": "Enrollment / Portal Issues Login",
-        "longDesc": "Claim approved in July but no amount credited."
-      },
       "channels": [{
         "@context": "…/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
@@ -202,6 +211,11 @@ POST /support
         "applicantPhone": "9876543210",
         "cropYear": "2026",
         "season": "Kharif",
+        "grievance": {
+          "category": { "code": "3", "name": "Enrollment / Portal Issues" },
+          "subCategory": { "code": "10", "name": "Login" },
+          "description": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment."
+        },
         "challenge": { "method": "SMS_OTP", "value": "482137" }
       }]
     }
@@ -212,11 +226,11 @@ POST /support
 **`on_support`**
 
 - `orderId` is echoed unchanged — a reply does not change what the complaint is against.
-- `ticketNo` is the ticket the portal just issued, on the channel. The spec names no field
-  for it, and the channel is where the scheme's own fields live.
+- `case.ticketNo` is the ticket the portal just issued. The spec names no field for it, and
+  the attributes are where the scheme's own fields live.
 - `informationMode` flips to `Direct`.
-- `caseStatus`, `filedOn` and `provider` are the adapter's assertions, not the portal's;
-  `descriptor` is the caller's own words echoed back.
+- `case.status`, `case.filedOn` and `provider` are the adapter's assertions, not the
+  portal's; the `grievance` band is the caller's own words echoed back.
 - `challenge` and `applicantPhone` are dropped by the response allow-list.
 
 The portal's lodge reply carries four things:
@@ -224,7 +238,7 @@ The portal's lodge reply carries four things:
 | upstream | what we do with it |
 |---|---|
 | success flag | decides whether this is an ACK at all |
-| `ticket-no` | becomes `ticketNo` — the number the farmer quotes back |
+| `ticket-no` | becomes `case.ticketNo` — the number the farmer quotes back |
 | `ticket-id` | dropped; the portal's own row id, nothing later needs it |
 | message | never returned, logged redacted |
 
@@ -234,11 +248,6 @@ The portal's lodge reply carries four things:
   "message": {
     "support": {
       "orderId": "KA2026KH00123456",
-      "descriptor": {
-        "code": "3.10",
-        "name": "Enrollment / Portal Issues Login",
-        "longDesc": "Claim approved in July but no amount credited."
-      },
       "channels": [{
         "@context": "…/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
@@ -248,9 +257,16 @@ The portal's lodge reply carries four things:
           "descriptor": { "name": "PMFBY Grievance Portal" }
         },
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-        "ticketNo": "100626000099001",
-        "caseStatus": { "code": "Registered" },
-        "filedOn": "2026-09-28"
+        "grievance": {
+          "category": { "code": "3", "name": "Enrollment / Portal Issues" },
+          "subCategory": { "code": "10", "name": "Login" },
+          "description": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment."
+        },
+        "case": {
+          "ticketNo": "100626000099001",
+          "status": { "code": "Registered" },
+          "filedOn": "2026-09-28"
+        }
       }]
     }
   }
@@ -261,15 +277,15 @@ No helpline channel is emitted — neither scheme publishes one we have on file.
 confirmed later it becomes a second member of `channels`, which is why a consumer must
 select the case record by `@type` rather than by position.
 
-**Next** — store `contract.id`, `ticketNo` and the phone number. `status` needs all three.
+**Next** — store `contract.id`, `case.ticketNo` and the phone number. `status` needs all three.
 
 ### Step 3 — `status`: check the ticket
 
 **Request**
 
 - New `transactionId` — a separate session, days later. Same `contract.id` as `init`.
-- No `descriptor`: this names a ticket, it does not restate the complaint.
-- Sends `ticketNo` and `applicantPhone`.
+- No `grievance` band: this names a ticket, it does not restate the complaint.
+- Sends `case.ticketNo` and `applicantPhone`.
 - No OTP — it is spent once, at filing.
 
 > **The read is not authenticated.** Anyone holding both the ticket number and the filing
@@ -300,7 +316,7 @@ POST /status
         "informationMode": "OnDemand",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "applicantPhone": "9876543210",
-        "ticketNo": "100626000099001"
+        "case": { "ticketNo": "100626000099001" }
       }
     }]
   }}
@@ -309,27 +325,26 @@ POST /status
 
 **`on_status`**
 
-- `contract.descriptor` carries the complaint as the portal holds it.
-- `commitmentAttributes` carries the case record.
-- `caseStatus.code` is the network's word; `caseStatus.name` is the portal's phrase, when it
-  gives one.
-- `caseRemark` is about the case rather than the complaint, so it stays in attributes. It is
-  absent while nothing has been recorded, and PMFBY publishes no date against it, so there
-  is no `remarkedOn`.
-- The portal also returns the farmer's name, mobile number, email, full address down to the
-  village, the insurance policy number and the insurer. All dropped — the response mapping
-  is an allow-list, not a passthrough.
+- The `grievance` band carries the complaint as the portal holds it, and the `case` band the
+  record it keeps against it.
+- `case.status.code` is the network's word; `case.status.name` is the portal's phrase, when
+  it gives one.
+- There is no remark. PMFBY's ticket record carries a status phrase and nothing resembling
+  a reply, so the pack refuses both `case.remark` and `case.remarkedOn`.
+- `case.cropName` is the insured crop, which PMFBY returns and no other scheme has.
+- The category comes back as a **name with no code** — the portal returns
+  `TicketCategoryName` and no id — so `code` is absent here. That is why the base requires
+  one of `code` or `name` rather than `code` outright.
+- `cropYear` and `season` are absent: the caller sends them, the portal does not return them.
+- The portal also returns the farmer's name, state, district and the insurer, plus an
+  internal ticket key. All dropped — the response mapping is an allow-list, not a
+  passthrough.
 
 ```json
 {
   "context": { "action": "on_status", "messageId": "2f8c…", "…": "…" },
   "message": { "contract": {
     "id": "b1d4e2f0-5a63-4c81-9e77-2af0c9d31b45",
-    "descriptor": {
-      "code": "3.10",
-      "name": "Enrollment / Portal Issues Login",
-      "longDesc": "Claim approved in July but no amount credited."
-    },
     "commitments": [{
       "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
@@ -343,25 +358,30 @@ POST /status
         "@type": "openagrinet:PMFBYGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-        "ticketNo": "100626000099001",
-        "applicationNo": "KA2026KH00123456",
-        "cropYear": "2026",
-        "season": "Kharif",
-        "caseStatus": { "code": "UnderReview", "name": "Open" },
-        "filedOn": "2026-09-28",
-        "caseRemark": "Claim file reopened, awaiting surveyor report."
+        "enrolmentId": "KA2026KH00123456",
+        "grievance": {
+          "category": { "name": "Enrollment / Portal Issues" },
+          "subCategory": { "name": "Login" },
+          "description": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment."
+        },
+        "case": {
+          "ticketNo": "100626000099001",
+          "status": { "code": "UnderReview", "name": "Open" },
+          "filedOn": "2026-09-28",
+          "cropName": "Paddy"
+        }
       }
     }]
   }}
 }
 ```
 
-> **This one reply is not verified.** Everything PMFBY *accepts* is confirmed against the
-> live system; what it *returns on a case read* is not — the field names behind this payload
-> appear in no source we hold. The Beckn side above will not change, but which upstream
-> field feeds which value may. Confirm against PMFBY's own API document before building on
-> it; `grievance-upstream-contracts.md` records what is verified and what is not, field by
-> field. PMFBY's `init` and `support`, and all of PM-KISAN, are unaffected.
+> **Verified.** The upstream names behind this payload are read from the v1 adapter on
+> `main` — `src/services/pmfby/pmfby-greviance.service.ts` and the mapping in
+> `src/app.service.ts`. One thing is still open: the portal sends a `recordCount` beside
+> the record, and v1 reads the record as a single object. Whether a multi-ticket read
+> returns an array is unconfirmed. `grievance-upstream-contracts.md` has the field-by-field
+> provenance.
 
 **Next** — repeat `status` on demand.
 
@@ -374,8 +394,9 @@ POST /status
 - **`orderId` is the registration number.** PM-KISAN has no application number and no case
   number — the upstream takes exactly one reference, `IdentityNo`. So the farmer's enrolment
   is both the identity the portal authenticates on and the thing the complaint is against,
-  which is what `orderId` means. It goes in the slot PMFBY fills with `applicationNo` and is
-  echoed unchanged on the reply. It stays `no-log` and `no-trace` either way.
+  which is what `orderId` means. It travels as `enrolmentId`, the same field PMFBY fills
+  with its application number, and is echoed unchanged on the reply. It stays `no-log` and
+  `no-trace` either way.
 - **Encryption is not yours to do.** PM-KISAN accepts and returns AES-GCM envelopes, not
   JSON: `{"EncryptedRequest": "…"}` in, `{"d": {"output": "…"}}` back. The adapter
   encrypts after the request mapping runs and decrypts before the response mapping runs, so
@@ -391,9 +412,9 @@ POST /status
 **Request**
 
 - `orderId` is the farmer's PM-KISAN registration number.
-- `descriptor.code` is one of the pack's ten codes.
-- `channels[0]` carries the `provider` to route to and the scheme, and nothing else:
-  PM-KISAN asks for no phone and issues no challenge.
+- `grievance.category.code` is one of the pack's ten codes.
+- `channels[0]` carries the `provider` to route to, the scheme and the `grievance` band.
+  No phone and no `challenge`: PM-KISAN asks for neither.
 
 ```json
 POST /support
@@ -406,11 +427,6 @@ POST /support
   "message": {
     "support": {
       "orderId": "UP12345678A",
-      "descriptor": {
-        "code": "G003",
-        "name": "Installment not received",
-        "longDesc": "Third instalment for 2026 has not been credited."
-      },
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
@@ -419,14 +435,20 @@ POST /support
           "id": "pmkisan",
           "descriptor": { "name": "PM-KISAN Grievance Portal" }
         },
-        "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" }
+        "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+        "grievance": {
+          "category": { "code": "G003", "name": "Installment not received" },
+          "description": "Third instalment for 2026 has not been credited."
+        }
       }]
     }
   }
 }
 ```
 
-Categories are a closed list, `G001`–`G010`:
+`grievance.category.code` is a closed list, `G001`–`G010`, and the pack holds it as an enum.
+There is no `subCategory`: PM-KISAN classifies one level deep, and the pack refuses the
+field outright rather than letting it pass unnoticed.
 
 ```
 G001 account number not correct        G006 gender not correct
@@ -439,14 +461,15 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
 **`on_support`**
 
 - `orderId` is echoed as it went up, exactly as on PMFBY.
-- No ticket — the portal issues none, so the case record comes back without a case
-  identifier.
-- The portal's lodge reply is `{ Responce, message }` and nothing more: no identifier, no
-  date, no status. `Responce` becomes the ACK; `message` is logged redacted and never
-  returned.
-- So **nothing in the reply comes from the portal.** `descriptor` is the caller's own words
-  echoed back, `caseStatus` and `filedOn` are the adapter's assertions, and `provider` is
-  the registry entry the adapter routed to. The reply confirms receipt and nothing more.
+- `case.ticketNo` is the portal's — the lodge reply carries `GrievanceID`, or `GrievanceNo`
+  where that is absent. The portal uses both names for the same handle; whichever arrives
+  lands here.
+- The success sentinel arrives under `Status`, `Responce` or `Rsponce`; `"False"` is a
+  refusal and becomes a NACK. The prose arrives under `Message`, `message` or `Remark`, and
+  is logged redacted, never returned.
+- The portal sends no date and no status on a lodge, so `case.status` and `case.filedOn`
+  are the adapter's assertions, and the `grievance` band is the caller's own words echoed
+  back.
 
 ```json
 {
@@ -454,11 +477,6 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
   "message": {
     "support": {
       "orderId": "UP12345678A",
-      "descriptor": {
-        "code": "G003",
-        "name": "Installment not received",
-        "longDesc": "Third instalment for 2026 has not been credited."
-      },
       "channels": [{
         "@context": "…/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
@@ -468,25 +486,36 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
           "descriptor": { "name": "PM-KISAN Grievance Portal" }
         },
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "caseStatus": { "code": "Registered" },
-        "filedOn": "2026-09-28"
+        "grievance": {
+          "category": { "code": "G003", "name": "Installment not received" },
+          "description": "Third instalment for 2026 has not been credited."
+        },
+        "case": {
+          "ticketNo": "PMK2026091234",
+          "status": { "code": "Registered" },
+          "filedOn": "2026-09-28"
+        }
       }]
     }
   }
 }
 ```
 
-**Next** — there is no ticket number to keep, and no `contract.id` either, since `support`
-composes no contract. Keep the registration number and `filedOn`.
+**Next** — keep `case.ticketNo`, the registration number and `case.filedOn`. There is no
+`contract.id` to keep, since `support` composes no contract.
+
+> The ticket number is a handle for the farmer to quote, not a read key. PM-KISAN has no
+> per-grievance endpoint and the status call is not documented to repeat the handle per
+> record, so the read below still matches on date.
 
 ### Step 2 — `status`: read the replies
 
 **Request**
 
 - `contract.id` is a UUID the caller mints here — PM-KISAN has no earlier leg to mint one.
-- The registration number rides in `commitmentAttributes.registrationNo` rather than
+- The registration number rides in `commitmentAttributes.enrolmentId` rather than
   `orderId`, because a `Contract` has no `orderId`.
-- `filedOn` is the one from `on_support`, and it is required: the portal has no
+- `case.filedOn` is the one from `on_support`, and it is required: the portal has no
   per-grievance endpoint, so the date is what picks this grievance out of the farmer's list.
 
 > **Two grievances filed on the same identity on the same day are indistinguishable.** The
@@ -515,8 +544,8 @@ POST /status
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "registrationNo": "UP12345678A",
-        "filedOn": "2026-09-28"
+        "enrolmentId": "UP12345678A",
+        "case": { "filedOn": "2026-09-28" }
       }
     }]
   }}
@@ -527,20 +556,18 @@ POST /status
 
 - One commitment — the grievance this contract is about. The farmer's other grievances are
   filtered out; each has its own contract.
-- `registrationNo` is not echoed.
+- `enrolmentId` is not echoed.
 - The farmer's name, father's name, gender, mobile number and address are dropped by the
   allow-list, and `Reg_No` with them: five of the record's fourteen fields survive.
-- The record carries no category, so `descriptor` comes back with `longDesc` only — the
-  description the portal stored — and no `code` or `name`.
+- The record carries no category, so the `grievance` band comes back with `description`
+  alone. That is why the base requires only `description` of a `grievance`: a portal that
+  stores no category still has to be describable.
 
 ```json
 {
   "context": { "action": "on_status", "messageId": "e91f…", "…": "…" },
   "message": { "contract": {
     "id": "c9b31a45-0f78-4e2d-9a60-84b7d3e15c02",
-    "descriptor": {
-      "longDesc": "Third instalment for 2026 has not been credited."
-    },
     "commitments": [{
       "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
@@ -554,10 +581,15 @@ POST /status
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "caseStatus": { "code": "Replied" },
-        "filedOn": "2026-09-28",
-        "caseRemark": "Instalment released on 2026-10-01, credited to the linked account.",
-        "remarkedOn": "2026-10-01"
+        "grievance": {
+          "description": "Third instalment for 2026 has not been credited."
+        },
+        "case": {
+          "status": { "code": "Replied", "name": "Disposed" },
+          "filedOn": "2026-09-28",
+          "remark": "Bank account seeded with Aadhaar; payment in next cycle.",
+          "remarkedOn": "2026-10-06"
+        }
       }
     }]
   }}
@@ -572,17 +604,52 @@ POST /status
 
 - **`informationMode` tells you the direction.** `OnDemand` is a request, `Direct` is an
   answer carrying a real case. Read it rather than the action name.
-- **Secrets go one way; identifiers do not.** `challenge` is `writeOnly` as a whole object —
-  send it, never expect it back, never log it, and `challenge.value` never reaches the lodge
-  call. `challengeIssued` is the `readOnly` other half: returned, never sent, never secret.
-  `applicationNo` and `registrationNo` are identifiers rather than secrets and do come back,
-  echoed in `orderId` on `on_support`; PMFBY's returns again in `commitmentAttributes` on
-  `on_status`. Both stay `no-log` and `no-trace` either way. Every field carrying personal
-  data is marked `x-oan-pii` in the pack, with a class and a handling list — documentation
-  today, not something the validator enforces.
+- **Secrets go one way; identifiers do not.** Send `challenge`, never expect it back, never
+  log it; `challenge.value` never reaches the lodge call. `challengeIssued` is the other
+  half: returned, never sent, never secret. `enrolmentId` is an identifier rather than a
+  secret and does come back, echoed in `orderId` on `on_support`; PMFBY's returns again in
+  `commitmentAttributes` on `on_status`. It stays `no-log` and `no-trace` either way. Every
+  field carrying personal data is marked `x-oan-pii` in the pack, with a class and a
+  handling list — documentation today, not something the validator enforces.
+
+  Neither object is marked `writeOnly` or `readOnly`, and that is deliberate. The network
+  validates every payload as a request, on the way out as well as in, so `writeOnly` would
+  assert nothing and `readOnly` would reject the very response it describes. Direction is
+  carried by `x-oan-pii` handling, which the adapter reads.
 - **Nothing is closed yet.** Neither portal documents a terminal status, so no case read
   yields `Resolved`, `Rejected` or `Closed` today: an unrecognised phrase maps to
   `UnderReview`, never to a terminal code.
+
+## Why `support` and not `confirm`
+
+Lodging a grievance is not ordering anything. `confirm` composes a `Contract` the provider
+is expected to have agreed to; a complaint is a message to a portal that answers it or does
+not. `support` says that directly, and on that leg the pack payload rides in
+`Support.channels` — the same base `Attributes` schema `commitmentAttributes` extends, so
+it validates unchanged. `init` and `status` keep their own actions.
+
+Nothing about what we send a portal changes with this choice: same body, same fields, same
+call count — PMFBY three, PM-KISAN two. It is a change of Beckn envelope only.
+
+### Three questions for the network's spec authority
+
+Carried forward; none blocks building, all three should be filed together.
+
+- **`channels` is carrying something that is not a channel.** The spec defines it as
+  "available support channels … such as phone, email, or chat endpoints", and we put a case
+  record in it. It validates — `Attributes` requires only `@context` and `@type` — but it is
+  a repurposing, forced because `Support` has no `supportAttributes` the way `Commitment`
+  has `commitmentAttributes`. There is no other slot. This is the strongest argument against
+  the design and the reason a consumer must select the case record by `@type`, never by index.
+- **`/status` asks about a contract that was never confirmed.** Its precondition has no
+  alternative branch: *"A `/confirm` request MUST have completed and the CN MUST have
+  received an `/on_confirm` callback with a confirmed Contract carrying a valid id before
+  this endpoint may be called."* Using `support` means that is never true, and on PM-KISAN
+  there is no `init` either, so the `contract.id` presented at `status` is a UUID the
+  provider has never seen.
+- **`502` is not declared.** `/init`, `/support` and `/status` list only
+  `200, 202, 400, 401, 403, 429, 500`. The adapter returns `502` for an upstream failure, so
+  we inherit it.
 
 ## Errors
 
@@ -594,7 +661,7 @@ Every error comes back on the same HTTP response, never on a later `on_*`.
 | Wrong OTP — PMFBY; the lodge call is never made | `400` | NACK | `BIZ_GENERIC_ERROR` |
 | Portal rejects the request, or is unreachable | `502` | NACK | `NET_DOWNSTREAM_UNAVAILABLE` |
 | Envelope will not decrypt — PM-KISAN | `500` | NACK | `NET_INTERNAL_ERROR` |
-| No grievance found — the portal answered, and has no case matching the ticket or `filedOn` | `202` | ACK | `BIZ_NO_RESULTS_FOUND` |
+| No grievance found — the portal answered, and has no case matching the ticket or `case.filedOn` | `202` | ACK | `BIZ_NO_RESULTS_FOUND` |
 
 **A failure** — `NACK`, with `details.path` naming the field:
 
@@ -605,8 +672,8 @@ Every error comes back on the same HTTP response, never on a later `on_*`.
     "messageId": "<the messageId from the request context>",
     "error": {
       "code": "SCH_REQUIRED_FIELD_MISSING",
-      "message": "applicantPhone is required",
-      "details": { "path": "$.message.support.channels[0].applicantPhone" }
+      "message": "grievance.description is required",
+      "details": { "path": "$.message.support.channels[0].grievance.description" }
     }
   }
 }
@@ -631,20 +698,18 @@ nothing further coming.
 }
 ```
 
-Four things to know:
+Three things to know:
 
 - **`details.path` follows the field, not the action.** A missing phone is
   `$.message.support.channels[0].applicantPhone` on `support` and
   `$.message.contract.commitments[0].commitmentAttributes.applicantPhone` on `status`. The
-  pack's `x-beckn-path` is the source for both.
+  pack's `x-beckn-container-by-action` names each of those two roots. `x-beckn-path` is a
+  different keyword and sits on one field only, `enrolmentId` — the one field that moves.
 - **The portal's own message is never passed through.** It may hold a stack trace, an
   internal hostname, or a quoted-back credential. Logged redacted; we return our own.
 - **A wrong OTP is not a `401`.** That code means the Beckn signature failed to verify,
   which is a different fault. The enum has no OTP-specific value. PMFBY publishes no clean
   success signal for the verify step either, so this row is provisional.
-- **`502` is not declared by the spec.** `/init`, `/support` and `/status` list only
-  `200, 202, 400, 401, 403, 429, 500`. The adapter returns `502` for an upstream failure,
-  so we inherit it.
 
 ## Registry
 
@@ -667,8 +732,15 @@ data is, who we call, and how.
   "name": "PMFBY Grievance Portal",
   "type": "upstream_api",                    // speaks HTTP, not Beckn: no role, no keys
   "status": "active",
-  "baseUrl": "https://pmfbydemo.amnex.co.in/krphapi/FGMS"   // demo host; confirm production
+  "baseUrl": "https://pmfbydemo.amnex.co.in"   // demo host; confirm production
 } }
+
+// One host, two unrelated auth realms. The grievance calls live under
+// /krphapi/FGMS and log in at POST /krphapi/FGMS/NICUsersLogin, which answers
+// with a token sent back as a bare Authorization header -- no "Bearer".
+// The OTP pair lives under /api/v1 on the policy realm and has its own login
+// at POST /api/v2/external/service/login. The two tokens are not
+// interchangeable, so the action paths above are written full from the host.
 
 { "ProviderSchema": {
   "bindingKey":     "pmfby|openagrinet:PMFBYGrievance",
@@ -676,16 +748,17 @@ data is, who we call, and how.
   "capabilityCode": "openagrinet:PMFBYGrievance",
   "status": "active",
   "actions": [
-    { "action": "init",    "method": "POST", "path": "/SendOTP",                 // TODO: path unconfirmed
+    { "action": "init",    "method": "POST", "path": "/api/v1/services/nic/getOtp",
+      // on the PMFBY core realm, not FGMS -- see the baseUrl note below
       "mappings": "mappings/pmfby/grievance.init.yaml",
       "timeoutMs": 20000, "status": "active" },
-    { "action": "support", "method": "POST", "path": "/InsertGrievenceTicket",   // TODO: path unconfirmed
+    { "action": "support", "method": "POST", "path": "/AddKRPHNCIPGrievenceSupportTicket",
       "mappings": "mappings/pmfby/grievance.support.yaml",
       "providerIdAt":     "message.support.channels[].provider.id",  // [] is the grammar's
                                                                       // only plural: no index
       "capabilityCodeAt": "message.support.channels[].@type",
       "timeoutMs": 30000, "status": "active" },
-    { "action": "status",  "method": "POST", "path": "/GetGrievenceTicketsStatus", // TODO: path unconfirmed
+    { "action": "status",  "method": "POST", "path": "/GetGrievenceTicketsStatus",
       "mappings": "mappings/pmfby/grievance.status.yaml",
       "timeoutMs": 30000, "retryMax": 2, "status": "active" }
   ] } }

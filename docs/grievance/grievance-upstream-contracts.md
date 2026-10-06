@@ -16,18 +16,124 @@ BharatVistaar source, with the file and line, or marked as not verified.
 | **verified** | read from BharatVistaar source; the citation is the file and line |
 | **not verified** | named in our own design docs and in no source available to us |
 
-There is a third thing worth saying plainly: for PMFBY we have **no direct
-portal client anywhere in the legacy tree**. Every PMFBY call goes through the
-v1 Beckn gateway, so what is verified below is the gateway's tag vocabulary,
-not the portal's own field names. The gateway sits between us and PMFBY and we
-cannot see through it from here.
+Where to look, because it is not one tree. `BharatVistaar/` is a working
+directory holding several independent git repositories, and `Beckn/` is one of
+them. Its checked-out `BharatVistaar` branch is 138 commits behind `main`, and
+**the grievance implementation for both schemes exists only on `main`**. An
+earlier revision of this page concluded that no direct portal client existed
+anywhere; that conclusion came from searching the checked-out working tree
+alone and was wrong. Both clients are there:
+
+- `main:src/services/pmfby/pmfby-greviance.service.ts` — PMFBY, calls FGMS directly
+- `main:src/services/pmkisan-grievance/pmkisan-grievance.service.ts` — PM-KISAN
+- `main:src/app.service.ts` — the Beckn mappings over both
+
+Citations below name the branch when the file is not in the working tree.
 
 ---
 
 # PMFBY
 
-One client: `Orchestrator/agents/tools/pmfby_grievance.py`. It posts Beckn v1.1.0
-bodies to `BAP_ENDPOINT`, not to PMFBY. Three calls.
+Two layers, and they speak different vocabularies.
+
+`Orchestrator/agents/tools/pmfby_grievance.py` posts Beckn v1.1.0 bodies to
+`BAP_ENDPOINT` in lowercase_snake tags. The adapter translates those into the
+portal's own camelCase body and calls FGMS. **The v2 adapter replaces the
+gateway and calls FGMS directly**, so the portal contract in §0 below is the
+one that governs; the gateway's tag vocabulary is recorded only because the
+request field meanings were established there.
+
+## 0. The portal itself — FGMS
+
+**verified** — `main:src/services/pmfby/pmfby-greviance.service.ts`.
+
+One host, `PMFBY_BASE_URL`, carrying **two unrelated auth realms**:
+
+| realm | path prefix | login | used for |
+|---|---|---|---|
+| PMFBY core | `/api/v*` | `POST /api/v2/external/service/login` | OTP, policy, claims |
+| FGMS | `/krphapi/FGMS` | `POST /krphapi/FGMS/NICUsersLogin` | **all three grievance calls** |
+
+FGMS login sends `{appAccessUID, appAccessPWD}` and reads the token from
+`responseDynamic.token.Token`. It is sent back as a bare `Authorization:`
+header — **no `Bearer` prefix** (line 91).
+
+**There is no grievance-specific OTP endpoint.** The OTP is the PMFBY core
+one, `POST /api/v1/services/nic/getOtp` and `/api/v1/services/nic/verifyMobile`
+(`main:src/services/pmfby/pmfby.service.ts:232,274`), on the other auth realm.
+An earlier draft of the registry listed a `/SendOTP` under FGMS; no such
+endpoint exists.
+
+**Every FGMS reply shares one envelope:**
+
+| field | |
+|---|---|
+| `responseCode` | `"1"` is success; anything else is failure |
+| `responseMessage` | the portal's own prose — never returned to the network |
+| `recordCount` | present on the status call |
+| `responseDynamic` | the payload |
+
+### Lodge — `POST /krphapi/FGMS/AddKRPHNCIPGrievenceSupportTicket`
+
+**verified** — lines 161-180. Not `InsertGrievenceTicket`, which an earlier
+draft named and which does not exist.
+
+Request body: `requestorMobileNo`, `complaintDate`, `receiptSourceID`,
+`ticketCategoryID`, `ticketSubCategoryID`, `requestYear`, `requestSeason`,
+`applicationNo`, `grievenceDescription` — the portal's spelling of
+"grievence" preserved.
+
+Response: `responseDynamic.GrievenceSupportTicketNo` and
+`responseDynamic.GrievenceSupportTicketID` (lines 194-198).
+
+### Read — `POST /krphapi/FGMS/GetGrievenceTicketsStatus`
+
+**verified** — lines 86-98 for the call, `main:src/app.service.ts:3343-3374`
+for the field names.
+
+Request body: `{requestorMobileNo, GrievenceSupportTicketNo}`.
+
+`responseDynamic` carries twelve named fields:
+
+| returned | v2 target |
+|---|---|
+| `ApplicationNo` | `enrolmentId` |
+| `TicketStatus` | `case.status.name`, and `code` derived from it |
+| `ComplaintDate` | `case.filedOn` |
+| `GrievenceDescription` | `grievance.description` |
+| `TicketCategoryName` | `grievance.category.name` |
+| `TicketSubCategoryName` | `grievance.subCategory.name` |
+| `CropName` | `case.cropName` |
+| `GrievenceSupportTicketID` | **dropped** — internal key |
+| `FarmerName` | **dropped** — personal |
+| `StateMasterName` | **dropped** — personal |
+| `DistrictMasterName` | **dropped** — personal |
+| `InsuranceCompany` | **dropped** — not the farmer's complaint |
+
+Four things follow, and each one moved the pack:
+
+1. **No category id comes back.** The portal returns `TicketCategoryName` and
+   `TicketSubCategoryName` with no `TicketCategoryID` beside them. The base
+   pack therefore requires one of `code` or `name` on a category, not `code`.
+2. **No remark, and no date for one.** Nothing in the record is a reply.
+   `latestRemark` was our own invention and appears in no source. The PMFBY
+   pack now refuses `case.remark` as well as `case.remarkedOn`.
+3. **No `requestYear` or `requestSeason` comes back.** `cropYear` and `season`
+   are send-only.
+4. **The ticket number is not returned either** — only the internal
+   `GrievenceSupportTicketID`. On a read the adapter echoes the number the
+   caller selected the record by.
+
+Still open: `recordCount` sits beside a `responseDynamic` that v1 reads as a
+**single object** (`dynamic.FarmerName`, not `dynamic[0].FarmerName`), while
+also dumping the whole thing to a string as a hedge. Whether a multi-ticket
+read returns an array is unconfirmed. See "What it leaves open".
+
+---
+
+## The v1 gateway's own vocabulary
+
+Three calls, recorded for the request field meanings.
 
 Every request puts its fields in
 `message.order.fulfillments[0].customer.person.tags[]`, each as
@@ -108,27 +214,26 @@ farmer details. The gateway returns the ticket and nothing else.
 `message.order_id` carries the ticket as well, and `provider.id` is
 `pmfby-grievance`.
 
-**Response: not verified, and this is the one real gap.**
-`format_status_result`, lines 396-417, walks every tag and every list item and
-prints `descriptor.name or descriptor.code` against `value`. It never names a
-field, so the reply's shape is invisible from here.
+**Response — now verified, by the portal client rather than by this gateway.**
+`format_status_result`, lines 396-417, walks every tag and prints
+`descriptor.name or descriptor.code` against `value`. It never names a field,
+so the reply's shape is invisible from *this* file by construction. §0 above
+has the real names, read from the adapter on `main`.
 
-Our design docs name fourteen: `GrievenceSupportTicketNo`, `ApplicationNo`,
-`GrievenceDescription`, `TicketCategoryID`, `TicketSubCategoryID`,
-`TicketCategoryName`, `TicketSubCategoryName`, `RequestYear`, `RequestSeason`,
-`TicketStatus`, `TicketStatusID`, `ComplaintDate`, `latestRemark`,
-`responseDynamic`, plus eleven personal fields. **Only
-`GrievenceSupportTicketNo` occurs anywhere in BharatVistaar**, and it occurs as
-a request tag, not a response field. The other thirteen occur in no file in the
-legacy tree, in no beckn specification, and in nothing else on disk.
+**A correction worth keeping.** An earlier revision of this page listed
+fourteen field names as "not verified" and recorded the search for them as
+exhausted. That search covered the checked-out working tree only, and the
+implementation is on `Beckn`'s `main` branch. Of the fourteen:
 
-Either they came from a PMFBY API document we were given and did not keep, or a
-previous draft invented them. Until that is settled, treat the entire PMFBY
-case-read mapping as a proposal. It is the largest open item against the pack.
+| our guess | reality |
+|---|---|
+| `ApplicationNo`, `GrievenceDescription`, `TicketStatus`, `ComplaintDate`, `TicketCategoryName`, `TicketSubCategoryName` | **real** |
+| `TicketCategoryID`, `TicketSubCategoryID`, `TicketStatusID`, `RequestYear`, `RequestSeason`, `latestRemark` | **invented** — in no source, and the pack has been corrected |
+| `GrievenceSupportTicketNo` | real, but a *request* field; the read does not return it |
+| `CropName`, `recordCount` | real, and we had missed both |
 
----
-
-# PM-KISAN
+The lesson is procedural, not technical: `BharatVistaar/` holds several
+repositories, and "not in the working tree" is not "not in the codebase".
 
 Two clients, and they do not agree, so the choice between them is a real
 decision rather than a detail.
@@ -179,16 +284,31 @@ The returned token then stands in for the identity everywhere below.
 | `GrievanceType` | `G001`–`G010` from `assets/grievance_types.json` |
 | `GrievanceDescription` | free text, at least ten characters — line 308 |
 
-**Response — verified**, `GenericMessageResponse`, line 177:
+**Response — two clients, and the second one reads a field the first
+discards.**
+
+`Voice/agents/tools/grievance.py`'s `GenericMessageResponse`, line 177, keeps
+two:
 
 | returned | note |
 |---|---|
 | `Responce` | `"True"` / `"False"`, spelled as shown |
 | `message` | the portal's own prose |
 
-**Nothing else.** No identifier, no date, no status, no category. The reply
-confirms receipt and that is all — which is why PM-KISAN has no case identifier
-and why the read has to match on a date.
+The v1 Beckn adapter, `Beckn` on `main`,
+`src/services/pmkisan-grievance/pmkisan-grievance.service.ts`, reads more from
+the same reply:
+
+| returned | note |
+|---|---|
+| `GrievanceID` ?? `grievanceId` ?? `GrievanceNo` | **the case identifier** — the portal uses all three spellings |
+| `Message` ?? `message` ?? `Remark` | the prose, under whichever key arrives |
+| `Status` ?? `Responce` ?? `Rsponce` | the success sentinel; `"False"` means refused |
+
+**PM-KISAN does issue a case identifier.** The direct client's Pydantic model
+simply does not declare it, so it is dropped before anyone sees it. This
+settles the long-open question in §4 below, and it is why
+`PMKISANGrievance/v0.1` allows `case.ticketNo` rather than forbidding it.
 
 ## 3. Read the cases — `/GrievanceStatusCheck`
 
@@ -248,27 +368,35 @@ log or a trace.
 
 Two of these are worth naming.
 
-**`grievance-id` — unresolved, and it changes the design if it is real.** The
-direct client's `/LodgeGrievance` returns `{Responce, message}` with no
-identifier, so either the gateway mints this itself or it reads something the
-direct client never asked for. If PM-KISAN does issue a case id, then "PM-KISAN
-has no case identifier" is wrong and the whole date-matching read is
-unnecessary. This must be settled with PM-KISAN before the pack leaves v0.1.
+**`grievance-id` — resolved. It is real, and it comes from the portal.** The
+gateway does not mint it: the lodge reply carries it as `GrievanceID`, or
+`GrievanceNo` where that is absent (§2). The direct client's model omits the
+field, which is the only reason it looked invented.
+
+What that changes: a lodged PM-KISAN grievance has a handle, so `case.ticketNo`
+is populated on a lodge reply and the pack permits it. What it does *not*
+change: `/GrievanceStatusCheck` still returns every grievance on the identity
+and is not documented to repeat the handle per record, so a case **read** may
+still have to match on date. The handle helps the caller quote its grievance
+back; it does not give the portal a per-grievance read.
 
 **`identity-no` is echoed back.** The gateway returns the registration number
-or Aadhaar token it was given. That must not be carried into v2: `registrationNo`
-is `writeOnly` and is not echoed.
+or Aadhaar token it was given. That must not be carried into v2. The field is
+`enrolmentId`, marked `no-log` and `no-trace`, and on a case read it is consumed
+rather than surfaced: matched against the number the caller sent, then discarded.
+The one place it comes back is `Support.orderId` on `on_support`, where it is
+returned to the caller who sent it over the same signed exchange.
 
 ## Grievance categories
 
 **verified** — `Orchestrator/assets/grievance_types.json` and
 `Voice/assets/grievance_types.json` are byte-identical. Ten codes:
 
-`G001` account number not correct · `G002` Aadhaar not seeded · `G003`
-instalment not received · `G004` name mismatch · `G005` bank account
-change · `G006` land record not updated · `G007` eKYC not done · `G008`
-status not updated · `G009` registration not approved · `G010` problem in
-facial-based eKYC
+`G001` account number not correct · `G002` online application pending for
+approval · `G003` installment not received · `G004` transaction failed ·
+`G005` problem in Aadhaar correction · `G006` gender not correct · `G007`
+payment related · `G008` problem in OTP-based eKYC · `G009` problem in
+biometric-based eKYC · `G010` problem in facial-based eKYC
 
 PM-KISAN uses these; PMFBY does not. PMFBY's category is a dotted pair, and the
 legacy tool hard-codes it to 3.10.
@@ -277,24 +405,31 @@ legacy tool hard-codes it to 3.10.
 
 # What this page settles
 
+- **PMFBY's endpoints and auth.** One host, two unrelated realms; the grievance
+  calls are `NICUsersLogin`, `AddKRPHNCIPGrievenceSupportTicket` and
+  `GetGrievenceTicketsStatus`, and the token goes in a bare `Authorization`
+  header. §0. Verified.
+- **PMFBY's case record is twelve fields**, named. §0. Verified — this was the
+  open item, and it is closed.
 - **PMFBY's lodge reply is four fields** and three of them are usable. Verified.
-- **PM-KISAN's lodge reply is two fields** and neither is data. Verified.
+- **PMFBY has no grievance OTP endpoint.** The OTP is the policy flow's,
+  `/api/v1/services/nic/getOtp` and `/verifyMobile`. §0. Verified.
+- **PM-KISAN issues a case identifier** — `GrievanceID`, or `GrievanceNo`. §2.
+  Verified.
 - **PM-KISAN's case record is fourteen fields**, not the five the direct client
   models. Verified, from the gateway's labels.
-- **PMFBY's case record is unknown.** Not verified, and no source on disk names
-  it.
 
 # What it leaves open
 
-1. **PMFBY case-read field names.** Thirteen of the fourteen in our docs are
-   uncorroborated. Get the PMFBY API document, or drop the mapping to a
-   proposal.
-2. **`grievance-id`.** If PM-KISAN issues one, the PM-KISAN retrieval design
-   changes completely.
-3. **The PMFBY challenge reply.** `challengeIssued.sentTo` and `.expiresAt`
+1. **Is PMFBY's `responseDynamic` an object or an array?** The reply carries a
+   `recordCount` beside it, and v1 reads it as a single object while also
+   dumping it to a string as a hedge. One captured response settles it — the
+   telemetry store keeps them, `beckn_ext_events.ext_api_response`, filtered on
+   `service_name = 'pmfby-greviance'`.
+2. **The PMFBY challenge reply.** `challengeIssued.sentTo` and `.expiresAt`
    are our invention; the real reply is unpinned. `method` is a mapping
    constant, so it is ours too, but it restates a fact the v1 flow confirms.
-4. **Which PM-KISAN client v2 follows** — the direct portal contract, which has
+3. **Which PM-KISAN client v2 follows** — the direct portal contract, which has
    no OTP, or the gateway's, which the v1 flow used.
-5. **Whether PMFBY still wants a fixed 3.10 category** or the caller's choice,
+4. **Whether PMFBY still wants a fixed 3.10 category** or the caller's choice,
    which is what our packs assume.

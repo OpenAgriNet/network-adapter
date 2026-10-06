@@ -41,14 +41,16 @@ a job to do: ask for one, and give the farmer time to read it before `support`. 
 flow starts at `support`.
 
 **`contract.id` is not the case identifier.** It is a UUID minted by the caller and echoed on
-every later action; `Contract.id` is `format: uuid` and a PMFBY ticket number is not one.
-PMFBY's case identifier is `commitmentAttributes.ticketNo`. PM-KISAN has none — see
-"Case identity" in Open.
+every later action; `Contract.id` is `format: uuid` and a portal's ticket number is not one.
+On both providers the case identifier is `commitmentAttributes.case.ticketNo`. The
+difference is what it is good for: PMFBY's is the read key, PM-KISAN's is a handle the
+farmer quotes, because that portal has no per-grievance endpoint. See "Case identity" in
+Open.
 
 **The adapter is stateless.** It stores no contract and does not relate a `support` to the
 `init` before it. On PMFBY the real linkage is portal-side: the OTP went to a phone number,
 and `support` presents that number with the OTP. On PM-KISAN there is no linkage at all,
-which is why `status` has to carry `filedOn`.
+which is why `status` has to carry `case.filedOn`.
 
 **All calls are synchronous** — `init` returns `on_init` in the HTTP 200, not an `Ack`.
 No callbacks.
@@ -141,29 +143,49 @@ with it, being a discovery category for the catalog resource rather than anythin
 per-case payload carries.
 
 What they compose instead is **`GrievanceBase`**, in
-`api-schemas/Grievance/v0.1/attributes.yaml`. It owns the fields both packs share —
-`informationMode`, `provider`, `scheme`, `grievanceDescription`, `caseStatus`, `filedOn`,
-`caseRemark`, `remarkedOn` — together with `CaseStatusCode`, `CalendarDate` and
-`ProviderReference`. Each pack `allOf`-references it, pins its own `@type` and
-`scheme.code`, and adds what its portal has. The case-status vocabulary is therefore one
-list, not two kept in step by review.
+`api-schemas/Grievance/v0.1/attributes.yaml`. It owns everything both packs share, in four
+bands — `informationMode`, `provider`, `scheme` and `enrolmentId` at the top; a `grievance`
+object holding `category`, `subCategory` and `description`; a `case` object holding
+`ticketNo`, `status`, `filedOn`, `remark` and `remarkedOn` — together with `CaseStatusCode`,
+`CalendarDate` and `ProviderReference`. Each pack `allOf`-references it, pins its own
+`@type` and `scheme.code`, and narrows or refuses what its portal does not have. The
+case-status vocabulary is therefore one list, not two kept in step by review.
+
+The band a field sits in says who wrote it: the caller at the top, the farmer under
+`grievance`, the portal under `case`. That is the axis, not mutability — `case.filedOn` is
+a date the portal stamps, so it sits with the portal's other fields even though it never
+changes.
+
+PM-KISAN adds no field of its own; it only narrows, refuses and annotates. That is the
+measure of whether the base is drawn right.
 
 `Grievance/v0.1` is a file, not a pack: no `profile.json`, never indexed, and no payload
-ever declares `@type: openagrinet:GrievanceBase`. Two fields stay out of it — `@type`,
-which is the pack's identity, and `grievanceCategory`, which resolves to a different IRI
-per scheme over incompatible value spaces.
+ever declares `@type: openagrinet:GrievanceBase`. The one field that stays out of it is
+`@type`, which is the pack's identity. `grievance.category` is in the base but carries no
+IRI there — each pack binds it to its own, over value spaces that do not overlap.
 
 Shape rules that hold in both directions live in the base or the pack.
 
 Per-action requirements do not, and cannot. One `@type` covers every action, so
-"`applicationNo` is required on `support` but not on `init`" is not expressible in a pack.
-Each pack carries one `if/then` for direction — a `Direct` payload must name the case, its
-status, when it was filed and where it came from — and even that is inert at runtime: the
-extended-schema validator parses `if/then` and never evaluates it, which
-`mandi-price.select.yaml` documents at length.
+"`enrolmentId` is required on `support` but not on `init`" is not expressible in a pack.
 
-**Per-action field enforcement therefore lives in the mapping guards.** That is where it
-was always going to live.
+**Direction is enforced, and it is enforced with `anyOf`.** Each pack carries two top-level
+`anyOf` gates: a `Direct` payload must carry a `case` band with a status and a filing date,
+and every payload must carry at least one of the things it could be about. Both were tested
+against the real validator.
+
+`if/then` would be the natural way to write the first gate and it does not work. The
+extended-schema validator parses `if`/`then` and never evaluates it, so a schema saying
+*"if `informationMode` is `Direct` then `case` is required"* accepts a `Direct` payload with
+no `case` at all. `allOf`, `anyOf` and `not` are evaluated, including nested under
+`properties`, which is what the gates and the per-pack refusals are built from. Two earlier
+guards in these packs were written as `if/then` and enforced nothing.
+
+A gate has to live in the pack rather than the base. A pack cannot widen an inherited
+`anyOf` — `allOf` means both must hold — and PMFBY needs a branch the base cannot know
+about, for the challenge acknowledgement that carries nothing but `challengeIssued`.
+
+**What remains per-action lives in the mapping guards**, as it always would have.
 
 ### The published pack is what gets fetched
 
@@ -187,21 +209,30 @@ request 404s. Filed as a separate bug; grievance payloads use the string form.
 ### What each pack declares
 
 **PMFBY** — `applicantPhone` is an Indian mobile series, `season` is one of three names,
-`cropYear` is four digits, and `grievanceCategory.code` is the dotted pair the adapter
-splits on. `challenge` is declared in the pack itself — `method: SMS_OTP`, a six-digit
-`value`, nothing else accepted — and is `writeOnly` as a whole object. Its `Direct` branch requires
-`ticketNo`, `caseStatus` and `filedOn`.
+`cropYear` is four digits, and `grievance.category.code` and `grievance.subCategory.code`
+are each digits, held as two fields rather than one joined string. `challenge` is declared
+in the pack itself — `method: SMS_OTP`, a six-digit `value`, nothing else accepted. Its
+`Direct` gate requires `case.ticketNo`, `case.status` and `case.filedOn`, and it refuses
+`case.remarkedOn`, which PMFBY does not publish.
 
-**PM-KISAN** — the identity (`registrationNo`), the category, the
-description, and the case fields the portal returns. Its `Direct` branch requires
-`caseStatus` and `filedOn`; there is no ticket number to require. Its categories
-are a real, closed, ten-value vocabulary, so they are declared as an enum rather than left
-to a guard.
+**PM-KISAN** — narrowings only. Its `Direct` gate requires `case.status` and
+`case.filedOn`, and not `case.ticketNo`. The field is allowed and is populated on a lodge,
+but the status call is not documented to repeat the handle per record, so a case read may
+carry none and the gate must not demand one. `grievance.subCategory` is refused: PM-KISAN
+classifies one level deep.
+Its categories are a real, closed, ten-value vocabulary, so they are an enum rather than a
+guard.
 
-The JSON key is `grievanceCategory` in both packs, but it resolves to
+The JSON path is `grievance.category` in both packs, but it resolves to
 `openagrinet:pmfbyGrievanceCategory` in one and `openagrinet:pmkisanGrievanceCategory` in
-the other. The two schemes publish incompatible value spaces — a dotted `3.10` against that
+the other. The two schemes publish incompatible value spaces — bare digits against that
 closed list — so one IRI could not hold both.
+
+**Neither `writeOnly` nor `readOnly` appears in either pack.** The validator visits every
+payload with `VisitAsRequest`, on the way out as well as in, so `writeOnly` would assert
+nothing and `readOnly` would reject the very response it describes — a `readOnly`
+`challengeIssued` makes the challenge acknowledgement unvalidatable. Direction is carried by
+`x-oan-pii` handling instead.
 
 ### The challenge is PMFBY's own
 
@@ -212,12 +243,14 @@ and neither is shared with another pack:
 ```yaml
 challenge:
   type: object
-  writeOnly: true
   required: [method, value]
   additionalProperties: false
+  x-oan-pii:
+    class: credential
+    handling: [no-log, no-trace, no-echo, no-forward]
   properties:
     method: { type: string, enum: [SMS_OTP] }
-    value:  { type: string, pattern: "^[0-9]{6}$", writeOnly: true }
+    value:  { type: string, pattern: "^[0-9]{6}$" }
 ```
 
 Three things follow.
@@ -372,19 +405,31 @@ generated IV is a config change rather than a rewrite.
 ```jsonata
 (
   $ca := beckn.message.contract.commitments[0].commitmentAttributes;
-  { "phone_number": $ca.applicantPhone }
+  { "mobile": $ca.applicantPhone, "otpType": "SMS" }
 )
 ```
 
 ```json
-{ "phone_number": "9876543210" }
+{ "mobile": "9876543210", "otpType": "SMS" }
 ```
+
+This leg is on the **PMFBY core realm**, `POST /api/v1/services/nic/getOtp`, not on FGMS.
+PMFBY publishes no grievance-specific OTP endpoint; the grievance flow reuses the policy
+flow's pair. The two realms log in separately and their tokens are not interchangeable.
 
 #### Provider response
 
 ```json
-{ "status": "success", "message": "OTP sent to registered mobile", "valid_for": 600 }
+{ "status": true, "data": "OTP sent to registered mobile", "error": "" }
 ```
+
+`status` is a boolean, not the string `"success"`, and `data` is either the message as a
+bare string or an object with a `message` in it — both shapes occur. `status: false` puts
+the reason in `error`.
+
+**The portal does not say when the OTP expires.** There is no `valid_for` and no
+equivalent. `challengeIssued.expiresAt` is therefore the adapter's own assertion, computed
+from a configured TTL, and the mapping below says so.
 
 #### Mapping → Beckn (`on_init`)
 
@@ -398,10 +443,16 @@ plus the two derived values:
     "method":    "SMS_OTP",
     "sentTo":    $substring($ca.applicantPhone, 0, 2) & "XXXXXX"
                    & $substring($ca.applicantPhone, 8, 2),
-    "expiresAt": $fromMillis($toMillis($now()) + response.valid_for * 1000)
+    "expiresAt": $fromMillis($toMillis($now()) + $number($env.PMFBY_OTP_TTL_SECONDS) * 1000)
   }
 )
 ```
+
+`expiresAt` is ours, not the portal's — see the note on the response above. The pack
+requires the field, so the adapter states a value rather than omitting it; `PMFBY_OTP_TTL_SECONDS`
+is a provider constant to be set from whatever PMFBY confirms its window is. Until then it
+is a stated expectation, and a caller must still be ready for the portal to reject an OTP
+it considers stale earlier than that.
 
 `response` is the portal's reply and `beckn` the original request, as in every other
 mapping; `$ca` is re-declared here because each block is its own expression and nothing
@@ -419,8 +470,8 @@ was used, and that is all a response needs to carry.
 #### Guards — refused before the provider is called
 
 There is no contract on this leg — a `SupportAction` has none — so every guard reads from
-`message.support`: the application number from `orderId`, the category and the complaint
-text from `descriptor`, and the rest from the one channel.
+`message.support`: the enrolment identifier from `orderId`, and everything else from the
+one channel the pack validates.
 
 ```yaml
 required:
@@ -429,29 +480,30 @@ required:
        $exists($s.orderId) and $exists($ch.cropYear) and $exists($ch.season))
     message: "lodging a PMFBY grievance needs the application number, crop year and season"
   - check: |
-      ($s := beckn.message.support;
-       $count($match($s.descriptor.code, /^[0-9]+\.[0-9]+$/)) > 0)
-    message: "descriptor.code must be <category>.<subCategory>, e.g. 3.10"
+      ($ch := beckn.message.support.channels[0];
+       $exists($ch.grievance.category.code) and $exists($ch.grievance.subCategory.code))
+    message: "lodging a PMFBY grievance needs both category levels"
   - check: |
-      ($s := beckn.message.support; $c := $s.channels[0].challenge;
-       $c.method = "SMS_OTP" and $exists($c.value) and $exists($s.descriptor.longDesc))
-    message: "support carries an SMS OTP challenge and the complaint text"
+      ($c := beckn.message.support.channels[0].challenge;
+       $c.method = "SMS_OTP" and $exists($c.value))
+    message: "support carries an SMS OTP challenge"
 ```
 
-`$count($match(…)) > 0` rather than `$exists($match(…))`: this engine returns an empty
-array on no-match, and `$exists([])` is true — the mandi mapping carries the same note.
-
 These guards enforce what the pack deliberately cannot: which fields a *particular* action
-must carry. The pack checks shape — the season enum, the phone pattern — on whatever
-payload arrives, and has no `OnDemand` required branch, because what `support` needs is not
-what `init` or `status` need. The guards live in `grievance.support.yaml`, so they run only
-on `support`, and `init` is not forced to carry fields it cannot have yet.
+must carry. The pack checks shape — the season enum, the phone pattern, the digits in each
+category code — on whatever payload arrives. What it cannot say is that `support`
+specifically needs a crop year, because `init` cannot have one. The guards live in
+`grievance.support.yaml`, so they run only on `support`.
 
-For three of the fields these guards are the only check there is. `orderId` and
-`descriptor` sit outside the channel, so the pack never sees the application number, the
-category code or the complaint text on this leg — `x-beckn-path` records where each one
-lands, but the validator only reads `channels[]`. The category-code pattern here is
-therefore not a repeat of the pack's: on `support` it is the enforcement.
+They are shorter than they were. The complaint now travels inside `channels[0]`, which the
+pack validates, so the category pattern and the presence of the description are checked by
+the schema on every leg and the guard only has to say *both levels are present on this
+one*. Only `orderId` still sits outside the channel, unseen by the validator — and the
+first guard covers it.
+
+No pattern is restated here. A guard that repeats a rule the pack already holds is a second
+copy to keep in step; the one the old version carried
+(`descriptor.code must be <category>.<subCategory>`) is gone with the dotted code itself.
 
 No guard checks `provider`, and none should: the binding key is built before the mapper
 runs, so a payload missing it never reaches a guard — it is refused as unroutable.
@@ -482,87 +534,102 @@ Prerequisites are registered per **binding key, not per action**
 (
   $s   := beckn.message.support;
   $ch  := $s.channels[0];
-  $cat := $split($s.descriptor.code, ".");
+  $g   := $ch.grievance;
   $seasons := { "Kharif": "1", "Rabi": "2", "Zaid": "3" };
   {
-    "phone_number":          $ch.applicantPhone,
-    "application_no":        $s.orderId,
-    "request_year":          $ch.cropYear,
-    "request_season":        $lookup($seasons, $ch.season),
-    "ticket_category_id":    $cat[0],
-    "ticket_sub_category_id": $cat[1],
-    "grievance_description": $trim($s.descriptor.longDesc),
-    "complaint_date":        $fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530"),
-    "receipt_source_id":     "134306"
+    "requestorMobileNo":     $ch.applicantPhone,
+    "applicationNo":         $s.orderId,
+    "requestYear":           $ch.cropYear,
+    "requestSeason":         $lookup($seasons, $ch.season),
+    "ticketCategoryID":      $g.category.code,
+    "ticketSubCategoryID":   $g.subCategory.code,
+    "grievenceDescription":  $trim($g.description),
+    "complaintDate":         $fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530"),
+    "receiptSourceID":       "134306"
   }
 )
 ```
 
 ```json
 {
-  "phone_number": "9876543210",
-  "application_no": "KA2026KH00123456",
-  "request_year": "2026",
-  "request_season": "1",
-  "ticket_category_id": "3",
-  "ticket_sub_category_id": "10",
-  "grievance_description": "Claim approved in July but no amount credited.",
-  "complaint_date": "2026-09-28",
-  "receipt_source_id": "134306"
+  "requestorMobileNo": "9876543210",
+  "applicationNo": "KA2026KH00123456",
+  "requestYear": "2026",
+  "requestSeason": "1",
+  "ticketCategoryID": "3",
+  "ticketSubCategoryID": "10",
+  "grievenceDescription": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment.",
+  "complaintDate": "2026-09-28",
+  "receiptSourceID": "134306"
 }
 ```
+
+These are the portal's own key names, `POST /krphapi/FGMS/AddKRPHNCIPGrievenceSupportTicket`.
+Two of them are misspelled upstream -- `grievenceDescription`, and `Grievence` throughout
+the path. The typos are preserved in the mapping and corrected at the network boundary.
 
 #### Provider response
 
 ```json
 {
-  "status": "success",
-  "ticket_no": "100626000099001",
-  "ticket_id": "1",
-  "message": "Grievance registered successfully"
+  "responseCode": "1",
+  "responseMessage": "Grievance registered successfully",
+  "recordCount": 1,
+  "responseDynamic": {
+    "GrievenceSupportTicketNo": "100626000099001",
+    "GrievenceSupportTicketID": 1
+  }
 }
 ```
+
+Every FGMS reply wears this envelope: `responseCode`, `responseMessage`, `recordCount`,
+`responseDynamic`. Success is `responseCode` equal to `"1"` — and it arrives as a string on
+this leg and has been seen as a number on others, so the test is on the stringified value,
+never on `===  1`. `responseMessage` is the portal's own prose and is never returned.
 
 #### Mapping → Beckn (`on_support`)
 
 There is no commitment on this leg and no offer or resource either — the reply is a
-`Support` object. `orderId` carries the application number back unchanged, `descriptor` is
-the caller's own words echoed back, and `channels[0]` is the case record, its
+`Support` object. `orderId` carries the application number back unchanged, the `grievance`
+band is the caller's own words echoed back, and `channels[0]` is the case record, its
 `informationMode` flipped to `Direct` because it now carries a real case rather than a
 request for one. The ticket the portal just issued is in that case record, not in `orderId`:
 `orderId` means the thing support is required against, and that is the application both
-before and after the call. From here on `ticketNo` identifies the case, and a later `status`
+before and after the call. From here on `case.ticketNo` identifies the case, and a later `status`
 re-enters through a contract whose resource is the thin catalog pointer
 `res:pmfby:grievance`.
 
-The lodge response returns only `status`, `ticket_no`, `ticket_id` and `message`. Every
+The lodge reply carries two usable values inside the envelope. Every
 field in `on_support` comes from one of four places:
 
-- **Read from the provider** — `ticketNo`, and nothing else.
-- **Stated by the mapping** — `caseStatus.code` is `Registered`, derived from
-  `status: "success"` (the portal has no status field on this leg; a freshly lodged
+- **Read from the provider** — `case.ticketNo`, from
+  `responseDynamic.GrievenceSupportTicketNo`, and nothing else.
+- **Stated by the mapping** — `case.status.code` is `Registered`, derived from
+  `responseCode` being `"1"` (the portal has no status field on this leg; a freshly lodged
   grievance is registered by definition). No `name` accompanies it: the portal said
   nothing, and an absent `name` is how a caller tells an inferred status from a quoted
-  one. `filedOn` restates the `complaint_date` the request just generated, not a value
+  one. `case.filedOn` restates the `complaintDate` the request just generated, not a value
   the portal echoed — an IST calendar date. `provider` names the portal the adapter routed
   to, taken from the registry entry.
 - **Changed** — `informationMode`, `OnDemand` → `Direct`.
-- **Echoed from the request** — `scheme`, and nothing else.
+- **Echoed from the request** — `scheme` and the `grievance` band.
 
-`ticket_no` maps to `ticketNo` on the channel and nowhere else. The spec says the provider
+`GrievenceSupportTicketNo` maps to `case.ticketNo` and nowhere else. The spec says the provider
 returns "the ticket reference" without naming the field that holds it, and `orderId` is the
 obvious candidate only if you read it as a general-purpose reference slot — but it is
 defined as "the order against which support is required", and the ticket is not that. The
-channel is where the scheme's own fields live, `ticketNo` is already one of them, and it
-carries the same value on `on_status`, so one field means one thing on both legs.
-`ticket_id` is dropped. It is the portal's own row id rather than the number the farmer
-quotes, and no later call is known to need it — an internal key published to a network with
-no consumer. That is the same judgement the case read makes about `TicketStatusID`, and the
-pack now makes it consistently. The rule this pack follows is: map what the portal sends, or
-say in the README why not. The README says why not. `applicantPhone` and `challenge` are not echoed:
+`case` band is where the portal's own record lives, `ticketNo` is already one of its
+fields, and it carries the same value on `on_status`, so one field means one thing on both
+legs.
+`GrievenceSupportTicketID` is dropped. It is the portal's own row id rather than the number
+the farmer quotes, and no later call takes it — the read is keyed on
+`GrievenceSupportTicketNo`. An internal key published to a network with no consumer. The
+rule this pack follows is: map what the portal sends, or say in the README why not. The
+README says why not. `recordCount` and `responseMessage` are dropped on the same ground —
+one is a count of a single record, the other is the portal's own text. `applicantPhone` and `challenge` are not echoed:
 neither belongs in a response.
 
-`applicationNo` **is** echoed here, in `orderId`, unchanged from the ask. It tells the caller
+`enrolmentId` **is** echoed here, in `orderId`, unchanged from the ask. It tells the caller
 nothing they did not send, which is exactly why it is safe; what it buys is that `orderId`
 holds one meaning in both directions and on both providers. The case read echoes it too, on
 the commitment, because the portal sends `ApplicationNo` back. It is `class: identifier`,
@@ -582,7 +649,7 @@ so those two fields are the whole of the check; see "What identity is proven".
 required:
   - check: |
       ($ca := beckn.message.contract.commitments[0].commitmentAttributes;
-       $exists($ca.ticketNo) and $exists($ca.applicantPhone))
+       $exists($ca.case.ticketNo) and $exists($ca.applicantPhone))
     message: "checking a PMFBY grievance needs the ticket number and the filing phone number"
 ```
 
@@ -593,96 +660,117 @@ required:
   $ca := beckn.message.contract.commitments[0].commitmentAttributes;
   {
     "requestorMobileNo":        $ca.applicantPhone,
-    "GrievenceSupportTicketNo": $ca.ticketNo
+    "GrievenceSupportTicketNo": $ca.case.ticketNo
   }
 )
 ```
 
-The upstream misspells "Grievance". The typo is preserved in the mapping and corrected
-at the network boundary.
+The request body is the portal's, `POST /krphapi/FGMS/GetGrievenceTicketsStatus`. Note the
+casing: `requestorMobileNo` is lower-cased, `GrievenceSupportTicketNo` is not. The upstream
+misspells "Grievance" throughout; the typo is preserved in the mapping and corrected at the
+network boundary.
 
 #### Provider response
 
-**Not verified — treat the field names below as a proposal.** They are attributed to
-`/krphapi/FGMS/GetGrievenceTicketsStatus` on the demo portal, but of the names in this
-block only `GrievenceSupportTicketNo` occurs anywhere we can check, and it occurs in
-BharatVistaar as a *request* tag rather than a response field. The legacy client
-(`Orchestrator/agents/tools/pmfby_grievance.py`, `format_status_result`, lines 396-417)
-renders this reply generically — `descriptor.name or descriptor.code` against `value` —
-so it never names a field and the reply's shape is not observable from it. Confirm these
-names against PMFBY's own API document before anything is built on them. See
-`grievance-upstream-contracts.md`, the master reference for what each portal actually
-accepts and returns; where it and this page disagree, it wins.
-
-Abridged to the fields that matter:
+**Verified.** The names below are read from the v1 adapter on `Beckn`'s `main` branch —
+the twelve `responseDynamic` fields from the mapping in `src/app.service.ts`, the envelope
+from `src/services/pmfby/pmfby-greviance.service.ts`. See
+`grievance-upstream-contracts.md` §0 for the line references; where it and this page
+disagree, it wins.
 
 ```json
 {
-  "responseObject": null,
-  "responseDynamic": {
-    "GrievenceSupportTicketNo": "100626000099001",
-    "TicketStatus": "Open",
-    "TicketStatusID": 109301,
-    "ComplaintDate": "2026-05-11",
-    "ApplicationNo": "040108251010160770605",
-    "GrievenceDescription": "Claim is not recieved by me.",
-    "TicketCategoryID": 3,
-    "TicketCategoryName": "Enrollment",
-    "TicketSubCategoryID": 10,
-    "TicketSubCategoryName": "Portal Issues Login",
-    "RequestYear": 2025,
-    "RequestSeason": 1,
-    "latestRemark": "",
-
-    "FarmerName": "…", "RequestorMobileNo": "…", "Email": null,
-    "StateMasterName": "…", "DistrictMasterName": "…", "SubDistrictName": "…",
-    "GramPanchayat": "…", "NyayPanchayat": null, "VillageName": null,
-    "InsurancePolicyNo": "…", "InsuranceCompany": "…"
-  },
-  "responseCode": 1,
+  "responseCode": "1",
   "responseMessage": "Fetched successfully",
-  "recordCount": 0
+  "recordCount": 1,
+  "responseDynamic": {
+    "GrievenceSupportTicketID": 109301,
+    "TicketStatus": "Open",
+    "ComplaintDate": "2026-09-28",
+    "ApplicationNo": "KA2026KH00123456",
+    "GrievenceDescription": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment.",
+    "TicketCategoryName": "Enrollment / Portal Issues",
+    "TicketSubCategoryName": "Login",
+    "CropName": "Paddy",
+
+    "FarmerName": "…", "InsuranceCompany": "…",
+    "StateMasterName": "…", "DistrictMasterName": "…"
+  }
 }
 ```
 
-Three things about the envelope. The payload is under `responseDynamic`, not
-`responseObject`, which is `null` here. Success is `responseCode: 1`, not an HTTP status
-and not a `status` string. And `recordCount` is `0` despite a record being present, so
-the mapping must not gate on it — read `responseDynamic` and test that directly.
+Four things about this reply, each of which changed the pack.
+
+1. **No category ids.** The portal answers with `TicketCategoryName` and
+   `TicketSubCategoryName` and no id beside either. The base pack therefore requires
+   `code` **or** `name` on a classification rather than `code` outright — a response
+   carrying what the portal actually sent could not satisfy a `code` requirement.
+2. **No remark, and no remark date.** Nothing in the record resembles a reply from the
+   portal. `latestRemark` was our own invention. The PMFBY pack refuses both
+   `case.remark` and `case.remarkedOn` rather than leaving them permanently absent.
+3. **No `requestYear` or `requestSeason` comes back.** They go up on the lodge and are
+   not returned, so `cropYear` and `season` are absent from every response.
+4. **The ticket number is not returned.** The read answers with
+   `GrievenceSupportTicketID`, an internal key that is not mapped. On a read the adapter
+   echoes the number the caller asked with.
+
+On the envelope: success is `responseCode` equal to `"1"`, not an HTTP status; it has been
+seen as both a string and a number, so test the stringified value. `recordCount` sits
+beside `responseDynamic`, which v1 reads as a single object. **Whether a multi-ticket read
+returns an array is unconfirmed** — the mapping must not gate on `recordCount`; read
+`responseDynamic` and test that directly. See Open.
 
 #### Mapping → Beckn (`on_status`)
 
-`ComplaintDate` is already ISO, so `filedOn` needs no date conversion — unlike `support`,
-where the adapter generates the date. `caseStatus` splits in two: `name` carries
-`TicketStatus` verbatim, and `code` is the `CaseStatusCode` from `GrievanceBase`
-that the adapter maps that phrase to. The portal also returns `TicketStatusID`, an opaque internal key that is
-not mapped at all.
+`case.status` splits in two: `name` carries `TicketStatus` verbatim, and `code` is the
+`CaseStatusCode` from `GrievanceBase` that the adapter maps that phrase to.
+
+`ComplaintDate` becomes `case.filedOn`. The portal does not publish a format for it, so
+the adapter normalises to an ISO calendar date rather than passing it through — unlike
+`support`, where the adapter generates the date itself and the question does not arise.
 
 The mapping is a lookup, not a transformation. A phrase the lookup does not hold falls to
 `UnderReview` — never to a terminal code, which must come from the portal — and the phrase
 still reaches the caller in `name`. So an unfamiliar status is rendered correctly and is
 never mistaken for a finished case.
 
-The response is richer than the request. It carries its own `GrievenceSupportTicketNo`,
-so `ticketNo` need not be echoed, and it returns `ApplicationNo`, `GrievenceDescription`,
-the category pair with names, `RequestYear` and `RequestSeason` — all of which map
-straight through. `RequestYear` arrives as a number and is stringified. The two category
-names are joined with a slash into `grievanceCategory.name`, mirroring the dot that joins
-the two codes.
+The response returns `ApplicationNo` and `GrievenceDescription`, which map straight
+through to `enrolmentId` and `grievance.description`. It does **not** return the ticket
+number, so `case.ticketNo` is echoed from the request — the one field on this leg the
+portal does not supply.
 
-`latestRemark` becomes `caseRemark`. The portal sends an empty string rather than
-omitting it when nothing has been recorded, so the adapter omits the field instead — an
-absent `caseRemark` reads as "nothing recorded yet". Anything longer than 2000 characters
-is rejected by the pack; this is unvalidated upstream free text going into a response.
-There is no remark date anywhere in the response, which is why this pack has no
-`remarkedOn`.
+`CropName` becomes `case.cropName`, a field this pack adds rather than inherits. PMFBY
+tickets carry a crop because the scheme insures one; a grievance system that is not crop
+insurance has nothing to put there. It sits in `case` because the portal authors it.
 
-`applicantPhone` is deliberately not echoed, even though `RequestorMobileNo` comes back.
+The two category levels stay two fields, and on this leg both arrive as names only:
 
-**The response mapping is an allow-list.** The record also carries the farmer's name,
-mobile number, email, and the full state / district / sub-district / panchayat / village
-hierarchy, plus the insurance policy number and insurer. None of it is mapped, logged or
-traced. A passthrough here would repeat the v1 `identity-no` echo at far greater scale.
+| upstream | Beckn |
+|---|---|
+| `TicketCategoryName` | `grievance.category.name` — no id accompanies it |
+| `TicketSubCategoryName` | `grievance.subCategory.name` — likewise |
+
+The ids go up on the lodge, as `ticketCategoryID` and `ticketSubCategoryID`, and do not
+come back. So the request carries `code` and the response carries `name`, which is why the
+base pack requires one of the two rather than `code` outright.
+
+An earlier draft joined the two names with a slash and the two codes with a dot. The join
+was lossy and could not be undone: this portal's own category name contains the separator —
+`Enrollment / Portal Issues` beside `Login` — so no split on ` / ` recovers the original
+pair. Keeping them apart removes the split from both directions.
+
+**There is no remark.** The record carries a status phrase and nothing resembling a reply
+from the portal, and no date against one. The pack refuses `case.remark` and
+`case.remarkedOn` outright rather than leaving two inherited fields permanently absent —
+two members to delete if PMFBY ever starts publishing them.
+
+`applicantPhone` is deliberately not echoed. The read does not return it anyway; the
+request is keyed on it.
+
+**The response mapping is an allow-list.** The record also carries the farmer's name, the
+insurer, and the state and district. None of it is mapped, logged or traced. A passthrough
+here would repeat the v1 `identity-no` echo at far greater scale. The table at the end of
+this section lists every dropped field and why.
 
 The commitment stays `ACTIVE` while the case is open and should become `CLOSED` on a
 terminal status — but which `TicketStatus` values are terminal is not yet known, so
@@ -690,28 +778,46 @@ today everything maps to `ACTIVE`. See Open.
 
 ### Field mapping
 
-| Beckn (`commitmentAttributes`) | Provider |
+Upstream names are the portal's own, verified against the v1 adapter on `main`.
+
+| Beckn (`commitmentAttributes`) | Up to the provider | Back from the provider |
+|---|---|---|
+| `applicantPhone` | `mobile` on the OTP pair; `requestorMobileNo` on both FGMS calls | not returned, and never echoed |
+| `enrolmentId` | `applicationNo` on the lodge; also carried in `support.orderId` | `ApplicationNo` on the case read |
+| `cropYear` | `requestYear` on the lodge | **not returned** — absent from every response |
+| `season` | `requestSeason`; the name is mapped to the portal's code: Kharif 1, Rabi 2, Zaid 3 | **not returned** |
+| `grievance.category` | `ticketCategoryID` ← `.code` | `TicketCategoryName` → `.name`, with no id beside it |
+| `grievance.subCategory` | `ticketSubCategoryID` ← `.code` | `TicketSubCategoryName` → `.name`. Two fields, not one joined string — see the note on the lossy join |
+| `grievance.description` | `grievenceDescription` (the portal's spelling) | `GrievenceDescription` |
+| `case.ticketNo` | `GrievenceSupportTicketNo` as the `status` query key | `responseDynamic.GrievenceSupportTicketNo` on the **lodge**. The read does not return it, so there the adapter echoes the number the caller asked with |
+| `case.status` | not sent | `TicketStatus` verbatim into `name`; `code` is the `CaseStatusCode` it maps to, falling back to `UnderReview` |
+| `case.cropName` | not sent | `CropName`. Added by this pack, not inherited |
+| `case.filedOn` | not sent; on `support` it restates the generated `complaintDate` | `ComplaintDate`, format unpublished, so the adapter normalises to an ISO calendar date |
+| `challenge` | `value` → `otp` on `verifyMobile` only, selected by `method`; never on the lodge call | never in a response. Not marked `writeOnly` — the validator would not act on it |
+| `challengeIssued` | not sent | `on_init` only — `method` is the constant `SMS_OTP`, `sentTo` is the masked request phone, `expiresAt` is a configured TTL because **the portal publishes no expiry**. All three are required; `txnId` is refused |
+| `informationMode` | not sent | `OnDemand` on requests, `Direct` on responses that carry a real case |
+| `scheme` | not sent | echoed unchanged, it identifies the scheme |
+| `provider` | not sent | the registry entry the adapter routed to. Returned on `on_support` only -- on a contract leg `commitments[].offer.provider` carries it |
+| — | `complaintDate` = `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`, generated in IST — the farmer does not backdate | |
+| — | `receiptSourceID` = `134306` (provider constant); `otpType` = `SMS` | |
+
+Refused by the pack rather than mapped: **`case.remark` and `case.remarkedOn`**. PMFBY
+publishes neither.
+
+Returned by the portal and deliberately not mapped:
+
+| dropped | why |
 |---|---|
-| `applicantPhone` | `phone_number` / `requestorMobileNo` |
-| `applicationNo` | `application_no` — returns as `ApplicationNo` |
-| `cropYear` | `request_year` — returns as `RequestYear`, a number; stringified on the way back |
-| `season` | `request_season` — the name is mapped to the portal's code: Kharif 1, Rabi 2, Zaid 3; returns as `RequestSeason` |
-| `grievanceCategory` | `ticket_category_id` + `ticket_sub_category_id` (code split on `.`); returns as `TicketCategoryID`/`TicketSubCategoryID`, with `TicketCategoryName`/`TicketSubCategoryName` joined by ` / ` into `name` |
-| `grievanceDescription` | `grievance_description` — returns as `GrievenceDescription` |
-| `ticketNo` | `ticket_no` on `support`, returned on the channel and never in `orderId`; `GrievenceSupportTicketNo` both as the `status` query and in its response |
-| `caseStatus` | `TicketStatus` verbatim into `name`; `code` is the `CaseStatusCode` it maps to, falling back to `UnderReview` |
-| `caseRemark` | `latestRemark` — omitted when empty, capped at 2000 characters. PMFBY publishes no remark date, so there is no `remarkedOn` |
-| `filedOn` ← | `ComplaintDate` on `status`, already ISO; on `support` it restates the generated `complaint_date`. An IST calendar date |
-| `challenge` | `value` goes to the verify endpoint only, selected by `method`; never on the lodge call, never in a response |
-| `challengeIssued` | `on_init` only — `method` is the constant `SMS_OTP`, `sentTo` is the masked request phone, `expiresAt` is the reply's `valid_for` seconds from now. All three are required; `txnId` is refused |
-| `informationMode` | not sent; `OnDemand` on requests, `Direct` on responses that carry a real case |
-| `scheme` | not sent; echoed unchanged, it identifies the scheme |
-| `provider` | not sent; the registry entry the adapter routed to. Returned on `on_support` only -- on a contract leg `commitments[].offer.provider` carries it |
-| — | `complaint_date` = `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`, generated in IST — the farmer does not backdate |
-| — | `receipt_source_id` = `134306` (provider constant) |
-| consumed | `status` — drives `caseStatus` on `support` and the error path on both legs; not surfaced as a field |
-| dropped | `ticket_id` on `support` — the portal's own row id, an internal key with no consumer; `TicketStatusID` — an opaque internal key the derived `caseStatus.code` replaces; `message` — the portal's own text, logged redacted and never returned |
-| dropped (PII) | `FarmerName`, `RequestorMobileNo`, `Email`, `StateMasterName`, `DistrictMasterName`, `SubDistrictName`, `GramPanchayat`, `NyayPanchayat`, `VillageName`, `InsurancePolicyNo`, `InsuranceCompany` — never mapped, logged or traced |
+| `responseCode` | consumed — drives the ACK/NACK decision and `case.status` on the lodge; not surfaced as a field |
+| `responseMessage` | the portal's own text. Logged redacted, never returned: it may hold a stack trace, an internal hostname or a quoted-back credential |
+| `recordCount` | a count of a single record, and v1 has seen it disagree with the body |
+| `GrievenceSupportTicketID` | the portal's row id. Not the number the farmer quotes, and no call takes it |
+| `FarmerName`, `InsuranceCompany`, `StateMasterName`, `DistrictMasterName` | **personal data.** Never mapped, logged or traced |
+
+The policy and claim reads on the same portal return more of the same kind —
+`RequestorMobileNo`, `Email`, `SubDistrictName`, `GramPanchayat`, `NyayPanchayat`,
+`VillageName`, `InsurancePolicyNo`. None of it is in scope here, and none of it would be
+mapped if it were. **The response mapping is an allow-list, not a passthrough.**
 
 ## PM-KISAN: mappings and guards
 
@@ -719,11 +825,12 @@ today everything maps to `ACTIVE`. See Open.
 
 #### What the request carries
 
-`support.orderId` carries the farmer's PM-KISAN registration number, and the channel
-carries nothing but the scheme. The registration number is both the identity the portal
-authenticates on and the enrolment the complaint is against — the upstream takes one
-reference, `IdentityNo`, and nothing else in its API names a case — so it sits in the same
-slot PMFBY fills with the application number.
+`support.orderId` carries the farmer's PM-KISAN registration number -- that is where
+`enrolmentId` lands on this leg -- and the channel carries the scheme and the
+`grievance` band. The
+registration number is both the identity the portal authenticates on and the enrolment the
+complaint is against — the upstream takes one reference, `IdentityNo`, and nothing else in
+its API names a case — so it fills the same field PMFBY fills with the application number.
 
 Aadhaar is not offered: the grievance flow has no use for one, and an identifier the
 network does not need is an identifier it should not collect.
@@ -737,18 +844,14 @@ required:
        $count($match($s.orderId, /^[A-Za-z0-9]+$/)) > 0)
     message: "orderId must be a non-empty alphanumeric registration number"
   - check: |
-      ($s := beckn.message.support;
-       $s.descriptor.code in
-         ["G001","G002","G003","G004","G005","G006","G007","G008","G009","G010"])
-    message: "descriptor.code must be one of G001-G010"
-  - check: |
-      ($s := beckn.message.support;
-       $length($trim($s.descriptor.longDesc)) >= 10)
-    message: "the grievance description must say something - at least 10 characters"
+      ($exists(beckn.message.support.channels[0].grievance.category.code))
+    message: "lodging a PM-KISAN grievance needs a category"
 ```
 
-The category guard is an exact list because the vocabulary is closed and known. PMFBY's
-equivalent is a shape check because its vocabulary is not.
+Two guards, where there were three. The category vocabulary and the ten-character minimum
+on the description are both in the pack now, checked on `channels[0]` on every leg, so the
+guard only has to say that a category is present on *this* action — the pack cannot,
+because a case read legitimately carries none.
 
 **The identity guard is deliberately loose.** The legacy client never validates a
 registration number at all — anything that is not twelve digits falls through to the
@@ -780,8 +883,8 @@ same signed exchange. Nowhere else — a case read does not return it.
     "Type":                 "Reg_No_Details",
     "TokenNo":              _local.serviceToken,
     "IdentityNo":           $s.orderId,
-    "GrievanceType":        $s.descriptor.code,
-    "GrievanceDescription": $trim($s.descriptor.longDesc)
+    "GrievanceType":        $s.channels[0].grievance.category.code,
+    "GrievanceDescription": $trim($s.channels[0].grievance.description)
   }
 )
 ```
@@ -807,33 +910,56 @@ The body codec encrypts this object and posts `{"EncryptedRequest": "…"}`.
 After the codec unwraps `d.output`:
 
 ```json
-{ "Responce": "True", "message": "Grievance registered successfully" }
+{ "Responce": "True", "GrievanceID": "PMK2026091234", "message": "Grievance registered successfully" }
 ```
 
-`Responce` is misspelled upstream, and its value is the **string** `"True"` or `"False"`,
-not a boolean. The mapping matches the upstream on both counts — the spelling and the
-string comparison — and neither leaks past the network boundary.
+**Three fields, and every one of them arrives under more than one name.** The portal is
+inconsistent about casing and spelling, so the mapping reads each through a fallback
+chain — this is the v1 adapter's behaviour on `main`,
+`src/services/pmkisan-grievance/pmkisan-grievance.service.ts`, and it is reproduced here
+because it is the portal that is inconsistent, not the client:
 
-**It is also optional here.** The legacy client models the lodge response as
-`Responce: Optional[str]` and treats an absent field as success, with the comment that the
-response "typically carries `message` and sometimes `Responce`". So the mapping must test
-for failure, not for success: `Responce = "False"` is the error path, and anything else —
-`"True"` or nothing at all — is a registered grievance. A mapping written the other way
-round (`Responce = "True"` ? registered : error) would `502` every successful lodge on
-which the portal omitted the field. `/GrievanceStatusCheck` is different: `Responce` is
-always present there and is tested directly.
+| value | names seen |
+|---|---|
+| the case identifier | `GrievanceID`, `grievanceId`, `GrievanceNo` |
+| the sentinel | `Status`, `Responce`, `Rsponce` |
+| the prose | `Message`, `message`, `Remark` |
+
+```jsonata
+$ident := response.GrievanceID ? response.GrievanceID
+          : response.grievanceId ? response.grievanceId : response.GrievanceNo;
+```
+
+The sentinel's value is the **string** `"True"` or `"False"`, not a boolean, and the
+mapping compares strings. **It is also optional here.** The direct client models it as
+`Responce: Optional[str]` and treats an absent field as success, noting that the response
+"typically carries `message` and sometimes `Responce`". So the mapping must test for
+failure, not for success: `"False"` is the error path, and anything else — `"True"` or
+nothing at all — is a registered grievance. A mapping written the other way round would
+`502` every successful lodge on which the portal omitted the field.
+`/GrievanceStatusCheck` is different: the sentinel is always present there and is tested
+directly.
 
 #### Mapping → Beckn (`on_support`)
 
-**The portal returns no ticket number.** There is nothing to quote back — no case id, no
-reference, not even a timestamp. So `orderId` comes back as it went up, the registration
-number unchanged, where PMFBY's would carry a ticket. Provenance of each field in
+**The portal does issue a case identifier.** It arrives as `GrievanceID`, or `GrievanceNo`
+where that is absent, and it becomes `case.ticketNo`. An earlier revision of this page said
+PM-KISAN issued nothing of the kind; that reading came from the direct client, whose
+Pydantic model simply does not declare the field, so it was dropped before anyone saw it.
+
+What the identifier does **not** buy is a read. `/GrievanceStatusCheck` returns every
+grievance on the identity and is not documented to repeat the handle per record, so the
+case read below still matches on `case.filedOn`. The ticket number is a handle for the
+farmer to quote, not a key the portal accepts.
+
+`orderId` still comes back as it went up, the registration number unchanged, exactly as on
+PMFBY — the ticket rides in the `case` band on both providers. Provenance of each field in
 `on_support`:
 
-- **Read from the provider** — nothing but the success/failure decision.
-- **Stated by the mapping** — `caseStatus.code` is `Registered`, asserted whenever
-  `Responce` is not `"False"`, with no `name`: the portal said nothing, and the absent
-  `name` is how a caller tells an inferred status from a quoted one. `filedOn` is
+- **Read from the provider** — `case.ticketNo`, and the success/failure decision.
+- **Stated by the mapping** — `case.status.code` is `Registered`, asserted whenever
+  the sentinel is not `"False"`, with no `name`: the portal said nothing, and the absent
+  `name` is how a caller tells an inferred status from a quoted one. `case.filedOn` is
   `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`, generated in IST,
   because the portal returns no date. `provider` names the portal the adapter routed to,
   taken from the registry entry.
@@ -849,12 +975,12 @@ not mapped either.
 
 There is no resource or offer on this leg. `res:pmkisan:grievance`, the fixed catalog
 pointer, appears on the `status` contract and does not change on any response. Per-case
-identity lives elsewhere: `contract.id` is the caller's handle on this grievance, and
-`filedOn` is what a later `status` uses to find it at the portal. This is the one place the PM-KISAN design is weaker than PMFBY, which
-has a portal-issued `ticketNo` for the same job. See `status` below, and `grievance-id` in
-Open.
+identity is split: `case.ticketNo` is the portal's handle and `contract.id` is the
+caller's, but neither is a read key. `filedOn` is what a later `status` uses to find the
+grievance at the portal. That is where PM-KISAN stays weaker than PMFBY — not for want of
+an identifier, but because the portal accepts none on a read. See `status` below.
 
-**`filedOn` is shifted to IST before truncating**, which is why the mapping above does not
+**`case.filedOn` is shifted to IST before truncating**, which is why the mapping above does not
 simply truncate `$now()`. Because `status` matches on it, a day's drift would not merely
 mislabel the grievance — it would fail to find it. See Open.
 
@@ -865,7 +991,7 @@ anything in this response — is what retrieves the grievance later.
 
 #### What the request carries
 
-**`filedOn` is the discriminator, and it is why the request carries three fields rather
+**`case.filedOn` is the discriminator, and it is why the request carries three fields rather
 than two.** The portal has no per-grievance endpoint: `/GrievanceStatusCheck` takes an
 identity and returns *every* grievance on it. But `/on_status` answers for **one**
 contract, so the adapter has to select the record this contract is about, and the adapter
@@ -875,14 +1001,16 @@ against it.
 
 That is the honest limit of this design. Two grievances filed on the same identity on the
 same day are indistinguishable, because the portal returns nothing else stable to key on.
-A portal-issued grievance id would replace `filedOn` here and close the gap; see Open.
+The portal does issue a grievance id on the lodge, but it accepts none on a read and is
+not documented to repeat it per record — so the id cannot be the discriminator until
+PM-KISAN changes one of those two things. See Open.
 
 #### Guards
 
 The identity guard, restated in `grievance.status.yaml` against the contract this action
 does carry — the registration number must be non-empty alphanumeric, read from
-`commitmentAttributes.registrationNo` rather than from `orderId`, because a `Contract` has no
-`orderId` — plus one this action needs on its own: `filedOn` must be present and ISO, since
+`commitmentAttributes.enrolmentId` rather than from `orderId`, because a `Contract` has no
+`orderId` — plus one this action needs on its own: `case.filedOn` must be present and ISO, since
 without it there is nothing to match the returned records against. Guards are per mapping
 file, so this is a copy, not a reference; the category and description guards have no place
 here and are not copied.
@@ -895,7 +1023,7 @@ here and are not copied.
   {
     "Type":       "Reg_No_Status",
     "TokenNo":    _local.serviceToken,
-    "IdentityNo": $ca.registrationNo
+    "IdentityNo": $ca.enrolmentId
   }
 )
 ```
@@ -913,6 +1041,7 @@ Same two-by-two, `_Status` suffix this time.
       "Reg_No": "UP12345678A",
       "GrievanceDate": "28-09-2026",
       "GrievanceDescription": "Third instalment for 2026 has not been credited.",
+      "GrievanceStatus": "Disposed",
       "OfficerReply": "Bank account seeded with Aadhaar; payment in next cycle.",
       "OfficeReplyDate": "06-10-2026"
     },
@@ -920,6 +1049,7 @@ Same two-by-two, `_Status` suffix this time.
       "Reg_No": "UP12345678A",
       "GrievanceDate": "14-03-2026",
       "GrievanceDescription": "Name spelling incorrect.",
+      "GrievanceStatus": "Pending",
       "OfficerReply": null,
       "OfficeReplyDate": null
     }
@@ -931,7 +1061,7 @@ Same two-by-two, `_Status` suffix this time.
 
 **`details` is a list; `on_status` returns the one record that matches.** The mapping
 converts each `GrievanceDate` from `dd-MM-yyyy` to ISO and keeps the record whose date
-equals the request's `filedOn`. The rest are discarded — they belong to other contracts.
+equals the request's `case.filedOn`. The rest are discarded — they belong to other contracts.
 The legacy client rendered `details[0]` and discarded the rest too, but that was a display
 shortcut that happened to land on the newest record; this is a match, not a guess.
 
@@ -940,7 +1070,7 @@ $ca.filedOn = $fromMillis($toMillis($.GrievanceDate, "[D01]-[M01]-[Y0001]"),
                           "[Y0001]-[M01]-[D01]")
 ```
 
-`caseStatus` carries the portal's `GrievanceStatus` verbatim in `name`, with `code` the
+`case.status` carries the portal's `GrievanceStatus` verbatim in `name`, with `code` the
 `CaseStatusCode` the adapter maps that phrase to — PMFBY's treatment exactly, which is the
 point of defining the vocabulary once. The direct client's model drops that field, but the
 portal does return it (the v1 adapter formats it and exposes a `grievance-status` tag).
@@ -983,30 +1113,32 @@ id — it is only what the caller just sent. The one place the registration numb
 is `orderId` on `on_support`, and a `Contract` has no `orderId`, so on a case read it is
 matched and then dropped.
 
-`caseRemark` and `remarkedOn` are omitted when null rather than emitted as `null` — an
-absent field reads as "nothing recorded yet," which is what it means. `caseRemark` is
+`case.remark` and `case.remarkedOn` are omitted when null rather than emitted as `null` —
+an absent field reads as "nothing recorded yet," which is what it means. `case.remark` is
 capped at 2000 characters by the pack, being unvalidated upstream free text.
 
 ### Field mapping
 
 | Beckn (`commitmentAttributes`) | Provider |
 |---|---|
-| `registrationNo` | `IdentityNo` — the registration number, sent as it arrived. It rides in `support.orderId` on the lodge leg and in `commitmentAttributes` on the read |
+| `enrolmentId` | `IdentityNo` — the registration number, sent as it arrived. It rides in `support.orderId` on the lodge leg and in `commitmentAttributes` on the read |
 | action | selects the `Type` suffix: `_Details` on `support`, `_Status` on `status` |
-| `grievanceCategory.code` | `GrievanceType` (`G001`–`G010`, verbatim) — **outbound only**. `Reg_No_Status` returns no category, so a case read cannot populate it and the field is absent from a PM-KISAN `on_status`. PMFBY round-trips its category; this one does not |
-| `grievanceDescription` | `GrievanceDescription` out; `GrievanceDescription` in on `status` |
-| `caseStatus` | `code` only: `Registered` on `support` unless `Responce` is `"False"`; on `status`, `GrievanceStatus` into `name` with the mapped `CaseStatusCode` in `code`, falling back to `Replied`/`UnderReview` from `OfficerReply` when the portal publishes no status |
-| `filedOn` | sent on `status` and matched against `GrievanceDate`; generated on `support`, which returns no date |
-| `caseRemark`, `remarkedOn` | `OfficerReply`, `OfficeReplyDate` — omitted when null. The network does not adopt the portal's field name; the portal itself is inconsistent about the author (`OfficeReplyDate`, not `OfficerReplyDate`) |
+| `grievance.category.code` | `GrievanceType` (`G001`–`G010`, verbatim) — **outbound only**. `Reg_No_Status` returns no category, so a case read cannot populate it and the field is absent from a PM-KISAN `on_status`. That is why the base requires only `description` of a `grievance`. PMFBY round-trips its category; this one does not |
+| `grievance.subCategory` | refused by the pack — PM-KISAN classifies one level deep |
+| `grievance.description` | `GrievanceDescription` out; `GrievanceDescription` in on `status` |
+| `case.status` | `code` only: `Registered` on `support` unless `Responce` is `"False"`; on `status`, `GrievanceStatus` into `name` with the mapped `CaseStatusCode` in `code`, falling back to `Replied`/`UnderReview` from `OfficerReply` when the portal publishes no status |
+| `case.filedOn` | sent on `status` and matched against `GrievanceDate`; generated on `support`, which returns no date |
+| `case.remark`, `case.remarkedOn` | `OfficerReply`, `OfficeReplyDate` — omitted when null. The network does not adopt the portal's field name; the portal itself is inconsistent about the author (`OfficeReplyDate`, not `OfficerReplyDate`) |
+| `case.ticketNo` | `GrievanceID`, or `GrievanceNo` where that is absent — the portal uses both names for one handle. Returned on a lodge; the status call is not documented to repeat it per record, so a case read may carry none. Never sent: the portal accepts no ticket number on a read |
 | `informationMode` | not sent; `OnDemand` on requests, `Direct` on responses |
 | `scheme` | not sent; echoed unchanged |
 | `provider` | not sent; the registry entry the adapter routed to. Returned on `on_support` only -- on a contract leg `commitments[].offer.provider` carries it |
 | — | `TokenNo` = the portal's static service token, from the prerequisite |
-| consumed | `Responce` — drives `caseStatus`, the empty-result path, and the error path |
+| consumed | `Responce` — drives `case.status`, the empty-result path, and the error path |
 | dropped | `Reg_No` — returned on every `status` record and discarded; it appears in no field and in no id |
 | dropped (PII) | `Farmer_Name`, `Father_Name`, `Gender`, `MobileNo`, `StateName`, `DistrictName`, `BlockName`, `RevenueVillageName` — returned on every `status` record; never mapped, logged or traced |
 | dropped | `message`, `__type` — portal prose and envelope chatter |
-| echoed once | `registrationNo` — returned in `orderId` on `on_support` to the caller who sent it, and nowhere else; never logged, never traced, never surfaced on a case read |
+| echoed once | `enrolmentId` — returned in `orderId` on `on_support` to the caller who sent it, and nowhere else; never logged, never traced, never surfaced on a case read |
 
 ## When it fails
 
@@ -1015,7 +1147,7 @@ The status codes and the NACK body are in the Errors section. What produces them
 **Guards run before any upstream call**, so a malformed payload never reaches the portal.
 
 **An empty answer is not an error, but it is still said out loud.** An unknown ticket, or no
-PM-KISAN record matching `filedOn`, returns `202` with an `AckNoCallback` body carrying
+PM-KISAN record matching `case.filedOn`, returns `202` with an `AckNoCallback` body carrying
 `BIZ_NO_RESULTS_FOUND` — `status: "ACK"`, because the request was accepted and processed.
 This needs no schema change: no field of either pack is involved.
 
@@ -1023,10 +1155,12 @@ Returning a commitment with `commitmentAttributes` omitted would also be spec-le
 what an earlier draft did. It was dropped because a missing field is not a message — a
 consumer cannot distinguish it from an adapter bug that lost the field.
 
-**The portals signal failure in the body, not the status line.** PMFBY sends
-`status != "success"`; PM-KISAN sends `Responce: "False"`, and on `/LodgeGrievance` an
-*absent* `Responce` is success rather than failure. Both become `502` /
-`NET_DOWNSTREAM_UNAVAILABLE`.
+**The portals signal failure in the body, not the status line.** PMFBY's FGMS calls send
+`responseCode` other than `"1"` — test the stringified value, it has been seen as both a
+string and a number — and its OTP pair sends `status: false` with the reason in `error`.
+PM-KISAN sends its sentinel under `Status`, `Responce` or `Rsponce`, spellings included,
+and `"False"` is the refusal; on `/LodgeGrievance` an *absent* sentinel is success rather
+than failure. All of these become `502` / `NET_DOWNSTREAM_UNAVAILABLE`.
 
 **The portal's message does not go into the response.** `common/http.go` already refuses this
 for a non-2xx — a failure body may hold a stack trace or an internal hostname, and a rejected
@@ -1040,7 +1174,7 @@ or IV drift, so it is a `500` / `NET_INTERNAL_ERROR` — our configuration — r
 `502`, which would blame a portal that answered correctly. It must not log the ciphertext,
 which may be a valid envelope the adapter cannot open, and the request is not retried.
 
-No error path carries `challenge.value`, `registrationNo`, or the service token.
+No error path carries `challenge.value`, `enrolmentId`, or the service token.
 
 ## What gets added
 
@@ -1077,17 +1211,24 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
 
 ### Blocking
 
-- **The PMFBY case-read contract is unverified** — the whole `on_status` mapping rests on
-  it. Thirteen of the fourteen field names in the response above occur in no source we
-  hold: not in BharatVistaar, not in any Beckn specification, not anywhere on disk. The
-  fourteenth, `GrievenceSupportTicketNo`, occurs only as a *request* tag. The legacy client
-  renders that reply generically and never names a field, so the shape is not recoverable
-  from the code. Either these names came from a PMFBY API document we were given and did
-  not keep, or a previous draft invented them — and the mapping, the pack's `result_fields`,
-  the `on_status` examples in every doc, and the demo host `pmfbydemo.amnex.co.in` all
-  inherit whichever it is. Get the document from PMFBY, or get one live response, before
-  anything is built on this. `grievance-upstream-contracts.md` records the provenance of
-  each field either way. PM-KISAN is unaffected.
+- **Is PMFBY's `responseDynamic` an object or an array?** This is what is left of the
+  case-read question, and it is the only open item on the PMFBY mapping. The reply carries
+  a `recordCount` beside the payload, and v1 reads the payload as a single object while
+  also dumping it to a string as a hedge — so a multi-ticket read may well return an array
+  and nobody has checked. The mapping below assumes an object. Settle it by observation:
+  the telemetry store keeps raw upstream bodies in
+  `beckn_ext_events.ext_api_response`, filtered on `service_name = 'pmfby-greviance'`.
+
+  The rest of the case-read contract is **closed**. The twelve `responseDynamic` fields,
+  the three FGMS endpoints, the bare-`Authorization` token and the absence of a
+  grievance-specific OTP are all read from the v1 adapter on `Beckn`'s `main` branch.
+  `grievance-upstream-contracts.md` §0 has the line references. An earlier revision of
+  this page recorded these names as unverifiable; that search had covered only the
+  checked-out working tree.
+
+- **PMFBY publishes no OTP expiry.** `getOtp` answers `{status, data, error}` and nothing
+  more, so `challengeIssued.expiresAt` is a configured TTL the adapter asserts. Confirm
+  the real window with PMFBY and set `PMFBY_OTP_TTL_SECONDS` from it.
 
 - **Body codec** — nothing on PM-KISAN ships without it. Designed under "The blocker"
   above; needs approval before implementation, since it is the only change to shared
@@ -1127,8 +1268,8 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
 
 - **Generated dates are shifted to IST; the assumption behind it is unconfirmed.** `$now()`
   is UTC, so a truncated UTC date lands on the previous day for anything filed between
-  00:00 and 05:30 IST. On PMFBY the generated `complaint_date` is *sent to the portal*, so
-  the drift would be written upstream; on PM-KISAN the generated `filedOn` is what a later
+  00:00 and 05:30 IST. On PMFBY the generated `complaintDate` is *sent to the portal*, so
+  the drift would be written upstream; on PM-KISAN the generated `case.filedOn` is what a later
   `status` matches against, so it would not merely mislabel the grievance — it would fail
   to find it. Both mappings above therefore shift before truncating, with
   `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`. What remains open is
@@ -1136,22 +1277,22 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
 
 - **Terminal statuses — ask both portals for their full status vocabulary.** Neither
   documents which values close a case, so every commitment sits at `ACTIVE` and
-  `status.descriptor.code` carries a constant. `caseStatus` holds the real state, but in
+  `status.descriptor.code` carries a constant. `case.status` holds the real state, but in
   each portal's own words, so a consumer without this pack cannot tell an open case from a
   finished one — which is the only job the coarse enum has. What is needed is the complete
   list of values each portal can return and which of them are terminal; `CLOSED` is then a
   mapping rather than a guess. Until then the field stays `ACTIVE`: inventing a terminal
   set would be worse than leaving it flagged.
 
-- **Endpoint paths and credentials** need the portals' integration documents. PMFBY's
-  request body is reconstructed from the v1 *gateway's* tag vocabulary — the legacy repo
-  holds the caller-side tools but no client that ever called PMFBY directly, so even the
-  request field names are one translation removed from the portal's own. Its response is
-  worse off; see the blocking item above. The two paths `/SendOTP` and
-  `/InsertGrievenceTicket` are marked `TODO: path unconfirmed` in the registry for the same
-  reason. PM-KISAN's two paths
-  and its `TokenNo` are taken from the legacy client; the base URL, the token's real
-  value, and whether it is per-integrator are all unconfirmed.
+- **Endpoint paths are confirmed; the hosts and credentials are not.** PMFBY's five paths
+  are read from the v1 adapter on `main`: `POST /krphapi/FGMS/NICUsersLogin`,
+  `/AddKRPHNCIPGrievenceSupportTicket` and `/GetGrievenceTicketsStatus` on the FGMS realm,
+  and `POST /api/v1/services/nic/getOtp` and `/verifyMobile` on the policy realm behind
+  `POST /api/v2/external/service/login`. One host, two unrelated tokens, and the FGMS one
+  goes in a bare `Authorization` header with no `Bearer`. PM-KISAN's three paths and its
+  `TokenNo` are taken from the legacy client. What remains unconfirmed on both:
+  the production base URL — `pmfbydemo.amnex.co.in` is a demo host — the credentials'
+  real values, and whether they are per-integrator.
 
 - **`/support` lodges the grievance, and two of its preconditions are read generously.**
   `/support` states that "The CN MUST hold a confirmed Contract id or a reference to another
@@ -1174,15 +1315,17 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
 
 ### PMFBY
 
-- **`grievanceCategory`** — only `3`/`10` is used today, and the
-  `<category>.<subCategory>` code shape is this design's invention. If the portal publishes
-  a real list, enumerate it in the `support` guard rather than the pack: the list is
-  provider-specific, and PM-KISAN's `G001`–`G010` shares the field but not the values.
+- **`grievance.category`** — only `3`/`10` is used today. The pack carries both levels as
+  values rather than writing them into the mapping, so when the portal publishes its real
+  list the experience layer starts sending a genuine choice and nothing here changes. If
+  that list arrives, enumerate it in the PMFBY pack the way PM-KISAN's `G001`–`G010` is
+  enumerated: the two schemes bind `grievance.category` to different IRIs precisely so each
+  can hold its own closed list.
 - **`ticket-id`** — dropped, after a draft that mapped it. Nothing reads it back and it is
   an internal key, so publishing it costs without paying. Ask PMFBY whether the case read
   keys on it; if it does, the field comes back, which is far cheaper than retiring a
   published one.
-- **`receipt_source_id` `134306`** — assumed fixed for the Vistaar channel.
+- **`receiptSourceID` `134306`** — assumed fixed for the Vistaar channel.
 
 ### PM-KISAN
 
@@ -1199,25 +1342,21 @@ configuration and mapping files. PMFBY needs none of it and can ship first.
   legacy client validates nothing, and the 11-character figure comes from a docstring.
   Ask PM-KISAN for the real format and tighten the guard to it; until then a loose guard
   is the safe error.
-- **Case identity** — the resource is a fixed catalog pointer and carries no case identity.
-  `contract.id` is the caller's handle, and `filedOn` is what actually retrieves the
-  grievance from the portal — and it collides for two grievances filed on the same identity
-  the same day. If the portal has an internal grievance id it does not currently return,
-  asking for it in the response would close the collision and give the pack a real case
-  identifier; see `grievance-id` below.
+- **Case identity** — `case.ticketNo` exists on PM-KISAN after all (`GrievanceID` /
+  `GrievanceNo` on the lodge), but the portal accepts no ticket number on a read. So
+  `case.filedOn` is still what retrieves the grievance, and it still collides for two
+  grievances filed on the same identity the same day. What would close it is a
+  `/GrievanceStatusCheck` that takes the grievance id, or at minimum one that repeats it
+  per record so the adapter can match on it instead of the date. Ask PM-KISAN for either.
 - **Category is write-only** — `Reg_No_Status` returns fourteen fields and `GrievanceType`
   is not among them, so a grievance the network filed under `G003` comes back with no
   category at all. The adapter will not infer one: a category reconstructed from a remark would be a
   guess wearing a governed code. Ask PM-KISAN whether the case read can return
   `GrievanceType`; if it can, the field round-trips as it does on PMFBY and the
   `on_status` payload gains it with no schema change — the pack already defines it.
-- **`grievance-id`** — the v1 adapter reads a `grievance-id` tag, but nothing in the portal
-  client produces one and no sample response exists in the tree. If it turns out to be
-  portal-issued, it replaces `filedOn` as the `status` discriminator and the pack needs a
-  case-identifier field. Resolve against a live response before v1.0.
-- **`caseStatus` vocabulary** — the portal does return a `GrievanceStatus` field (the v1
+- **`case.status` vocabulary** — the portal does return a `GrievanceStatus` field (the v1
   adapter formats it and exposes it as a `grievance-status` tag); the direct client's
-  `GrievanceStatusDetail` model simply drops it. Carry it verbatim in `caseStatus.name`
+  `GrievanceStatusDetail` model simply drops it. Carry it verbatim in `case.status.name`
   and map it to a `CaseStatusCode` for `code`; fall back to inferring
   `Replied`/`UnderReview` from `OfficerReply` only when it is absent. What is still needed
   is the phrase list itself, so the lookup can be written — until then every phrase falls
