@@ -93,7 +93,7 @@ func (p *pmfbyStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case sendOTPPath:
-		fmt.Fprint(w, `{"responseCode":1,"responseMessage":"OTP sent","responseDynamic":{"otpValidityInSeconds":300}}`)
+		fmt.Fprint(w, `{"responseCode":1,"responseMessage":"OTP sent"}`)
 	case insertPath:
 		if body["otp"] != validOTP {
 			w.WriteHeader(http.StatusBadRequest)
@@ -165,7 +165,7 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type",
 		// A support request composes no contract; its channel names both.
-		FallbackProviderIDAt:     "message.support.channels[].providerId",
+		FallbackProviderIDAt:     "message.support.channels[].provider.id",
 		FallbackCapabilityCodeAt: "message.support.channels[].@type",
 		AuthByProvider: map[string]*common.AuthProfile{"pmfby": {
 			Scheme: util.AuthSchemeTokenHeader, TokenURL: upstream.URL + loginPath,
@@ -258,6 +258,10 @@ const packContext = "https://openagrinet.github.io/network-specs/api-schemas/PMF
 // scheme is what every PMFBY payload names, in both directions.
 var scheme = map[string]any{"code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana"}
 
+// provider is the portal a support request names on its channel, since it
+// composes no contract to name it on.
+var provider = map[string]any{"id": "pmfby", "descriptor": map[string]any{"name": "PMFBY Grievance Portal"}}
+
 func becknContext(action string) map[string]any {
 	return map[string]any{"version": "2.0.0", "action": action, "transactionId": "txn-1", "messageId": "msg-1"}
 }
@@ -289,7 +293,7 @@ func request(action string, attributes map[string]any) []byte {
 // everything else on channels[0]. A field left out is absent from the payload.
 func support(fields map[string]any) []byte {
 	channel := map[string]any{"@context": packContext, "@type": "openagrinet:PMFBYGrievance",
-		"informationMode": "OnDemand", "scheme": scheme, "providerId": "pmfby"}
+		"informationMode": "OnDemand", "scheme": scheme, "provider": provider}
 	body := map[string]any{"channels": []any{channel}}
 	descriptor := map[string]any{}
 	for field, value := range fields {
@@ -311,10 +315,15 @@ func support(fields map[string]any) []byte {
 
 func initAttributes() map[string]any { return map[string]any{"applicantPhone": phone} }
 
+// challenge is the OTP as a support request carries it.
+func challenge(otp string) map[string]any {
+	return map[string]any{"method": "SMS_OTP", "value": otp}
+}
+
 func supportFields() map[string]any {
 	return map[string]any{
 		"orderId": "040108251010160770605", "code": "3.10", "name": "Claim / Claim not received",
-		"longDesc": "  Claim not received  ", "applicantPhone": phone, "otp": validOTP,
+		"longDesc": "  Claim not received  ", "applicantPhone": phone, "challenge": challenge(validOTP),
 		"cropYear": "2025", "season": "Kharif",
 	}
 }
@@ -344,14 +353,21 @@ func todayIST() string {
 
 func TestInit_ValidPhone_ReturnsMaskedOTPChallenge(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
+	before := time.Now()
 	got := h.mustSend(t, request("init", initAttributes()))
 
 	if sent := h.pmfby.bodies[sendOTPPath]; len(sent) != 1 || sent["requestorMobileNo"] != phone {
 		t.Errorf("PMFBY was sent %v, want requestorMobileNo alone", sent)
 	}
-	challenge, _ := got.attributes()["otpChallenge"].(map[string]any)
-	if challenge["sentTo"] != "98XXXXXX10" {
-		t.Errorf("sentTo = %v, want 98XXXXXX10", challenge["sentTo"])
+	issued, _ := got.attributes()["challengeIssued"].(map[string]any)
+	if issued["method"] != "SMS_OTP" || issued["sentTo"] != "98XXXXXX10" {
+		t.Errorf("challengeIssued = %v, want SMS_OTP sent to 98XXXXXX10", issued)
+	}
+	// Ten minutes from the call, the validity the adapter derives.
+	expiresAt, err := time.Parse(time.RFC3339, fmt.Sprint(issued["expiresAt"]))
+	if err != nil || expiresAt.Before(before.Add(10*time.Minute-time.Second)) ||
+		expiresAt.After(time.Now().Add(10*time.Minute+time.Second)) {
+		t.Errorf("expiresAt = %v, want ten minutes from now", issued["expiresAt"])
 	}
 	if got.Context["action"] != "on_init" || got.status() != "DRAFT" {
 		t.Errorf("action %v, status %v; want on_init, DRAFT", got.Context["action"], got.status())
@@ -447,25 +463,25 @@ func TestSupport_ValidOTP_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	}
 	channel := got.channel()
 	caseStatus, _ := channel["caseStatus"].(map[string]any)
-	source, _ := channel["source"].(map[string]any)
-	if channel["ticketNo"] != knownTicket || channel["ticketId"] != "8842317" ||
-		caseStatus["code"] != "REGISTERED" || caseStatus["name"] != "Registered" ||
-		channel["filedOn"] != todayIST() || source["sourceId"] != "pmfby" ||
+	routedTo, _ := channel["provider"].(map[string]any)
+	if channel["ticketNo"] != knownTicket || len(caseStatus) != 1 || caseStatus["code"] != "Registered" ||
+		channel["filedOn"] != todayIST() || routedTo["id"] != "pmfby" ||
 		channel["informationMode"] != "Direct" || channel["scheme"] == nil {
 		t.Errorf("channel = %v", channel)
 	}
-	for _, private := range []string{"otp", "applicantPhone", "providerId"} {
+	for _, private := range []string{"challenge", "applicantPhone", "ticketId"} {
 		if _, echoed := channel[private]; echoed {
 			t.Errorf("%s must not be echoed", private)
 		}
 	}
 }
 
-func TestSupport_NoTicketID_OmitsIt(t *testing.T) {
+// The pack holds ticketNo as a string of digits, whichever PMFBY sends.
+func TestSupport_NumericTicketNo_ReturnedAsString(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{answers: map[string]string{
-		insertPath: fmt.Sprintf(`{"responseCode":1,"responseDynamic":{"GrievenceSupportTicketNo":%q}}`, knownTicket)}}, 0)
-	if value, present := h.mustSend(t, support(supportFields())).channel()["ticketId"]; present {
-		t.Errorf("ticketId = %v, want it omitted when PMFBY sends none", value)
+		insertPath: fmt.Sprintf(`{"responseCode":1,"responseDynamic":{"GrievenceSupportTicketNo":%s}}`, knownTicket)}}, 0)
+	if got := h.mustSend(t, support(supportFields())).channel()["ticketNo"]; got != knownTicket {
+		t.Errorf("ticketNo = %#v, want %q", got, knownTicket)
 	}
 }
 
@@ -509,7 +525,7 @@ func TestSupport_CategoryCode_SplitsOnTheDot(t *testing.T) {
 }
 
 func TestSupport_MissingField_Returns400WithoutCallingPMFBY(t *testing.T) {
-	for _, field := range []string{"orderId", "code", "longDesc", "applicantPhone", "otp", "cropYear", "season"} {
+	for _, field := range []string{"orderId", "code", "longDesc", "applicantPhone", "challenge", "cropYear", "season"} {
 		t.Run(field, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
 			fields := supportFields()
@@ -566,7 +582,7 @@ func TestSupport_UnknownSeason_Returns400WithoutCallingPMFBY(t *testing.T) {
 // OTP to the caller, and the lodge call is not repeated.
 func TestSupport_PortalAnswers400_Returns400BizGenericError(t *testing.T) {
 	fields := supportFields()
-	fields["otp"] = "000000"
+	fields["challenge"] = challenge("000000")
 	h := newHarness(t, &pmfbyStub{}, 0)
 	_, err := h.send(t, support(fields))
 	assertCoded(t, err, http.StatusBadRequest, "BIZ_GENERIC_ERROR")
@@ -641,10 +657,14 @@ func TestSupport_FallbackNotConfigured_PassesThroughUntouched(t *testing.T) {
 	}
 }
 
-func TestSupport_NoProviderID_PassesThrough(t *testing.T) {
-	body := strings.Replace(string(support(supportFields())), `"providerId":"pmfby",`, "", 1)
+func TestSupport_NoProvider_PassesThrough(t *testing.T) {
+	var payload map[string]any
+	_ = json.Unmarshal(support(supportFields()), &payload)
+	channels := payload["message"].(map[string]any)["support"].(map[string]any)["channels"].([]any)
+	delete(channels[0].(map[string]any), "provider")
+	body, _ := json.Marshal(payload)
 	h := newHarness(t, &pmfbyStub{}, 0)
-	got, err := h.send(t, []byte(body))
+	got, err := h.send(t, body)
 	if err != nil || got != nil {
 		t.Errorf("Run() = %v, %v; want a support request naming no provider passed on", got, err)
 	}
@@ -668,19 +688,17 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 	attributes := got.attributes()
 	for field, want := range map[string]any{
 		"ticketNo": knownTicket, "applicationNo": "040108251010160770605", "cropYear": "2025",
-		"season": "Kharif", "filedOn": "2026-10-04", "officerReply": "Forwarded to insurer",
+		"season": "Kharif", "filedOn": "2026-10-04", "caseRemark": "Forwarded to insurer",
 		"informationMode": "Direct",
 	} {
 		if attributes[field] != want {
 			t.Errorf("%s = %v, want %v", field, attributes[field], want)
 		}
 	}
+	// An unrecognised portal phrase is UnderReview, the phrase kept as the name.
 	caseStatus, _ := attributes["caseStatus"].(map[string]any)
-	if caseStatus["code"] != "UNDER_REVIEW" || caseStatus["name"] != "Under Review" {
-		t.Errorf("caseStatus = %v, want UNDER_REVIEW / Under Review", caseStatus)
-	}
-	if source, _ := attributes["source"].(map[string]any); source["sourceId"] != "pmfby" {
-		t.Errorf("source = %v, want pmfby", attributes["source"])
+	if caseStatus["code"] != "UnderReview" || caseStatus["name"] != "Under Review" {
+		t.Errorf("caseStatus = %v, want UnderReview / Under Review", caseStatus)
 	}
 	if got.Context["action"] != "on_status" || got.status() != "ACTIVE" {
 		t.Errorf("action %v, status %v; want on_status, ACTIVE", got.Context["action"], got.status())
@@ -691,7 +709,7 @@ func TestStatus_KnownTicket_DropsPersonalAndInternalFields(t *testing.T) {
 	got := newHarness(t, &pmfbyStub{}, 0).mustSend(t, request("status", statusAttributes()))
 	allowed := map[string]bool{"@context": true, "@type": true, "informationMode": true, "scheme": true,
 		"ticketNo": true, "applicationNo": true, "cropYear": true, "season": true, "caseStatus": true,
-		"filedOn": true, "officerReply": true, "source": true}
+		"filedOn": true, "caseRemark": true}
 	for field := range got.attributes() {
 		if !allowed[field] {
 			t.Errorf("%s is mapped; the response is an allow-list", field)
@@ -699,12 +717,28 @@ func TestStatus_KnownTicket_DropsPersonalAndInternalFields(t *testing.T) {
 	}
 }
 
-func TestStatus_NoRemarkYet_OmitsOfficerReply(t *testing.T) {
+func TestStatus_NoRemarkYet_OmitsCaseRemark(t *testing.T) {
 	record := strings.Replace(knownTicketRecord, `"latestRemark":"Forwarded to insurer"`, `"latestRemark":""`, 1)
 	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
 		mustSend(t, request("status", statusAttributes()))
-	if _, present := got.attributes()["officerReply"]; present {
-		t.Errorf("officerReply = %v, want it omitted while PMFBY has none", got.attributes()["officerReply"])
+	if _, present := got.attributes()["caseRemark"]; present {
+		t.Errorf("caseRemark = %v, want it omitted while PMFBY has none", got.attributes()["caseRemark"])
+	}
+}
+
+// The pack requires caseStatus on a case read, so a missing phrase still says
+// UnderReview; only the name, which would quote the portal, is dropped.
+func TestStatus_NoStatusPhrase_UnderReviewWithoutName(t *testing.T) {
+	for name, phrase := range map[string]string{"null": `null`, "empty": `""`} {
+		t.Run(name, func(t *testing.T) {
+			record := strings.Replace(knownTicketRecord, `"TicketStatus":"Under Review"`, `"TicketStatus":`+phrase, 1)
+			got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+				mustSend(t, request("status", statusAttributes()))
+			caseStatus, _ := got.attributes()["caseStatus"].(map[string]any)
+			if len(caseStatus) != 1 || caseStatus["code"] != "UnderReview" {
+				t.Errorf("caseStatus = %v, want code UnderReview alone", caseStatus)
+			}
+		})
 	}
 }
 
@@ -720,12 +754,10 @@ func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
 		field    string
 		where    func(string) func(*answer) map[string]any
 	}{
-		"null status":          {`"TicketStatus":"Under Review"`, `"TicketStatus":null`, "caseStatus", inAttributes},
-		"empty status":         {`"TicketStatus":"Under Review"`, `"TicketStatus":""`, "caseStatus", inAttributes},
 		"null sub-category id": {`"TicketSubCategoryID":10`, `"TicketSubCategoryID":null`, "code", inDescriptor},
 		"null description":     {`"GrievenceDescription":"Claim not received"`, `"GrievenceDescription":null`, "longDesc", inDescriptor},
 		"null complaint date":  {`"ComplaintDate":"2026-10-04"`, `"ComplaintDate":null`, "filedOn", inAttributes},
-		"null remark":          {`"latestRemark":"Forwarded to insurer"`, `"latestRemark":null`, "officerReply", inAttributes},
+		"null remark":          {`"latestRemark":"Forwarded to insurer"`, `"latestRemark":null`, "caseRemark", inAttributes},
 		"null application no":  {`"ApplicationNo":"040108251010160770605"`, `"ApplicationNo":null`, "applicationNo", inAttributes},
 		"null request season":  {`"RequestSeason":1`, `"RequestSeason":null`, "season", inAttributes},
 	} {
@@ -802,7 +834,7 @@ func TestFlow_InitSupportStatus_LogsInOnce(t *testing.T) {
 	ticket := h.mustSend(t, support(supportFields())).channel()["ticketNo"]
 	got := h.mustSend(t, request("status", map[string]any{"applicantPhone": phone, "ticketNo": ticket}))
 
-	if caseStatus, _ := got.attributes()["caseStatus"].(map[string]any); caseStatus["code"] != "UNDER_REVIEW" {
+	if caseStatus, _ := got.attributes()["caseStatus"].(map[string]any); caseStatus["code"] != "UnderReview" {
 		t.Errorf("status of the filed ticket = %v", got.attributes())
 	}
 	if logins := h.pmfby.calls[loginPath]; logins != 1 {

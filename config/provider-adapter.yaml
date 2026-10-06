@@ -522,7 +522,7 @@ modules:
               # A support request composes no contract, so it names its provider
               # and type on its one channel instead. Tried only when the paths
               # above find nothing. Both or neither, like the pair above.
-              fallbackProviderIdAt: "message.support.channels[].providerId"
+              fallbackProviderIdAt: "message.support.channels[].provider.id"
               fallbackCapabilityCodeAt: "message.support.channels[].@type"
 
               # PMFBY issues its own token from its login endpoint

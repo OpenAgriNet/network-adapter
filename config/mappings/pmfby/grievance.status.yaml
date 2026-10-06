@@ -55,7 +55,7 @@ response: |
             "longDesc": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription
           },
           "commitments": [$merge([$commitment, {
-            "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+            "status": { "descriptor": { "code": "ACTIVE" } },
             "commitmentAttributes": {
               "@context": $ca.`@context`,
               "@type": $ca.`@type`,
@@ -66,13 +66,17 @@ response: |
               "cropYear": $isNumber($ticket.RequestYear) or $isText($ticket.RequestYear)
                 ? $string($ticket.RequestYear),
               "season": $isNumber($ticket.RequestSeason) ? $lookup($seasons, $string($ticket.RequestSeason)),
-              "caseStatus": $isText($ticket.TicketStatus) ? {
-                "code": $uppercase($replace($ticket.TicketStatus, " ", "_")),
-                "name": $ticket.TicketStatus
+              /* code is the network's word, name the portal's phrase. PMFBY
+                 publishes no status vocabulary, so every phrase is one the
+                 adapter does not recognise and maps to UnderReview, which is
+                 never a closed state. Recognised phrases are added here once
+                 PMFBY confirms them. */
+              "caseStatus": {
+                "code": "UnderReview",
+                "name": $isText($ticket.TicketStatus) ? $ticket.TicketStatus
               },
               "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
-              "officerReply": $isText($ticket.latestRemark) ? $ticket.latestRemark,
-              "source": { "sourceId": "pmfby", "sourceName": "PMFBY Grievance Portal" }
+              "caseRemark": $isText($ticket.latestRemark) ? $ticket.latestRemark
             }
           }])]
         }])

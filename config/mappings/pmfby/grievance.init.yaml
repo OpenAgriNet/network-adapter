@@ -26,28 +26,33 @@ request: |
   )
 
 # Built from the request alone: SendOTP's reply is not documented, so nothing
-# is read from it, and expiresAt is left out until it is. The phone is masked
-# rather than echoed: enough for the farmer to recognise which number, not
-# enough to read it back.
+# is read from it. The phone is masked rather than echoed: enough for the
+# farmer to recognise which number, not enough to read it back.
 response: |
   (
     $commitment := beckn.message.contract.commitments[0];
     $ca := $commitment.commitmentAttributes;
     $phone := $ca.applicantPhone;
+    /* The pack requires expiresAt and has the adapter derive it. PMFBY
+       publishes no OTP validity; ten minutes is the architecture doc's
+       example, to be confirmed with PMFBY. */
+    $otpValidityMillis := 10 * 60 * 1000;
     {
       "context": $merge([beckn.context, { "action": "on_init", "timestamp": $now() }]),
       "message": {
         "contract": $merge([beckn.message.contract, {
           "commitments": [$merge([$commitment, {
-            "status": { "descriptor": { "code": "DRAFT", "name": "draft" } },
+            "status": { "descriptor": { "code": "DRAFT" } },
             "commitmentAttributes": {
               "@context": $ca.`@context`,
               "@type": $ca.`@type`,
               /* Still OnDemand: an OTP acknowledgement carries no case. */
               "informationMode": "OnDemand",
               "scheme": $ca.scheme,
-              "otpChallenge": {
-                "sentTo": $substring($phone, 0, 2) & "XXXXXX" & $substring($phone, -2)
+              "challengeIssued": {
+                "method": "SMS_OTP",
+                "sentTo": $substring($phone, 0, 2) & "XXXXXX" & $substring($phone, -2),
+                "expiresAt": $fromMillis($millis() + $otpValidityMillis)
               }
             }
           }])]
