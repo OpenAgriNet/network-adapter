@@ -36,11 +36,13 @@ it; the channel carries `provider` instead, and no adapter change is needed.
 onto `Contract`'s own `required: [commitments]`, so a status payload carries both — and
 `commitmentAttributes` is reachable there exactly as it is under `select`.
 
-**PMFBY needs three actions, PM-KISAN two.** PMFBY's portal issues an OTP, so `init` has
-a job to do: ask for one, and give the farmer time to read it before `support`. PM-KISAN's
-`/LodgeGrievance` asks for no OTP, so there is nothing for an `init` leg to do and the
-flow starts at `support`. Which of the two a caller is looking at is published rather
-than assumed — see [`Discovery`](#discovery-how-a-caller-finds-any-of-this).
+**Both schemes need three actions.** `init` asks for an OTP and gives the farmer time to
+read it. PMFBY's portal issues one of its own; PM-KISAN's grievance portal does not, and
+the network requires one anyway — see [`What identity is
+proven`](#what-identity-is-proven). What differs is which later calls the OTP guards:
+PMFBY's `support` alone, PM-KISAN's `support` and `status`. That is published in each
+pack's `x-oan-required-by-action` rather than assumed — see
+[`Discovery`](#discovery-how-a-caller-finds-any-of-this).
 
 **`discover` comes before all of them, and is answered from a catalog, not a portal.**
 The two catalogs are published once and indexed; no grievance call reaches a portal
@@ -128,13 +130,16 @@ discover which kind by sending one and being refused. The items enum is pinned p
 pack to exactly what that portal issues — `[SMS_OTP]` on PMFBY — so the declaration
 cannot advertise a mechanism the adapter has no prerequisite hook for.
 
-The field sits in `GrievanceBase` rather than in the PMFBY pack, which is the
-opposite of where `challenge` itself sits, and deliberately. `challenge` is a
-field only one portal has, so it belongs to that portal's pack. `challengeMethods`
-is the question *every* pack has to answer, including by answering "none" — a pack
-that cannot state it is a pack a caller cannot plan against. PM-KISAN answers with
-an empty list, which is also what marks its catalog entry as a declaration; see
-"What the packs must add".
+The field sits in `GrievanceBase`, because it is the question *every* pack has to
+answer, including by answering "none" — a pack that cannot state it is a pack a
+caller cannot plan against. Both packs answer `[SMS_OTP]` today. An empty list is
+a legal answer and nothing publishes one; it is kept legal so a portal that drops
+its OTP can say so without a schema change.
+
+What `challengeMethods` does *not* say is which actions are challenged. PMFBY
+challenges `support` alone; PM-KISAN challenges `support` and `status`. That is in
+each pack's `x-oan-required-by-action`, where everything else a particular action
+must carry already lives.
 
 ### What a request must carry is not published
 
@@ -186,8 +191,9 @@ Four changes, all in the schemas, none in adapter code:
 1. **`GrievanceBase`** gains `challengeMethods`, optional, described as
    declaration-only — it appears on a catalog entry and on no transaction payload.
 2. **PMFBY** pins `challengeMethods` to `minItems: 1` with `items.enum: [SMS_OTP]`.
-3. **PM-KISAN** pins it to `maxItems: 0`: the field is present and empty, which is
-   the honest statement that the portal issues no challenge.
+3. **PM-KISAN** pins it the same way. Both desks challenge, so both publish
+   `["SMS_OTP"]`. An empty array stays legal in the base — it is how a desk that
+   drops its OTP would say so — and nothing publishes one today.
 4. **Both** gain one branch in the "every payload must be about something" gate:
 
    ```yaml
@@ -195,13 +201,16 @@ Four changes, all in the schemas, none in adapter code:
        - required: [grievance]
        - required: [case]
        - required: [enrolmentId]
+       - required: [challengeIssued]    # an OTP acknowledgement: echoes nothing else
        - required: [challengeMethods]   # a catalog entry: declares, asks nothing
-       # ... plus challengeIssued and applicantPhone on PMFBY
+       # ... plus applicantPhone on PMFBY, whose init carries the phone and
+       #     nothing else
    ```
 
    Without it a catalog entry fails validation, because it carries none of the
-   things a transaction payload is about. This is why PM-KISAN publishes an empty
-   array rather than omitting the field: grievance uses `OnDemand` for both the
+   things a transaction payload is about, and so does an `on_init` — which is why
+   `challengeIssued` is a branch in its own right. This is also why the field is
+   published rather than omitted: grievance uses `OnDemand` for both the
    declaration and the ask, unlike `WeatherAdvisory` where `OnDemand` is the
    declaration and nothing else, so the declaration needs a field of its own to be
    told apart from a request.
@@ -376,12 +385,17 @@ request 404s. Filed as a separate bug; grievance payloads use the string form.
 
 **PMFBY** — `applicantPhone` is an Indian mobile series, `season` is one of three names,
 `cropYear` is four digits, and `grievance.category.code` and `grievance.subCategory.code`
-are each digits, held as two fields rather than one joined string. `challenge` is declared
-in the pack itself — `method: SMS_OTP`, a six-digit `value`, nothing else accepted. Its
-`Direct` gate requires `case.ticketNo`, `case.status` and `case.filedOn`, and it refuses
+are each digits, held as two fields rather than one joined string. It narrows the base
+`challenge` to a six-digit `value`, and the base `challengeIssued` back to
+`required: [method, sentTo, expiresAt]` — PMFBY is the only portal here that discloses
+where it sent the OTP. Its `Direct` gate requires `case.ticketNo`, `case.status` and `case.filedOn`, and it refuses
 `case.remarkedOn`, which PMFBY does not publish.
 
-**PM-KISAN** — narrowings only. Its `Direct` gate requires `case.status` and
+**PM-KISAN** — narrowings only. It pins `challenge.value` to four digits, and refuses
+`challengeIssued.sentTo` outright with `not: { required: [sentTo] }`: the portal answers
+"OTP has been sent to the registered mobile number" and names no number, so there is
+nothing to mask and a mask the farmer could not recognise would be worse than none.
+Its `Direct` gate requires `case.status` and
 `case.filedOn`, and not `case.ticketNo`. The field is allowed and is populated on a lodge,
 but the status call is not documented to repeat the handle per record, so a case read may
 carry none and the gate must not demand one. `grievance.subCategory` is refused: PM-KISAN
@@ -400,13 +414,14 @@ nothing and `readOnly` would reject the very response it describes — a `readOn
 `challengeIssued` makes the challenge acknowledgement unvalidatable. Direction is carried by
 `x-oan-pii` handling instead.
 
-### The challenge is PMFBY's own
+### The challenge
 
-`challenge` and `challengeIssued` are declared inline in
-`api-schemas/PMFBYGrievance/v0.1/attributes.yaml`. Neither is defined in a domain schema,
-and neither is shared with another pack:
+Both portals challenge, so `challenge` and `challengeIssued` are declared in
+`api-schemas/Grievance/v0.1/attributes.yaml` and narrowed by each pack. Neither is defined
+in a domain schema:
 
 ```yaml
+# GrievanceBase
 challenge:
   type: object
   required: [method, value]
@@ -415,36 +430,38 @@ challenge:
     class: credential
     handling: [no-log, no-trace, no-echo, no-forward]
   properties:
-    method: { type: string, enum: [SMS_OTP] }
-    value:  { type: string, pattern: "^[0-9]{6}$" }
+    method: { type: string }                       # packs pin the enum
+    value:  { type: string, pattern: "^[0-9]{4,8}$" }   # packs pin the length
 ```
+
+The base holds the range the network will accept; each pack pins its portal's exact
+format — six digits on PMFBY, four on PM-KISAN — with an `allOf` narrowing. A caller that
+reads the pack it is talking to gets the exact rule; a caller that reads only the base
+still cannot send something neither portal would take.
 
 Three things follow.
 
-**The pack advertises exactly what the Provider accepts.** `SMS_OTP` and nothing else —
-it does not claim to take a device token it has no prerequisite for. A second mechanism is
-paid for by the pack that wants it: widen the `enum` and pin the new format in the same
-edit.
+**The pack advertises exactly what the Provider accepts.** `method` is unconstrained in
+the base and pinned to `[SMS_OTP]` in both packs — neither claims to take a device token
+it has no prerequisite for. A second mechanism is paid for by the pack that wants it:
+widen that `enum` and pin the new format in the same edit.
 
 **Nothing travels that the adapter would ignore.** `additionalProperties: false` refuses
 every key not named here, which is both stricter and shorter than refusing them one at a
-time. An earlier draft composed a network-wide `Challenge` that carried a `txnId` for
-mechanisms whose upstream issues a correlator, and spent a `not: { required: [txnId] }` to
-refuse it. PMFBY binds the challenge to the phone number alone, so the field is now simply
-never defined.
+time. An earlier draft carried a `txnId` for mechanisms whose upstream issues a
+correlator. Neither portal issues one — PMFBY binds the challenge to the phone number and
+PM-KISAN to the registration number — so the field is simply never defined.
 
 **The format rule is genuinely enforced.** A single `Challenge` with `if method = X then
 value matches Y` would validate nothing: the extended-schema validator parses `if/then`
 and never evaluates it, which is the same limitation [`What a pack
 enforces`](#what-a-pack-enforces-and-what-it-cannot) records. A `pattern` on a directly
-declared property has no such problem, and the six-digit rule is as enforced as it was
-when the field was a bare `otp`.
+declared property has no such problem, and the length rule is as enforced as it was when
+the field was a bare `otp`.
 
-It stays in the pack rather than moving into `GrievanceBase` for the plainest of
-reasons: PM-KISAN issues no challenge at all, so there is no second consumer. The base
-holds what both packs have; a field only one portal has belongs to that pack. The seam is
-then: the pack owns the shape and the format, the mapping guard owns which action must
-carry one.
+The seam is: the base owns the shape, the pack owns the format, and
+`x-oan-required-by-action` owns which action must carry one. The mapping guard restates
+that last part, because the guard is what runs before the portal is called.
 
 One consequence for the adapter: the prerequisite hook switches on `challenge.method`
 rather than assuming. See [`support`](#2-support--the-challenge-plus-the-complaint-ticket-issued).
@@ -463,28 +480,33 @@ phone is the only thing binding the read and it is asserted, not proven. The OTP
 ticket number is not derivable from a phone number, so cases are not enumerable. It leaks
 only to someone who already holds both.
 
-**PM-KISAN proves nothing, in either direction.** `/LodgeGrievance` takes a registration
-number and writes a grievance; it does not check that the caller is that farmer. Anyone
-holding an 11-character registration number can file a complaint in someone's name, and
-anyone holding one can read the officer replies on it through `/GrievanceStatusCheck`.
-That is the portal's design and the adapter cannot repair it.
+**PM-KISAN's portal proves nothing; the network proves the phone on both legs.**
+`/LodgeGrievance` takes a registration number and writes a grievance, and
+`/GrievanceStatusCheck` returns every officer reply on one — neither checks that the
+caller is that farmer. Anyone holding an 11-character registration number could file in
+someone's name and read the replies. That is the portal's design and the adapter cannot
+repair it at the portal; it can refuse to pass the call on.
 
-The v1 Vistaar flow did put an OTP in front of PM-KISAN, but that OTP came from the
-separate `pmkisan` scheme-status provider, not from the grievance portal — a Vistaar
-policy layer, not a portal requirement. Two honest positions:
+So the adapter challenges both legs. The OTP goes to the mobile number the portal already
+holds against that registration, which is exactly the proof the registration number alone
+does not give. **The read is challenged where PMFBY's is not**, and the asymmetry is the
+point: PMFBY's read is keyed on a ticket number only the filer holds, PM-KISAN's on a
+registration number that returns everything filed against it. A single lookup that returns
+a farmer's whole grievance history to anyone who can guess an identifier is not a read to
+leave open.
 
-1. **Match the portal.** Two actions, as specified here. The adapter is as trustworthy as the
-   portal and no more, and the caller is told so.
-2. **Keep the v1 OTP layer.** Add an `init` leg that calls the scheme-status provider for
-   an OTP, and a verify prerequisite on `support` — structurally identical to PMFBY.
-   Costs a second upstream provider in the grievance path.
+The v1 Vistaar flow already did this, and v2 keeps it rather than matching the bare portal
+API. The honest statement of the cost: **v2 PM-KISAN is deliberately stricter than the
+portal requires, and v2 PMFBY is deliberately stricter than v1** — v1 called
+`_validate_otp` on the PMFBY leg, discarded the result and never put the OTP in the
+payload, so a correctly-formatted wrong OTP filed a grievance. v2 verifies in band.
 
-This design specifies (1), because it is what the grievance API actually offers, and
-inventing proof the portal ignores would misrepresent the guarantee. (2) is a network
-policy decision rather than a technical one; it is in Open.
+One thing is not settled: **where PM-KISAN's OTP comes from.** v1 got it by calling its
+own network against the `pmkisan` scheme-status capability, not the grievance portal, and
+the encrypted grievance API documents no OTP call. That endpoint is in Open, and it is
+blocking.
 
-So this is a network-level policy question, not a defect in either provider's mapping.
-What *is* authenticated on PM-KISAN is the integrator rather than the farmer — the service
+What *is* authenticated on PM-KISAN beyond the farmer is the integrator — the service
 token and the AES key both identify the caller, and the next section is about where they
 live.
 
@@ -989,7 +1011,60 @@ mapped if it were. **The response mapping is an allow-list, not a passthrough.**
 
 ## PM-KISAN: mappings and guards
 
-### 1. `support` — lodge the grievance
+### 1. `init` — request a challenge
+
+#### What the request carries
+
+`commitmentAttributes.enrolmentId`, and nothing else. **No phone number**: the portal
+texts the mobile it already holds against that registration, so the network never has to
+carry one. One fewer piece of personal data on the wire, and nothing to get wrong.
+
+> **BLOCKING — the upstream endpoint is not confirmed.** PM-KISAN's encrypted grievance
+> API documents no OTP call. v1 Vistaar obtained one by posting to its own network against
+> the `pmkisan` **scheme-status** capability, which is a different provider from the
+> grievance portal. The registry entry in the use-case document therefore carries
+> `"path": "<TBD>"` and `"status": "draft"`. Settle it with PM-KISAN before `init` is
+> wired. Do not guess a path: a wrong one fails closed as an unreachable provider, but a
+> *plausible* wrong one fails open as a flow that looks authenticated and is not.
+
+#### Guards
+
+```yaml
+required:
+  - check: |
+      ($ca := beckn.message.contract.commitments[0].commitmentAttributes;
+       $count($match($ca.enrolmentId, /^[A-Za-z0-9]+$/)) > 0)
+    message: "init needs the registration number to send an OTP against"
+```
+
+One guard. It is the same loose identity check the other two legs carry, for the same
+reason given under `support` below. The pack's top-level `anyOf` is satisfied by
+`enrolmentId` alone, so without this guard an `init` carrying only a `challengeIssued`
+would validate — which is the mistake PMFBY's `init` makes today and the first item in
+Open.
+
+#### Mapping → Beckn (`on_init`)
+
+Commitment stays `DRAFT`. The acknowledgement carries two fields:
+
+```jsonata
+{
+  "method":    "SMS_OTP",
+  "expiresAt": $fromMillis($toMillis($now()) + $number($env.PMKISAN_OTP_TTL_SECONDS) * 1000)
+}
+```
+
+**No `sentTo`.** The portal's own acknowledgement is the sentence "OTP has been sent to
+the registered mobile number" — it names no number, and the adapter holds none to mask.
+The pack refuses the field with `not: { required: [sentTo] }` rather than leave it
+optional, so nothing can quietly start emitting an invented mask. PMFBY's `on_init` does
+carry one; a caller must read `method` and treat `sentTo` as absent-unless-present, not
+write one reader for both.
+
+`expiresAt` is the adapter's assertion from a configured TTL, exactly as on PMFBY, and for
+the same reason: the portal publishes no window.
+
+### 2. `support` — lodge the grievance
 
 #### What the request carries
 
@@ -1014,9 +1089,13 @@ required:
   - check: |
       ($exists(beckn.message.support.channels[0].grievance.category.code))
     message: "lodging a PM-KISAN grievance needs a category"
+  - check: |
+      ($c := beckn.message.support.channels[0].challenge;
+       $c.method = "SMS_OTP" and $exists($c.value))
+    message: "support carries an SMS OTP challenge"
 ```
 
-Two guards, where there were three. The category vocabulary and the ten-character minimum
+Three guards. The category vocabulary and the ten-character minimum
 on the description are both in the pack now, checked on `channels[0]` on every leg, so the
 guard only has to say that a category is present on *this* action — the pack cannot,
 because a case read legitimately carries none.
@@ -1029,12 +1108,18 @@ before the farmer's complaint ever reaches the portal. So the check is only non-
 and alphanumeric. Tighten it to the exact format once the
 portal's integration document states one; see Open.
 
-#### No second upstream call
+#### The challenge is verified before the portal is called
 
-A PM-KISAN `support` is one call to the portal. There is no OTP to verify and no identity
-to exchange — the registration number goes up as it arrived. A **Go prerequisite** still
-runs, but only to supply `serviceToken`, because every call needs a `TokenNo` and a
-published mapping file is no place for a shared secret.
+A PM-KISAN `support` is **one** call to the grievance portal, but not the only upstream
+call on the leg. A **Go prerequisite** runs first and does two things: verifies the OTP,
+and supplies `serviceToken`, because every portal call needs a `TokenNo` and a published
+mapping file is no place for a shared secret. A failed verification is a `400` NACK and
+the portal is never called, so no grievance is written.
+
+`challenge.value` goes to the verify step and **nowhere else**. It is not in the body
+below, it is not logged, it is not traced, and it is not echoed. Its destination depends
+on the unresolved endpoint above; the prerequisite is the only place that changes when
+that is settled.
 
 The registration number is never logged and never traced, and it appears in exactly one
 response field: `orderId` on `on_support`, handed back to the caller who sent it over the
@@ -1155,7 +1240,7 @@ mislabel the grievance — it would fail to find it. See Open.
 The caller should tell the farmer to keep their registration number, because that — not
 anything in this response — is what retrieves the grievance later.
 
-### 2. `status` — read the replies
+### 3. `status` — read the replies
 
 #### What the request carries
 
@@ -1178,10 +1263,13 @@ PM-KISAN changes one of those two things. See Open.
 The identity guard, restated in `grievance.status.yaml` against the contract this action
 does carry — the registration number must be non-empty alphanumeric, read from
 `commitmentAttributes.enrolmentId` rather than from `orderId`, because a `Contract` has no
-`orderId` — plus one this action needs on its own: `case.filedOn` must be present and ISO, since
-without it there is nothing to match the returned records against. Guards are per mapping
-file, so this is a copy, not a reference; the category and description guards have no place
-here and are not copied.
+`orderId` — plus two this action needs on its own: `case.filedOn` must be present and ISO,
+since without it there is nothing to match the returned records against, and the
+`challenge` must be present and verified, since a registration number alone would hand a
+farmer's whole grievance history to anyone who could guess one. **This is where PM-KISAN
+and PMFBY differ**: PMFBY's read is matched on a ticket number only the filer holds, so it
+carries no challenge. Guards are per mapping file, so these are copies, not references;
+the category and description guards have no place here and are not copied.
 
 #### Mapping → provider
 
@@ -1289,8 +1377,10 @@ capped at 2000 characters by the pack, being unvalidated upstream free text.
 
 | Beckn (`commitmentAttributes`) | Provider |
 |---|---|
-| `enrolmentId` | `IdentityNo` — the registration number, sent as it arrived. It rides in `support.orderId` on the lodge leg and in `commitmentAttributes` on the read |
+| `enrolmentId` | `IdentityNo` — the registration number, sent as it arrived. It rides in `support.orderId` on the lodge leg and in `commitmentAttributes` on `init` and the read |
 | action | selects the `Type` suffix: `_Details` on `support`, `_Status` on `status` |
+| `challenge.method`, `challenge.value` | consumed by the prerequisite that verifies the OTP, on `support` **and** on `status`. Never reaches `/LodgeGrievance` or `/GrievanceStatusCheck`, never logged, never traced, never echoed |
+| `challengeIssued` | `on_init` only. `method` is the constant `SMS_OTP`; `expiresAt` is the adapter's TTL. **No `sentTo`** — the portal names no number and the pack refuses the field |
 | `grievance.category.code` | `GrievanceType` (`G001`–`G010`, verbatim) — **outbound only**. `Reg_No_Status` returns no category, so a case read cannot populate it and the field is absent from a PM-KISAN `on_status`. That is why the base requires only `description` of a `grievance`. PMFBY round-trips its category; this one does not |
 | `grievance.subCategory` | refused by the pack — PM-KISAN classifies one level deep |
 | `grievance.description` | `GrievanceDescription` out; `GrievanceDescription` in on `status` |
@@ -1348,19 +1438,21 @@ No error path carries `challenge.value`, `enrolmentId`, or the service token.
 
 ```
 network-specs/api-schemas/Grievance/v0.1/                + challengeMethods
+                                                         + challenge, challengeIssued
 network-specs/api-schemas/PMFBYGrievance/v0.1/           (published; must be live first)
 network-specs/api-schemas/PMKISANGrievance/v0.1/         (published; must be live first)
-  each pack: a pin for challengeMethods, one anyOf branch,
-             one examples/on-demand-capability.json
+  each pack: a pin for challengeMethods, narrowings for
+             challenge + challengeIssued, x-oan-required-by-action,
+             two anyOf branches, one examples/on-demand-capability.json
 
 catalogs: 2 × catalog/publish, submitted once to the discovery service
           (documents, not config -- the publisher takes them over HTTP)
 
 beckn-onix/config/mappings/pmfby/grievance.{init,support,status}.yaml
-beckn-onix/config/mappings/pmkisan/grievance.{support,status}.yaml
+beckn-onix/config/mappings/pmkisan/grievance.{init,support,status}.yaml   ← init path TBD
 
 beckn-onix/pkg/plugin/implementation/Grievance/          one plugin, both providers
-                                                         + challenge-verify hook (pmfby)
+                                                         + challenge-verify hook (both)
                                                          + service-token hook   (pmkisan)
 beckn-onix/pkg/plugin/implementation/internal/common/    body codec + config plumbing  ← new
 
@@ -1369,13 +1461,14 @@ registry: 2 × (1 SchemaRegistry + 1 Participant + 1 ProviderSchema)   (rows in 
 
 One plugin, two providers, two binding keys, two sets of mappings. The directory is named
 for the capability it implements, as `MandiPrice/` and `AgricultureFacility/` are. The
-prerequisite hook is where the providers diverge — PMFBY verifies a challenge, PM-KISAN
-only supplies the service token — and both dispatch on the binding key they were registered
-under.
+prerequisite hook is where the providers diverge — both verify a challenge, and PM-KISAN
+additionally supplies the service token — and both dispatch on the binding key they were
+registered under.
 
 Most of the field differences need no code at all. Registration number instead of
-application number, `G001`–`G010` instead of a dotted pair, no season: all declared in the
-packs, so the mappings differ only in their guards and key names.
+application number, `G001`–`G010` instead of a dotted pair, no season, four OTP digits
+instead of six: all declared in the packs, so the mappings differ only in their guards and
+key names.
 
 **The body codec is the only genuinely new machinery** — the one item that touches shared
 adapter code rather than adding a provider beside the existing ones. Everything else is
@@ -1411,6 +1504,19 @@ already exists. Nothing in `pkg/plugin/implementation/Grievance/` answers a `dis
   `grievance-upstream-contracts.md` §0 has the line references. An earlier revision of
   this page recorded these names as unverifiable; that search had covered only the
   checked-out working tree.
+
+- **PM-KISAN's OTP endpoint is unknown.** The design challenges both PM-KISAN legs — see
+  "What identity is proven" — but the encrypted grievance API documents no OTP call, and
+  v1 Vistaar got one by posting to its own network against the `pmkisan` scheme-status
+  capability, a different provider from the grievance portal. The registry entry carries
+  `"path": "<TBD>"` and `"status": "draft"`. Nothing on this leg can be wired until
+  PM-KISAN names an endpoint, or the network decides the scheme-status provider is the
+  endpoint and accepts a second upstream provider in the grievance path. Do not guess:
+  a plausible wrong path fails open.
+
+- **PM-KISAN publishes no OTP expiry either.** Same shape as the PMFBY item below:
+  `challengeIssued.expiresAt` is a configured TTL the adapter asserts, from
+  `PMKISAN_OTP_TTL_SECONDS`. Confirm the real window once the endpoint is settled.
 
 - **The adapter's own network identity is not fixed.** Every catalog names the adapter in
   `senderId`, and a caller resolves its address from the registry under that id. The

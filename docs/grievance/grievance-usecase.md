@@ -31,7 +31,7 @@ This page is the sequence of execution — the calls in order, and the payloads 
 3. [Reading `code` and `name`](#3-reading-code-and-name)
 4. [Discovery](#4-discovery)
 5. [PMFBY](#5-pmfby) — `discover` → `init` → `support` → `status`
-6. [PM-KISAN](#6-pm-kisan) — `discover` → `support` → `status`
+6. [PM-KISAN](#6-pm-kisan) — `discover` → `init` → `support` → `status`
 7. [Required fields by call](#7-required-fields-by-call)
 8. [Rules that apply to both schemes](#8-rules-that-apply-to-both-schemes)
 9. [Errors](#9-errors)
@@ -51,12 +51,16 @@ bands once and every example on this page reads the same way.
 | top level | who is asking and about what: `informationMode`, `provider`, `scheme`, `enrolmentId`, and the PMFBY-only `applicantPhone`, `cropYear`, `season` | the caller |
 | `grievance` | what the farmer submitted: `category`, `subCategory`, `description` | the farmer |
 | `case` | the record the portal holds: `ticketNo`, `status`, `filedOn`, and, by scheme, `cropName` or `remark` + `remarkedOn` | the portal |
-| `challenge` | proof of the phone number, on the way in only — PMFBY only | the caller |
-| `challengeIssued` | the acknowledgement of that proof, on the way out only — PMFBY only | the portal |
+| `challenge` | proof of the phone number, on the way in only | the caller |
+| `challengeIssued` | the acknowledgement of that proof, on the way out only | the portal |
 
 The `case` band differs by scheme. PMFBY returns `cropName` and never a remark — its pack
 refuses `remark` and `remarkedOn`. PM-KISAN returns `remark` and `remarkedOn` and has no
 crop. Both return `ticketNo`, `status` and `filedOn`.
+
+The two challenge bands differ by scheme too. PMFBY's OTP is six digits and its
+`challengeIssued` names a masked number in `sentTo`. PM-KISAN's is four digits and its
+`challengeIssued` has no `sentTo` at all — the portal does not say where it sent the OTP.
 
 Nothing rides in a Beckn `descriptor`. The category, the sub-category and the farmer's
 words are attribute fields, so the pack bounds each one.
@@ -94,10 +98,17 @@ The diagram starts at the lodge. `discover` is not in it — it runs once agains
 discovery service rather than per grievance, and it talks to neither portal. Each
 scheme's Step 0 below covers it.
 
-The OTP never reaches the lodge call and is never returned. Neither portal's ticket is the
-`orderId`: it arrives separately, in `case.ticketNo` on the channel. Both portals issue one on a
-lodge. The difference is on the read — PMFBY takes the ticket number back, PM-KISAN has no
-per-grievance endpoint, so its case is read back by identity and the date it was filed.
+Both schemes open with `init` to request an OTP, and the OTP never reaches the call it
+authorises, is never logged and is never returned.
+
+Neither portal's ticket is the `orderId`: it arrives separately, in `case.ticketNo` on the
+channel. Both portals issue one on a lodge. Two things differ on the read:
+
+- **How the case is found.** PMFBY takes the ticket number back. PM-KISAN has no
+  per-grievance endpoint, so its case is found by identity and the date it was filed.
+- **Whether the read is challenged.** PMFBY's is not — the ticket number is held only by
+  whoever filed. PM-KISAN's is — a registration number alone would return every grievance
+  on it, so the read asks for a fresh OTP of its own.
 
 ---
 
@@ -156,15 +167,16 @@ The first matches a known scheme; the second matches every desk that will send a
 Every catalog entry carries it, and it settles the sequence before a caller sends
 anything.
 
-- **Non-empty** — `init` first, and the array names the challenge. PMFBY publishes
-  `["SMS_OTP"]`.
-- **Empty** — `support` first. PM-KISAN publishes `[]`.
+- **Non-empty** — `init` first, and the array names the challenge. Both schemes publish
+  `["SMS_OTP"]` today.
+- **Empty** — no challenge, and `support` is the first call. No scheme publishes this today.
 
 Branch on the values, not on the length: a portal that adds a second mechanism widens
 the list, and a caller that reads the method keeps working.
 
-**What each call must carry is not published.** It is in
-[Required fields by call](#7-required-fields-by-call), and in no catalog field.
+It does not say *which* calls are challenged — PMFBY challenges the lodge alone, PM-KISAN
+the lodge and the read. That, and everything else a particular call must carry, is in
+[Required fields by call](#7-required-fields-by-call).
 
 ---
 
@@ -521,8 +533,13 @@ POST /status
 
 ## 6. PM-KISAN
 
-- **No OTP step.** The portal proves nothing about the caller, so neither does the network.
-  `support` is the first call.
+- **An OTP guards both legs.** `init` requests one and the portal texts the mobile number it
+  already holds against the registration. Filing is challenged, and so is reading back — a
+  registration number on its own would return every grievance filed on it. A read that comes
+  later needs an `init` of its own.
+- **No phone number crosses the network.** The caller never sends one, and the
+  acknowledgement names none — not even masked. PM-KISAN does not disclose where it sent
+  the OTP.
 - **`orderId` is the registration number.** The upstream takes exactly one reference,
   `IdentityNo`. It travels as `enrolmentId` — the same field PMFBY fills with its
   application number — and is echoed unchanged on the reply. `no-log` and `no-trace`.
@@ -560,7 +577,7 @@ POST /catalog/publish
         "code": "PMKISAN-GRIEVANCE",
         "name": "PM-KISAN Grievance Desk",
         "shortDesc": "File and track PM-KISAN grievances",
-        "longDesc": "Lodge a grievance against a PM-KISAN registration and read the case back. No challenge: filing is the first call."
+        "longDesc": "Lodge a grievance against a PM-KISAN registration and read the case back. An OTP is required to file and to read."
       },
       "provider": {
         "id": "pmkisan",
@@ -574,7 +591,7 @@ POST /catalog/publish
           "@type": "openagrinet:PMKISANGrievance",
           "informationMode": "OnDemand",
           "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-          "challengeMethods": []
+          "challengeMethods": ["SMS_OTP"]
         }
       }],
       "offers": [{
@@ -591,8 +608,8 @@ POST /catalog/publish
 
 - Identical in shape to PMFBY's. What differs is the ids, the pack it points at, and
   `challengeMethods`.
-- `challengeMethods: []` is what tells a caller there is no `init` — `support` is the
-  first call.
+- `challengeMethods: ["SMS_OTP"]` tells a caller to open with `init`. What it does not say
+  is that PM-KISAN challenges the read as well as the lodge; §7.2 does.
 
 #### Sent by the caller — `discover`
 
@@ -620,14 +637,80 @@ POST /discover
 `on_discover` returns the catalog above. Take `provider.id`, `offers[].id` and
 `resources[].id` from it — Steps 1 and 2 quote them verbatim.
 
-### 6.2 Step 1 — `support`: lodge the grievance
+### 6.2 Step 1 — `init`: request a challenge
 
 #### Request
 
-- `orderId` is the farmer's PM-KISAN registration number.
+- Carries the registration number in `enrolmentId`, and nothing else.
+- No phone number: the portal texts the mobile it already holds against that registration.
+- No `grievance` band — the farmer has not stated a complaint yet.
+- Commitment status is `DRAFT`. The caller mints `contract.id` here. The lodge that
+  follows has no contract to carry it into, so this one ends with the `init`; the read
+  later on opens its own.
+
+```json
+POST /init
+{
+  "context": {
+    "version": "2.0.0", "action": "init", "networkId": "openagrinet",
+    "transactionId": "7f3a…", "messageId": "1b85…",
+    "timestamp": "2026-09-28T10:58:00Z"
+  },
+  "message": { "contract": {
+    "id": "5e2704c8-9d31-4f6a-b8c0-1a73e6d2f094",
+    "commitments": [{
+      "status": { "descriptor": { "code": "DRAFT" } },
+      "offer": {
+        "id": "off:pmkisan:grievance",
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "resourceIds": ["res:pmkisan:grievance"]
+      },
+      "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
+      "commitmentAttributes": {
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
+        "@type": "openagrinet:PMKISANGrievance",
+        "informationMode": "OnDemand",
+        "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+        "enrolmentId": "UP12345678A"
+      }
+    }]
+  }}
+}
+```
+
+#### Response — `on_init`
+
+- Commitment stays `DRAFT`. The OTP is never returned.
+- `challengeIssued` carries `method` and `expiresAt` only. **There is no `sentTo`** — PM-KISAN
+  does not disclose the number it texted, and the pack refuses the field rather than invent a
+  mask the farmer could not recognise. PMFBY's does carry one; do not write one reader for both.
+- Branch on `method`; do not hard-code "four digits".
+- `informationMode` stays `OnDemand` — an acknowledgement is not a case.
+
+```json
+"commitmentAttributes": {
+  "@context": "…/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
+  "@type": "openagrinet:PMKISANGrievance",
+  "informationMode": "OnDemand",
+  "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+  "challengeIssued": {
+    "method": "SMS_OTP", "expiresAt": "2026-09-28T11:08:00Z"
+  }
+}
+```
+
+**Next** — collect the OTP from the farmer, then `support`.
+
+### 6.3 Step 2 — `support`: lodge the grievance
+
+#### Request
+
+- `orderId` is the farmer's PM-KISAN registration number — the same one that went up on `init`.
 - `grievance.category.code` is one of the pack's ten codes.
-- `channels[0]` carries the `provider` to route to, the scheme and the `grievance` band.
-  No phone and no `challenge`: PM-KISAN asks for neither.
+- `challenge.value` is the four-digit OTP from `on_init`. It never reaches the portal's
+  lodge call and is never echoed back.
+- `channels[0]` carries the `provider` to route to, the scheme, the `grievance` band and the
+  `challenge`. There is no phone number and no contract — `support` composes neither.
 
 ```json
 POST /support
@@ -652,7 +735,8 @@ POST /support
         "grievance": {
           "category": { "code": "G003", "name": "Installment not received" },
           "description": "Third instalment for 2026 has not been credited."
-        }
+        },
+        "challenge": { "method": "SMS_OTP", "value": "4821" }
       }]
     }
   }
@@ -714,14 +798,18 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
 }
 ```
 
-**Next** — keep `case.ticketNo`, the registration number and `case.filedOn`. There is no
-`contract.id` to keep, since `support` composes no contract.
+**Next** — keep the registration number and `case.filedOn`; the read is matched on those
+two. Keep `case.ticketNo` as well, to show the farmer. `support` composes no contract of
+its own, so there is nothing else to carry forward.
 
-### 6.3 Step 2 — `status`: read the replies
+### 6.4 Step 3 — `status`: read the replies
 
 #### Request
 
-- `contract.id` is a UUID the caller mints here — PM-KISAN has no earlier call to mint one.
+- **The read is challenged.** Call `init` again for a fresh OTP, then send it here. The one
+  used to file is spent, and it has expired long before the portal replies.
+- `contract.id` is the one minted by the `init` immediately before *this* call. It is a
+  new value, not the one from the `init` that preceded the lodge four days earlier.
 - The registration number rides in `commitmentAttributes.enrolmentId` rather than
   `orderId`, because a `Contract` has no `orderId`.
 - `case.filedOn` is the one from `on_support`, and it is required: the portal has no
@@ -754,7 +842,8 @@ POST /status
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "enrolmentId": "UP12345678A",
-        "case": { "filedOn": "2026-09-28" }
+        "case": { "filedOn": "2026-09-28" },
+        "challenge": { "method": "SMS_OTP", "value": "7390" }
       }
     }]
   }}
@@ -765,7 +854,7 @@ POST /status
 
 - One commitment — the grievance this contract is about. The farmer's other grievances are
   filtered out; each has its own contract.
-- `enrolmentId` is not echoed.
+- `enrolmentId` is not echoed, and neither is the `challenge`.
 - The farmer's name, father's name, gender, mobile number and address are dropped by the
   allow-list, and `Reg_No` with them: five of the record's fourteen fields survive.
 - The record carries no category, so the `grievance` band comes back with `description`
@@ -849,17 +938,23 @@ catalog and never change.
 
 ### 7.2 PM-KISAN
 
-| field | `support` | `status` |
-|---|---|---|
-| `contract.id` | — no contract | required — caller-minted |
-| `support.orderId` | required — the registration number | — |
-| `enrolmentId` | — | required — the same registration number |
-| `grievance.category.code` | required — one of `G001`–`G010` | — |
-| `grievance.description` | required — 10 to 2000 characters | — |
-| `case.filedOn` | — | required — from `on_support` |
+| field | `init` | `support` | `status` |
+|---|---|---|---|
+| `contract.id` | required — caller-minted | — no contract | required — the same value as the `init` before it |
+| `support.orderId` | — | required — the registration number | — |
+| `enrolmentId` | required — the registration number | — | required — the same registration number |
+| `grievance.category.code` | — | required — one of `G001`–`G010` | — |
+| `grievance.description` | — | required — 10 to 2000 characters | — |
+| `challenge.method` | — | required — `SMS_OTP` | required — `SMS_OTP` |
+| `challenge.value` | — | required — the OTP the farmer received | required — a fresh OTP |
+| `case.filedOn` | — | — | required — from `on_support` |
 
-PM-KISAN uses no `applicantPhone`, `cropYear`, `season` or `challenge`, and its pack
-refuses `grievance.subCategory` outright.
+`challenge` on `status` is the one real difference from PMFBY: PMFBY's read is matched on a
+ticket number only the filer holds, PM-KISAN's on a registration number that returns
+everything filed against it, so PM-KISAN asks for the OTP again.
+
+PM-KISAN uses no `applicantPhone`, `cropYear` or `season`, and its pack refuses
+`grievance.subCategory` outright.
 
 Everything else is optional. The `name` beside any `code`, `provider.descriptor.name` and
 `scheme.name` are display text: send them or omit them, the adapter matches on `code` and
@@ -891,7 +986,7 @@ Every error comes back on the same HTTP response, never on a later `on_*`.
 | What went wrong | HTTP | `status` | `error.code` |
 |---|---|---|---|
 | A required field is missing | `400` | NACK | `SCH_REQUIRED_FIELD_MISSING` |
-| Wrong OTP — PMFBY; the lodge call is never made | `400` | NACK | `BIZ_GENERIC_ERROR` |
+| Wrong or expired OTP; the portal is never called | `400` | NACK | `BIZ_GENERIC_ERROR` |
 | Portal rejects the request, or is unreachable | `502` | NACK | `NET_DOWNSTREAM_UNAVAILABLE` |
 | Envelope will not decrypt — PM-KISAN | `500` | NACK | `NET_INTERNAL_ERROR` |
 | No grievance found — the portal answered, and has no case matching the ticket or `case.filedOn` | `202` | ACK | `BIZ_NO_RESULTS_FOUND` |
@@ -943,8 +1038,8 @@ Three things to know:
 - **The portal's own message is never passed through.** It may hold a stack trace, an
   internal hostname, or a quoted-back credential. Logged redacted; we return our own.
 - **A wrong OTP is not a `401`.** `401` means the Beckn signature failed to verify. The
-  enum has no OTP-specific value, and PMFBY publishes no clean success signal for the
-  verify step, so that row is provisional.
+  enum has no OTP-specific value, and neither portal publishes a clean success signal for
+  the verify step, so that row is provisional.
 
 ---
 
@@ -1003,7 +1098,7 @@ data is, who we call, and how.
 
 ### 10.2 PM-KISAN
 
-Same shape, two actions instead of three, because there is no OTP step.
+Same shape and the same three actions as PMFBY.
 
 ```jsonc
 { "SchemaRegistry": {
@@ -1028,6 +1123,14 @@ Same shape, two actions instead of three, because there is no OTP step.
   "capabilityCode": "openagrinet:PMKISANGrievance",
   "status": "active",
   "actions": [
+    // BLOCKING: the OTP endpoint is not confirmed. The path below is a
+    // placeholder. Bharat Vistaar today gets a PM-KISAN OTP by calling its own
+    // network, against the scheme-status capability rather than the grievance
+    // portal, and the encrypted grievance API documents no OTP call at all.
+    // Resolve with PM-KISAN before this entry goes live; do not guess a path.
+    { "action": "init",    "method": "POST", "path": "<TBD>",
+      "mappings": "mappings/pmkisan/grievance.init.yaml",
+      "timeoutMs": 20000, "status": "draft" },
     { "action": "support", "method": "POST", "path": "/LodgeGrievance",
       "mappings": "mappings/pmkisan/grievance.support.yaml",
       "providerIdAt":     "message.support.channels[].provider.id",  // [] is the grammar's
