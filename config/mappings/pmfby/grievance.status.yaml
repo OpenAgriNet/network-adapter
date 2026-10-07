@@ -12,19 +12,20 @@
 request: |
   (
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
-    $not($exists($ca.applicantPhone) and $exists($ca.ticketNo))
+    $not($exists($ca.applicantPhone) and $exists($ca.case.ticketNo))
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "checking a grievance needs applicantPhone and ticketNo" } }
+                    "message": "checking a grievance needs applicantPhone and case.ticketNo" } }
     : {
       "requestorMobileNo": $ca.applicantPhone,
-      "GrievenceSupportTicketNo": $ca.ticketNo
+      "GrievenceSupportTicketNo": $ca.case.ticketNo
     }
   )
 
 # No case record in the reply is not a failure -- PMFBY answered and has
-# nothing on file -- so it is a 202 ACK saying so. Otherwise contract.descriptor
-# is the complaint as PMFBY holds it, the attributes are the case record, and a
-# field PMFBY does not return is left out.
+# nothing on file -- so it is a 202 ACK saying so. Otherwise the grievance is
+# the complaint as PMFBY holds it, the case is the record it keeps against it,
+# and a field PMFBY does not return is left out. The category comes back by
+# name alone: PMFBY returns no category id on a case read.
 response: |
   /* A 4xx from PMFBY arrives under _status; it is PMFBY's refusal, left to
      the adapter's 502 rather than read as nothing on file. */
@@ -40,20 +41,10 @@ response: |
     /* PMFBY may send null or "" for a field it has no value for; such a
        field is dropped rather than mapped as "null" or failing the call. */
     $isText := function($v) { $type($v) = "string" and $v != "" };
-    $isNumber := function($v) { $type($v) = "number" };
-    $seasons := { "1": "Kharif", "2": "Rabi", "3": "Zaid" };
-    $hasCategory := $isNumber($ticket.TicketCategoryID) and $isNumber($ticket.TicketSubCategoryID);
     {
       "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
       "message": {
         "contract": $merge([beckn.message.contract, {
-          "descriptor": {
-            "code": $hasCategory
-              ? $string($ticket.TicketCategoryID) & "." & $string($ticket.TicketSubCategoryID),
-            "name": $isText($ticket.TicketCategoryName) and $isText($ticket.TicketSubCategoryName)
-              ? $ticket.TicketCategoryName & " / " & $ticket.TicketSubCategoryName,
-            "longDesc": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription
-          },
           "commitments": [$merge([$commitment, {
             "status": { "descriptor": { "code": "ACTIVE" } },
             "commitmentAttributes": {
@@ -61,22 +52,25 @@ response: |
               "@type": $ca.`@type`,
               "informationMode": "Direct",
               "scheme": $ca.scheme,
-              "ticketNo": $ca.ticketNo,
-              "applicationNo": $isText($ticket.ApplicationNo) ? $ticket.ApplicationNo,
-              "cropYear": $isNumber($ticket.RequestYear) or $isText($ticket.RequestYear)
-                ? $string($ticket.RequestYear),
-              "season": $isNumber($ticket.RequestSeason) ? $lookup($seasons, $string($ticket.RequestSeason)),
-              /* code is the network's word, name the portal's phrase. PMFBY
-                 publishes no status vocabulary, so every phrase is one the
-                 adapter does not recognise and maps to UnderReview, which is
-                 never a closed state. Recognised phrases are added here once
-                 PMFBY confirms them. */
-              "caseStatus": {
-                "code": "UnderReview",
-                "name": $isText($ticket.TicketStatus) ? $ticket.TicketStatus
+              "enrolmentId": $isText($ticket.ApplicationNo) ? $ticket.ApplicationNo,
+              "grievance": {
+                "category": $isText($ticket.TicketCategoryName) ? { "name": $ticket.TicketCategoryName },
+                "subCategory": $isText($ticket.TicketSubCategoryName) ? { "name": $ticket.TicketSubCategoryName },
+                "description": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription
               },
-              "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
-              "caseRemark": $isText($ticket.latestRemark) ? $ticket.latestRemark
+              "case": {
+                "ticketNo": $ca.case.ticketNo,
+                /* code is the network's word, name the portal's phrase. PMFBY
+                   publishes no status vocabulary, so every phrase is one the
+                   adapter does not recognise and maps to UnderReview, which is
+                   never a closed state. Recognised phrases are added here once
+                   PMFBY confirms them. */
+                "status": {
+                  "code": "UnderReview",
+                  "name": $isText($ticket.TicketStatus) ? $ticket.TicketStatus
+                },
+                "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate
+              }
             }
           }])]
         }])
