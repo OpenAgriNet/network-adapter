@@ -28,8 +28,8 @@ func TestBuildPushBody_CarriesEntryMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := got["context"].(map[string]any)
-	if ctx["bppId"] != "p1" || ctx["action"] != "catalog/push" {
-		t.Fatalf("context = %+v, want bppId=p1 action=catalog/push", ctx)
+	if ctx["senderId"] != "p1" || ctx["action"] != "catalog/push" {
+		t.Fatalf("context = %+v, want senderId=p1 action=catalog/push", ctx)
 	}
 	directives := got["message"].(map[string]any)["publishDirectives"].([]any)
 	directive := directives[0].(map[string]any)

@@ -76,8 +76,13 @@ func BuildPushBody(meta PushMeta, catalog []byte) ([]byte, error) {
 		// push route takes; discovery-service's /publish takes
 		// "catalog/publish" and refuses a mismatch with CTX_ACTION_MISMATCH --
 		// it checks the body's action against the route.
-		"action":        actionOr(meta.Action),
-		"bppId":         meta.ParticipantID,
+		"action": actionOr(meta.Action),
+		// senderId, not bppId: this is a push OUT, so we are the sender. The
+		// v2 context names the ends by direction rather than by Beckn role.
+		"senderId": meta.ParticipantID,
+		// bppUri stays as it is. It addresses the PROVIDER a catalog is served
+		// from, which is a property of the published data rather than of who
+		// sent this envelope -- a consumer copies it into a select.
 		"bppUri":        meta.BppURI,
 		"messageId":     meta.MessageID,
 		"transactionId": meta.TransactionID,

@@ -151,10 +151,15 @@ func (p *peerCrawl) discoverBody(audience string, schemaContext []string) ([]byt
 			// either is refused before it reaches its discovery service -- with
 			// "no routing rules found for domain", which names the field and
 			// not the caller.
-			"domain":        p.domain,
-			"version":       p.protocolVersion,
-			"networkId":     audience,
-			"bapId":         p.subscriberID,
+			"domain":    p.domain,
+			"version":   p.protocolVersion,
+			"networkId": audience,
+			// senderId, not bapId. The v2 context names the two ends by
+			// DIRECTION -- sender and receiver -- rather than by the role the
+			// participant happens to play, and bapId/bppId are the older
+			// spelling. Everything that READS these accepts both, so this is
+			// about what we emit, not what we tolerate.
+			"senderId":      p.subscriberID,
 			"messageId":     uuid.NewString(),
 			"schemaContext": schemaContext,
 			// One transaction per PAGE request, matching messageId. A crawl is
