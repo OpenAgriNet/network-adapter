@@ -1,5 +1,7 @@
 # catalogpublisher
 
+> Naming: `catalogpublisher/` is the catalog publishing ENGINE (this plugin, plus `pipeline/`, the publish-pipeline interpreter). It is not `publisher/`, which is the RabbitMQ message publisher. The per-capability pipeline FILES live with their capability, in `<Capability>/publish/` (e.g. `MandiPrice/publish/agmarknet.yaml`).
+
 Implements `definition.CatalogPublisher`: given a publisher's catalog
 submissions, produces a catalog index whose wire shape matches
 **"Decentralized Catalog file spec.md"** exactly. This is the producing

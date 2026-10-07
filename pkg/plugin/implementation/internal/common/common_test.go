@@ -289,6 +289,71 @@ func TestRunDoesNotRetryAClientError(t *testing.T) {
 	}
 }
 
+// A cross-host redirect must not carry a credential to wherever it points --
+// query, header, basic and oauth2 credentials all ride the request Go would
+// otherwise resend to the redirect target.
+func TestRunDoesNotCarryACredentialToARedirectedHost(t *testing.T) {
+	// No t.Parallel: t.Setenv forbids it.
+	var reachedElsewhere bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reachedElsewhere = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer elsewhere.Close()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 0,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper, func(c *Config) {
+		c.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeHeader, HeaderName: "x-api-key", HeaderValueEnv: "TEST_REDIRECT_HEADER"})
+	})
+	t.Setenv("TEST_REDIRECT_HEADER", "secret-header-value")
+
+	if _, err := runStep(t, step, selectBody); err == nil {
+		t.Fatal("a cross-host redirect was followed with the credential attached")
+	}
+	if reachedElsewhere {
+		t.Error("the redirected host was reached; the credential rode along")
+	}
+}
+
+// The error must say how many attempts actually happened, not the configured
+// ceiling: a permanent failure on the first attempt reads as "after 1
+// attempt", never "after 6 attempts" for a budget of 5 retries it never used.
+func TestRunReportsTheAttemptsActuallyMadeNotTheBudget(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 5,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	_, err := runStep(t, step, selectBody)
+	if err == nil {
+		t.Fatal("expected a 400 from the provider to be reported")
+	}
+	if strings.Contains(err.Error(), "after 6 attempts") {
+		t.Errorf("error %q reports the configured budget, not the 1 attempt actually made", err)
+	}
+	if !strings.Contains(err.Error(), "after 1 attempt") {
+		t.Errorf("error %q does not say 1 attempt was made", err)
+	}
+}
+
 // 5xx and 429 are the provider asking to be tried again, so those still are.
 func TestRunRetriesWhatTheProviderAsksItTo(t *testing.T) {
 	t.Parallel()
@@ -358,6 +423,148 @@ func TestRunDoesNotRetryAMissingCredential(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "basic") {
 		t.Errorf("error %q should say which auth scheme could not be presented", err)
+	}
+}
+
+// A caller that goes away during the backoff is not the provider failing: the
+// result must carry the context's error and a 504, not the last upstream
+// failure dressed as a 502.
+func TestRunReportsACancelDuringBackoffAsTheContextsError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		cancel()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 3,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error %v does not carry context.Canceled", err)
+	}
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusGatewayTimeout {
+		t.Errorf("status for a cancelled request = %v, want 504", err)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("provider called %d times, want 1", got)
+	}
+}
+
+// The provider did answer before the caller left: the 504 must still say what
+// it answered, not claim it never did.
+func TestRunKeepsTheProvidersAnswerWhenTheCallerLeavesDuringBackoff(t *testing.T) {
+	t.Parallel()
+
+	// The caller leaves as the answer arrives: Err reports it, but the
+	// response is still read.
+	ctx := &flipCtx{Context: context.Background()}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.ended.Store(true)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 3,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error %v does not carry context.Canceled", err)
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("error %q drops the provider's 503", err)
+	}
+	if strings.Contains(err.Error(), "before the provider answered") {
+		t.Errorf("error %q claims the provider never answered; it answered 503", err)
+	}
+}
+
+// A 4xx is the provider's final word, retried or not. A caller leaving at the
+// same moment does not turn it into a 504.
+func TestRunReportsAPermanentAnswerThatArrivesAsTheCallerLeaves(t *testing.T) {
+	t.Parallel()
+
+	// The caller leaves as the answer arrives: Err reports it, but the
+	// response is still read.
+	ctx := &flipCtx{Context: context.Background()}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.ended.Store(true)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 3,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadGateway {
+		t.Errorf("status for a 400 answer = %v, want 502", err)
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("error %q drops the provider's 400", err)
+	}
+}
+
+// flipCtx reports itself ended once flipped, but never closes Done -- the shape
+// of a deadline that lands after a backoff finished and before the next
+// attempt starts.
+type flipCtx struct {
+	context.Context
+	ended atomic.Bool
+}
+
+func (c *flipCtx) Err() error {
+	if c.ended.Load() {
+		return context.Canceled
+	}
+	return nil
+}
+
+// An attempt that never ran must not be counted.
+func TestRunDoesNotCountAnAttemptThatNeverRan(t *testing.T) {
+	t.Parallel()
+
+	ctx := &flipCtx{Context: context.Background()}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx.ended.Store(true)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	plan := testPlan(upstream.URL, http.MethodGet)
+	plan.Actions["select"] = model.ActionPlan{
+		Method: http.MethodGet, Path: "/x", Mappings: testMappingRef, RetryMax: 1,
+	}
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: plan}, mapper)
+
+	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	if err == nil {
+		t.Fatal("expected the ended request to be reported")
+	}
+	if !strings.Contains(err.Error(), "after 1 attempt") {
+		t.Errorf("error %q miscounts: only 1 attempt was made", err)
 	}
 }
 
@@ -615,6 +822,27 @@ func TestRunRedactsAQueryCredentialFromAnError(t *testing.T) {
 // The URL is logged so a provider problem can be diagnosed from what was asked
 // of whom. That makes the credential's absence from it load-bearing, not
 // incidental: with a query-string scheme the token is in the URL by definition.
+// A secret that straddles Explain's truncation point must not survive as an
+// unredacted prefix: redacting AFTER truncating only ever matches the WHOLE
+// secret, so a body just over the limit would otherwise leak everything up
+// to the cut.
+func TestExplainRedactedRedactsBeforeTruncating(t *testing.T) {
+	t.Setenv("TEST_STRADDLING_TOKEN", "s3cr3t-token-value-right-at-the-cut")
+
+	step := stepWithProviderAuth(AuthProfile{Scheme: util.AuthSchemeHeader, HeaderName: "x", HeaderValueEnv: "TEST_STRADDLING_TOKEN"})
+	secret := "s3cr3t-token-value-right-at-the-cut"
+	padding := strings.Repeat("a", util.ExplainLimit-10)
+	body := []byte(padding + secret)
+
+	got := step.explainRedacted(body)
+	if strings.Contains(got, secret) {
+		t.Errorf("explainRedacted leaked the secret across the truncation boundary: %q", got)
+	}
+	if !strings.Contains(got, "REDACTED") {
+		t.Errorf("explainRedacted = %q, want it to show the credential was removed", got)
+	}
+}
+
 func TestRedactStringRemovesTheCredentialFromTheURL(t *testing.T) {
 	// No t.Parallel: t.Setenv forbids it.
 	t.Setenv("TEST_MANDI_TOKEN", "s3cr3t")

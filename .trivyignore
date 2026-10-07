@@ -1,0 +1,8 @@
+# CVE-2026-85091 (zlib, in cgr.dev/chainguard/wolfi-base): Trivy's DB lists
+# the fix as 1.3.3-r0, but as of 2026-09-16 the Wolfi apk repo does not carry
+# it yet -- the newest build there is zlib-1.3.2.1_rc20260601-r0, confirmed
+# with `docker run --rm cgr.dev/chainguard/wolfi-base:latest apk list -a zlib`.
+# `apk upgrade --no-cache zlib` in Dockerfile.adapter-with-plugins is left in
+# place so the fixed build is picked up the moment Chainguard publishes it --
+# remove this line at that point, not before.
+CVE-2026-85091

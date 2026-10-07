@@ -118,7 +118,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		registry:      registry,
 		mapper:        mapper,
 		// The timeout is per request, from the registry's budget.
-		httpClient: &http.Client{},
+		httpClient: &http.Client{CheckRedirect: util.RefuseOffHostRedirect},
 		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
 	}
 	for provider, profile := range cfg.AuthByProvider {
