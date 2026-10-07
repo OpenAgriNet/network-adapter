@@ -60,17 +60,16 @@ const pkSupportRequest = `{
   "message": {
     "support": {
       "orderId": "UP12345678A",
-      "descriptor": {
-        "code": "G003",
-        "name": "Installment not received",
-        "longDesc": "  Third instalment for 2026 has not been credited.  "
-      },
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
         "informationMode": "OnDemand",
-        "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" }
+        "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+        "grievance": {
+          "category": { "code": "G003", "name": "Installment not received" },
+          "description": "  Third instalment for 2026 has not been credited.  "
+        }
       }]
     }
   }
@@ -86,7 +85,7 @@ const pkStatusRequest = `{
   "message": { "contract": {
     "id": "c9b31a45-0f78-4e2d-9a60-84b7d3e15c02",
     "commitments": [{
-      "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+      "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:grievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
@@ -98,8 +97,8 @@ const pkStatusRequest = `{
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "registrationNo": "UP12345678A",
-        "filedOn": "2026-09-28"
+        "enrolmentId": "UP12345678A",
+        "case": { "filedOn": "2026-09-28" }
       }
     }]
   }}
@@ -337,7 +336,7 @@ func pkBecknErr(t *testing.T, err error) (*model.Error, int) {
 // --- support ----------------------------------------------------------------
 
 func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testing.T) {
-	p := newPKPortal(t, `{"Responce":"True","message":"Grievance submitted successfully"}`)
+	p := newPKPortal(t, `{"Responce":"True","GrievanceID":"PMK2026091234","message":"Grievance submitted successfully"}`)
 	body, err := runPMKISAN(t, p, pkSupportRequest)
 	if err != nil {
 		t.Fatalf("Run() = %v", err)
@@ -368,8 +367,8 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 	if got := pkAt(t, support, "orderId"); got != pkRegistrationNo {
 		t.Errorf("orderId = %v, want it echoed unchanged", got)
 	}
-	if got := pkAt(t, support, "descriptor", "code"); got != "G003" {
-		t.Errorf("descriptor.code = %v, want it echoed", got)
+	if _, present := support.(map[string]any)["descriptor"]; present {
+		t.Error("on_support carries a descriptor; the grievance now travels on the channel")
 	}
 	channel := pkAt(t, support, "channels", 0)
 	for field, want := range map[string]any{
@@ -380,21 +379,25 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 			t.Errorf("channel %s = %v, want %v", field, got, want)
 		}
 	}
-	// Asserted, not stated by the portal: the network's code and no name.
-	if got := pkAt(t, channel, "caseStatus"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Registered"}) {
-		t.Errorf("caseStatus = %v, want {code: Registered} with no name", got)
-	}
+	// The caller's own, echoed: provider and the grievance band.
 	if got := pkAt(t, channel, "provider", "id"); got != "pmkisan" {
 		t.Errorf("provider.id = %v, want pmkisan", got)
 	}
-	if _, present := channel.(map[string]any)["source"]; present {
-		t.Error("on_support carries source, which the architecture no longer emits")
+	if got := pkAt(t, channel, "grievance", "category", "code"); got != "G003" {
+		t.Errorf("grievance.category.code = %v, want it echoed", got)
 	}
-
-	// filedOn is today in IST -- the date a later status matches on.
+	// The case band: the portal's handle, and the adapter's assertions -- the
+	// network's code with no name, and today in IST, the date a later status
+	// matches on.
+	if got := pkAt(t, channel, "case", "ticketNo"); got != "PMK2026091234" {
+		t.Errorf("case.ticketNo = %v, want the portal's GrievanceID", got)
+	}
+	if got := pkAt(t, channel, "case", "status"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Registered"}) {
+		t.Errorf("case.status = %v, want {code: Registered} with no name", got)
+	}
 	ist := time.FixedZone("IST", 5*3600+1800)
-	if got, want := pkAt(t, channel, "filedOn"), time.Now().In(ist).Format("2006-01-02"); got != want {
-		t.Errorf("filedOn = %v, want today in IST, %s", got, want)
+	if got, want := pkAt(t, channel, "case", "filedOn"), time.Now().In(ist).Format("2006-01-02"); got != want {
+		t.Errorf("case.filedOn = %v, want today in IST, %s", got, want)
 	}
 
 	if strings.Contains(string(body), pkToken) {
@@ -412,11 +415,16 @@ func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
 		// Missing: refused by the request half under _error.
 		{"no registration number", `"orderId": "UP12345678A",`, ``, "SCH_REQUIRED_FIELD_MISSING"},
 		{"no description", `,
-        "longDesc": "  Third instalment for 2026 has not been credited.  "`, ``, "SCH_REQUIRED_FIELD_MISSING"},
+          "description": "  Third instalment for 2026 has not been credited.  "`, ``, "SCH_REQUIRED_FIELD_MISSING"},
+		{"no category", `"category": { "code": "G003", "name": "Installment not received" },`, ``, "SCH_REQUIRED_FIELD_MISSING"},
 		// Malformed: refused by required.
 		{"a registration number in native script", `"orderId": "UP12345678A"`, `"orderId": "UP१२३४५"`, "SCH_INVALID_FORMAT"},
 		{"a category outside the portal's list", `"code": "G003"`, `"code": "G011"`, "SCH_INVALID_FORMAT"},
 		{"a description that says nothing", `"  Third instalment for 2026 has not been credited.  "`, `"   short   "`, "SCH_INVALID_FORMAT"},
+		{"a sub-category, which PM-KISAN does not have",
+			`"category": { "code": "G003", "name": "Installment not received" },`,
+			`"category": { "code": "G003", "name": "Installment not received" }, "subCategory": { "code": "1" },`,
+			"SCH_INVALID_FORMAT"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			request := strings.Replace(pkSupportRequest, tc.from, tc.to, 1)
@@ -444,6 +452,7 @@ func TestPMKISANSupportReportsAPortalRefusalInOurWords(t *testing.T) {
 		"Responce": `{"Responce":"False","message":"Registration number not found"}`,
 		"Rsponce":  `{"Rsponce":"false","message":"Registration number not found"}`,
 		"status":   `{"status":"False","Message":"Registration number not found"}`,
+		"Status":   `{"Status":"False","Remark":"Registration number not found"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := runPMKISAN(t, newPKPortal(t, answer), pkSupportRequest)
@@ -495,27 +504,33 @@ func TestPMKISANStatusAnswersTheGrievanceFiledOnThatDate(t *testing.T) {
 	if got := pkAt(t, contract, "id"); got != "c9b31a45-0f78-4e2d-9a60-84b7d3e15c02" {
 		t.Errorf("contract.id = %v, want it echoed", got)
 	}
-	if got := pkAt(t, contract, "descriptor", "longDesc"); got != "Third instalment for 2026 has not been credited." {
-		t.Errorf("descriptor.longDesc = %v, want the matching record's complaint", got)
+	if _, present := contract.(map[string]any)["descriptor"]; present {
+		t.Error("on_status carries contract.descriptor; the complaint now travels in the grievance band")
 	}
 	attributes := pkAt(t, contract, "commitments", 0, "commitmentAttributes")
+	if got := pkAt(t, attributes, "informationMode"); got != "Direct" {
+		t.Errorf("informationMode = %v, want Direct", got)
+	}
+	if got := pkAt(t, attributes, "grievance"); fmt.Sprint(got) !=
+		fmt.Sprint(map[string]any{"description": "Third instalment for 2026 has not been credited."}) {
+		t.Errorf("grievance = %v, want the matching record's description alone", got)
+	}
 	for field, want := range map[string]any{
-		"informationMode": "Direct",
-		"filedOn":         "2026-09-28",
-		"remarkedOn":      "2026-10-01",
-		"caseRemark":      "Instalment released on 2026-10-01, credited to the linked account.",
+		"filedOn":    "2026-09-28",
+		"remarkedOn": "2026-10-01",
+		"remark":     "Instalment released on 2026-10-01, credited to the linked account.",
 	} {
-		if got := pkAt(t, attributes, field); got != want {
-			t.Errorf("%s = %v, want %v", field, got, want)
+		if got := pkAt(t, attributes, "case", field); got != want {
+			t.Errorf("case.%s = %v, want %v", field, got, want)
 		}
 	}
 	// No GrievanceStatus on this record, and a remark exists: inferred, so
 	// the network's code and no name.
-	if got := pkAt(t, attributes, "caseStatus"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Replied"}) {
-		t.Errorf("caseStatus = %v, want {code: Replied} with no name", got)
+	if got := pkAt(t, attributes, "case", "status"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Replied"}) {
+		t.Errorf("case.status = %v, want {code: Replied} with no name", got)
 	}
-	if _, present := attributes.(map[string]any)["source"]; present {
-		t.Error("on_status carries source, which the architecture no longer emits")
+	if _, present := attributes.(map[string]any)["enrolmentId"]; present {
+		t.Error("on_status echoes enrolmentId; the registration number is consumed, not surfaced")
 	}
 	commitmentStatus := pkAt(t, pkDecode(t, body), "message", "contract", "commitments", 0, "status", "descriptor")
 	if fmt.Sprint(commitmentStatus) != fmt.Sprint(map[string]any{"code": "ACTIVE"}) {
@@ -537,6 +552,8 @@ func TestPMKISANStatusMapsThePortalsPhraseToTheNetworksCode(t *testing.T) {
 		"Under Review": "UnderReview",
 		"REPLIED":      "Replied",
 		"Closed":       "Closed",
+		// The portal's word for a grievance it has answered.
+		"Disposed": "Replied",
 		// One it does not recognise is non-terminal: never inferred closed.
 		"Pending at District": "UnderReview",
 	} {
@@ -547,16 +564,16 @@ func TestPMKISANStatusMapsThePortalsPhraseToTheNetworksCode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run() = %v", err)
 			}
-			status := pkAt(t, pkDecode(t, body), "message", "contract", "commitments", 0, "commitmentAttributes", "caseStatus")
+			status := pkAt(t, pkDecode(t, body), "message", "contract", "commitments", 0, "commitmentAttributes", "case", "status")
 			if fmt.Sprint(status) != fmt.Sprint(map[string]any{"code": code, "name": phrase}) {
-				t.Errorf("caseStatus = %v, want code %s with the phrase kept in name", status, code)
+				t.Errorf("case.status = %v, want code %s with the phrase kept in name", status, code)
 			}
 		})
 	}
 }
 
 func TestPMKISANStatusReportsNothingOnFileAsAnAcceptedAnswer(t *testing.T) {
-	request := strings.Replace(pkStatusRequest, `"filedOn": "2026-09-28"`, `"filedOn": "2026-09-29"`, 1)
+	request := strings.Replace(pkStatusRequest, `"case": { "filedOn": "2026-09-28" }`, `"case": { "filedOn": "2026-09-29" }`, 1)
 	_, err := runPMKISAN(t, newPKPortal(t, pkStatusAnswer), request)
 	if err == nil {
 		t.Fatal("Run() answered a date with no grievance on it")
@@ -570,20 +587,12 @@ func TestPMKISANStatusReportsNothingOnFileAsAnAcceptedAnswer(t *testing.T) {
 	}
 }
 
-func TestPMKISANStatusStillReadsTheEarlierApplicantIdName(t *testing.T) {
-	request := strings.Replace(pkStatusRequest, `"registrationNo"`, `"applicantId"`, 1)
-	p := newPKPortal(t, pkStatusAnswer)
-	if _, err := runPMKISAN(t, p, request); err != nil {
-		t.Fatalf("Run() = %v", err)
-	}
-	if p.sent["IdentityNo"] != pkRegistrationNo {
-		t.Errorf("portal received IdentityNo %v, want the applicantId", p.sent["IdentityNo"])
-	}
-}
-
 func TestPMKISANStatusRefusesWithoutAFilingDate(t *testing.T) {
 	request := strings.Replace(pkStatusRequest, `,
-        "filedOn": "2026-09-28"`, ``, 1)
+        "case": { "filedOn": "2026-09-28" }`, ``, 1)
+	if request == pkStatusRequest {
+		t.Fatal("the edit did not apply to the request")
+	}
 	p := newPKPortal(t, pkStatusAnswer)
 	_, err := runPMKISAN(t, p, request)
 	beckn, status := pkBecknErr(t, err)
@@ -624,6 +633,33 @@ func TestPMKISANStatusReportsAnAnswerWithNoRecordsAsNothingOnFile(t *testing.T) 
 			var ack *model.AckNoCallbackErr
 			if !errors.As(err, &ack) || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
 				t.Fatalf("Run() = %v, want an ACK carrying BIZ_NO_RESULTS_FOUND", err)
+			}
+		})
+	}
+}
+
+func TestPMKISANSupportReadsTheTicketFromEitherName(t *testing.T) {
+	for name, tc := range map[string]struct{ answer, want string }{
+		"GrievanceID":                   {`{"Responce":"True","GrievanceID":"PMK1"}`, "PMK1"},
+		"GrievanceNo when ID is absent": {`{"Responce":"True","GrievanceNo":"PMK2"}`, "PMK2"},
+		"a numeric GrievanceNo":         {`{"Responce":"True","GrievanceNo":20260912}`, "20260912"},
+		"neither":                       {`{"Responce":"True"}`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body, err := runPMKISAN(t, newPKPortal(t, tc.answer), pkSupportRequest)
+			if err != nil {
+				t.Fatalf("Run() = %v", err)
+			}
+			c := pkAt(t, pkDecode(t, body), "message", "support", "channels", 0, "case").(map[string]any)
+			got, present := c["ticketNo"]
+			if tc.want == "" {
+				if present {
+					t.Errorf("case.ticketNo = %v, want it absent when the portal sends no handle", got)
+				}
+				return
+			}
+			if got != tc.want {
+				t.Errorf("case.ticketNo = %v, want %s", got, tc.want)
 			}
 		})
 	}
