@@ -2,11 +2,10 @@
 # Both directions, one file.
 #
 # Step two of three: lodge the grievance. A support request composes no
-# contract: message.support carries the application number in orderId, the
-# complaint in descriptor (code "3.10" is category and sub-category), and the
-# provider, the farmer and the OTP (challenge) in channels[0]. The OTP init sent
-# travels on the lodge call until PMFBY's verify endpoint is wired in; it is
-# never echoed back.
+# contract: message.support carries the application number in orderId, and
+# channels[0] carries the provider, the farmer, the complaint (grievance) and
+# the OTP (challenge). The OTP init sent travels on the lodge call until PMFBY's
+# verify endpoint is wired in; it is never echoed back.
 #
 # "Grievence" is PMFBY's spelling, kept where PMFBY reads it.
 
@@ -14,12 +13,15 @@
 # absent field pass. A missing field is refused by the request half under
 # _error, which can name SCH_REQUIRED_FIELD_MISSING.
 required:
+  # PMFBY takes both codes as numbers, so anything else is refused here rather
+  # than failing the conversion.
   - check: |
       (
-        $code := beckn.message.support.descriptor.code;
-        $not($exists($code)) or $exists($match($code, /^[0-9]+\.[0-9]+$/)[0])
+        $g := beckn.message.support.channels[0].grievance;
+        $digits := function($code) { $not($exists($code)) or $exists($match($code, /^[0-9]+$/)[0]) };
+        $digits($g.category.code) and $digits($g.subCategory.code)
       )
-    message: "descriptor.code must be <category>.<subCategory>, e.g. 3.10"
+    message: "grievance.category.code and grievance.subCategory.code must be digits, e.g. 3 and 10"
   - check: |
       (
         $season := beckn.message.support.channels[0].season;
@@ -31,37 +33,38 @@ request: |
   (
     $s := beckn.message.support;
     $ch := $s.channels[0];
-    $category := $split($s.descriptor.code, ".");
+    $g := $ch.grievance;
     $seasons := { "Kharif": 1, "Rabi": 2, "Zaid": 3 };
     /* PMFBY's fixed id for this channel as the source of the grievance. */
     $receiptSourceID := 134306;
-    $complete := $exists($s.orderId) and $exists($s.descriptor.code) and $exists($s.descriptor.longDesc)
-      and $exists($ch.applicantPhone) and $exists($ch.challenge.value)
-      and $exists($ch.cropYear) and $exists($ch.season);
+    $complete := $exists($s.orderId) and $exists($ch.applicantPhone) and $exists($ch.challenge.value)
+      and $exists($ch.cropYear) and $exists($ch.season)
+      and $exists($g.category.code) and $exists($g.subCategory.code) and $exists($g.description);
     $not($complete)
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "lodging a grievance needs orderId, descriptor.code, descriptor.longDesc and, on channels[0], applicantPhone, challenge.value, cropYear and season" } }
+                    "message": "lodging a grievance needs orderId and, on channels[0], applicantPhone, challenge.value, cropYear, season, grievance.category.code, grievance.subCategory.code and grievance.description" } }
     : {
       "requestorMobileNo": $ch.applicantPhone,
       "otp": $ch.challenge.value,
       "complaintDate": $now("[Y0001]-[M01]-[D01]", "+0530"),
       "receiptSourceID": $receiptSourceID,
-      "ticketCategoryID": $number($category[0]),
-      "ticketSubCategoryID": $number($category[1]),
+      "ticketCategoryID": $number($g.category.code),
+      "ticketSubCategoryID": $number($g.subCategory.code),
       "requestYear": $string($ch.cropYear),
       "requestSeason": $lookup($seasons, $ch.season),
       "applicationNo": $s.orderId,
-      "grievenceDescription": $trim($s.descriptor.longDesc)
+      "grievenceDescription": $trim($g.description)
     }
   )
 
 # A 4xx from PMFBY reaches this half with its status under _status.
 #
-# orderId and descriptor are the caller's own, echoed, and the ticket goes on
-# the channel. caseStatus, filedOn and provider are not in PMFBY's reply: a
-# freshly lodged grievance is registered, with no portal phrase to quote as its
-# name, filedOn restates the IST date just sent, and provider is the one the
-# request was routed by. PMFBY's ticket id is its own row id and is not mapped.
+# orderId and the grievance are the caller's own, echoed, and the ticket goes in
+# the channel's case. Its status, filedOn and provider are not in PMFBY's
+# reply: a freshly lodged grievance is registered, with no portal phrase to
+# quote as its name, filedOn restates the IST date just sent, and provider is
+# the one the request was routed by. PMFBY's ticket id is its own row id and is
+# not mapped.
 response: |
   $exists(_status)
   ? (
@@ -81,16 +84,18 @@ response: |
       "message": {
         "support": {
           "orderId": $s.orderId,
-          "descriptor": $s.descriptor,
           "channels": [{
             "@context": $ch.`@context`,
             "@type": $ch.`@type`,
             "informationMode": "Direct",
             "provider": $ch.provider,
             "scheme": $ch.scheme,
-            "ticketNo": $type($ticketNo) = "number" or $type($ticketNo) = "string" ? $string($ticketNo),
-            "caseStatus": { "code": "Registered" },
-            "filedOn": $now("[Y0001]-[M01]-[D01]", "+0530")
+            "grievance": $ch.grievance,
+            "case": {
+              "ticketNo": $type($ticketNo) = "number" or $type($ticketNo) = "string" ? $string($ticketNo),
+              "status": { "code": "Registered" },
+              "filedOn": $now("[Y0001]-[M01]-[D01]", "+0530")
+            }
           }]
         }
       }
