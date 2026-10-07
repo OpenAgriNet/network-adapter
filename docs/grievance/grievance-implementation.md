@@ -710,8 +710,9 @@ Prerequisites are registered per **binding key, not per action**
     "ticketCategoryID":      $g.category.code,
     "ticketSubCategoryID":   $g.subCategory.code,
     "grievenceDescription":  $trim($g.description),
-    "complaintDate":         $fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530"),
-    "receiptSourceID":       "134306"
+    "complaintDate":         $ch.complaintDate ? $ch.complaintDate
+                               : $fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530"),
+    "receiptSourceID":       $ch.receiptSourceId ? $ch.receiptSourceId : "134306"
   }
 )
 ```
@@ -965,7 +966,8 @@ Upstream names are the portal's own, verified against the v1 adapter on `main`.
 | `scheme` | not sent | echoed unchanged, it identifies the scheme |
 | `provider` | not sent | the registry entry the adapter routed to. Returned on `on_support` only -- on a contract leg `commitments[].offer.provider` carries it |
 | — | `complaintDate` = `$fromMillis($toMillis($now()), "[Y0001]-[M01]-[D01]", "+0530")`, generated in IST — the farmer does not backdate | |
-| — | `receiptSourceID` = `134306` (provider constant); `otpType` = `SMS` | |
+| `complaintDate`, `receiptSourceId` | sent as `complaintDate` and `receiptSourceID`. Both optional: the date falls back to the current IST date, the source id to the adapter's configured channel id (`134306` for Vistaar) | not returned |
+| — | `otpType` = `SMS` | |
 
 Refused by the pack rather than mapped: **`case.remark` and `case.remarkedOn`**. PMFBY
 publishes neither.
