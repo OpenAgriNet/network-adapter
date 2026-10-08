@@ -1574,9 +1574,22 @@ Take `provider.id`, `offers[].id` and `resources[].id` from the reply —
 ## Appendix G — Registry
 
 Nothing above works until the providers are registered. Three kinds of record: what the
-data is (`SchemaRegistry`), who we call (`Participant`), and how (`ProviderSchema`). Two
-participants, three capabilities — PM-KISAN carries two, so it gets one `Participant`
-record and two each of the others.
+data is (`SchemaRegistry`), who we call (`Participant`), and how (`ProviderSchema`).
+Three participants, three capabilities. A `Participant` carries one `baseUrl` shared by
+every one of its actions, so PM-KISAN's two hosts are two participants.
+
+These records are written against the schemas the registry actually enforces —
+`helmcharts/quick-start/config/registry/schemas/`. The copy under
+`discovery-service/docs/design/` has drifted and will reject them: it still says
+`upstream_api` where the code says `upstream`, and wants a relative `mappings/…` path
+where the adapter fetches a URL (`pkg/model/model.go`: *"it is a URL the mapper fetches"*).
+Treat the deployed copy as authoritative and bring the design copy up to it.
+
+Two things left to settle. `schemaUrl` points at `raw.githubusercontent.com` on the pack
+branch rather than the Pages site, which is not published until the PR merges — but
+`SchemaRegistry.schemaUrl` admits only `/schema/`, so the pattern has to widen to
+`(schema|api-schemas)` before these three records validate. And the `mappings` files do
+not exist on the branch named below; pin the ref when you register.
 
 ### G.1 PMFBY grievance
 
@@ -1585,14 +1598,14 @@ record and two each of the others.
   "capabilityCode": "openagrinet:PMFBYGrievance",
   "name": "PMFBY Grievance",
   "version": "v0.1",
-  "schemaUrl": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/attributes.yaml",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/PMFBYGrievance/v0.1/attributes.yaml",
   "status": "active"
 } }
 
 { "Participant": {
   "participantId": "pmfby",                  // also the Beckn offer.provider.id
   "name": "PMFBY Grievance Portal",
-  "type": "upstream_api",                    // speaks HTTP, not Beckn: no role, no keys
+  "type": "upstream",                        // speaks HTTP, not Beckn: no role, no keys
   "status": "active",
   "baseUrl": "https://pmfbydemo.amnex.co.in"   // demo host; confirm production
 } }
@@ -1619,15 +1632,23 @@ record and two each of the others.
     { "action": "support", "method": "POST", "path": "/krphapi/FGMS/AddKRPHNCIPGrievenceSupportTicket",
       // The lodge takes no OTP -- FGMS trusts the service token, not the farmer --
       // and applicationNo is accepted unverified. Filing is unauthenticated.
-      "mappings": "mappings/pmfby/grievance.support.yaml",
-      "providerIdAt":     "message.support.channels[].provider.id",  // [] is the grammar's
-                                                                      // only plural: no index
-      "capabilityCodeAt": "message.support.channels[].@type",
+      "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmfby/grievance.support.yaml",
       "timeoutMs": 30000, "status": "active" },
     { "action": "status",  "method": "POST", "path": "/krphapi/FGMS/GetGrievenceTicketsStatus",
-      "mappings": "mappings/pmfby/grievance.status.yaml",
+      "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmfby/grievance.status.yaml",
       "timeoutMs": 30000, "retryMax": 2, "status": "active" }
   ] } }
+```
+
+`support` carries no `Contract`, so the adapter cannot read the provider and the
+capability from the Beckn v2 defaults. Where it reads them instead is **adapter config,
+not a registry field** — `providerIdAt` and `capabilityCodeAt` sit beside `bindingKeys`
+in `beckn-onix/config/provider-adapter.yaml`. Set both or neither; one alone is refused
+at startup. `ActionBinding` takes no such keys and is closed to them.
+
+```yaml
+providerIdAt:     "message.support.channels[].provider.id"   # [] is the grammar's
+capabilityCodeAt: "message.support.channels[].@type"         # only plural: no index
 ```
 
 `receiptSourceID`, `ticketCategoryID`, `ticketSubCategoryID` and `requestYear` go upstream
@@ -1643,25 +1664,25 @@ nowhere to land.
 ### G.2 PM-KISAN grievance
 
 Same shape as PMFBY, with an `init` PMFBY does not have — three actions rather than two.
-The `Participant` record below is shared with §G.3 — register it once.
+This participant is the grievance host only; the chatbot host is §G.3's.
 
 ```jsonc
 { "SchemaRegistry": {
   "capabilityCode": "openagrinet:PMKISANGrievance",
   "name": "PM-KISAN Grievance",
   "version": "v0.1",
-  "schemaUrl": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/attributes.yaml",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/PMKISANGrievance/v0.1/attributes.yaml",
   "status": "active"
 } }
 
 { "Participant": {
   "participantId": "pmkisan",
   "name": "PM-KISAN Grievance Portal",
-  "type": "upstream_api",
+  "type": "upstream",
   "status": "active",
   // staging host; the production one is not recorded anywhere -- confirm it
   // with PM-KISAN rather than deriving it from the "Test" in this name
-  "baseUrl": "https://pmkisanstaging.amnex.co.in/exlinkstaging/services/GrievanceServiceTest.asmx"
+  "baseUrl": "https://pmkisanstaging.amnex.co.in"
 } }
 
 // Two hosts, two tokens, two body encodings. The grievance calls and the OTP
@@ -1671,8 +1692,13 @@ The `Participant` record below is shared with §G.3 — register it once.
 //              .../GrievanceServiceTest.asmx   AES-256-GCM
 //   OTP        /ChatbotOTP, /ChatbotOTPVerified
 //              .../chatbotservice.asmx         AES-128-CBC
-// The action below that lives on the second host names it, because a
-// Participant carries one baseUrl and these two are not the same host.
+// OPEN — a Participant carries one baseUrl shared by every action, so one
+// binding cannot span both hosts. support and status belong to pmkisan below.
+// init's call goes to the chatbot host, which §G.3 registers as its own
+// participant, so the init binding as written is not registrable: it would be
+// sent to the grievance host. Resolve it before registering. Do NOT add a
+// per-action baseUrl -- the adapter reads the host from the participant and
+// nowhere else (pkg/model/model.go, ProviderRecord.BaseURL).
 
 { "ProviderSchema": {
   "bindingKey":     "pmkisan|openagrinet:PMKISANGrievance",
@@ -1680,64 +1706,70 @@ The `Participant` record below is shared with §G.3 — register it once.
   "capabilityCode": "openagrinet:PMKISANGrievance",
   "status": "active",
   "actions": [
-    { "action": "init",    "method": "POST", "path": "/ChatbotOTP",
-      // different host, token and cipher from the two actions below.
-      // /ChatbotOTPVerified on the same host runs before support and status,
-      // so it is a precondition of those, not an action of its own.
-      "baseUrl": "https://exlink.pmkisan.gov.in/services/chatbotservice.asmx",
-      "mappings": "mappings/pmkisan/grievance.init.yaml",
+    { "action": "init",    "method": "POST", "path": "/services/chatbotservice.asmx/ChatbotOTP",
+      // UNRESOLVED HOST -- see the note above. Different host, token and cipher
+      // from the two actions below. /ChatbotOTPVerified on that same host runs
+      // before support and status, so it is a precondition of those, not an
+      // action of its own.
+      "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmkisan/grievance.init.yaml",
       "timeoutMs": 20000, "status": "active" },
-    { "action": "support", "method": "POST", "path": "/LodgeGrievance",
-      "mappings": "mappings/pmkisan/grievance.support.yaml",
-      "providerIdAt":     "message.support.channels[].provider.id",  // [] is the grammar's
-                                                                      // only plural: no index
-      "capabilityCodeAt": "message.support.channels[].@type",
+    { "action": "support", "method": "POST", "path": "/exlinkstaging/services/GrievanceServiceTest.asmx/LodgeGrievance",
+      "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmkisan/grievance.support.yaml",
       "timeoutMs": 30000, "status": "active" },
-    { "action": "status",  "method": "POST", "path": "/GrievanceStatusCheck",
-      "mappings": "mappings/pmkisan/grievance.status.yaml",
+    { "action": "status",  "method": "POST", "path": "/exlinkstaging/services/GrievanceServiceTest.asmx/GrievanceStatusCheck",
+      "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmkisan/grievance.status.yaml",
       "timeoutMs": 30000, "retryMax": 2, "status": "active" }
   ] } }
 ```
 
 ### G.3 PM-KISAN application status
 
-A second capability on the **same** `Participant`. No new participant record: the
-`pmkisan` one in §G.2 serves both, and the binding key is what tells the two apart.
+A second PM-KISAN capability, on its **own** `Participant`. Both of its actions sit on
+the chatbot host while the `pmkisan` record in §G.2 points at the grievance host, so this
+one gets `pmkisan-chatbot`. A participant is a host, not an organisation.
 
 ```jsonc
 { "SchemaRegistry": {
   "capabilityCode": "openagrinet:PMKISANApplicationStatus",
   "name": "PM-KISAN Application Status",
   "version": "v0.1",
-  "schemaUrl": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/attributes.yaml",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/PMKISANApplicationStatus/v0.1/attributes.yaml",
   "status": "active"
 } }
 
-// Both actions live on the chatbot service, not the grievance service, so both
-// name a baseUrl rather than inheriting the Participant's. That is the opposite
-// split from §G.2, where only init sits there.
+{ "Participant": {
+  "participantId": "pmkisan-chatbot",        // the chatbot host, not the grievance one
+  "name": "PM-KISAN Chatbot Service",
+  "type": "upstream",
+  "status": "active",
+  "baseUrl": "https://exlink.pmkisan.gov.in"
+} }
+
+// Both actions live on the chatbot service, not the grievance service, so this
+// capability binds to its own participant rather than reusing pmkisan. One
+// participant, one host -- that is the whole reason there are two of them.
 //
 // Four upstream paths, all AES-128-CBC with the key in band:
 //   /ChatbotOTP, /ChatbotOTPVerified     the OTP pair
 //   /ChatbotUserDetails                  the record
 //   /ChatbotBeneficiaryStatus            what is blocking payment
 //
-// CONFIRM THE HOST. The value below is the legacy client's hardcoded fallback,
-// used only when neither PM_KISAN_BASE_URL nor PM_KISAN_BASE_OTP_URL is set;
-// the API collection leaves both as unresolved variables and notes the two may
-// differ. If they do, otpBaseUrl and baseUrl below are two different hosts.
+// CONFIRM THE HOST. The pmkisan-chatbot host above comes from the legacy
+// client's hardcoded fallback, used only when neither PM_KISAN_BASE_URL nor
+// PM_KISAN_BASE_OTP_URL is set; the API collection leaves both as unresolved
+// variables and notes the two may differ. If they do, that is a fourth
+// participant, not a second URL on this one.
 
 { "ProviderSchema": {
-  "bindingKey":     "pmkisan|openagrinet:PMKISANApplicationStatus",
-  "participantId":  "pmkisan",
+  "bindingKey":     "pmkisan-chatbot|openagrinet:PMKISANApplicationStatus",
+  "participantId":  "pmkisan-chatbot",
   "capabilityCode": "openagrinet:PMKISANApplicationStatus",
   "status": "active",
   "actions": [
-    { "action": "init",   "method": "POST", "path": "/ChatbotOTP",
-      "baseUrl": "https://exlink.pmkisan.gov.in/services/chatbotservice.asmx",
-      "mappings": "mappings/pmkisan/application-status.init.yaml",
+    { "action": "init",   "method": "POST", "path": "/services/chatbotservice.asmx/ChatbotOTP",
+      "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmkisan/application-status.init.yaml",
       "timeoutMs": 20000, "status": "active" },
-    { "action": "status", "method": "POST", "path": "/ChatbotUserDetails",
+    { "action": "status", "method": "POST", "path": "/services/chatbotservice.asmx/ChatbotUserDetails",
       // One Beckn status, three upstream calls, in order:
       //   /ChatbotOTPVerified       spend the OTP -- a precondition, not an
       //                             action of its own, as in the grievance
@@ -1745,19 +1777,19 @@ A second capability on the **same** `Participant`. No new participant record: th
       //   /ChatbotUserDetails       enrolmentId, registeredOn,
       //                             latestInstallmentPaid, ekyc
       //   /ChatbotBeneficiaryStatus blockers
-      // The second is the path above; the third is the chained call below.
+      // The second is the path above. The third the adapter makes itself: the
+      // registry binds one endpoint per action, and a chained call is plugin
+      // orchestration, exactly like /ChatbotOTPVerified.
       // Only the second is mandatory: if the third fails, return the record
       // with blockers ABSENT rather than empty -- absent means not asked, and
       // an empty array would read as "payment is clear".
-      "baseUrl": "https://exlink.pmkisan.gov.in/services/chatbotservice.asmx",
-      "chainedPath": "/ChatbotBeneficiaryStatus",
-      "mappings": "mappings/pmkisan/application-status.status.yaml",
+      "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmkisan/application-status.status.yaml",
       "timeoutMs": 30000, "retryMax": 2, "status": "active" }
   ] } }
 ```
 
-There is no `support` action, no `providerIdAt` and no `capabilityCodeAt`: both legs
-compose a `Contract`, so the adapter reads the participant from
+There is no `support` action, so none of the adapter config of §G.1 applies here: both
+legs compose a `Contract`, so the adapter reads the participant from
 `commitments[].offer.provider.id` and the capability from `commitmentAttributes.@type` on
 the Beckn v2 defaults.
 
