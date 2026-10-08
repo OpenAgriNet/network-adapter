@@ -60,7 +60,8 @@ type AuthProfile struct {
 	TokenSecretName string
 	TokenSecretEnv  string
 
-	// Where the token sits in the response body, as a top-level key.
+	// Where the token sits in the response body, as a dotted path:
+	// "token" at the top level, "responseDynamic.token.Token" nested.
 	TokenResponseField string
 
 	// How long a token may be held, as written in config and as parsed.

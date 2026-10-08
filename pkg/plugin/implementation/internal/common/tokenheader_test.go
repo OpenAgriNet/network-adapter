@@ -80,6 +80,41 @@ func TestTokenHeader_ValidLogin_SendsBareTokenInHeaderNotQuery(t *testing.T) {
 	}
 }
 
+// PMFBY's login wraps the token in its reply envelope, so the field is a path.
+func TestTokenHeader_NestedTokenField_ReadsTheDottedPath(t *testing.T) {
+	t.Setenv("TEST_TQ_USER", "user")
+	t.Setenv("TEST_TQ_SECRET", "secret")
+
+	login := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"responseCode":"1","responseDynamic":{"token":{"Token":"nested-token"}}}`)
+	}))
+	t.Cleanup(login.Close)
+	var authorization string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(provider.Close)
+
+	step := newStep(t, &stubRegistry{plan: testPlan(provider.URL, http.MethodPost)},
+		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"a":1}`)},
+		func(c *Config) {
+			profile := tokenHeaderProfile(login.URL)
+			profile.TokenResponseField = "responseDynamic.token.Token"
+			if err := profile.validate(); err != nil {
+				t.Fatalf("profile does not validate: %v", err)
+			}
+			c.setProviderAuth(profile)
+		})
+
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if authorization != "nested-token" {
+		t.Errorf("provider saw Authorization %q, want the token read from the nested path", authorization)
+	}
+}
+
 func TestTokenHeader_RepeatedCalls_LogsInOnce(t *testing.T) {
 	t.Setenv("TEST_TQ_USER", "user")
 	t.Setenv("TEST_TQ_SECRET", "secret")
