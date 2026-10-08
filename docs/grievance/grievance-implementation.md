@@ -501,13 +501,14 @@ portal requires, and v2 PMFBY is deliberately stricter than v1** — v1 called
 `_validate_otp` on the PMFBY leg, discarded the result and never put the OTP in the
 payload, so a correctly-formatted wrong OTP filed a grievance. v2 verifies in band.
 
-One thing is not settled: **where PM-KISAN's OTP comes from.** v1 got it by calling its
-own network against the `pmkisan` scheme-status capability, not the grievance portal, and
-the encrypted grievance API documents no OTP call. That endpoint is in Open, and it is
-blocking.
+PM-KISAN's OTP does not come from the grievance portal — the encrypted grievance API has
+no OTP call. It comes from `/ChatbotOTP` and `/ChatbotOTPVerified` on
+`exlink.pmkisan.gov.in`, a separate PM-KISAN service that authenticates the same
+registration number. v1 reached it indirectly, through its own network; the adapter calls
+it directly. The farmer sees one flow; the adapter talks to two hosts.
 
 What *is* authenticated on PM-KISAN beyond the farmer is the integrator — the service
-token and the AES key both identify the caller, and the next section is about where they
+tokens and the AES key all identify the caller, and the next section is about where they
 live.
 
 ## The blocker: PM-KISAN speaks in envelopes
@@ -518,19 +519,53 @@ built. PMFBY is unaffected and can ship first.
 PM-KISAN does not accept or return JSON. Every request body is
 
 ```json
-{ "EncryptedRequest": "<base64 AES-GCM ciphertext>" }
+{ "EncryptedRequest": "<base64 ciphertext>" }
 ```
 
 and every response is
 
 ```json
-{ "d": { "__type": "…", "output": "<base64 AES-GCM ciphertext>" } }
+{ "d": { "__type": "…", "output": "<base64 ciphertext>" } }
 ```
 
-The plaintext inside is the JSON the mappings care about. Both the key and the IV are
-static, hex, and read from the environment — in the legacy client `GRIEVANCE_KEY_1` is the
-key and `GRIEVANCE_KEY_2` is the **IV**, despite the name. That second variable is the
-whole of the problem described below.
+The plaintext inside is the JSON the mappings care about.
+
+**There are two realms behind that one shape, and they do not use the same cipher.** The
+grievance calls and the OTP calls are separate PM-KISAN services with separate hosts,
+separate service tokens and separate codecs — the same split PMFBY has between FGMS and
+its core realm.
+
+| | grievance realm | OTP realm |
+|---|---|---|
+| calls | `/LodgeGrievance`, `/GrievanceStatusCheck` | `/ChatbotOTP`, `/ChatbotOTPVerified` |
+| host | `…/GrievanceServiceTest.asmx` | `…/chatbotservice.asmx` |
+| cipher | AES-256-GCM, no AAD | AES-128-CBC, PKCS#7 |
+| key | fixed, from the environment | **random per request** |
+| IV / nonce | fixed, from the environment | **the key itself** |
+| payload | `base64(ciphertext ‖ 16-byte tag)` | `base64(ciphertext)` |
+| envelope | `EncryptedRequest: <cipher>` | `EncryptedRequest: <cipher>@<key>` |
+| body token | `TokenNo` | `Token` |
+| identity field | `IdentityNo`, with `Type` | `Values`, with `Types` |
+
+Two things in that table are worth saying out loud rather than implementing quietly.
+
+**The OTP realm transmits its key beside the ciphertext.** `<cipher>@<key>` — the key is
+in the request, in the clear, and the IV is the key. That is obfuscation, not encryption:
+it protects nothing from anyone who can read the request, which is precisely who TLS
+already protects against. Implement it because the portal requires it; do not record it
+anywhere as a security control, and do not let its presence justify relaxing anything
+else.
+
+The key is also weaker than its length suggests. It is generated as 32 random hex
+*characters*, and the AES-128 key is the first 16 **bytes of that string** — sixteen ASCII
+hex digits, four bits of entropy each. 64 bits, not 128. Reproduce it exactly; the
+adapter has to be bug-compatible with the portal. Just do not describe it as AES-128.
+
+**The grievance realm reuses one GCM nonce forever.** Nonce reuse is the one thing
+AES-GCM must not do — two messages under one key and nonce leak enough to forge a third.
+The legacy client at least fails closed when the variables are unset, which the rest of
+that code does not. Raise it with PM-KISAN; the note at the end of this section says what
+to do in the meantime.
 
 Nothing in the adapter can do this today:
 
@@ -550,16 +585,23 @@ mapping runs and unwraps the response body before the response mapping runs. It 
 outside JSONata deliberately — this is transport, and the mappings should keep seeing
 plaintext JSON.
 
+The codec is therefore **parameterised, not a single implementation** — one hook with two
+configured variants, selected per action.
+
 ```yaml
 # provider-adapter.yaml, alongside authScheme
 pmkisan:
   authScheme: none                        # nothing for the auth layer to attach; see below
-  bodyCodec: aesGcmEnvelope
-  codecKeyEnv:  PMKISAN_GRIEVANCE_KEY     # names the variable; holds no secret
-  codecIvEnv:   PMKISAN_GRIEVANCE_IV      # fixed IV, for portal compatibility only
-  serviceTokenEnv: PMKISAN_SERVICE_TOKEN  # the body's TokenNo, read by the prerequisite
   requestEnvelopeField: EncryptedRequest
   responseEnvelopePath: d.output
+  serviceTokenEnv: PMKISAN_SERVICE_TOKEN  # the body's TokenNo, read by the prerequisite
+  bodyCodec: aesGcmFixedKey               # default: the grievance realm
+  codecKeyEnv:  PMKISAN_GRIEVANCE_KEY     # names the variable; holds no secret
+  codecIvEnv:   PMKISAN_GRIEVANCE_IV      # fixed nonce, for portal compatibility only
+  otpRealm:                               # the ChatbotOTP pair, a different service
+    bodyCodec: aesCbcKeyInBand            # key generated per request, appended after '@'
+    keySuffixSeparator: "@"
+    serviceTokenEnv: PMKISAN_OTP_TOKEN    # a different token from the grievance realm
 ```
 
 Same discipline as every credential in that file: the `*Env` keys name an environment
@@ -567,16 +609,21 @@ variable, and no key material is written into the config, a mapping file, or a r
 row. Mapping files are published; they must stay readable by anyone.
 
 **`authScheme: none` does not mean PM-KISAN is open.** It means the auth layer has nothing
-to attach. The portal still has two caller credentials, both in places an auth scheme
-cannot reach: `TokenNo`, a static service token that is a *body* field on all three calls,
-and the AES-GCM key itself — GCM is authenticated encryption, so the tag verifies only for
+to attach. The portal still has caller credentials, all in places an auth scheme cannot
+reach: a static service token that is a *body* field on every call — `TokenNo` on the
+grievance realm, `Token` on the OTP realm, and **they are different tokens** — and, on the
+grievance realm, the AES-GCM key itself — GCM is authenticated encryption, so the tag verifies only for
 a party holding the key, which makes the encryption the caller authentication whatever its
 confidentiality is worth under a fixed IV. `codecKeyEnv` is therefore a credential.
 
-Both must **fail closed**, and neither can inherit that from the auth layer, which is what
-normally enforces it. An unset `codecKeyEnv`, `codecIvEnv` or `serviceTokenEnv` refuses the
-request; the legacy client fails *open* on the last of these and that must not be carried
-over. See Open.
+All of them must **fail closed**, and none can inherit that from the auth layer, which is
+what normally enforces it. An unset `codecKeyEnv`, `codecIvEnv`, `serviceTokenEnv` or
+`otpRealm.serviceTokenEnv` refuses the request. The legacy orchestrator fails *open* on the
+service token and that must not be carried over; the legacy grievance service does fail
+closed on the key material, and that part should be. See Open.
+
+The OTP realm's key is generated per request and needs no variable — but its *absence*
+from config must not read as "no codec configured". Name the variant explicitly, as above.
 
 The IV is the portal's, not ours: a per-request random IV only works if the portal reads
 one back off the wire, and it does not. Implement the codec bug-compatibly to talk to the
@@ -1019,13 +1066,12 @@ mapped if it were. **The response mapping is an allow-list, not a passthrough.**
 texts the mobile it already holds against that registration, so the network never has to
 carry one. One fewer piece of personal data on the wire, and nothing to get wrong.
 
-> **BLOCKING — the upstream endpoint is not confirmed.** PM-KISAN's encrypted grievance
-> API documents no OTP call. v1 Vistaar obtained one by posting to its own network against
-> the `pmkisan` **scheme-status** capability, which is a different provider from the
-> grievance portal. The registry entry in the use-case document therefore carries
-> `"path": "<TBD>"` and `"status": "draft"`. Settle it with PM-KISAN before `init` is
-> wired. Do not guess a path: a wrong one fails closed as an unreachable provider, but a
-> *plausible* wrong one fails open as a flow that looks authenticated and is not.
+**The OTP comes from a different PM-KISAN service than the grievance itself.** The
+encrypted grievance API has no OTP call; `/ChatbotOTP` on `exlink.pmkisan.gov.in` does,
+and it authenticates the same registration number. v1 Vistaar reached it the long way
+round, by posting to its own network against a separate scheme-status capability; the
+adapter calls it directly. One Beckn action, one upstream call — it is only the *host* and
+the codec that differ from the other two legs, and both are configuration.
 
 #### Guards
 
@@ -1042,6 +1088,43 @@ reason given under `support` below. The pack's top-level `anyOf` is satisfied by
 `enrolmentId` alone, so without this guard an `init` carrying only a `challengeIssued`
 would validate — which is the mistake PMFBY's `init` makes today and the first item in
 Open.
+
+#### Mapping → provider
+
+```jsonata
+(
+  $ca := beckn.message.contract.commitments[0].commitmentAttributes;
+  {
+    "Types":  "Ben_id",
+    "Values": $ca.enrolmentId,
+    "Token":  _local.otpServiceToken
+  }
+)
+```
+
+`Types` is a constant. The upstream accepts `Mobile`, `Aadhar` and `Ben_id` and the legacy
+client picks between them by sniffing the string — ten digits starting 6–9 is a mobile,
+twelve digits is an Aadhaar, anything else is a registration. **The adapter sniffs
+nothing.** This pack carries registration numbers only: it has no phone field, and it
+refuses twelve-digit values outright so an Aadhaar cannot arrive by accident. The
+discriminator is therefore fixed by the pack, not inferred from the value, and a
+mistyped identifier fails as a bad registration rather than silently becoming a lookup of
+a different kind.
+
+`Token` is supplied by the prerequisite from `otpRealm.serviceTokenEnv`, not from the
+mapping — it is a shared secret and this file is published.
+
+#### Provider response
+
+```json
+{ "d": { "output": "{\"Rsponce\":\"True\",\"Message\":\"OTP has been sent to the registered mobile number\"}" } }
+```
+
+`Rsponce` is the portal's spelling. **`"True"` is the only success.** The legacy client
+tests `Rsponce !== "False"` here, which treats a timeout, an empty body or any unexpected
+token as a sent OTP; the adapter tests `= "True"` and NACKs everything else. `Message` is
+the portal's own text and is not returned — it is logged redacted and replaced with ours,
+the same rule as everywhere else.
 
 #### Mapping → Beckn (`on_init`)
 
@@ -1111,15 +1194,24 @@ portal's integration document states one; see Open.
 #### The challenge is verified before the portal is called
 
 A PM-KISAN `support` is **one** call to the grievance portal, but not the only upstream
-call on the leg. A **Go prerequisite** runs first and does two things: verifies the OTP,
-and supplies `serviceToken`, because every portal call needs a `TokenNo` and a published
-mapping file is no place for a shared secret. A failed verification is a `400` NACK and
-the portal is never called, so no grievance is written.
+call on the leg. A **Go prerequisite** runs first and does two things: verifies the OTP
+against the OTP realm, and supplies `serviceToken` for the grievance realm, because every
+portal call needs a token in its body and a published mapping file is no place for a
+shared secret. A failed verification is a `400` NACK and the grievance portal is never
+called, so no grievance is written.
+
+The verify call is `/ChatbotOTPVerified`, on the OTP host and codec, not the grievance
+one:
+
+```json
+{ "Types": "Ben_id", "Values": "<registration number>", "OTP": "<challenge.value>", "Token": "<env>" }
+```
+
+Success is `Rsponce = "True"` and nothing else — the legacy client already fails closed
+here, and that is the behaviour to keep.
 
 `challenge.value` goes to the verify step and **nowhere else**. It is not in the body
-below, it is not logged, it is not traced, and it is not echoed. Its destination depends
-on the unresolved endpoint above; the prerequisite is the only place that changes when
-that is settled.
+below, it is not logged, it is not traced, and it is not echoed.
 
 The registration number is never logged and never traced, and it appears in exactly one
 response field: `orderId` on `on_support`, handed back to the caller who sent it over the
@@ -1449,12 +1541,13 @@ catalogs: 2 × catalog/publish, submitted once to the discovery service
           (documents, not config -- the publisher takes them over HTTP)
 
 beckn-onix/config/mappings/pmfby/grievance.{init,support,status}.yaml
-beckn-onix/config/mappings/pmkisan/grievance.{init,support,status}.yaml   ← init path TBD
+beckn-onix/config/mappings/pmkisan/grievance.{init,support,status}.yaml
 
 beckn-onix/pkg/plugin/implementation/Grievance/          one plugin, both providers
                                                          + challenge-verify hook (both)
                                                          + service-token hook   (pmkisan)
-beckn-onix/pkg/plugin/implementation/internal/common/    body codec + config plumbing  ← new
+beckn-onix/pkg/plugin/implementation/internal/common/    body codec, 2 variants         ← new
+                                                         + config plumbing
 
 registry: 2 × (1 SchemaRegistry + 1 Participant + 1 ProviderSchema)   (rows in Registry)
 ```
@@ -1471,7 +1564,8 @@ instead of six: all declared in the packs, so the mappings differ only in their 
 key names.
 
 **The body codec is the only genuinely new machinery** — the one item that touches shared
-adapter code rather than adding a provider beside the existing ones. Everything else is
+adapter code rather than adding a provider beside the existing ones. It is one hook with
+two configured variants, because PM-KISAN's two realms do not use the same cipher. Everything else is
 configuration and mapping files. PMFBY needs none of it and can ship first.
 
 **Discovery adds no adapter code either.** The two catalogs are documents submitted to
@@ -1505,14 +1599,17 @@ already exists. Nothing in `pkg/plugin/implementation/Grievance/` answers a `dis
   this page recorded these names as unverifiable; that search had covered only the
   checked-out working tree.
 
-- **PM-KISAN's OTP endpoint is unknown.** The design challenges both PM-KISAN legs — see
-  "What identity is proven" — but the encrypted grievance API documents no OTP call, and
-  v1 Vistaar got one by posting to its own network against the `pmkisan` scheme-status
-  capability, a different provider from the grievance portal. The registry entry carries
-  `"path": "<TBD>"` and `"status": "draft"`. Nothing on this leg can be wired until
-  PM-KISAN names an endpoint, or the network decides the scheme-status provider is the
-  endpoint and accepts a second upstream provider in the grievance path. Do not guess:
-  a plausible wrong path fails open.
+- **PM-KISAN's grievance host is staging only.** The working collection calls
+  `pmkisanstaging.amnex.co.in/exlinkstaging/services/GrievanceServiceTest.asmx` — note the
+  `Test` suffix on the service name, which the production endpoint will not carry. The v1
+  client reads its base URL from `PMKISAN_GRIEVANCE_BASE_URL` and ships no default, so
+  there is nothing in the tree to read the production host off. Ask PM-KISAN; do not
+  derive it from the staging name. The OTP host is not affected —
+  `exlink.pmkisan.gov.in/services/chatbotservice.asmx` is a literal default in the same
+  tree.
+
+  An earlier revision of this page recorded the *OTP endpoint* as the unknown one. That
+  was wrong: `/ChatbotOTP` and `/ChatbotOTPVerified` are real and are now the design.
 
 - **PM-KISAN publishes no OTP expiry either.** Same shape as the PMFBY item below:
   `challengeIssued.expiresAt` is a configured TTL the adapter asserts, from
@@ -1656,15 +1753,20 @@ already exists. Nothing in `pkg/plugin/implementation/Grievance/` answers a `dis
 
 ### PM-KISAN
 
-- **Credential fail-closed** — `codecKeyEnv`, `codecIvEnv` and `serviceTokenEnv` sit
-  outside the auth layer, so they do not inherit its "absent variable fails the request"
-  rule. The codec and the prerequisite must enforce it themselves. Confirm no deployment
-  relies on the legacy `PMK_123456` default.
-- **Static IV** — raise with PM-KISAN. The codec should take the IV per call so the fix is
-  configuration, not a rewrite.
-- **OTP** — whether the network requires proof of identity the portal itself does not.
-  A policy decision; see "What identity is proven". If yes, an `init` leg and a verify
-  prerequisite, sourced from the `pmkisan` scheme-status provider as in v1.
+- **Credential fail-closed** — `codecKeyEnv`, `codecIvEnv` and the two `serviceTokenEnv`
+  settings sit outside the auth layer, so they do not inherit its "absent variable fails
+  the request" rule. The codec and the prerequisite must enforce it themselves. Confirm no
+  deployment relies on the legacy `PMK_123456` default.
+- **Static GCM nonce** — raise with PM-KISAN. Reusing one nonce across every message under
+  one key is the failure mode AES-GCM is least tolerant of. The codec should take the
+  nonce per call so the fix is configuration, not a rewrite.
+- **The OTP realm sends its key in the clear** — `EncryptedRequest: <cipher>@<key>`, with
+  the IV equal to the key. Match it because the portal requires it; record nowhere that it
+  provides confidentiality, because against anyone who can read the request it provides
+  none. Worth raising with PM-KISAN alongside the nonce.
+- **Two realms, two tokens** — the grievance calls and the OTP calls take different
+  service tokens and different hosts. Confirm whether an integrator is issued both at
+  once, or has to onboard twice.
 - **Registration-number format** — the guard checks only "alphanumeric, non-empty". The
   legacy client validates nothing, and the 11-character figure comes from a docstring.
   Ask PM-KISAN for the real format and tighten the guard to it; until then a loose guard
@@ -1675,6 +1777,14 @@ already exists. Nothing in `pkg/plugin/implementation/Grievance/` answers a `dis
   grievances filed on the same identity the same day. What would close it is a
   `/GrievanceStatusCheck` that takes the grievance id, or at minimum one that repeats it
   per record so the adapter can match on it instead of the date. Ask PM-KISAN for either.
+- **`GrievanceType` may be numeric, not `G001`–`G010`.** The pack enumerates the ten
+  published codes and sends them verbatim. The v1 client defaults the field to the string
+  `"101"` when the caller supplies nothing, which is not in that list and not in its
+  format. One of three things is true: the default is dead code, the portal accepts both
+  spaces, or the published list is not what the API takes. Confirm with PM-KISAN before
+  the first live lodge — this is the one PM-KISAN field where a wrong value is accepted by
+  the portal and silently files the grievance under the wrong head.
+
 - **Category is write-only** — `Reg_No_Status` returns fourteen fields and `GrievanceType`
   is not among them, so a grievance the network filed under `G003` comes back with no
   category at all. The adapter will not infer one: a category reconstructed from a remark would be a
