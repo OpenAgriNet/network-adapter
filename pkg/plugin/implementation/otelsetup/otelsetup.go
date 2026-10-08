@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/log/global"
+	"go.opentelemetry.io/otel/propagation"
 	logsdk "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -150,6 +151,11 @@ func (Setup) New(ctx context.Context, cfg *Config) (*telemetry.Provider, error) 
 		}
 		traceProvider = trace.NewTracerProvider(trace.WithBatcher(traceExporter), trace.WithResource(resTrace))
 		otel.SetTracerProvider(traceProvider)
+		// W3C trace context, so a span started for an inbound request becomes
+		// the parent of spans in the modules it calls (traceparent is injected
+		// on inproc:// hops and extracted by every handler).
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{}))
 		log.Infof(ctx, "OpenTelemetry tracing initialized for service=%s (OTLP endpoint=%s)",
 			cfg.ServiceName, cfg.OtlpEndpoint)
 	}
