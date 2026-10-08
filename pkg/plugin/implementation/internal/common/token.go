@@ -123,18 +123,20 @@ func (s *Step) exchangeLoginToken(ctx context.Context, auth *authenticator) (str
 		return "", 0, err
 	}
 
-	// Decoded into a map because the field name is configured: a struct tag
-	// cannot be written for a key that is not known until config is read.
-	var fields map[string]any
+	// Decoded generically because the field is configured: a struct tag cannot
+	// be written for a key that is not known until config is read. It is a
+	// dotted path, since some login replies nest the token in an envelope.
+	var fields any
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return "", 0, s.permanentTokenErr(fmt.Errorf("token response from %s is not JSON: %w",
 			cfg.TokenURL, err))
 	}
-	token, ok := fields[cfg.TokenResponseField].(string)
-	if !ok || token == "" {
+	tokens := ValuesAt(fields, cfg.TokenResponseField)
+	if len(tokens) == 0 || tokens[0] == "" {
 		return "", 0, s.permanentTokenErr(fmt.Errorf(
 			"token response from %s carries no %s", cfg.TokenURL, cfg.TokenResponseField))
 	}
+	token := tokens[0]
 
 	// The skew is subtracted here for the same reason oauth2 subtracts it from
 	// expires_in: a request that passed the expiry check must not arrive after
