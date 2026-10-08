@@ -1,36 +1,42 @@
-# PMFBY, openagrinet:PMFBYGrievance, status -> POST /GetGrievenceTicketsStatus.
+# PMFBY, openagrinet:PMFBYGrievance, status -> POST /krphapi/FGMS/GetGrievenceTicketsStatus.
 # Both directions, one file.
 #
-# Step three: read a filed grievance back. PMFBY matches the ticket to the phone
-# it was filed from, so both are required.
+# Step two of two: read a filed grievance back. PMFBY matches the ticket to the
+# phone it was filed from, so both are required. No OTP: PMFBY asks for none.
 #
 # The response is an allow-list. PMFBY's record also carries the farmer's name,
-# address and policy details; none of it is mapped.
+# state, district and insurer; none of it is mapped.
 
 # A missing field is refused by the request half under _error, which can name
-# SCH_REQUIRED_FIELD_MISSING.
+# SCH_REQUIRED_FIELD_MISSING and the field's path.
 request: |
   (
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
-    $not($exists($ca.applicantPhone) and $exists($ca.case.ticketNo))
+    $at := "$.message.contract.commitments[0].commitmentAttributes.";
+    $missing := [
+      { "field": "applicantPhone", "path": $at & "applicantPhone", "present": $exists($ca.applicantPhone) },
+      { "field": "case.ticketNo", "path": $at & "case.ticketNo", "present": $exists($ca.case.ticketNo) }
+    ][$not(present)][0];
+    $missing
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "checking a grievance needs applicantPhone and case.ticketNo" } }
+                    "message": $missing.field & " is required", "path": $missing.path } }
     : {
       "requestorMobileNo": $ca.applicantPhone,
       "GrievenceSupportTicketNo": $ca.case.ticketNo
     }
   )
 
-# No case record in the reply is not a failure -- PMFBY answered and has
-# nothing on file -- so it is a 202 ACK saying so. Otherwise the grievance is
-# the complaint as PMFBY holds it, the case is the record it keeps against it,
-# and a field PMFBY does not return is left out. The category comes back by
-# name alone: PMFBY returns no category id on a case read.
+# PMFBY says success with responseCode "1", seen as a string and as a number;
+# anything else is the portal refusing, a 502. A success with no case record is
+# not a failure -- PMFBY answered and has nothing on file -- so it is a 202 ACK
+# saying so. Otherwise the grievance is the complaint as PMFBY holds it, the
+# case is the record it keeps against it, and a field PMFBY does not return is
+# left out. The category comes back by name alone, and the ticket number not at
+# all, so the one the caller asked with is echoed.
 response: |
-  /* A 4xx from PMFBY arrives under _status; it is PMFBY's refusal, left to
-     the adapter's 502 rather than read as nothing on file. */
-  $exists(_status)
-  ? {}
+  $string(response.responseCode) != "1"
+  ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                  "message": "PMFBY could not read the grievance" } }
   : $type(response.responseDynamic) != "object"
   ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
                   "message": "No grievance matches this ticket and phone number." } }
@@ -69,7 +75,8 @@ response: |
                   "code": "UnderReview",
                   "name": $isText($ticket.TicketStatus) ? $ticket.TicketStatus
                 },
-                "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate
+                "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
+                "cropName": $isText($ticket.CropName) ? $ticket.CropName
               }
             }
           }])]
