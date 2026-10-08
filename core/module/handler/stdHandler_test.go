@@ -426,10 +426,7 @@ func TestNewHTTPClient(t *testing.T) {
 				t.Fatal("newHTTPClient returned nil")
 			}
 
-			transport, ok := client.Transport.(*http.Transport)
-			if !ok {
-				t.Fatal("client transport is not *http.Transport")
-			}
+			transport := networkTransport(t, client)
 
 			if transport.MaxIdleConns != tt.expected.maxIdleConns {
 				t.Errorf("MaxIdleConns = %d, want %d", transport.MaxIdleConns, tt.expected.maxIdleConns)
@@ -455,7 +452,7 @@ func TestHttpClientConfigDefaults(t *testing.T) {
 	config := &HttpClientConfig{}
 	client := newHTTPClient(config, nil)
 
-	transport := client.Transport.(*http.Transport)
+	transport := networkTransport(t, client)
 
 	// Verify defaults are preserved when config values are zero
 	if transport.MaxIdleConns == 0 {
@@ -478,7 +475,7 @@ func TestHttpClientConfigPerformanceValues(t *testing.T) {
 	}
 
 	client := newHTTPClient(config, nil)
-	transport := client.Transport.(*http.Transport)
+	transport := networkTransport(t, client)
 
 	// Verify performance-optimized values
 	if transport.MaxIdleConns != 1000 {
