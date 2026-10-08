@@ -134,7 +134,7 @@ same HTTP response. Shortened here to the parts the scenarios use:
     "resources": [{
       "id": "res:pmfby:grievance",
       "resourceAttributes": {
-        "@context": "…/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
@@ -267,7 +267,7 @@ POST /support
     "support": {
       "orderId": "KA2026KH00123456",
       "channels": [{
-        "@context": "…/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
         "informationMode": "Direct",
         "provider": {
@@ -392,7 +392,7 @@ POST /status
       },
       "resources": [{ "id": "res:pmfby:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "…/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
@@ -498,7 +498,7 @@ POST /init
 
 ```json
 "commitmentAttributes": {
-  "@context": "…/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
+  "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
   "@type": "openagrinet:PMKISANGrievance",
   "informationMode": "OnDemand",
   "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
@@ -582,7 +582,7 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
     "support": {
       "orderId": "UP12345678A",
       "channels": [{
-        "@context": "…/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "Direct",
         "provider": {
@@ -744,7 +744,7 @@ POST /status
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "…/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
@@ -851,7 +851,7 @@ POST /init
 
 ```json
 "commitmentAttributes": {
-  "@context": "…/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
+  "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
   "@type": "openagrinet:PMKISANApplicationStatus",
   "informationMode": "OnDemand",
   "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
@@ -924,7 +924,7 @@ POST /status
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "…/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANApplicationStatus",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
@@ -951,7 +951,7 @@ farmer's record, which is why the other values differ too:
 
 ```json
 "commitmentAttributes": {
-  "@context": "…/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
+  "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
   "@type": "openagrinet:PMKISANApplicationStatus",
   "informationMode": "Direct",
   "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
