@@ -48,6 +48,12 @@ func BindingFrom(paths Paths, body []byte) (Binding, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return Binding{}, fmt.Errorf("payload could not be read: %w", err)
 	}
+	return bindingIn(paths, payload)
+}
+
+// bindingIn is BindingFrom over a payload already decoded, so a step trying two
+// sets of paths reads the body once.
+func bindingIn(paths Paths, payload any) (Binding, error) {
 
 	// Checked before distinctness: N commitments naming the SAME provider and
 	// type collapse to one key, so they would pass unnoticed and the mapping

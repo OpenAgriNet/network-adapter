@@ -3,6 +3,7 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,17 +24,28 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
-	binding, err := BindingFrom(s.paths, ctx.Body)
+	var payload any
+	if err := json.Unmarshal(ctx.Body, &payload); err != nil {
+		// Unclassified it becomes a 500, which blames this adapter and hides
+		// the reason from the caller.
+		return model.NewBadReqErr("", fmt.Errorf("payload could not be read: %w", err))
+	}
+	binding, err := bindingIn(s.paths, payload)
 	if errors.Is(err, errNoBinding) && s.fallback != nil {
-		binding, err = BindingFrom(*s.fallback, ctx.Body)
+		binding, err = bindingIn(*s.fallback, payload)
+		// The fallback reads a container other capabilities use too, so a
+		// payload it cannot resolve is refused only when it names this step's
+		// own work; anyone else's passes through.
+		if err != nil && !errors.Is(err, errNoBinding) && !s.namesServed(*s.fallback, payload) {
+			return nil
+		}
 	}
 	if errors.Is(err, errNoBinding) {
 		return nil
 	}
 	if err != nil {
-		// Everything BindingFrom refuses is about the payload -- unreadable
-		// JSON, or more than one call named. Unclassified it becomes a 500,
-		// which blames this adapter and hides the reason from the caller.
+		// Everything bindingIn refuses is about the payload -- more than one
+		// call named. Unclassified it becomes a 500, as above.
 		return model.NewBadReqErr("", err)
 	}
 	if !s.serves(binding.Key()) {
@@ -84,6 +96,19 @@ func (s *Step) resolve(ctx context.Context, bindingKey string, beckn any) (map[s
 // cheaper than a map and config order survives into New's startup log.
 func (s *Step) serves(key string) bool {
 	return slices.Contains(s.config.BindingKeys, key)
+}
+
+// namesServed reports whether any provider and type the paths reach pair into
+// a binding this step serves.
+func (s *Step) namesServed(paths Paths, payload any) bool {
+	for _, provider := range ValuesAt(payload, paths.ProviderID) {
+		for _, capability := range ValuesAt(payload, paths.CapabilityCode) {
+			if s.serves(Binding{ParticipantID: provider, CapabilityCode: capability}.Key()) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // serve runs the exchange this step exists for: resolve, map out, call, map back.
@@ -199,6 +224,11 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 // fault, returned as details.path. 202 is an answer with nothing in it, so it
 // is an ACK carrying the reason.
 func refusalIn(mapped []byte) error {
+	// Checked as text first: every answer passes through here, and almost
+	// none carries the field, so most are spared a second decode.
+	if !bytes.Contains(mapped, []byte(`"_error"`)) {
+		return nil
+	}
 	var document map[string]json.RawMessage
 	if json.Unmarshal(mapped, &document) != nil || document["_error"] == nil {
 		return nil
