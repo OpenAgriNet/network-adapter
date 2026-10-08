@@ -74,8 +74,10 @@ const defaultInprocTimeout = 30 * time.Second
 // network hop would give the target module:
 //   - a context with the caller's deadline and cancellation but none of its
 //     values, as a fresh server request would have, bounded by timeout;
-//   - the caller's trace context, injected as headers (traceparent) the target
-//     module extracts like any inbound request, so both spans join one trace;
+//   - the caller's trace context, injected as headers the target module
+//     extracts like any inbound request. Injection goes through the global
+//     propagator, which otelsetup registers only when tracing is enabled;
+//     without it nothing is injected and the target starts its own trace;
 //   - a recovered panic, logged with its stack and turned into an error so the
 //     proxy answers 502, as for an unreachable upstream. http.ErrAbortHandler
 //     is re-raised: it is the deliberate abort net/http expects to see.
