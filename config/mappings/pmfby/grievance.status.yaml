@@ -7,8 +7,19 @@
 # The response is an allow-list. PMFBY's record also carries the farmer's name,
 # state, district and insurer; none of it is mapped.
 
-# A missing field is refused by the request half under _error, which can name
-# SCH_REQUIRED_FIELD_MISSING and the field's path.
+# required holds format checks, which return SCH_INVALID_FORMAT and let an
+# absent field pass. A missing field is refused by the request half under
+# _error, which can name SCH_REQUIRED_FIELD_MISSING and the field's path.
+required:
+  # A ten-digit Indian mobile, as text: PMFBY files the ticket against it and
+  # matches the read on it, so a number or a mangled one is refused here.
+  - check: |
+      (
+        $phone := beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone;
+        $not($exists($phone)) or ($type($phone) = "string" ? $exists($match($phone, /^[6-9][0-9]{9}$/)[0]) : false)
+      )
+    message: "applicantPhone must be a ten-digit mobile number, as text"
+
 request: |
   (
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
@@ -34,53 +45,60 @@ request: |
 # left out. The category comes back by name alone, and the ticket number not at
 # all, so the one the caller asked with is echoed.
 response: |
-  $string(response.responseCode) != "1"
-  ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
-                  "message": "PMFBY could not read the grievance" } }
-  : $type(response.responseDynamic) != "object"
-  ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
-                  "message": "No grievance matches this ticket and phone number." } }
-  : (
-    $commitment := beckn.message.contract.commitments[0];
-    $ca := $commitment.commitmentAttributes;
-    $ticket := response.responseDynamic;
-    /* PMFBY may send null or "" for a field it has no value for; such a
-       field is dropped rather than mapped as "null" or failing the call. */
-    $isText := function($v) { $type($v) = "string" and $v != "" };
-    {
-      "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
-      "message": {
-        "contract": $merge([beckn.message.contract, {
-          "commitments": [$merge([$commitment, {
-            "status": { "descriptor": { "code": "ACTIVE" } },
-            "commitmentAttributes": {
-              "@context": $ca.`@context`,
-              "@type": $ca.`@type`,
-              "informationMode": "Direct",
-              "scheme": $ca.scheme,
-              "enrolmentId": $isText($ticket.ApplicationNo) ? $ticket.ApplicationNo,
-              "grievance": {
-                "category": $isText($ticket.TicketCategoryName) ? { "name": $ticket.TicketCategoryName },
-                "subCategory": $isText($ticket.TicketSubCategoryName) ? { "name": $ticket.TicketSubCategoryName },
-                "description": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription
-              },
-              "case": {
-                "ticketNo": $ca.case.ticketNo,
-                /* code is the network's word, name the portal's phrase. PMFBY
-                   publishes no status vocabulary, so every phrase is one the
-                   adapter does not recognise and maps to UnderReview, which is
-                   never a closed state. Recognised phrases are added here once
-                   PMFBY confirms them. */
-                "status": {
-                  "code": "UnderReview",
-                  "name": $isText($ticket.TicketStatus) ? $ticket.TicketStatus
+  (
+    /* Tested as equal to "1", not unequal: a reply with no responseCode at
+       all is a failure, and an unequal test against a missing value is false.
+       The record is read as the first of the reply's, so one ticket sent as a
+       list of one reads the same as one sent bare. */
+    $ok := $string(response.responseCode) = "1";
+    $ticket := response.responseDynamic[0];
+    $not($ok)
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PMFBY could not read the grievance" } }
+    : $type($ticket) != "object"
+    ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
+                    "message": "No grievance matches this ticket and phone number." } }
+    : (
+      $commitment := beckn.message.contract.commitments[0];
+      $ca := $commitment.commitmentAttributes;
+      /* PMFBY may send null or "" for a field it has no value for; such a
+         field is dropped rather than mapped as "null" or failing the call. */
+      $isText := function($v) { $type($v) = "string" and $v != "" };
+      {
+        "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
+        "message": {
+          "contract": $merge([beckn.message.contract, {
+            "commitments": [$merge([$commitment, {
+              "status": { "descriptor": { "code": "ACTIVE" } },
+              "commitmentAttributes": {
+                "@context": $ca.`@context`,
+                "@type": $ca.`@type`,
+                "informationMode": "Direct",
+                "scheme": $ca.scheme,
+                "enrolmentId": $isText($ticket.ApplicationNo) ? $ticket.ApplicationNo,
+                "grievance": {
+                  "category": $isText($ticket.TicketCategoryName) ? { "name": $ticket.TicketCategoryName },
+                  "subCategory": $isText($ticket.TicketSubCategoryName) ? { "name": $ticket.TicketSubCategoryName },
+                  "description": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription
                 },
-                "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
-                "cropName": $isText($ticket.CropName) ? $ticket.CropName
+                "case": {
+                  "ticketNo": $ca.case.ticketNo,
+                  /* code is the network's word, name the portal's phrase. PMFBY
+                     publishes no status vocabulary, so every phrase is one the
+                     adapter does not recognise and maps to UnderReview, which is
+                     never a closed state. Recognised phrases are added here once
+                     PMFBY confirms them. */
+                  "status": {
+                    "code": "UnderReview",
+                    "name": $isText($ticket.TicketStatus) ? $ticket.TicketStatus
+                  },
+                  "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
+                  "cropName": $isText($ticket.CropName) ? $ticket.CropName
+                }
               }
-            }
-          }])]
-        }])
+            }])]
+          }])
+        }
       }
-    }
+    )
   )

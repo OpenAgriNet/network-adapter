@@ -550,6 +550,48 @@ func TestSupport_MalformedDateOrSource_Returns400WithoutCallingPMFBY(t *testing.
 	}
 }
 
+func TestSupport_MalformedPhoneOrDescription_Returns400WithoutCallingPMFBY(t *testing.T) {
+	for name, field := range map[string]struct {
+		key   string
+		value any
+	}{
+		"phone as a number":    {"applicantPhone", 9876543210},
+		"phone too short":      {"applicantPhone", "98765"},
+		"phone not a mobile":   {"applicantPhone", "1234567890"},
+		"description a number": {"description", 123},
+		"description blank":    {"description", "   "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, &pmfbyStub{}, 0)
+			fields := supportFields()
+			fields[field.key] = field.value
+			_, err := h.send(t, support(fields))
+			assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
+			if h.pmfby.calls[insertPath] != 0 {
+				t.Errorf("PMFBY was called with %s %v", field.key, field.value)
+			}
+		})
+	}
+}
+
+// With no complaintDate, the date is the request's own, in IST, on both the
+// lodge call and filedOn: a call crossing midnight cannot report a different day.
+func TestSupport_NoComplaintDate_DatesFromTheRequestInIST(t *testing.T) {
+	h := newHarness(t, &pmfbyStub{}, 0)
+	var payload map[string]any
+	_ = json.Unmarshal(support(supportFields()), &payload)
+	payload["context"].(map[string]any)["timestamp"] = "2026-10-07T18:30:00Z" // 00:00 IST on the 8th
+	raw, _ := json.Marshal(payload)
+
+	got := h.mustSend(t, raw)
+	if sent := h.pmfby.bodies[insertPath]["complaintDate"]; sent != "2026-10-08" {
+		t.Errorf("complaintDate = %v, want the IST date of the request, 2026-10-08", sent)
+	}
+	if filed := band(got.channel(), "case")["filedOn"]; filed != "2026-10-08" {
+		t.Errorf("filedOn = %v, want the date that was sent", filed)
+	}
+}
+
 // PMFBY answers its own refusal with HTTP 200 and a responseCode other than
 // "1". That filed nothing, so it is never reported as Registered.
 func TestSupport_PortalDidNotRegister_Returns502(t *testing.T) {
@@ -628,6 +670,24 @@ func TestSupport_FallbackNotConfigured_PassesThroughUntouched(t *testing.T) {
 	}
 	if len(h.pmfby.calls) != 0 {
 		t.Errorf("PMFBY was called %v without a way to recognise the request", h.pmfby.calls)
+	}
+}
+
+// Two channels is refused only when they name this step's work: another
+// capability's support request reaches this step too and must pass through.
+func TestSupport_OtherProviderTwoChannels_PassesThrough(t *testing.T) {
+	var payload map[string]any
+	_ = json.Unmarshal(support(supportFields()), &payload)
+	body := payload["message"].(map[string]any)["support"].(map[string]any)
+	channel := body["channels"].([]any)[0].(map[string]any)
+	channel["provider"] = map[string]any{"id": "someone-else"}
+	body["channels"] = append(body["channels"].([]any), channel)
+	raw, _ := json.Marshal(payload)
+
+	h := newHarness(t, &pmfbyStub{}, 0)
+	got, err := h.send(t, raw)
+	if err != nil || got != nil {
+		t.Errorf("Run() = %v, %v; want another provider's request passed on", got, err)
 	}
 }
 
@@ -758,11 +818,40 @@ func TestStatus_NoRecordInReply_Returns202NoResultsFound(t *testing.T) {
 	}
 }
 
+// A reply without FGMS's success code is a failure, never "nothing on file" --
+// including one with no envelope at all.
 func TestStatus_PortalRefused_Returns502(t *testing.T) {
-	h := newHarness(t, &pmfbyStub{answers: map[string]string{
-		statusPath: `{"responseCode":"0","responseMessage":"Session expired"}`}}, 0)
-	_, err := h.send(t, request("status", statusAttributes()))
-	assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
+	for name, reply := range map[string]string{
+		"refused":     `{"responseCode":"0","responseMessage":"Session expired"}`,
+		"no envelope": `{"message":"An error has occurred."}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: reply}}, 0)
+			_, err := h.send(t, request("status", statusAttributes()))
+			assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
+		})
+	}
+}
+
+// One ticket sent as a list of one reads the same as one sent bare.
+func TestStatus_RecordInAList_ReadAsTheRecord(t *testing.T) {
+	record := strings.Replace(strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":[{`, 1), `}}`, `}]}`, 1)
+	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+		mustSend(t, request("status", statusAttributes()))
+	if crop := band(got.attributes(), "case")["cropName"]; crop != "Paddy" {
+		t.Errorf("case = %v, want the record read from the list", band(got.attributes(), "case"))
+	}
+}
+
+func TestStatus_MalformedPhone_Returns400WithoutCallingPMFBY(t *testing.T) {
+	h := newHarness(t, &pmfbyStub{}, 0)
+	attributes := statusAttributes()
+	attributes["applicantPhone"] = 9876543210
+	_, err := h.send(t, request("status", attributes))
+	assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
+	if h.pmfby.calls[statusPath] != 0 {
+		t.Error("PMFBY was called with a phone number that is not text")
+	}
 }
 
 func TestStatus_MissingField_Returns400WithoutCallingPMFBY(t *testing.T) {
