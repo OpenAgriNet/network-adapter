@@ -12,6 +12,22 @@
 # absent field pass. A missing field is refused by the request half under
 # _error, which can name SCH_REQUIRED_FIELD_MISSING and the field's path.
 required:
+  # A ten-digit Indian mobile, as text: PMFBY files the ticket against it and
+  # matches the read on it, so a number or a mangled one is refused here.
+  - check: |
+      (
+        $phone := beckn.message.support.channels[0].applicantPhone;
+        $not($exists($phone)) or ($type($phone) = "string" ? $exists($match($phone, /^[6-9][0-9]{9}$/)[0]) : false)
+      )
+    message: "applicantPhone must be a ten-digit mobile number, as text"
+  # Text with something in it: a blank complaint would be filed and reported
+  # as Registered.
+  - check: |
+      (
+        $d := beckn.message.support.channels[0].grievance.description;
+        $not($exists($d)) or ($type($d) = "string" ? $exists($match($d, /\S/)[0]) : false)
+      )
+    message: "grievance.description must be text that is not blank"
   # PMFBY reads a non-numeric id as 0 and files the ticket under the wrong head
   # while reporting success, so the codes are checked before they are sent.
   - check: |
@@ -52,6 +68,11 @@ request: |
       { "field": "grievance.description", "path": $at & "grievance.description", "present": $exists($g.description) }
     ][$not(present)][0];
     $seasons := { "Kharif": "1", "Rabi": "2", "Zaid": "3" };
+    /* Today in IST, from the request's own timestamp so the response half
+       arrives at the same date. */
+    $today := $exists(beckn.context.timestamp)
+      ? $fromMillis($toMillis(beckn.context.timestamp), "[Y0001]-[M01]-[D01]", "+0530")
+      : $now("[Y0001]-[M01]-[D01]", "+0530");
     /* The adapter's channel id with PMFBY, used unless the caller has its own. */
     $receiptSourceID := "134306";
     $missing
@@ -65,7 +86,7 @@ request: |
       "ticketCategoryID": $string($g.category.code),
       "ticketSubCategoryID": $string($g.subCategory.code),
       "grievenceDescription": $trim($g.description),
-      "complaintDate": $exists($ch.complaintDate) ? $ch.complaintDate : $now("[Y0001]-[M01]-[D01]", "+0530"),
+      "complaintDate": $exists($ch.complaintDate) ? $ch.complaintDate : $today,
       "receiptSourceID": $exists($ch.receiptSourceId) ? $string($ch.receiptSourceId) : $receiptSourceID
     }
   )
@@ -81,6 +102,10 @@ response: |
     $s := beckn.message.support;
     $ch := $s.channels[0];
     $ticketNo := response.responseDynamic.GrievenceSupportTicketNo;
+    /* The same date the request half sent as complaintDate. */
+    $today := $exists(beckn.context.timestamp)
+      ? $fromMillis($toMillis(beckn.context.timestamp), "[Y0001]-[M01]-[D01]", "+0530")
+      : $now("[Y0001]-[M01]-[D01]", "+0530");
     /* PMFBY says success with responseCode "1", seen as a string and as a
        number. Anything else, or a success with no ticket, filed nothing. */
     $registered := $string(response.responseCode) = "1"
@@ -103,7 +128,7 @@ response: |
             "case": {
               "ticketNo": $string($ticketNo),
               "status": { "code": "Registered" },
-              "filedOn": $exists($ch.complaintDate) ? $ch.complaintDate : $now("[Y0001]-[M01]-[D01]", "+0530")
+              "filedOn": $exists($ch.complaintDate) ? $ch.complaintDate : $today
             }
           }]
         }
