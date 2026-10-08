@@ -197,6 +197,8 @@ func newServer(ctx context.Context, mgr handler.PluginManager, cfg *Config) (htt
 	if err := module.Register(ctx, cfg.Modules, mux, mgr); err != nil {
 		return nil, fmt.Errorf("failed to register modules: %w", err)
 	}
+	// inproc:// routes are served by this mux, so it has to be complete first.
+	handler.SetInprocHandler(mux)
 	return mux, nil
 }
 
