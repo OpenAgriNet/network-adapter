@@ -507,7 +507,7 @@ modules:
 
           # ------------------------------------------------------------------
           # Grievance -- filing a grievance against a scheme and checking it:
-          # init sends an OTP, support files the grievance, status reads it back.
+          # support files the grievance, status reads it back.
           # ------------------------------------------------------------------
           - id: Grievance
             config:
@@ -528,7 +528,8 @@ modules:
               # PMFBY issues its own token from its login endpoint
               # (.../krphapi/FGMS/NICUsersLogin) and reads it back as the bare
               # Authorization header, no "Bearer" -- tokenQuery's exchange,
-              # header's placement. tokenUrl is a per-deployment placeholder.
+              # header's placement. The login reply nests the token in its
+              # envelope. tokenUrl is a per-deployment placeholder.
               pmfby:
                 authScheme: tokenHeader
                 tokenUrl: <>
@@ -536,7 +537,7 @@ modules:
                 tokenUserEnv: PMFBY_ACCESS_UID
                 tokenSecretField: appAccessPWD
                 tokenSecretEnv: PMFBY_ACCESS_PWD
-                tokenResponseField: token
+                tokenResponseField: responseDynamic.token.Token
                 tokenTtl: 10m
                 headerName: Authorization
 

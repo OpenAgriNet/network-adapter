@@ -1,85 +1,94 @@
-# PMFBY, openagrinet:PMFBYGrievance, support -> POST /AddKRPHNCIPGrievenceSupportTicket.
+# PMFBY, openagrinet:PMFBYGrievance, support -> POST /krphapi/FGMS/AddKRPHNCIPGrievenceSupportTicket.
 # Both directions, one file.
 #
-# Step two of three: lodge the grievance. A support request composes no
-# contract: message.support carries the application number in orderId, and
-# channels[0] carries the provider, the farmer, the complaint (grievance) and
-# the OTP (challenge). The OTP init sent travels on the lodge call until PMFBY's
-# verify endpoint is wired in; it is never echoed back.
+# Step one of two: lodge the grievance. PMFBY's grievance service asks for no
+# OTP, so this is the first call. A support request composes no contract:
+# message.support carries the application number in orderId, and channels[0]
+# carries the provider, the enrolment and the complaint (grievance).
 #
 # "Grievence" is PMFBY's spelling, kept where PMFBY reads it.
 
 # required holds format checks, which return SCH_INVALID_FORMAT and let an
 # absent field pass. A missing field is refused by the request half under
-# _error, which can name SCH_REQUIRED_FIELD_MISSING.
+# _error, which can name SCH_REQUIRED_FIELD_MISSING and the field's path.
 required:
-  # PMFBY takes both codes as numbers, so anything else is refused here rather
-  # than failing the conversion.
+  # PMFBY reads a non-numeric id as 0 and files the ticket under the wrong head
+  # while reporting success, so the codes are checked before they are sent.
   - check: |
       (
-        $g := beckn.message.support.channels[0].grievance;
-        $digits := function($code) { $not($exists($code)) or $exists($match($code, /^[0-9]+$/)[0]) };
-        $digits($g.category.code) and $digits($g.subCategory.code)
+        $ch := beckn.message.support.channels[0];
+        $digits := function($v) { $not($exists($v)) or $exists($match($string($v), /^[0-9]+$/)[0]) };
+        $digits($ch.grievance.category.code) and $digits($ch.grievance.subCategory.code)
+          and $digits($ch.receiptSourceId)
       )
-    message: "grievance.category.code and grievance.subCategory.code must be digits, e.g. 3 and 10"
+    message: "grievance.category.code, grievance.subCategory.code and receiptSourceId must be digits"
   - check: |
       (
         $season := beckn.message.support.channels[0].season;
         $not($exists($season)) or $season in ["Kharif", "Rabi", "Zaid"]
       )
     message: "season must be Kharif, Rabi or Zaid"
+  - check: |
+      (
+        $date := beckn.message.support.channels[0].complaintDate;
+        $not($exists($date)) or $exists($match($string($date), /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)[0])
+      )
+    message: "complaintDate must be YYYY-MM-DD"
 
 request: |
   (
     $s := beckn.message.support;
     $ch := $s.channels[0];
     $g := $ch.grievance;
-    $seasons := { "Kharif": 1, "Rabi": 2, "Zaid": 3 };
-    /* PMFBY's fixed id for this channel as the source of the grievance. */
-    $receiptSourceID := 134306;
-    $complete := $exists($s.orderId) and $exists($ch.applicantPhone) and $exists($ch.challenge.value)
-      and $exists($ch.cropYear) and $exists($ch.season)
-      and $exists($g.category.code) and $exists($g.subCategory.code) and $exists($g.description);
-    $not($complete)
+    $at := "$.message.support.channels[0].";
+    /* The first required field the request lacks, with its path. */
+    $missing := [
+      { "field": "orderId", "path": "$.message.support.orderId", "present": $exists($s.orderId) },
+      { "field": "applicantPhone", "path": $at & "applicantPhone", "present": $exists($ch.applicantPhone) },
+      { "field": "cropYear", "path": $at & "cropYear", "present": $exists($ch.cropYear) },
+      { "field": "season", "path": $at & "season", "present": $exists($ch.season) },
+      { "field": "grievance.category.code", "path": $at & "grievance.category.code", "present": $exists($g.category.code) },
+      { "field": "grievance.subCategory.code", "path": $at & "grievance.subCategory.code", "present": $exists($g.subCategory.code) },
+      { "field": "grievance.description", "path": $at & "grievance.description", "present": $exists($g.description) }
+    ][$not(present)][0];
+    $seasons := { "Kharif": "1", "Rabi": "2", "Zaid": "3" };
+    /* The adapter's channel id with PMFBY, used unless the caller has its own. */
+    $receiptSourceID := "134306";
+    $missing
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "lodging a grievance needs orderId and, on channels[0], applicantPhone, challenge.value, cropYear, season, grievance.category.code, grievance.subCategory.code and grievance.description" } }
+                    "message": $missing.field & " is required", "path": $missing.path } }
     : {
       "requestorMobileNo": $ch.applicantPhone,
-      "otp": $ch.challenge.value,
-      "complaintDate": $now("[Y0001]-[M01]-[D01]", "+0530"),
-      "receiptSourceID": $receiptSourceID,
-      "ticketCategoryID": $number($g.category.code),
-      "ticketSubCategoryID": $number($g.subCategory.code),
+      "applicationNo": $s.orderId,
       "requestYear": $string($ch.cropYear),
       "requestSeason": $lookup($seasons, $ch.season),
-      "applicationNo": $s.orderId,
-      "grievenceDescription": $trim($g.description)
+      "ticketCategoryID": $string($g.category.code),
+      "ticketSubCategoryID": $string($g.subCategory.code),
+      "grievenceDescription": $trim($g.description),
+      "complaintDate": $exists($ch.complaintDate) ? $ch.complaintDate : $now("[Y0001]-[M01]-[D01]", "+0530"),
+      "receiptSourceID": $exists($ch.receiptSourceId) ? $string($ch.receiptSourceId) : $receiptSourceID
     }
   )
 
-# A 4xx from PMFBY reaches this half with its status under _status.
-#
 # orderId and the grievance are the caller's own, echoed, and the ticket goes in
 # the channel's case. Its status, filedOn and provider are not in PMFBY's
 # reply: a freshly lodged grievance is registered, with no portal phrase to
-# quote as its name, filedOn restates the IST date just sent, and provider is
+# quote as its name, filedOn is the complaintDate just sent, and provider is
 # the one the request was routed by. PMFBY's ticket id is its own row id and is
 # not mapped.
 response: |
-  $exists(_status)
-  ? (
-      /* PMFBY refused the lodge call with a 4xx. A 400 is a wrong or expired
-         OTP: the farmer's to fix, so a 400 back. Any other status is left to
-         the adapter's 502. */
-      _status = 400
-        ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": "the OTP is wrong or has expired" } }
-        : {}
-    )
-  : (
+  (
     $s := beckn.message.support;
     $ch := $s.channels[0];
     $ticketNo := response.responseDynamic.GrievenceSupportTicketNo;
-    {
+    /* PMFBY says success with responseCode "1", seen as a string and as a
+       number. Anything else, or a success with no ticket, filed nothing. */
+    $registered := $string(response.responseCode) = "1"
+      and ($type($ticketNo) = "string" or $type($ticketNo) = "number");
+    $not($registered)
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PMFBY did not register the grievance" } }
+    : {
       "context": $merge([beckn.context, { "action": "on_support", "timestamp": $now() }]),
       "message": {
         "support": {
@@ -92,9 +101,9 @@ response: |
             "scheme": $ch.scheme,
             "grievance": $ch.grievance,
             "case": {
-              "ticketNo": $type($ticketNo) = "number" or $type($ticketNo) = "string" ? $string($ticketNo),
+              "ticketNo": $string($ticketNo),
               "status": { "code": "Registered" },
-              "filedOn": $now("[Y0001]-[M01]-[D01]", "+0530")
+              "filedOn": $exists($ch.complaintDate) ? $ch.complaintDate : $now("[Y0001]-[M01]-[D01]", "+0530")
             }
           }]
         }

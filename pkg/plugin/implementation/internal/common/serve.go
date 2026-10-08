@@ -131,7 +131,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	upstreamResponse, err := s.call(ctx, auth, plan.BaseURL, call, upstreamRequest)
 	if err != nil {
-		return s.explainRefusal(ctx, plan.BindingKey, call, beckn, local, err)
+		return err
 	}
 
 	answer, err := decodeBody(upstreamResponse)
@@ -169,36 +169,6 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	return nil
 }
 
-// explainRefusal lets the response half say what a provider's 4xx means.
-//
-// The half is run with the status under _status and the body under response.
-// Only an _error it returns is used. A mapping that does not recognise the
-// status, or cannot read the body, leaves the original 502 standing, so
-// capabilities whose mappings ignore _status behave as before.
-func (s *Step) explainRefusal(ctx context.Context, bindingKey string, call model.ActionPlan,
-	beckn any, local map[string]any, err error) error {
-	var refused *providerRefusal
-	if !errors.As(err, &refused) {
-		return err
-	}
-	// Not JSON is read as nothing: the status alone may be enough.
-	answer, _ := decodeBody(refused.body)
-	mapped, mapErr := s.mapper.Transform(ctx, call.Mappings, definition.DirectionResponse, map[string]any{
-		"beckn":    beckn,
-		"_local":   local,
-		"response": answer,
-		"_status":  refused.status,
-	})
-	if mapErr != nil {
-		return err
-	}
-	if explained := refusalIn(mapped); explained != nil {
-		log.Warnf(ctx, "%s refused the request: %v", bindingKey, explained)
-		return explained
-	}
-	return err
-}
-
 // buildRequest produces what the provider is sent.
 //
 // Whatever the mapping produces IS the request: a body for a method that takes
@@ -224,8 +194,9 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 }
 
 // refusalIn returns the error a mapping half asks for under the reserved
-// _error field -- {status, code, message}, status absent meaning 400 -- or nil
-// when the document carries none. 202 is an answer with nothing in it, so it
+// _error field -- {status, code, message, path}, status absent meaning 400 --
+// or nil when the document carries none. path is the JSONPath of the field at
+// fault, returned as details.path. 202 is an answer with nothing in it, so it
 // is an ACK carrying the reason.
 func refusalIn(mapped []byte) error {
 	var document map[string]json.RawMessage
@@ -236,13 +207,15 @@ func refusalIn(mapped []byte) error {
 		Status  int    `json:"status"`
 		Code    string `json:"code"`
 		Message string `json:"message"`
+		Path    string `json:"path"`
 	}
 	if json.Unmarshal(document["_error"], &r) != nil || r.Message == "" {
 		return errors.New("a mapping refused the call with an unreadable _error; it needs status, code and message")
 	}
 	switch r.Status {
 	case 0, http.StatusBadRequest:
-		return model.NewBadReqErr(r.Code, errors.New(r.Message))
+		// The one 400 that carries a path on the wire: CodedErr drops details.
+		return &model.SchemaValidationErr{Errors: []model.Error{*model.NewCodedErrorWithCause(r.Code, r.Message, r.Path, nil)}}
 	case http.StatusAccepted:
 		return model.NewAckNoCallbackErr(model.StatusACK, &model.Error{Code: r.Code, Message: r.Message})
 	default:
