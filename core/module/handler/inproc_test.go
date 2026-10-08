@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,9 @@ import (
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // fakeRoundTripper records whether it was called, standing in for the network.
@@ -339,5 +343,134 @@ func TestProxy_InprocRoute(t *testing.T) {
 	}
 	if rec.Body.String() != `{"answer":42}` || string(respBody) != `{"answer":42}` {
 		t.Fatalf("caller got %q, captured %q", rec.Body.String(), respBody)
+	}
+}
+
+func TestInproc_TimeoutBoundsHungModule(t *testing.T) {
+	withInprocHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // a module that only returns when cancelled
+		w.WriteHeader(http.StatusGatewayTimeout)
+	}))
+	tr := &inprocTransport{next: &fakeRoundTripper{}, timeout: 50 * time.Millisecond}
+
+	start := time.Now()
+	if _, err := tr.RoundTrip(newInprocRequest(t, context.Background(), "inproc://provider/select")); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("hung module blocked the caller for %v", d)
+	}
+}
+
+func TestInproc_DefaultTimeoutApplied(t *testing.T) {
+	var deadline time.Time
+	var ok bool
+	withInprocHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deadline, ok = r.Context().Deadline()
+	}))
+	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, context.Background(), "inproc://provider/select")); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if !ok || time.Until(deadline) > defaultInprocTimeout {
+		t.Fatalf("deadline set=%v in=%v, want within %v", ok, time.Until(deadline), defaultInprocTimeout)
+	}
+}
+
+func TestNewHTTPClient_InprocTimeoutFromConfig(t *testing.T) {
+	client := newHTTPClient(&HttpClientConfig{ResponseHeaderTimeout: 7 * time.Second}, nil)
+	ip, ok := client.Transport.(*inprocTransport)
+	if !ok || ip.timeout != 7*time.Second {
+		t.Fatalf("inproc timeout = %v, want 7s", ip)
+	}
+}
+
+func TestInproc_TraceContextInjected(t *testing.T) {
+	prev := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTextMapPropagator(prev) })
+
+	var got string
+	withInprocHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("traceparent")
+	}))
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1},
+		SpanID:     trace.SpanID{2},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, ctx, "inproc://provider/select")); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if !strings.Contains(got, sc.TraceID().String()) {
+		t.Fatalf("traceparent = %q, want trace id %s", got, sc.TraceID())
+	}
+}
+
+func TestInproc_AbortHandlerRepanics(t *testing.T) {
+	withInprocHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic(http.ErrAbortHandler) }))
+	defer func() {
+		if p := recover(); p != http.ErrAbortHandler {
+			t.Fatalf("recovered %v, want http.ErrAbortHandler re-raised", p)
+		}
+	}()
+	_, _ = (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, context.Background(), "inproc://provider/select"))
+	t.Fatal("RoundTrip returned; want panic")
+}
+
+type closeTracker struct {
+	io.Reader
+	closed bool
+}
+
+func (c *closeTracker) Close() error { c.closed = true; return nil }
+
+func TestInproc_RequestBodyClosed(t *testing.T) {
+	for name, handler := range map[string]http.Handler{
+		"served":     http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		"no handler": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			withInprocHandler(t, handler)
+			body := &closeTracker{Reader: strings.NewReader("{}")}
+			req := newInprocRequest(t, context.Background(), "inproc://provider/select")
+			req.Body = body
+			_, _ = (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(req)
+			if !body.closed {
+				t.Fatal("request body not closed")
+			}
+		})
+	}
+}
+
+// excludeAction with a bare inproc://provider target has no path; it must reach
+// the module, not ServeMux's redirect from /provider to /provider/.
+func TestInproc_BareTargetReachesModuleRoot(t *testing.T) {
+	var gotURI string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/provider/", func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.URL.RequestURI()
+		w.WriteHeader(http.StatusOK)
+	})
+	withInprocHandler(t, mux)
+
+	resp, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, context.Background(), "inproc://provider"))
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || gotURI != "/provider/" {
+		t.Fatalf("status=%d uri=%q, want 200 /provider/", resp.StatusCode, gotURI)
+	}
+}
+
+func TestInproc_RemoteAddrIsHostPort(t *testing.T) {
+	var got string
+	withInprocHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = r.RemoteAddr }))
+	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, context.Background(), "inproc://provider/select")); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if _, _, err := net.SplitHostPort(got); err != nil {
+		t.Fatalf("RemoteAddr %q is not host:port: %v", got, err)
 	}
 }

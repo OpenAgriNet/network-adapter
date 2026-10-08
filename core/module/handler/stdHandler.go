@@ -93,7 +93,7 @@ func newHTTPClient(cfg *HttpClientConfig, wrapper definition.TransportWrapper) *
 	// inproc:// routes are served by this process's own mux (see inproc.go);
 	// every other route goes out over the network as before. The wrapper goes
 	// outside it, so a tracing wrapper still records the in-process hop.
-	var finalTransport http.RoundTripper = &inprocTransport{next: transport}
+	var finalTransport http.RoundTripper = &inprocTransport{next: transport, timeout: cfg.ResponseHeaderTimeout}
 	if wrapper != nil {
 		log.Debugf(context.Background(), "Applying custom transport wrapper")
 		finalTransport = wrapper.Wrap(finalTransport)

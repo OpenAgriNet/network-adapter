@@ -2,10 +2,17 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"sync/atomic"
+	"time"
+
+	"github.com/beckn-one/beckn-onix/pkg/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // InprocScheme is the URL scheme for a hop to another module of this same
@@ -49,20 +56,36 @@ func SetInprocHandler(h http.Handler) { inprocHandler.Store(&h) }
 // hands every other request to next unchanged.
 type inprocTransport struct {
 	next http.RoundTripper
+	// timeout bounds one in-process call, standing in for the network
+	// transport's ResponseHeaderTimeout (the response is buffered, so the
+	// first header and the whole answer arrive together). Zero means
+	// defaultInprocTimeout, so a hung module never blocks its caller forever.
+	timeout time.Duration
 }
+
+// defaultInprocTimeout bounds an in-process call when the module sets no
+// httpClientConfig.responseHeaderTimeout. An inbound request has no deadline of
+// its own, so without this a hung target would block the caller indefinitely.
+const defaultInprocTimeout = 30 * time.Second
 
 // RoundTrip implements http.RoundTripper.
 //
 // The inner call does not pass through http.Server, so it reproduces what a
 // network hop would give the target module:
 //   - a context with the caller's deadline and cancellation but none of its
-//     values, as a fresh server request would have (trace context still
-//     travels in the headers the transport wrapper injected);
-//   - a recovered panic, turned into an error so the proxy answers 502, as for
-//     an unreachable upstream.
+//     values, as a fresh server request would have, bounded by timeout;
+//   - the caller's trace context, injected as headers (traceparent) the target
+//     module extracts like any inbound request, so both spans join one trace;
+//   - a recovered panic, logged with its stack and turned into an error so the
+//     proxy answers 502, as for an unreachable upstream. http.ErrAbortHandler
+//     is re-raised: it is the deliberate abort net/http expects to see.
 func (t *inprocTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req.URL.Scheme != InprocScheme {
 		return t.next.RoundTrip(req)
+	}
+	// The RoundTripper contract: the request body is closed, even on error.
+	if req.Body != nil {
+		defer req.Body.Close()
 	}
 	hp := inprocHandler.Load()
 	if hp == nil {
@@ -76,22 +99,41 @@ func (t *inprocTransport) RoundTrip(req *http.Request) (resp *http.Response, err
 
 	ctx, cancel := detachedContext(req.Context())
 	defer cancel()
+	timeout := t.timeout
+	if timeout <= 0 {
+		timeout = defaultInprocTimeout
+	}
+	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
+	defer cancelTimeout()
 	ctx = context.WithValue(ctx, inprocDepthKey{}, depth+1)
 
 	// inproc://provider/select -> /provider/select, the path the target
-	// module is mounted under. Clone so the caller's request is left as is.
+	// module is mounted under. A target with no path (inproc://provider with
+	// excludeAction) becomes the module's root, /provider/, rather than
+	// /provider, which ServeMux would answer with a redirect. Clone so the
+	// caller's request is left as is.
 	in := req.Clone(ctx)
+	path := req.URL.Path
+	if path == "" {
+		path = "/"
+	}
 	in.URL.Scheme = ""
 	in.URL.Host = ""
-	in.URL.Path = "/" + req.URL.Host + req.URL.Path
+	in.URL.Path = "/" + req.URL.Host + path
 	in.URL.RawPath = ""
 	in.RequestURI = in.URL.RequestURI()
 	in.Host = req.URL.Host
-	in.RemoteAddr = "inproc"
+	in.RemoteAddr = "inproc:0"
+	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(in.Header))
 
 	defer func() {
 		if p := recover(); p != nil {
-			resp, err = nil, fmt.Errorf("inproc: handler for %s panicked: %v", req.URL, p)
+			if pErr, ok := p.(error); ok && errors.Is(pErr, http.ErrAbortHandler) {
+				panic(p)
+			}
+			err = fmt.Errorf("inproc: handler for %s panicked: %v", req.URL, p)
+			log.Errorf(req.Context(), err, "inproc: recovered panic\n%s", debug.Stack())
+			resp = nil
 		}
 	}()
 
