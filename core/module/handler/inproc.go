@@ -1,10 +1,10 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"sync/atomic"
 )
 
@@ -17,16 +17,24 @@ import (
 // inproc://provider + "select" arrives here as host "provider", path "/select",
 // and is served as /provider/select. The module strips its own base path from
 // there, exactly as it does for a request from the network.
+//
+// Only routing config may name an inproc:// target. The router refuses it in a
+// request-supplied URI (bppUri/bapUri), so a caller cannot use it to reach a
+// module directly.
 const InprocScheme = "inproc"
 
-// inprocDepthHeader counts in-process hops on one request chain, so a routing
-// loop (a module routing to itself, or two modules routing to each other)
-// fails fast instead of recursing until the stack runs out.
-const inprocDepthHeader = "X-Inproc-Depth"
-
-// maxInprocDepth is the most in-process hops one request may take. The longest
-// chain today is one hop (provider publish -> network publish).
+// maxInprocDepth is the most in-process hops one request chain may take. The
+// longest chain today is one hop (provider publish -> network publish).
 const maxInprocDepth = 5
+
+// inprocDepthKey carries the hop count in the request context. It lives in the
+// context rather than a header so a caller cannot set or reset it.
+type inprocDepthKey struct{}
+
+func inprocDepth(ctx context.Context) int {
+	d, _ := ctx.Value(inprocDepthKey{}).(int)
+	return d
+}
 
 // inprocHandler is the target of inproc:// routes: the ServeMux every module is
 // mounted on. It is set once after registration (SetInprocHandler), because
@@ -45,11 +53,13 @@ type inprocTransport struct {
 
 // RoundTrip implements http.RoundTripper.
 //
-// The inner call does not pass through http.Server, so two things the server
-// would normally give are done here: a panic in the target module is recovered
-// into an error (the proxy answers 502, as for an unreachable upstream), and
-// the request's context is the only deadline -- the same deadline a proxied
-// network call is bound by.
+// The inner call does not pass through http.Server, so it reproduces what a
+// network hop would give the target module:
+//   - a context with the caller's deadline and cancellation but none of its
+//     values, as a fresh server request would have (trace context still
+//     travels in the headers the transport wrapper injected);
+//   - a recovered panic, turned into an error so the proxy answers 502, as for
+//     an unreachable upstream.
 func (t *inprocTransport) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req.URL.Scheme != InprocScheme {
 		return t.next.RoundTrip(req)
@@ -59,14 +69,18 @@ func (t *inprocTransport) RoundTrip(req *http.Request) (resp *http.Response, err
 		return nil, fmt.Errorf("inproc: no in-process handler registered for %s", req.URL)
 	}
 
-	depth, _ := strconv.Atoi(req.Header.Get(inprocDepthHeader))
+	depth := inprocDepth(req.Context())
 	if depth >= maxInprocDepth {
 		return nil, fmt.Errorf("inproc: more than %d in-process hops for %s, is there a routing loop?", maxInprocDepth, req.URL)
 	}
 
+	ctx, cancel := detachedContext(req.Context())
+	defer cancel()
+	ctx = context.WithValue(ctx, inprocDepthKey{}, depth+1)
+
 	// inproc://provider/select -> /provider/select, the path the target
 	// module is mounted under. Clone so the caller's request is left as is.
-	in := req.Clone(req.Context())
+	in := req.Clone(ctx)
 	in.URL.Scheme = ""
 	in.URL.Host = ""
 	in.URL.Path = "/" + req.URL.Host + req.URL.Path
@@ -74,7 +88,6 @@ func (t *inprocTransport) RoundTrip(req *http.Request) (resp *http.Response, err
 	in.RequestURI = in.URL.RequestURI()
 	in.Host = req.URL.Host
 	in.RemoteAddr = "inproc"
-	in.Header.Set(inprocDepthHeader, strconv.Itoa(depth+1))
 
 	defer func() {
 		if p := recover(); p != nil {
@@ -90,4 +103,18 @@ func (t *inprocTransport) RoundTrip(req *http.Request) (resp *http.Response, err
 	resp = rec.Result()
 	resp.Request = req
 	return resp, nil
+}
+
+// detachedContext returns a context that is cancelled when parent is (and
+// shares its deadline) but carries none of parent's values.
+func detachedContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if dl, ok := parent.Deadline(); ok {
+		var cancelDL context.CancelFunc
+		ctx, cancelDL = context.WithDeadline(ctx, dl)
+		prev := cancel
+		cancel = func() { cancelDL(); prev() }
+	}
+	stop := context.AfterFunc(parent, cancel)
+	return ctx, func() { stop(); cancel() }
 }
