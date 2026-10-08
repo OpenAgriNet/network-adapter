@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 )
@@ -140,36 +141,95 @@ func TestInproc_ContextReachesHandler(t *testing.T) {
 	}
 }
 
-func TestInproc_DepthHeaderIncrements(t *testing.T) {
-	var got string
+func TestInproc_DepthIncrementsInContext(t *testing.T) {
+	var got int
 	withInprocHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.Header.Get(inprocDepthHeader)
+		got = inprocDepth(r.Context())
 	}))
-	req := newInprocRequest(t, context.Background(), "inproc://provider/select")
-	req.Header.Set(inprocDepthHeader, "2")
+	ctx := context.WithValue(context.Background(), inprocDepthKey{}, 2)
 
-	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(req); err != nil {
+	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, ctx, "inproc://provider/select")); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
-	if got != "3" {
-		t.Fatalf("inner depth = %q, want 3", got)
-	}
-	if req.Header.Get(inprocDepthHeader) != "2" {
-		t.Error("caller's request header must not be modified")
+	if got != 3 {
+		t.Fatalf("inner depth = %d, want 3", got)
 	}
 }
 
 func TestInproc_DepthGuard(t *testing.T) {
 	served := false
 	withInprocHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { served = true }))
-	req := newInprocRequest(t, context.Background(), "inproc://provider/select")
-	req.Header.Set(inprocDepthHeader, "5")
+	ctx := context.WithValue(context.Background(), inprocDepthKey{}, maxInprocDepth)
 
-	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(req); err == nil {
+	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, ctx, "inproc://provider/select")); err == nil {
 		t.Fatal("want error at max depth")
 	}
 	if served {
 		t.Error("handler must not run past max depth")
+	}
+}
+
+// A caller must not be able to influence the hop count: a header with a
+// negative or huge value is ignored.
+func TestInproc_DepthHeaderIgnored(t *testing.T) {
+	var got int
+	withInprocHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = inprocDepth(r.Context())
+	}))
+	req := newInprocRequest(t, context.Background(), "inproc://provider/select")
+	req.Header.Set("X-Inproc-Depth", "-1000")
+
+	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("inner depth = %d, want 1", got)
+	}
+}
+
+// A self-routing module stops at the guard instead of recursing.
+func TestInproc_LoopStops(t *testing.T) {
+	calls := 0
+	tr := &inprocTransport{next: &fakeRoundTripper{}}
+	var h http.HandlerFunc
+	h = func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if _, err := tr.RoundTrip(newInprocRequest(t, r.Context(), "inproc://loop/x")); err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+		}
+	}
+	withInprocHandler(t, h)
+
+	if _, err := tr.RoundTrip(newInprocRequest(t, context.Background(), "inproc://loop/x")); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if calls != maxInprocDepth {
+		t.Fatalf("handler ran %d times, want %d", calls, maxInprocDepth)
+	}
+}
+
+type leakKey struct{}
+
+// The target module gets the caller's deadline but none of its context values,
+// as a fresh request from the network would.
+func TestInproc_ContextValuesNotLeaked(t *testing.T) {
+	var leaked any
+	var hasDeadline bool
+	withInprocHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = r.Context().Value(leakKey{})
+		_, hasDeadline = r.Context().Deadline()
+	}))
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), leakKey{}, "secret"), time.Minute)
+	defer cancel()
+
+	if _, err := (&inprocTransport{next: &fakeRoundTripper{}}).RoundTrip(newInprocRequest(t, ctx, "inproc://provider/select")); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if leaked != nil {
+		t.Errorf("caller context value leaked: %v", leaked)
+	}
+	if !hasDeadline {
+		t.Error("caller deadline must reach the target module")
 	}
 }
 

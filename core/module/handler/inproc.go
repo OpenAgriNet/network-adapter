@@ -116,5 +116,10 @@ func detachedContext(parent context.Context) (context.Context, context.CancelFun
 		cancel = func() { cancelDL(); prev() }
 	}
 	stop := context.AfterFunc(parent, cancel)
+	// AfterFunc runs cancel on its own goroutine when parent is already done;
+	// cancel here too so the target never starts with a live context.
+	if parent.Err() != nil {
+		cancel()
+	}
 	return ctx, func() { stop(); cancel() }
 }

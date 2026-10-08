@@ -578,6 +578,22 @@ func TestRouteFailure(t *testing.T) {
 			wantCode:       "SCH_INVALID_FORMAT",
 		},
 		{
+			name:           "inproc bpp_uri in request is refused",
+			configFile:     "bap_caller.yaml",
+			endpointAction: "select",
+			body:           `{"context": {"domain": "ONDC:TRV10", "version": "1.1.0", "bpp_uri": "inproc://network"}}`,
+			wantErr:        "invalid BPP URI - inproc://network in request body for select: scheme must be http or https",
+			wantCode:       "SCH_INVALID_FORMAT",
+		},
+		{
+			name:           "non-http bap_uri in request is refused",
+			configFile:     "bpp_caller.yaml",
+			endpointAction: "on_search",
+			body:           `{"context": {"domain": "ONDC:TRV10", "version": "1.1.0", "bap_uri": "file:///etc/passwd"}}`,
+			wantErr:        "scheme must be http or https",
+			wantCode:       "SCH_INVALID_FORMAT",
+		},
+		{
 			name:           "Malformed JSON body",
 			configFile:     "bap_caller.yaml",
 			endpointAction: "select",
