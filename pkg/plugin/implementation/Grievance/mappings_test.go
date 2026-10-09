@@ -153,14 +153,10 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 	}}
 
 	cfg := &Grievance.Config{
-		BindingKeys:      []string{shippedBindingKey},
-		ProviderIDAt:     "message.contract.commitments[].offer.provider.id",
-		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type",
+		BindingKeys: []string{shippedBindingKey},
 		// A support request composes no contract; its channel names both.
-		PathsByAction: map[string]common.Paths{"support": {
-			ProviderID:     "message.support.channels[].provider.id",
-			CapabilityCode: "message.support.channels[].@type",
-		}},
+		ProviderIDAt:     "message.contract.commitments[].offer.provider.id, message.support.channels[].provider.id",
+		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type, message.support.channels[].@type",
 		AuthByProvider: map[string]*common.AuthProfile{"pmfby": {
 			Scheme: util.AuthSchemeTokenHeader, TokenURL: upstream.URL + loginPath,
 			TokenUserField: "appAccessUID", TokenUserEnv: "PMFBY_USER",
@@ -657,11 +653,12 @@ func TestSupport_SecondChannel_Returns400WithoutCallingPMFBY(t *testing.T) {
 	}
 }
 
-// The support paths are what make a support request reachable at all: without
+// The channel paths are what make a support request reachable at all: without
 // them it composes no contract the plugin can read a binding from.
-func TestSupport_SupportPathsNotConfigured_PassesThroughUntouched(t *testing.T) {
+func TestSupport_ChannelPathsNotConfigured_PassesThroughUntouched(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0, func(c *Grievance.Config) {
-		c.PathsByAction = nil
+		c.ProviderIDAt = "message.contract.commitments[].offer.provider.id"
+		c.CapabilityCodeAt = "message.contract.commitments[].commitmentAttributes.@type"
 	})
 	got, err := h.send(t, support(supportFields()))
 	if err != nil || got != nil {
