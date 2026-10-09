@@ -506,12 +506,14 @@ modules:
               searchConcurrency: 1
 
           # ------------------------------------------------------------------
-          # Grievance -- filing a grievance against a scheme and checking it:
-          # support files the grievance, status reads it back.
+          # Grievance -- filing a grievance against a scheme and checking it.
+          # PMFBY: support files the grievance, status reads it back.
+          # PM-KISAN: init sends an OTP, then support lodges the grievance or
+          # status reads it, each with the OTP.
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:PMFBYGrievance"
+              bindingKeys: "pmfby|openagrinet:PMFBYGrievance,pmkisan|openagrinet:PMKISANGrievance"
 
               # BOTH, OR THE ADAPTER DOES NOT START. A grievance names its
               # capability on the commitment, not on a resource, so without
@@ -540,6 +542,51 @@ modules:
                 tokenResponseField: responseDynamic.token.Token
                 tokenTtl: 10m
                 headerName: Authorization
+
+              # PM-KISAN is two services behind one registration number, and
+              # neither reads plain JSON. Each authenticates with a service
+              # token INSIDE the encrypted body -- so auth is none, and the
+              # envelope does the work: it adds the token and encrypts what the
+              # request half produces, and decrypts the answer before the
+              # response half reads it, so the mappings stay plain JSON.
+              #
+              #   grievance service   support, status   AES-256-GCM, fixed key
+              #                                         and nonce, TokenNo
+              #   OTP service         init              AES-128-CBC, a fresh key
+              #                                         sent beside the cipher,
+              #                                         Token
+              #
+              # support and status carry the farmer's OTP. The envelope verifies
+              # it on the OTP service (otpVerifyPath, on the host the registry
+              # names for init) before the lodge or the read is sent; a wrong
+              # OTP is a 400 and the call is never made.
+              #
+              # The *Env settings name VARIABLES, never values. All four must be
+              # set in the adapter's environment; with any missing, the calls
+              # that need it fail with NET_INTERNAL_ERROR and nothing is sent --
+              # there is no fallback to plaintext.
+              #
+              #   key        32 bytes, hex: AES-256, the grievance service
+              #   nonce      hex, the fixed value the portal issued
+              #   token      the grievance service's TokenNo
+              #   OTP token  the OTP service's Token -- a different token
+              pmkisan:
+                authScheme: none
+                envelope: aesGcm
+                envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
+                envelopeNonceEnv: PMKISAN_GRIEVANCE_NONCE
+                envelopeTokenEnv: PMKISAN_SERVICE_TOKEN
+                envelopeTokenField: TokenNo
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpEnvelope: aesCbcKeyInBand
+                otpTokenEnv: PMKISAN_OTP_TOKEN
+                otpTokenField: Token
+                otpRequestField: EncryptedRequest
+                otpResponsePaths: "d.output,output"
+                otpActions: init
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: "support,status"
 
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the

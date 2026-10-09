@@ -1,0 +1,192 @@
+# PM-KISAN, openagrinet:PMKISANGrievance, status -> POST /GrievanceStatusCheck.
+# Both directions, one file.
+#
+# Step two of two: read a lodged grievance back. status carries a contract,
+# and the ask is in commitmentAttributes:
+#
+#   enrolmentId    the registration number the grievance was filed under. A
+#                  Contract has no orderId, so it rides here rather than where
+#                  support carries it.
+#   case.filedOn   the date on_support returned, which picks this grievance out
+#   challenge      a fresh OTP, from the init before this status. The Grievance
+#                  plugin's envelope verifies it on PM-KISAN's OTP service
+#                  before the read is sent: a registration number alone would
+#                  return every grievance filed against it. It never reaches
+#                  the read and is never echoed.
+#
+# As with support, this file speaks plaintext: the Grievance plugin's envelope
+# adds TokenNo and encrypts on the way out, and decrypts before the response
+# half reads the answer.
+#
+# THE PORTAL HAS NO PER-GRIEVANCE READ. It returns every grievance on the
+# registration number, so case.filedOn is what selects the one this contract is
+# about. Two grievances filed on the same number on the same day cannot be told
+# apart; the first is answered.
+
+# Format checks; an absent field passes here and is refused by the request half.
+required:
+  - check: |
+      (
+        $id := beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId;
+        $not($exists($id)) or ($type($id) = "string" and $exists($match($id, /^[A-Za-z0-9]+$/)[0]))
+      )
+    message: "enrolmentId must be the registration number: ASCII letters and digits only"
+  - check: |
+      (
+        $c := beckn.message.contract.commitments[0].commitmentAttributes.challenge;
+        /* The OTP the farmer received by SMS: digits only. Its length is the
+           portal's business, so it is not fixed here. */
+        $not($exists($c))
+          or ($c.method = "SMS_OTP" and $type($c.value) = "string" and $exists($match($c.value, /^[0-9]+$/)[0]))
+      )
+    message: "challenge.method must be SMS_OTP and challenge.value the digits the farmer received"
+  - check: |
+      (
+        $f := beckn.message.contract.commitments[0].commitmentAttributes.case.filedOn;
+        $not($exists($f)) or ($type($f) = "string" and $exists($match($f, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)[0]))
+      )
+    message: "case.filedOn must be a date, YYYY-MM-DD, as on_support returned it"
+
+# The plaintext /GrievanceStatusCheck takes. TokenNo is added by the envelope.
+request: |
+  (
+    $ca := beckn.message.contract.commitments[0].commitmentAttributes;
+    $at := "$.message.contract.commitments[0].commitmentAttributes.";
+    /* The first required field the request lacks, with its path. case.filedOn
+       is required because the portal returns every grievance on a
+       registration number, and the filing date picks this one out. */
+    $missing := [
+      { "field": "enrolmentId", "path": $at & "enrolmentId", "present": $exists($ca.enrolmentId) },
+      { "field": "case.filedOn", "path": $at & "case.filedOn", "present": $exists($ca.case.filedOn) },
+      { "field": "challenge.value", "path": $at & "challenge.value", "present": $exists($ca.challenge.value) }
+    ][$not(present)][0];
+    $missing
+    ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                    "message": $missing.field & " is required", "path": $missing.path } }
+    : {
+      "Type":       "Reg_No_Status",
+      "IdentityNo": $ca.enrolmentId
+    }
+  )
+
+# Three outcomes, in order:
+#
+#   the portal refused     its sentinel reads "False"        502 under _error
+#   nothing on file        no record matches case.filedOn    202 ACK under _error
+#   the grievance          the first record matching it      on_status
+#
+# on_status is an allow-list, not a passthrough. Each record also carries the
+# farmer's name, father's name, gender, mobile number and address down to the
+# village, and the registration number itself; none of it is part of the
+# grievance, the caller already knows who they asked about, and none of it is
+# emitted -- enrolmentId included.
+#
+#   GrievanceDescription  grievance.description  the complaint, as the portal
+#                                                holds it; the record has no
+#                                                category, so none comes back
+#   GrievanceStatus       case.status.name       verbatim, when present
+#   GrievanceDate         case.filedOn
+#   OfficerReply          case.remark            absent while none
+#   OfficeReplyDate       case.remarkedOn        absent while none
+#
+# case.status.code is the network's CaseStatusCode, never the portal's phrase:
+#
+#   - a phrase that names a network state (case and spacing aside) maps to it,
+#     and so does Disposed, the portal's word for a grievance it has answered,
+#     which maps to Replied; the phrase is kept in name;
+#   - a phrase it does not recognise maps to UnderReview -- non-terminal and
+#     honest -- with the phrase kept in name;
+#   - no phrase at all: Replied when a remark exists, UnderReview otherwise,
+#     with no name, so a client can tell an inferred state from a stated one.
+#
+# Never an inferred closed state -- that has to come from the portal -- so the
+# commitment stays ACTIVE.
+#
+# A 4xx from the portal reaches this half under _status; each is left to the
+# adapter's 502.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    $false := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
+    $refused := $false(response.Status) or $false(response.Responce)
+      or $false(response.Rsponce) or $false(response.status);
+
+    $c  := beckn.message.contract.commitments[0];
+    $ca := $c.commitmentAttributes;
+    $records := $type(response) = "array" ? response
+              : $type(response.details) = "array" ? response.details
+              : $exists(response.details) ? [response.details]
+              : [];
+
+    /* The portal's date to ISO. Its format is not documented, so both ISO and
+       dd/MM/yyyy (or dd-MM-yyyy) are read, and a time after the date is
+       dropped. */
+    $iso := function($d) {
+      (
+        $day := $type($d) = "string" ? $split($trim($d), /[ T]/)[0];
+        $exists($match($day, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)[0]) ? $day
+        : $exists($match($day, /^[0-9]{2}[\/-][0-9]{2}[\/-][0-9]{4}$/)[0])
+          ? $substring($day, 6, 4) & "-" & $substring($day, 3, 2) & "-" & $substring($day, 0, 2)
+      )
+    };
+    /* A string with something in it, else nothing -- so an empty field is
+       absent rather than present-and-blank. */
+    $text := function($v) {
+      $type($v) = "string" and $length($trim($v)) > 0 ? $trim($v)
+    };
+    /* The network's CaseStatusCode values, keyed by how the portal might spell
+       them: lower case, letters only. */
+    $codes := {
+      "registered": "Registered", "underreview": "UnderReview",
+      "awaitingapplicant": "AwaitingApplicant", "replied": "Replied",
+      "disposed": "Replied",
+      "resolved": "Resolved", "rejected": "Rejected", "closed": "Closed"
+    };
+
+    $record := $filter($records, function($r) { $iso($r.GrievanceDate) = $ca.case.filedOn })[0];
+    $phrase := $text($record.GrievanceStatus);
+    $remark := $text($record.OfficerReply);
+    $complaint := $text($record.GrievanceDescription);
+
+    $refused
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN could not read the grievance" } }
+    : $not($exists($record))
+    ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
+                    "message": "No grievance matches this registration number and filing date." } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
+      "message": {
+        "contract": {
+          "id": beckn.message.contract.id,
+          "commitments": [{
+            "status": { "descriptor": { "code": "ACTIVE" } },
+            "offer":     $c.offer,
+            "resources": $c.resources,
+            "commitmentAttributes": {
+              "@context":        $ca.`@context`,
+              "@type":           $ca.`@type`,
+              "informationMode": "Direct",
+              "scheme":          $ca.scheme,
+              "grievance": $complaint ? { "description": $complaint },
+              "case": {
+                "status": $phrase
+                  ? {
+                      "code": (
+                        $known := $lookup($codes, $lowercase($replace($phrase, /[^A-Za-z]/, "")));
+                        $exists($known) ? $known : "UnderReview"
+                      ),
+                      "name": $phrase
+                    }
+                  : { "code": $remark ? "Replied" : "UnderReview" },
+                "filedOn":    $iso($record.GrievanceDate),
+                "remark":     $remark,
+                "remarkedOn": $remark ? $iso($record.OfficeReplyDate)
+              }
+            }
+          }]
+        }
+      }
+    }
+  )
