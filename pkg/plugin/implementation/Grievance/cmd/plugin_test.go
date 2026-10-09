@@ -32,8 +32,8 @@ const (
 	providerIDAt     = "message.contract.commitments[].offer.provider.id"
 	capabilityCodeAt = "message.contract.commitments[].commitmentAttributes.@type"
 
-	fallbackProviderIDAt     = "message.support.channels[].provider.id"
-	fallbackCapabilityCodeAt = "message.support.channels[].@type"
+	supportProviderIDAt     = "message.support.channels[].provider.id"
+	supportCapabilityCodeAt = "message.support.channels[].@type"
 )
 
 // pmfbyConfig is the block config/provider-adapter.yaml ships, as the plugin
@@ -43,8 +43,8 @@ func pmfbyConfig() map[string]string {
 		"bindingKeys":              pmfbyBindingKey,
 		"providerIdAt":             providerIDAt,
 		"capabilityCodeAt":         capabilityCodeAt,
-		"fallbackProviderIdAt":     fallbackProviderIDAt,
-		"fallbackCapabilityCodeAt": fallbackCapabilityCodeAt,
+		"providerIdAt-support":     supportProviderIDAt,
+		"capabilityCodeAt-support": supportCapabilityCodeAt,
 		"authScheme-pmfby":         "tokenHeader",
 		"tokenUrl-pmfby":           "https://pmfby.example/krphapi/FGMS/NICUsersLogin",
 		"tokenUserField-pmfby":     "appAccessUID",
@@ -66,9 +66,9 @@ func TestParseConfig_PMFBYBlock_ReadsEverySetting(t *testing.T) {
 		BindingKeys:      []string{pmfbyBindingKey},
 		ProviderIDAt:     providerIDAt,
 		CapabilityCodeAt: capabilityCodeAt,
-
-		FallbackProviderIDAt:     fallbackProviderIDAt,
-		FallbackCapabilityCodeAt: fallbackCapabilityCodeAt,
+		PathsByAction: map[string]common.Paths{
+			"support": {ProviderID: supportProviderIDAt, CapabilityCode: supportCapabilityCodeAt},
+		},
 		AuthByProvider: map[string]*common.AuthProfile{"pmfby": {
 			Provider: "pmfby", Scheme: "tokenHeader", TokenURL: "https://pmfby.example/krphapi/FGMS/NICUsersLogin",
 			TokenUserField: "appAccessUID", TokenUserEnv: "PMFBY_USER",
@@ -139,8 +139,9 @@ func TestNew_InvalidConfig_Refused(t *testing.T) {
 		"no binding keys":            func(c map[string]string) { delete(c, "bindingKeys") },
 		"providerIdAt alone":         func(c map[string]string) { delete(c, "capabilityCodeAt") },
 		"capabilityCodeAt alone":     func(c map[string]string) { delete(c, "providerIdAt") },
-		"fallback provider alone":    func(c map[string]string) { delete(c, "fallbackCapabilityCodeAt") },
-		"fallback type alone":        func(c map[string]string) { delete(c, "fallbackProviderIdAt") },
+		"support provider alone":     func(c map[string]string) { delete(c, "capabilityCodeAt-support") },
+		"support type alone":         func(c map[string]string) { delete(c, "providerIdAt-support") },
+		"support path blank segment": func(c map[string]string) { c["providerIdAt-support"] = "message..id" },
 		"no auth block for pmfby":    func(c map[string]string) { delete(c, "authScheme-pmfby") },
 		"unknown auth scheme":        func(c map[string]string) { c["authScheme-pmfby"] = "loginHeader" },
 		"tokenHeader without ttl":    func(c map[string]string) { delete(c, "tokenTtl-pmfby") },

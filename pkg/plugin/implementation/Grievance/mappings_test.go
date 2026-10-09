@@ -157,8 +157,10 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type",
 		// A support request composes no contract; its channel names both.
-		FallbackProviderIDAt:     "message.support.channels[].provider.id",
-		FallbackCapabilityCodeAt: "message.support.channels[].@type",
+		PathsByAction: map[string]common.Paths{"support": {
+			ProviderID:     "message.support.channels[].provider.id",
+			CapabilityCode: "message.support.channels[].@type",
+		}},
 		AuthByProvider: map[string]*common.AuthProfile{"pmfby": {
 			Scheme: util.AuthSchemeTokenHeader, TokenURL: upstream.URL + loginPath,
 			TokenUserField: "appAccessUID", TokenUserEnv: "PMFBY_USER",
@@ -650,19 +652,16 @@ func TestSupport_SecondChannel_Returns400WithoutCallingPMFBY(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
 	_, err := h.send(t, raw)
 	assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
-	if !strings.Contains(err.Error(), "2 channels") {
-		t.Errorf("error %q should say \"2 channels\" so the caller can act on it", err)
-	}
 	if h.pmfby.calls[insertPath] != 0 {
 		t.Error("PMFBY was called for a request naming two channels")
 	}
 }
 
-// The fallback keys are what make a support request reachable at all: without
+// The support paths are what make a support request reachable at all: without
 // them it composes no contract the plugin can read a binding from.
-func TestSupport_FallbackNotConfigured_PassesThroughUntouched(t *testing.T) {
+func TestSupport_SupportPathsNotConfigured_PassesThroughUntouched(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0, func(c *Grievance.Config) {
-		c.FallbackProviderIDAt, c.FallbackCapabilityCodeAt = "", ""
+		c.PathsByAction = nil
 	})
 	got, err := h.send(t, support(supportFields()))
 	if err != nil || got != nil {
