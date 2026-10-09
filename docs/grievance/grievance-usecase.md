@@ -186,6 +186,27 @@ and the entry carries only what is known. That also means PMFBY's list is what w
 rather than everything that would be accepted; PM-KISAN's ten are the portal's closed list
 and the pack refuses an eleventh.
 
+**What travels, and what does not.** The catalog entry carries three things per option and
+a payload carries at most two of them, so the examples further down show a `category` with
+a bare `code` on the way up and — on PMFBY only — a bare `name` on the way back. That is
+not an inconsistency between them:
+
+| | on the ask | on the read | on the catalog entry |
+|---|---|---|---|
+| `code` | sent, and it is the whole of what goes upstream | PMFBY returns none; PM-KISAN returns no `category` at all | published |
+| `name` | may be sent and is dropped — both portals read ids only | PMFBY only, in the portal's own wording | PM-KISAN only; PMFBY has never published one |
+| `descriptor` | never — a payload `category` is `{code, name}` and has no such field | never | published, and it is ours rather than the portal's |
+
+Send the code. Take the label from the catalog you have already read — that is what
+`grievanceOptions` is for, and it is why the label does not need to travel. Keeping
+`descriptor` off the wire is deliberate: it is this network's plain-language help text, and
+anything echoed back inside a `grievance` band would be read as the portal's own words.
+
+One consequence is worth planning for. A PMFBY read answers with a name and no id, so it
+cannot be joined back to the catalog entry the caller chose — FGMS returns no id, so the
+adapter has nothing to join on either. Show the name the portal sent; do not try to resolve
+it to a code.
+
 It does not say *which* calls are challenged. PM-KISAN challenges the lodge and the read
 alike. That, and everything else a call must carry, is
 [Appendix C](#appendix-c--required-fields-by-call). Why PMFBY has no challenge at all is
@@ -382,8 +403,8 @@ POST /status
 - **`enrolmentId`** — the application number, under its own name for the first time: the
   same value `support` sent as `orderId`. The request did not send it; the portal returns
   it.
-- **`case.status`** — `code` is this network's word, `name` is the portal's own phrase when
-  it gives one. Appendix B explains which to use.
+- **`case.status`** — a `CaseStatusCode` and nothing else. FGMS's own `TicketStatus`
+  phrase picks the code and then stops there; it is not forwarded. Appendix B says why.
 - **No remark.** PMFBY returns a status phrase and no reply text, so the schema refuses
   `case.remark` and `case.remarkedOn`.
 - **`case.cropName`** — the insured crop. PMFBY alone returns it.
@@ -420,7 +441,7 @@ POST /status
         },
         "case": {
           "ticketNo": "100626000099001",
-          "status": { "code": "UnderReview", "name": "Open" },
+          "status": { "code": "UnderReview" },
           "filedOn": "2026-09-28",
           "cropName": "Paddy"
         }
@@ -734,10 +755,10 @@ POST /status
 - **No `case.ticketNo` comes back.** The portal's status call answers per identity, not per
   ticket, and does not repeat the handle on each record. Show Suresh the ticket he kept
   from `on_support`; this read will not return it.
-- **`"Replied"` under `"Disposed"` is the rule working, not a mapping error.** The portal's
-  phrase reads finished; the code does not, because an adapter may infer a state but never
-  that a case is over. Show Suresh `Disposed`, branch on `Replied`, and leave the contract
-  `ACTIVE` — Appendix B.
+- **`status` is a code and nothing else.** The portal's own wording does not travel — see
+  Appendix B. `Replied` here is read off the presence of the remark, and it is not terminal:
+  a reply is not a resolution, so the contract stays `ACTIVE` and Suresh can read again. An
+  adapter may infer a state; it never infers that a case is over.
 
 ```json
 {
@@ -761,7 +782,7 @@ POST /status
           "description": "Third instalment for 2026 has not been credited."
         },
         "case": {
-          "status": { "code": "Replied", "name": "Disposed" },
+          "status": { "code": "Replied" },
           "filedOn": "2026-09-28",
           "remark": "Bank account seeded with Aadhaar; payment in next cycle.",
           "remarkedOn": "2026-10-01"
@@ -938,7 +959,7 @@ POST /status
         "application": {
           "registeredOn": "2021-06-14T00:00:00+05:30",
           "latestInstallmentPaid": 15,
-          "ekyc": { "code": "Pending", "name": "eKYC not completed" },
+          "ekyc": { "code": "Pending" },
           "blockers": [
             { "code": "LandSeedingPending", "name": "Land Seeding, KYS" },
             { "code": "Other", "name": "Bank account details could not be verified" }
@@ -965,7 +986,7 @@ farmer's record, which is why the other values differ too:
   "application": {
     "registeredOn": "2021-02-08T00:00:00+05:30",
     "latestInstallmentPaid": 22,
-    "ekyc": { "code": "Done", "name": "eKYC completed" },
+    "ekyc": { "code": "Done" },
     "blockers": []
   }
 }
@@ -1103,17 +1124,35 @@ index — a helpline channel could sit beside the case.
 
 ## Appendix B — Reading `code`, `name` and the contract lifecycle
 
-Six fields are a `code` + `name` pair: `scheme`, `grievance.category`,
-`grievance.subCategory`, `case.status`, and — on application status — `application.ekyc`
-and each entry of `application.blockers`. They all follow one rule.
+Several fields carry a `code`, and some of them carry a `name` beside it. The pair does not
+mean the same thing everywhere, which is why it is worth one page.
 
-- **`code` is the network's word.** It comes from a list this network governs.
-  Branch on it.
-- **`name` is the portal's own phrase, carried through untouched.** Show it. It
-  is what the farmer would read on the portal's own screen, so it may well say
-  `"Open"` where the code says `UnderReview`.
-- **A missing `name` means the portal said nothing**, and the adapter derived the
-  code rather than quoting a phrase. That is information, not an omission.
+**Both members ours.** `scheme`, and a `category` on a catalog entry. `code` is the handle,
+`name` is the longer rendering of the same fact — `PMFBY` and `Pradhan Mantri Fasal Bima
+Yojana`. They cannot disagree, and both are always there.
+
+**Our code beside the portal's phrase.** Only `application.blockers` works this way now.
+`code` is our classification, `name` is the text the portal actually sent, kept verbatim.
+The two come from different authorities and may legitimately read differently.
+
+**Code alone.** `case.status` and `application.ekyc`. These used to carry a `name` and no
+longer do:
+
+- **`case.status` is a `CaseStatusCode` and nothing else** — `Registered`, `UnderReview`,
+  `AwaitingApplicant`, `Replied`, `Resolved`, `Rejected`, `Closed`. The last three are
+  terminal and the adapter never assigns one on its own; an unrecognised portal phrase falls
+  to `UnderReview`. The adapter still reads the portal's phrase to pick the code — it just
+  does not forward it. Neither portal has supplied its status vocabulary and no captured
+  response carrying one exists, so there is nothing to carry that we could vouch for.
+  [Appendix D](#appendix-d--rules-that-apply-everywhere) tracks getting those lists; if a list
+  arrives and says more than the code does, `name` comes back as an optional member and
+  nothing a caller wrote breaks.
+- **`application.ekyc` is `Done` or `Pending`.** The portal sends the single character `Y`
+  or `N`, so there is no phrase of its own to carry. Any `name` would be our wording
+  dressed up as the portal's.
+
+So: branch on `code`, and render your own label from it. Where a `name` is present it is
+the portal's word and worth showing; where there is none, there was never a word to show.
 
 One field looks like these and is not: a commitment's `status.descriptor`. It sits in the
 same payload as `case.status` and answers a different question.
@@ -1257,6 +1296,14 @@ Everything else is optional. The `name` beside any `code`, `provider.descriptor.
   yields `Resolved`, `Rejected` or `Closed` today. An unrecognised phrase maps to
   `UnderReview`, never to a terminal code. This is a grievance rule; application status has
   no lifecycle to close.
+- **Neither status vocabulary is confirmed.** PMFBY returns `TicketStatus` and PM-KISAN
+  returns `GrievanceStatus`, and no captured response carrying either exists anywhere in the
+  legacy tree — v1 forwarded both into display tags and never mapped them. Until each portal
+  supplies its phrase list, the mapping has nothing to look up and every phrase falls to
+  `UnderReview`, so in practice only the inferred codes are ever emitted. Those two lists are
+  the single input that turns `case.status` from a two-value fallback into the full seven.
+  Ask for them; neither needs a schema change, and if a list turns out to say more than the
+  code can, that is the evidence for putting `name` back.
 - **The response is an allow-list, not a passthrough.** Both portals return far more about
   the farmer than any of these capabilities surface — name, parentage, gender, phone, full
   address. The adapter maps the fields the pack names and drops the rest. A field that is
