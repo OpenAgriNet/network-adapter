@@ -512,9 +512,9 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 	if got := pkAt(t, channel, "case", "status"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Registered"}) {
 		t.Errorf("case.status = %v, want {code: Registered} with no name", got)
 	}
-	ist := time.FixedZone("IST", 5*3600+1800)
-	if got, want := pkAt(t, channel, "case", "filedOn"), time.Now().In(ist).Format("2006-01-02"); got != want {
-		t.Errorf("case.filedOn = %v, want today in IST, %s", got, want)
+	// The IST date of the request's own timestamp, 2026-09-28T11:04:00Z.
+	if got := pkAt(t, channel, "case", "filedOn"); got != "2026-09-28" {
+		t.Errorf("case.filedOn = %v, want the request's date in IST, 2026-09-28", got)
 	}
 
 	if strings.Contains(string(body), pkToken) {
@@ -526,25 +526,28 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 }
 
 func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
+	at := "$.message.support.channels[0]."
 	for _, tc := range []struct {
-		name, from, to, code string
+		name, from, to, code, path string
 	}{
-		// Missing: refused by the request half under _error.
-		{"no registration number", `"orderId": "UP12345678A",`, ``, "SCH_REQUIRED_FIELD_MISSING"},
+		// Missing: refused by the request half under _error, naming the field.
+		{"no registration number", `"orderId": "UP12345678A",`, ``, "SCH_REQUIRED_FIELD_MISSING", "$.message.support.orderId"},
 		{"no description", `,
-          "description": "  Third instalment for 2026 has not been credited.  "`, ``, "SCH_REQUIRED_FIELD_MISSING"},
-		{"no category", `"category": { "code": "G003", "name": "Installment not received" },`, ``, "SCH_REQUIRED_FIELD_MISSING"},
+          "description": "  Third instalment for 2026 has not been credited.  "`, ``, "SCH_REQUIRED_FIELD_MISSING", at + "grievance.description"},
+		{"no category", `"category": { "code": "G003", "name": "Installment not received" },`, ``, "SCH_REQUIRED_FIELD_MISSING", at + "grievance.category.code"},
 		{"no OTP", `,
-        "challenge": { "method": "SMS_OTP", "value": "4821" }`, ``, "SCH_REQUIRED_FIELD_MISSING"},
-		{"an OTP that is not digits", `"value": "4821"`, `"value": "48a1"`, "SCH_INVALID_FORMAT"},
+        "challenge": { "method": "SMS_OTP", "value": "4821" }`, ``, "SCH_REQUIRED_FIELD_MISSING", at + "challenge.value"},
+		{"an OTP that is not digits", `"value": "4821"`, `"value": "48a1"`, "SCH_INVALID_FORMAT", ""},
 		// Malformed: refused by required.
-		{"a registration number in native script", `"orderId": "UP12345678A"`, `"orderId": "UP१२३४५"`, "SCH_INVALID_FORMAT"},
-		{"a category outside the portal's list", `"code": "G003"`, `"code": "G011"`, "SCH_INVALID_FORMAT"},
-		{"a description that says nothing", `"  Third instalment for 2026 has not been credited.  "`, `"   short   "`, "SCH_INVALID_FORMAT"},
+		{"a registration number in native script", `"orderId": "UP12345678A"`, `"orderId": "UP१२३४५"`, "SCH_INVALID_FORMAT", ""},
+		{"a category outside the portal's list", `"code": "G003"`, `"code": "G011"`, "SCH_INVALID_FORMAT", ""},
+		{"a description past 2000 characters", `"  Third instalment for 2026 has not been credited.  "`,
+			`"` + strings.Repeat("x", 2001) + `"`, "SCH_INVALID_FORMAT", ""},
+		{"a description that says nothing", `"  Third instalment for 2026 has not been credited.  "`, `"   short   "`, "SCH_INVALID_FORMAT", ""},
 		{"a sub-category, which PM-KISAN does not have",
 			`"category": { "code": "G003", "name": "Installment not received" },`,
 			`"category": { "code": "G003", "name": "Installment not received" }, "subCategory": { "code": "1" },`,
-			"SCH_INVALID_FORMAT"},
+			"SCH_INVALID_FORMAT", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			request := strings.Replace(pkSupportRequest, tc.from, tc.to, 1)
@@ -559,6 +562,9 @@ func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
 			beckn, status := pkBecknErr(t, err)
 			if status != http.StatusBadRequest || beckn.Code != tc.code {
 				t.Errorf("got %s/%d, want %s/400", beckn.Code, status, tc.code)
+			}
+			if tc.path != "" && (beckn.Details == nil || beckn.Details.Path != tc.path) {
+				t.Errorf("details = %+v, want path %s", beckn.Details, tc.path)
 			}
 			if p.calls != 0 {
 				t.Errorf("the portal was called %d times; a refused payload must never reach it", p.calls)
@@ -719,6 +725,9 @@ func TestPMKISANStatusRefusesWithoutAFilingDate(t *testing.T) {
 	if status != http.StatusBadRequest || beckn.Code != "SCH_REQUIRED_FIELD_MISSING" {
 		t.Errorf("got %s/%d, want SCH_REQUIRED_FIELD_MISSING/400", beckn.Code, status)
 	}
+	if want := "$.message.contract.commitments[0].commitmentAttributes.case.filedOn"; beckn.Details == nil || beckn.Details.Path != want {
+		t.Errorf("details = %+v, want path %s", beckn.Details, want)
+	}
 	if p.calls != 0 {
 		t.Errorf("the portal was called %d times without a filing date", p.calls)
 	}
@@ -857,6 +866,9 @@ func TestPMKISANInitRefusesWithoutARegistrationNumber(t *testing.T) {
 	if status != http.StatusBadRequest || beckn.Code != "SCH_REQUIRED_FIELD_MISSING" {
 		t.Errorf("got %s/%d, want SCH_REQUIRED_FIELD_MISSING/400", beckn.Code, status)
 	}
+	if want := "$.message.contract.commitments[0].commitmentAttributes.enrolmentId"; beckn.Details == nil || beckn.Details.Path != want {
+		t.Errorf("details = %+v, want path %s", beckn.Details, want)
+	}
 	if otp.calls["/ChatbotOTP"] != 0 {
 		t.Error("an OTP was requested with no registration number to send it against")
 	}
@@ -921,8 +933,28 @@ func TestPMKISANStatusRefusesWithoutAnOTP(t *testing.T) {
 	if status != http.StatusBadRequest || beckn.Code != "SCH_REQUIRED_FIELD_MISSING" {
 		t.Errorf("got %s/%d, want SCH_REQUIRED_FIELD_MISSING/400", beckn.Code, status)
 	}
+	if want := "$.message.contract.commitments[0].commitmentAttributes.challenge.value"; beckn.Details == nil || beckn.Details.Path != want {
+		t.Errorf("details = %+v, want path %s", beckn.Details, want)
+	}
 	if otp.calls["/ChatbotOTPVerified"] != 0 || p.calls != 0 {
 		t.Errorf("verify %d, read %d; a request refused before the call must reach neither service",
 			otp.calls["/ChatbotOTPVerified"], p.calls)
+	}
+}
+
+// filedOn is the request's own date in IST, so a lodge sent at 19:00 UTC is
+// filed on the next day -- the day it was in India -- and a later status
+// matches on that day.
+func TestPMKISANSupportDatesTheGrievanceByTheRequestInIST(t *testing.T) {
+	request := strings.Replace(pkSupportRequest, `"timestamp": "2026-09-28T11:04:00Z"`, `"timestamp": "2026-09-28T19:00:00Z"`, 1)
+	if request == pkSupportRequest {
+		t.Fatal("the edit did not apply to the request")
+	}
+	body, err := runPMKISAN(t, newPKPortal(t, `{"Responce":"True"}`), request)
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if got := pkAt(t, pkDecode(t, body), "message", "support", "channels", 0, "case", "filedOn"); got != "2026-09-29" {
+		t.Errorf("case.filedOn = %v, want 2026-09-29: 19:00 UTC is 00:30 the next day in IST", got)
 	}
 }

@@ -61,20 +61,27 @@ required:
         /* Measured after trimming, because the portal trims before it
            measures: ten spaces would pass an untrimmed check here and fail
            there. */
-        $not($exists($d)) or ($type($d) = "string" and $length($trim($d)) >= 10)
+        $not($exists($d)) or ($type($d) = "string" and $length($trim($d)) >= 10 and $length($trim($d)) <= 2000)
       )
-    message: "grievance.description must describe the problem in at least 10 characters"
+    message: "grievance.description must describe the problem in 10 to 2000 characters"
 
 # The plaintext /LodgeGrievance takes. TokenNo is added by the envelope.
 request: |
   (
     $s := beckn.message.support;
-    $g := $s.channels[0].grievance;
-    $complete := $exists($s.orderId) and $exists($g.category.code) and $exists($g.description)
-      and $exists($s.channels[0].challenge.value);
-    $not($complete)
+    $ch := $s.channels[0];
+    $g := $ch.grievance;
+    $at := "$.message.support.channels[0].";
+    /* The first required field the request lacks, with its path. */
+    $missing := [
+      { "field": "orderId", "path": "$.message.support.orderId", "present": $exists($s.orderId) },
+      { "field": "grievance.category.code", "path": $at & "grievance.category.code", "present": $exists($g.category.code) },
+      { "field": "grievance.description", "path": $at & "grievance.description", "present": $exists($g.description) },
+      { "field": "challenge.value", "path": $at & "challenge.value", "present": $exists($ch.challenge.value) }
+    ][$not(present)][0];
+    $missing
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "lodging a grievance needs orderId (the registration number) and, on channels[0], grievance.category.code, grievance.description and challenge, the OTP from on_init" } }
+                    "message": $missing.field & " is required", "path": $missing.path } }
     : {
       "Type":                 "Reg_No_Details",
       "IdentityNo":           $s.orderId,
@@ -94,8 +101,10 @@ request: |
 # grievance are the caller's own. case.ticketNo is the portal's handle for the
 # grievance, which it names GrievanceID or, where that is absent, GrievanceNo;
 # absent when it sends neither. case.status (Registered, with no name because
-# the portal stated no phrase) and case.filedOn (today's IST date, what a later
-# status matches on) are asserted: a lodge reply carries no status and no date.
+# the portal stated no phrase) and case.filedOn are asserted: a lodge reply
+# carries no status and no date. filedOn is the IST date of the request's own
+# timestamp, so it names the day the farmer filed -- and the date a later
+# status matches on -- however long the call took.
 #
 # A 4xx from the portal reaches this half with its status under _status. None
 # is known to mean anything the farmer can fix, so each is left to the
@@ -116,6 +125,10 @@ response: |
       : $handle(response.GrievanceNo);
     $s := beckn.message.support;
     $ch := $s.channels[0];
+    /* Today in IST, from the request's own timestamp. */
+    $filedOn := $exists(beckn.context.timestamp)
+      ? $fromMillis($toMillis(beckn.context.timestamp), "[Y0001]-[M01]-[D01]", "+0530")
+      : $now("[Y0001]-[M01]-[D01]", "+0530");
     $refused
     ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
                     "message": "PM-KISAN did not accept the grievance" } }
@@ -136,7 +149,7 @@ response: |
               "status":   { "code": "Registered" },
               /* IST, not UTC: a UTC date is yesterday for anything filed
                  before 05:30 IST, and status matches on this date. */
-              "filedOn":  $now("[Y0001]-[M01]-[D01]", "+0530")
+              "filedOn":  $filedOn
             }
           }]
         }

@@ -51,9 +51,18 @@ required:
 request: |
   (
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
-    $not($exists($ca.enrolmentId) and $exists($ca.case.filedOn) and $exists($ca.challenge.value))
+    $at := "$.message.contract.commitments[0].commitmentAttributes.";
+    /* The first required field the request lacks, with its path. case.filedOn
+       is required because the portal returns every grievance on a
+       registration number, and the filing date picks this one out. */
+    $missing := [
+      { "field": "enrolmentId", "path": $at & "enrolmentId", "present": $exists($ca.enrolmentId) },
+      { "field": "case.filedOn", "path": $at & "case.filedOn", "present": $exists($ca.case.filedOn) },
+      { "field": "challenge.value", "path": $at & "challenge.value", "present": $exists($ca.challenge.value) }
+    ][$not(present)][0];
+    $missing
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "reading a grievance needs enrolmentId (the registration number), case.filedOn -- the portal returns every grievance on a registration number, and the filing date picks this one out -- and challenge, a fresh OTP from init" } }
+                    "message": $missing.field & " is required", "path": $missing.path } }
     : {
       "Type":       "Reg_No_Status",
       "IdentityNo": $ca.enrolmentId
