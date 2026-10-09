@@ -88,18 +88,18 @@ type tokenResponse struct {
 // this adapter broke when it did not.
 func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	if auth.cfg.Scheme == util.AuthSchemeTokenQuery || auth.cfg.Scheme == util.AuthSchemeTokenHeader {
-		return s.exchangeLoginToken(ctx, auth)
+		return s.exchangeQueryToken(ctx, auth)
 	}
 	return s.exchangeOAuth2Token(ctx, auth)
 }
 
-// exchangeLoginToken POSTs a JSON body of configured field names and reads the
+// exchangeQueryToken POSTs a JSON body of configured field names and reads the
 // token out of a configured response field.
 //
 // The lifetime comes from config, not from the response: this endpoint says
 // nothing about how long its token lives. That is the whole reason tokenTtl is
 // required rather than defaulted -- see AuthProfile.
-func (s *Step) exchangeLoginToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
+func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	cfg := auth.cfg
 	user, secret := os.Getenv(cfg.TokenUserEnv), os.Getenv(cfg.TokenSecretEnv)
 	if user == "" || secret == "" {
@@ -123,9 +123,8 @@ func (s *Step) exchangeLoginToken(ctx context.Context, auth *authenticator) (str
 		return "", 0, err
 	}
 
-	// Decoded generically because the field is configured: a struct tag cannot
-	// be written for a key that is not known until config is read. It is a
-	// dotted path, since some login replies nest the token in an envelope.
+	// Decoded into a map because the field name is configured: a struct tag
+	// cannot be written for a key that is not known until config is read.
 	var fields any
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return "", 0, s.permanentTokenErr(fmt.Errorf("token response from %s is not JSON: %w",
