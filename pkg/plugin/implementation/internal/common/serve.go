@@ -162,6 +162,12 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// _error never reaches here -- and opened once after the loop, so the
 	// response half reads plain JSON.
 	envelope, wrapped := s.config.EnvelopeByProvider[provider]
+	base := plan.BaseURL
+	if router, routes := envelope.(Router); wrapped && routes {
+		if base, err = router.BaseURLFor(ctx, action, plan.BaseURL); err != nil {
+			return err
+		}
+	}
 	var open Opener
 	if wrapped {
 		exchange := Exchange{Action: action, Beckn: beckn, Plan: plan}
@@ -170,9 +176,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		}
 	}
 
-	// The action's own host when the registry names one, the participant's
-	// otherwise.
-	upstreamResponse, err := s.call(ctx, auth, plan.BaseURLFor(action), call, upstreamRequest)
+	upstreamResponse, err := s.call(ctx, auth, base, call, upstreamRequest)
 	if err != nil {
 		return err
 	}

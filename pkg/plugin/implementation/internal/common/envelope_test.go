@@ -169,21 +169,62 @@ func TestRunHandsTheEnvelopeTheExchange(t *testing.T) {
 	}
 }
 
-func TestRunCallsAnActionsOwnBaseURL(t *testing.T) {
-	var onAction, onParticipant string
-	actionHost := recordingUpstream(t, `{"ok":true}`, &onAction)
-	participantHost := recordingUpstream(t, `{"ok":true}`, &onParticipant)
+// routingEnvelope sends one action to its own host and leaves the rest alone.
+type routingEnvelope struct {
+	reversingEnvelope
+	action, host string
+	err          error
+}
 
-	plan := planWithAction(participantHost, "select")
-	call := plan.Actions["select"]
-	call.BaseURL = actionHost
-	plan.Actions["select"] = call
+func (e *routingEnvelope) BaseURLFor(_ context.Context, action, participant string) (string, error) {
+	if e.err != nil {
+		return "", e.err
+	}
+	if action == e.action {
+		return e.host, nil
+	}
+	return participant, nil
+}
+
+func TestRunCallsTheHostTheEnvelopeRoutesTo(t *testing.T) {
+	var onRouted, onParticipant string
+	routed := recordingUpstream(t, string(reverse([]byte(`{"ok":true}`))), &onRouted)
+	participant := recordingUpstream(t, string(reverse([]byte(`{"ok":true}`))), &onParticipant)
 
 	mapper := &stubMapper{requestResult: []byte(`{"ask":1}`), responseResult: []byte(`{"a":1}`)}
-	if _, err := runStep(t, newStep(t, &stubRegistry{plan: plan}, mapper), selectBody); err != nil {
+	envelope := &routingEnvelope{action: "select", host: routed}
+	if _, err := runStep(t, envelopedStep(t, participant, mapper, envelope), selectBody); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}
-	if onAction != `{"ask":1}` || onParticipant != "" {
-		t.Errorf("action host got %q, participant host got %q; want the action's own host called", onAction, onParticipant)
+	if onRouted == "" || onParticipant != "" {
+		t.Errorf("routed host got %q, participant host got %q; want the routed host called", onRouted, onParticipant)
+	}
+}
+
+func TestRunCallsTheParticipantForAnActionTheEnvelopeDoesNotRoute(t *testing.T) {
+	var sent string
+	participant := recordingUpstream(t, string(reverse([]byte(`{"ok":true}`))), &sent)
+
+	mapper := &stubMapper{requestResult: []byte(`{"ask":1}`), responseResult: []byte(`{"a":1}`)}
+	envelope := &routingEnvelope{action: "init", host: "http://elsewhere.invalid"}
+	if _, err := runStep(t, envelopedStep(t, participant, mapper, envelope), selectBody); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if sent == "" {
+		t.Error("the participant's host was not called")
+	}
+}
+
+func TestRunStopsWhenTheEnvelopeCannotRoute(t *testing.T) {
+	var sent string
+	participant := recordingUpstream(t, `{}`, &sent)
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	envelope := &routingEnvelope{err: model.NewCodedErr(http.StatusInternalServerError, "NET_INTERNAL_ERROR", errors.New("no host"))}
+	if _, err := runStep(t, envelopedStep(t, participant, mapper, envelope), selectBody); err == nil {
+		t.Fatal("Run() succeeded with no host to call")
+	}
+	if sent != "" || envelope.sealed != 0 {
+		t.Errorf("sent %q and sealed %d time(s); want nothing sealed or sent", sent, envelope.sealed)
 	}
 }

@@ -5,10 +5,11 @@
 # before each: once before support, and again, days later, before status.
 #
 # The OTP does not come from the grievance service. /ChatbotOTP is on PM-KISAN's
-# OTP service, another host with another cipher and another token, which the
-# registry row names as this action's own baseUrl. The Grievance plugin's
-# envelope sends this action through that realm (AES-128-CBC with the key in
-# band) and adds its token (Token); this file speaks plaintext.
+# OTP service, another host with another cipher and another token. The registry
+# participant is the grievance service, so the Grievance plugin's envelope
+# names the OTP host (otpBaseUrlEnv), sends this action there through that
+# realm (AES-128-CBC with the key in band) and adds its token (Token); this
+# file speaks plaintext.
 #
 # It carries the registration number and nothing else. No phone number crosses
 # the network: the portal texts the mobile it already holds against that
@@ -20,9 +21,13 @@ required:
   - check: |
       (
         $id := beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId;
-        $not($exists($id)) or ($type($id) = "string" and $exists($match($id, /^[A-Za-z0-9]+$/)[0]))
+        /* At most twenty characters, and never twelve bare digits -- an
+           Aadhaar number, which this capability does not accept. */
+        $not($exists($id)) or ($type($id) = "string"
+          and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
+          and $not($exists($match($id, /^[0-9]{12}$/)[0])))
       )
-    message: "enrolmentId must be the registration number: ASCII letters and digits only"
+    message: "enrolmentId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
 
 # The plaintext /ChatbotOTP takes. Types is fixed: a grievance is filed against
 # a registration, so the identifier is never a mobile or an Aadhaar number, and

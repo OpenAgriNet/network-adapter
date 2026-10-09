@@ -60,14 +60,26 @@ type Envelope interface {
 	Seal(ctx context.Context, exchange Exchange, mapped []byte) (sealed []byte, open Opener, err error)
 }
 
+// Router is an Envelope whose provider keeps some actions on another host than
+// the participant's -- PM-KISAN sends its OTP from a different service than the
+// one that takes the grievance. The registry names one host per participant,
+// so the other host is the envelope's configuration, not the registry's.
+//
+// BaseURLFor returns where the action's call goes: participant when the action
+// stays on the participant's host. It runs before Seal, so a host that is not
+// configured stops the call before anything is spent on it.
+type Router interface {
+	BaseURLFor(ctx context.Context, action, participant string) (string, error)
+}
+
 // Opener unwraps the answer to the request it was returned with.
 type Opener func(ctx context.Context, answer []byte) ([]byte, error)
 
 // Exchange is what an envelope may need to know about the call it wraps
 // beyond the mapped body: which action, the inbound Beckn payload, and the
 // provider's call plan. An envelope that verifies something before the call --
-// a challenge carried in the payload, checked against another host on the
-// plan -- reads them here.
+// a challenge carried in the payload, checked on another host -- reads them
+// here.
 type Exchange struct {
 	Action string
 	Beckn  any

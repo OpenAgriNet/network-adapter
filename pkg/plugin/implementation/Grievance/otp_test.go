@@ -78,12 +78,15 @@ func pmkisanEnvelope(t *testing.T) *providerEnvelope {
 	return e
 }
 
-// planOn is a call plan whose init action lives on the OTP service at url.
-func planOn(url string) *model.ProviderRecord {
+// planOn points the OTP realm at url and returns the grievance service's call
+// plan, whose participant host is elsewhere.
+func planOn(t *testing.T, url string) *model.ProviderRecord {
+	t.Helper()
+	t.Setenv(testOTPBaseURLEnv, url)
 	return &model.ProviderRecord{
 		BaseURL: "http://grievance.invalid",
 		Actions: map[string]model.ActionPlan{
-			"init":    {Method: http.MethodPost, Path: "/ChatbotOTP", BaseURL: url, TimeoutMs: 5000},
+			"init":    {Method: http.MethodPost, Path: "/ChatbotOTP", TimeoutMs: 5000},
 			"support": {Method: http.MethodPost, Path: "/LodgeGrievance"},
 			"status":  {Method: http.MethodPost, Path: "/GrievanceStatusCheck"},
 		},
@@ -110,7 +113,7 @@ func statusPayload(otp string) map[string]any {
 
 func TestInitGoesThroughTheOTPRealm(t *testing.T) {
 	e := pmkisanEnvelope(t)
-	wire, _, err := e.Seal(context.Background(), common.Exchange{Action: "init", Plan: planOn("http://otp.invalid")},
+	wire, _, err := e.Seal(context.Background(), common.Exchange{Action: "init", Plan: planOn(t, "http://otp.invalid")},
 		[]byte(`{"Types":"Ben_id","Values":"UP12345678A"}`))
 	if err != nil {
 		t.Fatalf("Seal() = %v", err)
@@ -119,6 +122,36 @@ func TestInitGoesThroughTheOTPRealm(t *testing.T) {
 	_ = json.Unmarshal(wire, &body)
 	if !strings.Contains(body["EncryptedRequest"], "@") {
 		t.Errorf("init sealed %q, want the OTP realm's cipher@key", body["EncryptedRequest"])
+	}
+}
+
+func TestInitIsSentToTheOTPServiceAndTheRestToTheParticipant(t *testing.T) {
+	e := pmkisanEnvelope(t)
+	t.Setenv(testOTPBaseURLEnv, "http://otp.invalid")
+	for action, want := range map[string]string{
+		"init":    "http://otp.invalid",
+		"support": "http://grievance.invalid",
+		"status":  "http://grievance.invalid",
+	} {
+		got, err := e.BaseURLFor(context.Background(), action, "http://grievance.invalid")
+		if err != nil || got != want {
+			t.Errorf("BaseURLFor(%s) = %q, %v; want %q", action, got, err, want)
+		}
+	}
+}
+
+func TestAnUnsetOTPHostStopsInitAndTheVerify(t *testing.T) {
+	e := pmkisanEnvelope(t)
+	t.Setenv(testOTPBaseURLEnv, "")
+	if _, err := e.BaseURLFor(context.Background(), "init", "http://grievance.invalid"); err == nil {
+		t.Error("BaseURLFor(init) fell back to the participant's host with the OTP host unset")
+	} else if code, status := codeOf(t, err); code != "NET_INTERNAL_ERROR" || status != http.StatusInternalServerError {
+		t.Errorf("got %s/%d, want NET_INTERNAL_ERROR/500", code, status)
+	}
+	_, _, err := e.Seal(context.Background(), common.Exchange{Action: "support", Beckn: supportPayload(validOTP),
+		Plan: &model.ProviderRecord{BaseURL: "http://grievance.invalid"}}, []byte(`{}`))
+	if code, status := codeOf(t, err); code != "NET_INTERNAL_ERROR" || status != http.StatusInternalServerError {
+		t.Errorf("verify with no OTP host: got %s/%d, want NET_INTERNAL_ERROR/500", code, status)
 	}
 }
 
@@ -134,7 +167,7 @@ func TestSupportAndStatusVerifyTheOTPThenGoThroughTheGrievanceRealm(t *testing.T
 			defer server.Close()
 
 			wire, _, err := e.Seal(context.Background(),
-				common.Exchange{Action: action, Beckn: payload, Plan: planOn(server.URL)}, []byte(`{"Type":"x"}`))
+				common.Exchange{Action: action, Beckn: payload, Plan: planOn(t, server.URL)}, []byte(`{"Type":"x"}`))
 			if err != nil {
 				t.Fatalf("Seal() = %v", err)
 			}
@@ -162,7 +195,7 @@ func TestAWrongOTPStopsTheCallItGuards(t *testing.T) {
 	defer server.Close()
 
 	_, _, err := e.Seal(context.Background(),
-		common.Exchange{Action: "support", Beckn: supportPayload("0000"), Plan: planOn(server.URL)}, []byte(`{}`))
+		common.Exchange{Action: "support", Beckn: supportPayload("0000"), Plan: planOn(t, server.URL)}, []byte(`{}`))
 	if err == nil {
 		t.Fatal("Seal() succeeded on a wrong OTP")
 	}
@@ -181,7 +214,7 @@ func TestAMissingChallengeIsRefusedWithoutCallingTheOTPService(t *testing.T) {
 	defer server.Close()
 
 	_, _, err := e.Seal(context.Background(),
-		common.Exchange{Action: "status", Beckn: statusPayload(""), Plan: planOn(server.URL)}, []byte(`{}`))
+		common.Exchange{Action: "status", Beckn: statusPayload(""), Plan: planOn(t, server.URL)}, []byte(`{}`))
 	if code, status := codeOf(t, err); code != "SCH_REQUIRED_FIELD_MISSING" || status != http.StatusBadRequest {
 		t.Errorf("got %s/%d, want SCH_REQUIRED_FIELD_MISSING/400", code, status)
 	}
@@ -197,7 +230,7 @@ func TestAnUnreachableOTPServiceIsTheUpstreamFailing(t *testing.T) {
 	defer server.Close()
 
 	_, _, err := e.Seal(context.Background(),
-		common.Exchange{Action: "support", Beckn: supportPayload(validOTP), Plan: planOn(server.URL)}, []byte(`{}`))
+		common.Exchange{Action: "support", Beckn: supportPayload(validOTP), Plan: planOn(t, server.URL)}, []byte(`{}`))
 	if code, status := codeOf(t, err); code != "NET_DOWNSTREAM_UNAVAILABLE" || status != http.StatusBadGateway {
 		t.Errorf("got %s/%d, want NET_DOWNSTREAM_UNAVAILABLE/502", code, status)
 	}
@@ -225,6 +258,7 @@ func TestNewProviderEnvelopeRefusesInconsistentOTPSettings(t *testing.T) {
 		"verify path with no actions":   func(s *envelopeSettings) { s.verifyActions = "" },
 		"verify actions with no path":   func(s *envelopeSettings) { s.verifyPath = "" },
 		"otp settings with no envelope": func(s *envelopeSettings) { s.otp.kind = "" },
+		"otp envelope with no host":     func(s *envelopeSettings) { s.otp.baseURLEnv = "" },
 		"neither envelope nor otp":      func(s *envelopeSettings) { *s = envelopeSettings{} },
 	} {
 		t.Run(name, func(t *testing.T) {

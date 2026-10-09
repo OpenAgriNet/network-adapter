@@ -544,36 +544,50 @@ modules:
               #                                         sent beside the cipher,
               #                                         Token
               #
-              # support and status carry the farmer's OTP. The envelope verifies
-              # it on the OTP service (otpVerifyPath, on the host the registry
-              # names for init) before the lodge or the read is sent; a wrong
-              # OTP is a 400 and the call is never made.
+              # The registry's pmkisan participant is the grievance service;
+              # a Participant has one baseUrl for all its actions. The OTP
+              # service's host is named here instead (otpBaseUrlEnv), and init
+              # goes there.
               #
-              # The *Env settings name VARIABLES, never values. All four must be
+              # PMKISAN_OTP_BASE_URL is the bare host; the service path rides in
+              # each path -- init's on the registry row, the verify's in
+              # otpVerifyPath -- and the two must name the same service
+              # (chatbotservice.asmx in production, chatbotservicestaging.asmx
+              # on staging).
+              #
+              # support and status carry the farmer's OTP. The envelope verifies
+              # it on the OTP service (otpVerifyPath, on that same host) before
+              # the lodge or the read is sent; a wrong OTP is a 400 and the call
+              # is never made.
+              #
+              # The *Env settings name VARIABLES, never values. All five must be
               # set in the adapter's environment; with any missing, the calls
               # that need it fail with NET_INTERNAL_ERROR and nothing is sent --
-              # there is no fallback to plaintext.
+              # there is no fallback to plaintext or to the participant's host.
               #
               #   key        32 bytes, hex: AES-256, the grievance service
               #   nonce      hex, the fixed value the portal issued
               #   token      the grievance service's TokenNo
               #   OTP token  the OTP service's Token -- a different token
+              #   OTP host   the OTP service's base URL, e.g.
+              #              https://exlink.pmkisan.gov.in
               pmkisan:
                 authScheme: none
                 envelope: aesGcm
                 envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
-                envelopeNonceEnv: PMKISAN_GRIEVANCE_NONCE
+                envelopeNonceEnv: PMKISAN_GRIEVANCE_IV
                 envelopeTokenEnv: PMKISAN_SERVICE_TOKEN
                 envelopeTokenField: TokenNo
                 envelopeRequestField: EncryptedRequest
                 envelopeResponsePaths: "d.output,output"
                 otpEnvelope: aesCbcKeyInBand
+                otpBaseUrlEnv: PMKISAN_OTP_BASE_URL
                 otpTokenEnv: PMKISAN_OTP_TOKEN
                 otpTokenField: Token
                 otpRequestField: EncryptedRequest
                 otpResponsePaths: "d.output,output"
                 otpActions: init
-                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyPath: /services/chatbotservice.asmx/ChatbotOTPVerified
                 otpVerifyActions: "support,status"
 
       # Declaring a step above is not enough: THIS list is what runs. A step

@@ -28,9 +28,13 @@ required:
   - check: |
       (
         $id := beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId;
-        $not($exists($id)) or ($type($id) = "string" and $exists($match($id, /^[A-Za-z0-9]+$/)[0]))
+        /* At most twenty characters, and never twelve bare digits -- an
+           Aadhaar number, which this capability does not accept. */
+        $not($exists($id)) or ($type($id) = "string"
+          and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
+          and $not($exists($match($id, /^[0-9]{12}$/)[0])))
       )
-    message: "enrolmentId must be the registration number: ASCII letters and digits only"
+    message: "enrolmentId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
   - check: |
       (
         $c := beckn.message.contract.commitments[0].commitmentAttributes.challenge;

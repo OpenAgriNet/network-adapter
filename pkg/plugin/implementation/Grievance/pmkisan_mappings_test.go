@@ -328,6 +328,7 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 	t.Cleanup(upstream.Close)
 	otpHost := httptest.NewServer(otp)
 	t.Cleanup(otpHost.Close)
+	t.Setenv("TEST_PMKISAN_OTP_BASE_URL", otpHost.URL)
 
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
@@ -341,8 +342,8 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 		CapabilityCode: pkCapability,
 		BaseURL:        upstream.URL,
 		Actions: map[string]model.ActionPlan{
-			// The OTP lives on another service: its own host on the registry row.
-			"init": {Method: http.MethodPost, Path: "/ChatbotOTP", BaseURL: otpHost.URL,
+			// The OTP lives on another service, whose host the envelope names.
+			"init": {Method: http.MethodPost, Path: "/ChatbotOTP",
 				Mappings: mappings.URL + "/grievance.init.yaml", TimeoutMs: 20000},
 			"support": {Method: http.MethodPost, Path: "/LodgeGrievance",
 				Mappings: mappings.URL + "/grievance.support.yaml", TimeoutMs: 30000},
@@ -362,6 +363,7 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 		"envelopeRequestField-pmkisan":  "EncryptedRequest",
 		"envelopeResponsePaths-pmkisan": "d.output,output",
 		"otpEnvelope-pmkisan":           "aesCbcKeyInBand",
+		"otpBaseUrlEnv-pmkisan":         "TEST_PMKISAN_OTP_BASE_URL",
 		"otpTokenEnv-pmkisan":           "TEST_PMKISAN_OTP_TOKEN",
 		"otpTokenField-pmkisan":         "Token",
 		"otpRequestField-pmkisan":       "EncryptedRequest",
@@ -538,6 +540,8 @@ func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
 		{"an OTP that is not digits", `"value": "4821"`, `"value": "48a1"`, "SCH_INVALID_FORMAT", ""},
 		// Malformed: refused by required.
 		{"a registration number in native script", `"orderId": "UP12345678A"`, `"orderId": "UP१२३४५"`, "SCH_INVALID_FORMAT", ""},
+		{"an Aadhaar number where the registration belongs", `"orderId": "UP12345678A"`, `"orderId": "123456789012"`, "SCH_INVALID_FORMAT", ""},
+		{"a registration number past 20 characters", `"orderId": "UP12345678A"`, `"orderId": "UP1234567890123456789"`, "SCH_INVALID_FORMAT", ""},
 		{"a category outside the portal's list", `"code": "G003"`, `"code": "G011"`, "SCH_INVALID_FORMAT", ""},
 		{"a description past 2000 characters", `"  Third instalment for 2026 has not been credited.  "`,
 			`"` + strings.Repeat("x", 2001) + `"`, "SCH_INVALID_FORMAT", ""},
@@ -852,6 +856,24 @@ func TestPMKISANInitReportsAnOTPServiceRefusal(t *testing.T) {
 	beckn, status := pkBecknErr(t, err)
 	if status != http.StatusBadGateway || beckn.Code != "NET_DOWNSTREAM_UNAVAILABLE" {
 		t.Errorf("got %s/%d, want NET_DOWNSTREAM_UNAVAILABLE/502", beckn.Code, status)
+	}
+}
+
+func TestPMKISANInitAndStatusRefuseAnAadhaarNumber(t *testing.T) {
+	for name, request := range map[string]string{"init": pkInitRequest, "status": pkStatusRequest} {
+		t.Run(name, func(t *testing.T) {
+			request = strings.Replace(request, `"enrolmentId": "UP12345678A"`, `"enrolmentId": "123456789012"`, 1)
+			otp := newPKOTPService(t)
+			p := newPKPortal(t, "")
+			_, err := runPMKISANWith(t, p, otp, request)
+			beckn, status := pkBecknErr(t, err)
+			if status != http.StatusBadRequest || beckn.Code != "SCH_INVALID_FORMAT" {
+				t.Errorf("got %s/%d, want SCH_INVALID_FORMAT/400", beckn.Code, status)
+			}
+			if len(otp.calls) != 0 || p.calls != 0 {
+				t.Errorf("upstream was called (OTP %v, portal %d) with an Aadhaar number", otp.calls, p.calls)
+			}
+		})
 	}
 }
 

@@ -73,9 +73,6 @@ type actionPlan struct {
 	TimeoutMs int    `json:"timeoutMs"`
 	RetryMax  int    `json:"retryMax"`
 	Status    string `json:"status"`
-	// BaseURL overrides the participant's for this action alone. Absent on
-	// almost every row.
-	BaseURL string `json:"baseUrl"`
 }
 
 var (
@@ -337,7 +334,6 @@ func toProviderRecord(binding providerBinding, owner participant) *model.Provide
 			Mappings:  plan.Mappings,
 			TimeoutMs: plan.TimeoutMs,
 			RetryMax:  plan.RetryMax,
-			BaseURL:   plan.BaseURL,
 		}
 	}
 

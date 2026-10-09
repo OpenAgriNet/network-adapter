@@ -32,9 +32,9 @@ const maxVerifyAnswerBytes = 64 << 10
 // carries one -- the lodge or the read -- is sent.
 //
 // It is one call the registry has no action for: a precondition of support
-// and status, not an action of its own. It goes to the host the OTP realm's
-// action names on the registry (init's), at verifyPath, through the same codec
-// and token, so the OTP realm's host lives in one place.
+// and status, not an action of its own. It goes to the OTP realm's host
+// (otpBaseUrlEnv) at verifyPath, through the same codec and token as init, and
+// within init's time budget.
 //
 // The OTP goes here and nowhere else: it is not in the lodge or the read, it is
 // not logged, and it is not echoed.
@@ -44,12 +44,14 @@ type otpVerify struct {
 	actions    map[string]bool
 	hostAction string
 	codec      *cbcCodec
+	host       func(context.Context) (string, error)
 	client     *http.Client
 }
 
-func newOTPVerify(provider, path string, actions map[string]bool, hostAction string, codec *cbcCodec) *otpVerify {
+func newOTPVerify(provider, path string, actions map[string]bool, hostAction string, codec *cbcCodec,
+	host func(context.Context) (string, error)) *otpVerify {
 	return &otpVerify{provider: provider, path: path, actions: actions, hostAction: hostAction,
-		codec: codec, client: &http.Client{}}
+		codec: codec, host: host, client: &http.Client{}}
 }
 
 // check verifies the exchange's challenge, refusing the call when it fails.
@@ -72,6 +74,10 @@ func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
 			"challenge.method must be %s", challengeMethod))
 	}
 
+	base, err := v.host(ctx)
+	if err != nil {
+		return err
+	}
 	body, err := json.Marshal(map[string]string{"Types": identityType, "Values": identity, "OTP": otp})
 	if err != nil {
 		return err
@@ -81,7 +87,7 @@ func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
 		return err
 	}
 
-	answer, err := v.post(ctx, exchange, sealed)
+	answer, err := v.post(ctx, exchange, base, sealed)
 	if err != nil {
 		return err
 	}
@@ -99,13 +105,13 @@ func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
 	return nil
 }
 
-// post sends the sealed verify request to the OTP realm's host.
-func (v *otpVerify) post(ctx context.Context, exchange common.Exchange, sealed []byte) ([]byte, error) {
-	if exchange.Plan == nil {
-		return nil, errors.New("no call plan to find the OTP service on")
+// post sends the sealed verify request to the OTP realm's host, within the
+// time budget of the realm's own action.
+func (v *otpVerify) post(ctx context.Context, exchange common.Exchange, base string, sealed []byte) ([]byte, error) {
+	var call model.ActionPlan
+	if exchange.Plan != nil {
+		call = exchange.Plan.Actions[v.hostAction]
 	}
-	call := exchange.Plan.Actions[v.hostAction]
-	base := exchange.Plan.BaseURLFor(v.hostAction)
 	endpoint, err := util.BuildEndpoint(base, model.ActionPlan{Method: http.MethodPost, Path: v.path}, nil)
 	if err != nil {
 		return nil, err

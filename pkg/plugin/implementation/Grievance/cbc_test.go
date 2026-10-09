@@ -24,12 +24,13 @@ const (
 	cbcReply      = "DladryWQZWg3x/IX77sFz5fyvL8fZS58iyeovMdphFl1xs/uwnFWA3cdIOe8A3wd@fedcba9876543210fedcba9876543210"
 	cbcReplyPlain = `{"Rsponce":"True","Message":"OTP Verified"}`
 
-	testOTPTokenEnv = "TEST_PMKISAN_OTP_TOKEN"
-	testOTPToken    = "test-otp-token"
+	testOTPTokenEnv   = "TEST_PMKISAN_OTP_TOKEN"
+	testOTPBaseURLEnv = "TEST_PMKISAN_OTP_BASE_URL"
+	testOTPToken      = "test-otp-token"
 )
 
 func otpRealm() realmSettings {
-	return realmSettings{kind: envelopeAESCBCKeyInBand, tokenEnv: testOTPTokenEnv, tokenField: "Token",
+	return realmSettings{kind: envelopeAESCBCKeyInBand, baseURLEnv: testOTPBaseURLEnv, tokenEnv: testOTPTokenEnv, tokenField: "Token",
 		requestField: "EncryptedRequest", responsePaths: "d.output,output"}
 }
 

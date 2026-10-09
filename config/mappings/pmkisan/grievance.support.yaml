@@ -31,12 +31,17 @@ required:
       (
         $id := beckn.message.support.orderId;
         /* ASCII letters and digits only. The portal accepts native-script
-           digits and forwards them unconverted, so they are refused here. No
-           length rule: eleven characters is the documented shape, but nothing
-           upstream enforces it. */
-        $not($exists($id)) or ($type($id) = "string" and $exists($match($id, /^[A-Za-z0-9]+$/)[0]))
+           digits and forwards them unconverted, so they are refused here. At
+           most twenty characters, and never twelve bare digits: that is an
+           Aadhaar number, which this capability does not accept. The pack
+           states both rules on enrolmentId, but on support the value sits in
+           orderId, outside everything the pack validates, so they are
+           restated here. */
+        $not($exists($id)) or ($type($id) = "string"
+          and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
+          and $not($exists($match($id, /^[0-9]{12}$/)[0])))
       )
-    message: "orderId must be the registration number: ASCII letters and digits only"
+    message: "orderId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
   - check: |
       (
         $code := beckn.message.support.channels[0].grievance.category.code;

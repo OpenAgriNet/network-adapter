@@ -51,6 +51,7 @@ var envelopeFields = map[string]func(*envelopeSettings, string){
 	"envelopeResponsePaths": func(s *envelopeSettings, v string) { s.responsePaths = v },
 
 	"otpEnvelope":      func(s *envelopeSettings, v string) { s.otp.kind = v },
+	"otpBaseUrlEnv":    func(s *envelopeSettings, v string) { s.otp.baseURLEnv = v },
 	"otpTokenEnv":      func(s *envelopeSettings, v string) { s.otp.tokenEnv = v },
 	"otpTokenField":    func(s *envelopeSettings, v string) { s.otp.tokenField = v },
 	"otpRequestField":  func(s *envelopeSettings, v string) { s.otp.requestField = v },
@@ -73,8 +74,13 @@ type envelopeSettings struct {
 }
 
 // realmSettings is a codec's own settings, for a realm that has no fixed key.
+//
+// baseURLEnv names the variable holding the realm's host. A Participant on the
+// registry carries one base URL for all its actions, and that is the
+// grievance service's; the OTP service is another host, so it is named here,
+// beside the realm's token, rather than on the registry.
 type realmSettings struct {
-	kind, tokenEnv, tokenField, requestField, responsePaths string
+	kind, baseURLEnv, tokenEnv, tokenField, requestField, responsePaths string
 }
 
 // ParseEnvelopes reads each provider's envelope out of a plugin's flattened
@@ -86,18 +92,19 @@ type realmSettings struct {
 //	  authScheme: none
 //	  envelope: aesGcm                     # the grievance service
 //	  envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
-//	  envelopeNonceEnv: PMKISAN_GRIEVANCE_NONCE
+//	  envelopeNonceEnv: PMKISAN_GRIEVANCE_IV
 //	  envelopeTokenEnv: PMKISAN_SERVICE_TOKEN
 //	  envelopeTokenField: TokenNo
 //	  envelopeRequestField: EncryptedRequest
 //	  envelopeResponsePaths: d.output,output
 //	  otpEnvelope: aesCbcKeyInBand         # the OTP service
+//	  otpBaseUrlEnv: PMKISAN_OTP_BASE_URL
 //	  otpTokenEnv: PMKISAN_OTP_TOKEN
 //	  otpTokenField: Token
 //	  otpRequestField: EncryptedRequest
 //	  otpResponsePaths: d.output,output
 //	  otpActions: init
-//	  otpVerifyPath: /ChatbotOTPVerified
+//	  otpVerifyPath: /services/chatbotservice.asmx/ChatbotOTPVerified
 //	  otpVerifyActions: support,status
 //
 // which pkg/plugin flattens to envelope-pmkisan and friends.
@@ -146,16 +153,41 @@ type providerEnvelope struct {
 	// Nil means those actions go as plain JSON.
 	base codec
 
-	// The OTP realm's codec and the actions sent through it.
-	otp        codec
-	otpActions map[string]bool
+	// The OTP realm's codec, the variable naming its host, and the actions
+	// sent through it.
+	otp           codec
+	otpBaseURLEnv string
+	otpActions    map[string]bool
 
 	// Verification before the actions that carry an OTP. Nil means none.
 	verify *otpVerify
 }
 
-// The step relies on this at runtime; prove it at compile time.
-var _ common.Envelope = (*providerEnvelope)(nil)
+// The step relies on these at runtime; prove them at compile time.
+var (
+	_ common.Envelope = (*providerEnvelope)(nil)
+	_ common.Router   = (*providerEnvelope)(nil)
+)
+
+// BaseURLFor sends the actions on the OTP realm to its host, and leaves every
+// other action on the participant's.
+func (e *providerEnvelope) BaseURLFor(ctx context.Context, action, participant string) (string, error) {
+	if !e.otpActions[action] {
+		return participant, nil
+	}
+	return e.otpHost(ctx)
+}
+
+// otpHost is the OTP realm's host, read when used like every other setting
+// that differs between environments. Unset, nothing is sent: the participant's
+// host is the grievance service, which has no OTP endpoint to fall back on.
+func (e *providerEnvelope) otpHost(ctx context.Context) (string, error) {
+	host := strings.TrimSpace(os.Getenv(e.otpBaseURLEnv))
+	if host == "" {
+		return "", unconfigured(ctx, e.provider, e.otpBaseURLEnv+" is not set")
+	}
+	return host, nil
+}
 
 // Seal verifies the action's OTP when it carries one, then wraps the mapped
 // request in the action's codec.
@@ -183,7 +215,7 @@ func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, m
 // Their secret values are not read here: like every credential in this
 // adapter they are read when used.
 func newProviderEnvelope(provider string, s envelopeSettings) (*providerEnvelope, error) {
-	e := &providerEnvelope{provider: provider, otpActions: listSet(s.otpActions)}
+	e := &providerEnvelope{provider: provider, otpBaseURLEnv: s.otp.baseURLEnv, otpActions: listSet(s.otpActions)}
 
 	if s.kind != "" {
 		base, err := newGCMCodec(provider, s)
@@ -201,8 +233,11 @@ func newProviderEnvelope(provider string, s envelopeSettings) (*providerEnvelope
 		if len(e.otpActions) == 0 {
 			return nil, fmt.Errorf("%s: otpEnvelope needs otpActions, the actions sent through it", provider)
 		}
+		if s.otp.baseURLEnv == "" {
+			return nil, fmt.Errorf("%s: otpEnvelope needs otpBaseUrlEnv, the variable holding the OTP service's host", provider)
+		}
 		e.otp = otp
-	} else if len(e.otpActions) > 0 || s.otp.tokenEnv != "" || s.otp.requestField != "" || s.otp.responsePaths != "" {
+	} else if len(e.otpActions) > 0 || s.otp.baseURLEnv != "" || s.otp.tokenEnv != "" || s.otp.requestField != "" || s.otp.responsePaths != "" {
 		return nil, fmt.Errorf("%s: otp settings are present but otpEnvelope is not set", provider)
 	}
 
@@ -214,7 +249,7 @@ func newProviderEnvelope(provider string, s envelopeSettings) (*providerEnvelope
 	case e.otp == nil:
 		return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope: the OTP is verified on the OTP realm", provider)
 	default:
-		e.verify = newOTPVerify(provider, s.verifyPath, verifyActions, firstOf(s.otpActions), e.otp.(*cbcCodec))
+		e.verify = newOTPVerify(provider, s.verifyPath, verifyActions, firstOf(s.otpActions), e.otp.(*cbcCodec), e.otpHost)
 	}
 
 	if e.base == nil && e.otp == nil {
