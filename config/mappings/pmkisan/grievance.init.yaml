@@ -33,7 +33,8 @@ request: |
     $exists($ca.enrolmentId)
     ? { "Types": "Ben_id", "Values": $ca.enrolmentId }
     : { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "requesting an OTP needs enrolmentId, the registration number" } }
+                    "message": "enrolmentId is required",
+                    "path": "$.message.contract.commitments[0].commitmentAttributes.enrolmentId" } }
   )
 
 # The OTP service answers with a success flag and a sentence. "True" is the
