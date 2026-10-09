@@ -56,10 +56,6 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 	}
 	cfg.AuthByProvider = auth
 
-	// Where an action whose payload composes no contract -- support -- names
-	// its provider and type, read from a block named for the action.
-	cfg.PathsByAction = common.ParseActionPaths(config)
-
 	return cfg, nil
 }
 

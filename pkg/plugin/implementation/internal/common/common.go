@@ -52,17 +52,12 @@ type Config struct {
 	// A network convention, not a preference: every participant must agree or
 	// requests silently fail to match. Configurable only so a spec change can
 	// be tracked without waiting for a release. Both or neither.
+	//
+	// Either may list several paths, comma-separated, paired by position and
+	// tried in order until one pair finds a binding: a support request composes
+	// no contract and names its provider and type on its channel instead.
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
-
-	// Where the two halves sit for one action, keyed by the Beckn action, when
-	// its payload puts them somewhere other than the paths above. A support
-	// request composes no contract, so it names its provider and type on its
-	// channel. An action not listed reads the paths above.
-	//
-	// Built by ParseActionPaths, not decoded from YAML -- an operator writes a
-	// nested block named for the action, which pkg/plugin flattens on the way in.
-	PathsByAction map[string]Paths `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
@@ -88,7 +83,7 @@ type Config struct {
 // safe for concurrent use.
 type Step struct {
 	config        *Config
-	paths         Paths
+	paths         []Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
 	mapper        definition.Mapper
@@ -119,15 +114,14 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	if err != nil {
 		return nil, nil, err
 	}
-	for action, actionPaths := range cfg.PathsByAction {
-		if err := actionPaths.Validate(); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", action, err)
-		}
+	pathList, err := splitPaths(paths)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	step := &Step{
 		config:        cfg,
-		paths:         paths,
+		paths:         pathList,
 		prerequisites: prerequisites,
 		registry:      registry,
 		mapper:        mapper,
@@ -175,38 +169,23 @@ func BindingPaths(cfg *Config) (Paths, error) {
 	return paths, nil
 }
 
-// The two settings that say where a binding key sits, at the top of a step's
-// config or in a block named for an action.
-const (
-	providerIDAtSetting     = "providerIdAt"
-	capabilityCodeAtSetting = "capabilityCodeAt"
-)
-
-// ParseActionPaths reads the per-action binding paths from a step's flattened
-// config: a block named for an action arrives as providerIdAt-<action> and
-// capabilityCodeAt-<action>. A block missing either half is refused by New,
-// whose Validate finds the empty path.
-//
-// EXPORTED for a domain plugin's cmd package, which hands the flat map over.
-func ParseActionPaths(config map[string]string) map[string]Paths {
-	byAction := map[string]Paths{}
-	for key, value := range config {
-		setting, action, dashed := strings.Cut(key, "-")
-		if !dashed {
-			continue
-		}
-		paths := byAction[action]
-		switch setting {
-		case providerIDAtSetting:
-			paths.ProviderID = value
-		case capabilityCodeAtSetting:
-			paths.CapabilityCode = value
-		default:
-			continue
-		}
-		byAction[action] = paths
+// splitPaths pairs the comma-separated halves of paths by position, so each
+// pair is one place a binding key may sit.
+func splitPaths(paths Paths) ([]Paths, error) {
+	providers := strings.Split(paths.ProviderID, ",")
+	capabilities := strings.Split(paths.CapabilityCode, ",")
+	if len(providers) != len(capabilities) {
+		return nil, fmt.Errorf("providerIdAt lists %d paths and capabilityCodeAt %d; they pair by position",
+			len(providers), len(capabilities))
 	}
-	return byAction
+	pairs := make([]Paths, len(providers))
+	for i := range providers {
+		pairs[i] = Paths{ProviderID: strings.TrimSpace(providers[i]), CapabilityCode: strings.TrimSpace(capabilities[i])}
+		if err := pairs[i].Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return pairs, nil
 }
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.

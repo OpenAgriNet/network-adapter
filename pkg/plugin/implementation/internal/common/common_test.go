@@ -1060,7 +1060,7 @@ func TestNewUsesTheBecknConventionByDefault(t *testing.T) {
 	t.Parallel()
 
 	step := newStep(t, &stubRegistry{}, &stubMapper{})
-	if step.paths != BecknV2 {
+	if !slices.Equal(step.paths, []Paths{BecknV2}) {
 		t.Errorf("paths = %+v, want the Beckn v2 convention", step.paths)
 	}
 }

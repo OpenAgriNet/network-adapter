@@ -24,21 +24,25 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
-	paths, ownPaths := s.config.PathsByAction[extractAction(ctx.Body)]
-	if !ownPaths {
-		paths = s.paths
+	var binding Binding
+	err := errNoBinding
+	for i, paths := range s.paths {
+		binding, err = BindingFrom(paths, ctx.Body)
+		if errors.Is(err, errNoBinding) {
+			continue
+		}
+		// A later pair may read a container other capabilities share -- a
+		// support request's channels -- so a payload it cannot resolve is
+		// refused only when it names this step's own work.
+		if err != nil && i > 0 && !s.namesServed(paths, ctx.Body) {
+			return nil
+		}
+		break
 	}
-	binding, err := BindingFrom(paths, ctx.Body)
 	if errors.Is(err, errNoBinding) {
 		return nil
 	}
 	if err != nil {
-		// An action's own paths may read a container other capabilities share
-		// -- a support request's channels -- so a payload they cannot resolve
-		// is refused only when it names this step's own work.
-		if ownPaths && !s.namesServed(paths, ctx.Body) {
-			return nil
-		}
 		// Everything BindingFrom refuses is about the payload -- unreadable
 		// JSON, or more than one call named. Unclassified it becomes a 500,
 		// which blames this adapter and hides the reason from the caller.
