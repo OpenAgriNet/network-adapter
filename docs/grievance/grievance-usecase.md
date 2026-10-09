@@ -14,7 +14,7 @@ Everything explaining *why* a field is shaped the way it is sits in the appendic
 1. [What this is](#1-what-this-is)
 2. [Before any scenario — `discover`](#2-before-any-scenario--discover)
 3. [PMFBY grievance](#3-pmfby-grievance) — `support`, then `status`
-   - 3.1 [A farmer cannot get into the portal](#31-scenario--a-farmer-cannot-get-into-the-portal)
+   - 3.1 [A claim that never arrived](#31-scenario--a-claim-that-never-arrived)
    - 3.2 [The same farmer checks his complaint four days later](#32-scenario--the-same-farmer-checks-his-complaint-four-days-later)
 4. [PM-KISAN grievance](#4-pm-kisan-grievance) — `init` → `support`, then `init` → `status`
    - 4.1 [Filing a complaint, with the registration proved first](#41-scenario--filing-a-complaint-with-the-registration-proved-first)
@@ -195,10 +195,11 @@ alike. That, and everything else a call must carry, is
 
 ## 3. PMFBY grievance
 
-### 3.1 Scenario — a farmer cannot get into the portal
+### 3.1 Scenario — a claim that never arrived
 
-Ramesh enrolled a Kharif paddy crop in 2026. He cannot sign in to the PMFBY portal to see
-that enrolment, so he raises a complaint about it.
+Ramesh enrolled a Kharif paddy crop in 2026. The crop was damaged, the claim against that
+enrolment was assessed, and the money has not reached his account. He raises a complaint
+about it.
 
 He has two things: his application number and the mobile number he enrolled with. He has
 no ticket number yet.
@@ -259,7 +260,7 @@ POST /support
         "grievance": {
           "category": { "code": "3" },
           "subCategory": { "code": "10" },
-          "description": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment."
+          "description": "Claim for my Kharif 2026 paddy enrolment has not been credited to my account."
         }
       }]
     }
@@ -294,7 +295,7 @@ POST /support
         "grievance": {
           "category": { "code": "3" },
           "subCategory": { "code": "10" },
-          "description": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment."
+          "description": "Claim for my Kharif 2026 paddy enrolment has not been credited to my account."
         },
         "case": {
           "ticketNo": "100626000099001",
@@ -387,8 +388,10 @@ POST /status
   `case.remark` and `case.remarkedOn`.
 - **`case.cropName`** — the insured crop. PMFBY alone returns it.
 - **The category comes back as a name with no code**, because the portal returns
-  `TicketCategoryName` and no id. PMFBY publishes no category master, so the wording below
-  is only an example. Show whatever the portal returns.
+  `TicketCategoryName` and `TicketSubCategoryName` and no ids at all. Both are shown as `…`
+  below. PMFBY publishes no category master and this network invents none — the catalog
+  entry omits `name` for the same reason — so whatever the portal returns is what you
+  show.
 - **Dropped:** the farmer's name, state, district, the insurer and an internal ticket key.
 
 ```json
@@ -411,9 +414,9 @@ POST /status
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "enrolmentId": "KA2026KH00123456",
         "grievance": {
-          "category": { "name": "Enrollment / Portal Issues" },
-          "subCategory": { "name": "Login" },
-          "description": "Cannot log in to the PMFBY portal to view my Kharif 2026 enrolment."
+          "category": { "name": "…" },
+          "subCategory": { "name": "…" },
+          "description": "Claim for my Kharif 2026 paddy enrolment has not been credited to my account."
         },
         "case": {
           "ticketNo": "100626000099001",
@@ -478,7 +481,7 @@ POST /init
       "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmkisan:grievance",
-        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Portal" } },
         "resourceIds": ["res:pmkisan:grievance"]
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
@@ -546,7 +549,7 @@ POST /support
         "informationMode": "OnDemand",
         "provider": {
           "id": "pmkisan",
-          "descriptor": { "name": "PM-KISAN Grievance Portal" }
+          "descriptor": { "name": "PM-KISAN Portal" }
         },
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "grievance": {
@@ -596,7 +599,7 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
         "informationMode": "Direct",
         "provider": {
           "id": "pmkisan",
-          "descriptor": { "name": "PM-KISAN Grievance Portal" }
+          "descriptor": { "name": "PM-KISAN Portal" }
         },
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "grievance": {
@@ -651,7 +654,7 @@ POST /init
       "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmkisan:grievance",
-        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Portal" } },
         "resourceIds": ["res:pmkisan:grievance"]
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
@@ -702,7 +705,7 @@ POST /status
       "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:grievance",
-        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Portal" } },
         "resourceIds": ["res:pmkisan:grievance"]
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
@@ -745,7 +748,7 @@ POST /status
       "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:grievance",
-        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Portal" } },
         "resourceIds": ["res:pmkisan:grievance"]
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
@@ -827,7 +830,7 @@ POST /init
       "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmkisan:application-status",
-        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Portal" } },
         "resourceIds": ["res:pmkisan:application-status"]
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
@@ -886,7 +889,7 @@ POST /status
       "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:application-status",
-        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Portal" } },
         "resourceIds": ["res:pmkisan:application-status"]
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
@@ -922,7 +925,7 @@ POST /status
       "status": { "descriptor": { "code": "CLOSED" } },
       "offer": {
         "id": "off:pmkisan:application-status",
-        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Portal" } },
         "resourceIds": ["res:pmkisan:application-status"]
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
@@ -961,7 +964,7 @@ farmer's record, which is why the other values differ too:
   "enrolmentId": "UP77554433D",
   "application": {
     "registeredOn": "2021-02-08T00:00:00+05:30",
-    "latestInstallmentPaid": 16,
+    "latestInstallmentPaid": 22,
     "ekyc": { "code": "Done", "name": "eKYC completed" },
     "blockers": []
   }
@@ -1467,7 +1470,7 @@ POST /catalog/publish
       },
       "provider": {
         "id": "pmkisan",
-        "descriptor": { "code": "PMKISAN", "name": "PM-KISAN Grievance Portal" }
+        "descriptor": { "code": "PMKISAN", "name": "PM-KISAN Portal" }
       },
       "resources": [{
         "id": "res:pmkisan:grievance",
@@ -1587,7 +1590,7 @@ POST /catalog/publish
       },
       "provider": {
         "id": "pmkisan",
-        "descriptor": { "code": "PMKISAN", "name": "PM-KISAN Grievance Portal" }
+        "descriptor": { "code": "PMKISAN", "name": "PM-KISAN Portal" }
       },
       "resources": [{
         "id": "res:pmkisan:application-status",
@@ -1613,7 +1616,12 @@ POST /catalog/publish
 ```
 
 - **Same `provider.id` as the grievance desk** — one participant, two capabilities.
-  `@type` tells them apart, and the registry binds on it.
+  `@type` tells them apart, and the registry binds on it. `provider.descriptor` describes
+  the participant and not the capability, so it reads `PM-KISAN Portal` in both catalogs:
+  nothing here is a grievance, and [G.3](#g3-pm-kisan-application-status) shows this one is
+  served by a different host.
+- **Catalog `descriptor` is where the capability is named** — `PM-KISAN Application Status`
+  here, `PM-KISAN Grievance Desk` in F.2. That is the field a caller shows a farmer.
 - **`challengeMethods: ["SMS_OTP"]`** — tells a caller to open with `init`.
 - **No `grievanceOptions`** — this desk reads a record; it files nothing, so it has no
   categories to offer. The pack refuses the field outright rather than leave it publishable
