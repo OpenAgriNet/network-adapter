@@ -372,14 +372,6 @@ func handleProtocolMapping(route *model.Route, npURI, endpoint, rawQuery string)
 		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT",
 			fmt.Errorf("invalid %s URI - %s in request body for %s: %w", role, target, endpoint, err))
 	}
-	// A URI from the request body names a network peer, so only http and
-	// https are accepted. Anything else -- inproc:// in particular, which the
-	// adapter serves in-process -- would let a caller pick a target that only
-	// routing config may name.
-	if targetURL.Scheme != "http" && targetURL.Scheme != "https" {
-		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT",
-			fmt.Errorf("invalid %s URI - %s in request body for %s: scheme must be http or https", role, target, endpoint))
-	}
 	targetURL.Path = joinPath(targetURL, endpoint)
 	if rawQuery != "" {
 		targetURL.RawQuery = rawQuery
