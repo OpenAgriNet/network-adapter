@@ -58,11 +58,7 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 
 	// Where an action whose payload composes no contract -- support -- names
 	// its provider and type, read from a block named for the action.
-	actionPaths, err := common.ParseActionPaths(config)
-	if err != nil {
-		return nil, err
-	}
-	cfg.PathsByAction = actionPaths
+	cfg.PathsByAction = common.ParseActionPaths(config)
 
 	return cfg, nil
 }
