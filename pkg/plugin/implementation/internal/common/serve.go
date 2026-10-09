@@ -24,28 +24,24 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
-	var payload any
-	if err := json.Unmarshal(ctx.Body, &payload); err != nil {
-		// Unclassified it becomes a 500, which blames this adapter and hides
-		// the reason from the caller.
-		return model.NewBadReqErr("", fmt.Errorf("payload could not be read: %w", err))
+	paths, ownPaths := s.config.PathsByAction[extractAction(ctx.Body)]
+	if !ownPaths {
+		paths = s.paths
 	}
-	binding, err := bindingIn(s.paths, payload)
-	if errors.Is(err, errNoBinding) && s.fallback != nil {
-		binding, err = bindingIn(*s.fallback, payload)
-		// The fallback reads a container other capabilities use too, so a
-		// payload it cannot resolve is refused only when it names this step's
-		// own work; anyone else's passes through.
-		if err != nil && !errors.Is(err, errNoBinding) && !s.namesServed(*s.fallback, payload) {
-			return nil
-		}
-	}
+	binding, err := BindingFrom(paths, ctx.Body)
 	if errors.Is(err, errNoBinding) {
 		return nil
 	}
 	if err != nil {
-		// Everything bindingIn refuses is about the payload -- more than one
-		// call named. Unclassified it becomes a 500, as above.
+		// An action's own paths may read a container other capabilities share
+		// -- a support request's channels -- so a payload they cannot resolve
+		// is refused only when it names this step's own work.
+		if ownPaths && !s.namesServed(paths, ctx.Body) {
+			return nil
+		}
+		// Everything BindingFrom refuses is about the payload -- unreadable
+		// JSON, or more than one call named. Unclassified it becomes a 500,
+		// which blames this adapter and hides the reason from the caller.
 		return model.NewBadReqErr("", err)
 	}
 	if !s.serves(binding.Key()) {
@@ -100,7 +96,11 @@ func (s *Step) serves(key string) bool {
 
 // namesServed reports whether any provider and type the paths reach pair into
 // a binding this step serves.
-func (s *Step) namesServed(paths Paths, payload any) bool {
+func (s *Step) namesServed(paths Paths, body []byte) bool {
+	var payload any
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
 	for _, provider := range ValuesAt(payload, paths.ProviderID) {
 		for _, capability := range ValuesAt(payload, paths.CapabilityCode) {
 			if s.serves(Binding{ParticipantID: provider, CapabilityCode: capability}.Key()) {

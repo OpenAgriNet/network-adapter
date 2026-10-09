@@ -18,7 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -55,12 +57,14 @@ type Config struct {
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
-	// A second place to read a binding key from, tried only when the first
-	// finds none. For an action whose payload composes no contract: a support
-	// request carries its provider and type on its channel instead. Both or
-	// neither; absent means there is no second place.
-	FallbackProviderIDAt     string `yaml:"fallbackProviderIdAt" json:"fallbackProviderIdAt"`
-	FallbackCapabilityCodeAt string `yaml:"fallbackCapabilityCodeAt" json:"fallbackCapabilityCodeAt"`
+	// Where the two halves sit for one action, keyed by the Beckn action, when
+	// its payload puts them somewhere other than the paths above. A support
+	// request composes no contract, so it names its provider and type on its
+	// channel. An action not listed reads the paths above.
+	//
+	// Built by ParseActionPaths, not decoded from YAML -- an operator writes a
+	// nested block named for the action, which pkg/plugin flattens on the way in.
+	PathsByAction map[string]Paths `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
@@ -87,7 +91,6 @@ type Config struct {
 type Step struct {
 	config        *Config
 	paths         Paths
-	fallback      *Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
 	mapper        definition.Mapper
@@ -118,15 +121,15 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	if err != nil {
 		return nil, nil, err
 	}
-	fallback, err := fallbackPaths(cfg)
-	if err != nil {
-		return nil, nil, err
+	for action, actionPaths := range cfg.PathsByAction {
+		if err := actionPaths.Validate(); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", action, err)
+		}
 	}
 
 	step := &Step{
 		config:        cfg,
 		paths:         paths,
-		fallback:      fallback,
 		prerequisites: prerequisites,
 		registry:      registry,
 		mapper:        mapper,
@@ -174,21 +177,45 @@ func BindingPaths(cfg *Config) (Paths, error) {
 	return paths, nil
 }
 
-// fallbackPaths resolves the second place a binding key may be read from, or
-// nil when none is configured. Both halves or neither, for the reason
+// The two settings that say where a binding key sits, at the top of a step's
+// config or in a block named for an action.
+const (
+	providerIDAtSetting     = "providerIdAt"
+	capabilityCodeAtSetting = "capabilityCodeAt"
+)
+
+// ParseActionPaths reads the per-action binding paths from a step's flattened
+// config: a block named for an action arrives as providerIdAt-<action> and
+// capabilityCodeAt-<action>. Both halves or neither, for the reason
 // BindingPaths gives.
-func fallbackPaths(cfg *Config) (*Paths, error) {
-	if cfg.FallbackProviderIDAt == "" && cfg.FallbackCapabilityCodeAt == "" {
-		return nil, nil
+//
+// EXPORTED for a domain plugin's cmd package, which hands the flat map over.
+func ParseActionPaths(config map[string]string) (map[string]Paths, error) {
+	byAction := map[string]Paths{}
+	for key, value := range config {
+		setting, action, dashed := strings.Cut(key, "-")
+		if !dashed {
+			continue
+		}
+		paths := byAction[action]
+		switch setting {
+		case providerIDAtSetting:
+			paths.ProviderID = value
+		case capabilityCodeAtSetting:
+			paths.CapabilityCode = value
+		default:
+			continue
+		}
+		byAction[action] = paths
 	}
-	if cfg.FallbackProviderIDAt == "" || cfg.FallbackCapabilityCodeAt == "" {
-		return nil, errors.New("fallbackProviderIdAt and fallbackCapabilityCodeAt are set together or not at all")
+	// Sorted so a config with two mistakes reports the same one every run.
+	for _, action := range slices.Sorted(maps.Keys(byAction)) {
+		if paths := byAction[action]; paths.ProviderID == "" || paths.CapabilityCode == "" {
+			return nil, fmt.Errorf("%s: %s and %s are set together or not at all",
+				action, providerIDAtSetting, capabilityCodeAtSetting)
+		}
 	}
-	paths := Paths{ProviderID: cfg.FallbackProviderIDAt, CapabilityCode: cfg.FallbackCapabilityCodeAt}
-	if err := paths.Validate(); err != nil {
-		return nil, fmt.Errorf("fallback %w", err)
-	}
-	return &paths, nil
+	return byAction, nil
 }
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.
