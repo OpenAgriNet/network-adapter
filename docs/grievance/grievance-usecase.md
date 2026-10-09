@@ -829,12 +829,15 @@ answer.
 
 #### The call — `init`
 
-- **`applicant`** — and nothing else. Where the OTP goes follows from `idType`: for
-  `Registration` and `Aadhaar` the portal looks up the mobile it holds, and the caller
-  never learns it; for `Mobile` the identifier *is* a phone number, so the OTP goes there.
-  The example below is a `Mobile` lookup, which is why a number appears in the payload.
-- **`applicant.idType`** — mandatory. The pack checks `applicant.id` against the shape that
-  type requires and refuses a mismatch before the portal is called.
+- **`applicant`** — and nothing else. Exactly one identifier, written into the member that
+  names its kind: `registration`, `mobile` or `aadhaar`. Where the OTP goes follows from
+  which member is used: for `registration` and `aadhaar` the portal looks up the mobile it
+  holds, and the caller never learns it; for `mobile` the identifier *is* a phone number,
+  so the OTP goes there. The example below is a `mobile` lookup, which is why a number
+  appears in the payload.
+- **One identifier, not two and not none.** Either is a validation error. Because the
+  member names the kind, there is no declared type left to disagree with the value beside
+  it.
 - **`DRAFT`.** The caller mints `contract.id` here and quotes the same value on `status`.
 
 ```json
@@ -860,7 +863,7 @@ POST /init
         "@type": "openagrinet:PMKISANApplicationStatus",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicant": { "idType": "Mobile", "id": "9812345670" }
+        "applicant": { "mobile": "9999999999" }
       }
     }]
   }}
@@ -919,7 +922,7 @@ POST /status
         "@type": "openagrinet:PMKISANApplicationStatus",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicant": { "idType": "Mobile", "id": "9812345670" },
+        "applicant": { "mobile": "9999999999" },
         "challenge": { "method": "SMS_OTP", "value": "4827" }
       }
     }]
@@ -1244,8 +1247,7 @@ PM-KISAN uses no `applicantPhone`, `cropYear` or `season`, and its pack refuses
 | field | `init` | `status` |
 |---|---|---|
 | `contract.id` | required — caller-minted | required — the same value as the `init` before it |
-| `applicant.idType` | required — `Registration`, `Mobile` or `Aadhaar` | required — the same value |
-| `applicant.id` | required — in the shape its type names | required — the same value |
+| `applicant` | required — exactly one of `registration`, `mobile`, `aadhaar` | required — the same member, the same value |
 | `challenge.method` | — | required — `SMS_OTP` |
 | `challenge.value` | — | required — the four-digit OTP from `on_init` |
 
@@ -1253,18 +1255,18 @@ There is no `support` row: this capability has no `support` leg, so nothing move
 `Support.orderId` and no field carries an `x-beckn-path`. `enrolmentId` appears only on the
 way back, as the registration the portal resolved the lookup to — a caller never sends it.
 
-`applicant.idType` is required because the portal guesses the kind of identifier from the
-*shape* of the value: ten digits beginning 6–9 is a mobile number, twelve digits an Aadhaar
-number, anything else a registration number. So a registration number that happens to look
-like a phone number becomes a phone lookup, silently, and returns nothing or somebody
-else's record. Declaring the type closes that off. A value that does not match its declared
-type is rejected before the portal is called:
+The kind is named rather than inferred because the portal guesses it from the *shape* of
+the value: ten digits beginning 6–9 is a mobile number, twelve digits an Aadhaar number,
+anything else a registration number. So a registration number that happens to look like a
+phone number becomes a phone lookup, silently, and returns nothing or somebody else's
+record. Writing the identifier into a member that names its kind closes that off — the
+adapter sends the kind outright, and each member is held to its own shape:
 
-| `idType` | the shape required | sent upstream as |
+| member | the shape required | sent upstream as |
 |---|---|---|
-| `Registration` | ASCII alphanumeric | `Ben_id` |
-| `Mobile` | `^[6-9][0-9]{9}$` | `Mobile` |
-| `Aadhaar` | twelve digits | `Aadhar` — the upstream's spelling, not ours |
+| `registration` | ASCII alphanumeric, up to 20 — no digit rule, which is the whole point | `Ben_id` |
+| `mobile` | `^[6-9][0-9]{9}$` | `Mobile` |
+| `aadhaar` | `^[0-9]{12}$` | `Aadhar` — the upstream's spelling, not ours |
 
 Everything else is optional. The `name` beside any `code`, `provider.descriptor.name` and
 `scheme.name` are display text: send them or omit them, the adapter matches on `code` and
@@ -1287,8 +1289,8 @@ Everything else is optional. The `name` beside any `code`, `provider.descriptor.
     `orderId` on `on_support`, and again in `commitmentAttributes` on PMFBY's `on_status`.
     It stays `no-log` and `no-trace` either way.
   - On application status `enrolmentId` is never sent, and comes back as the portal's
-    resolution of the lookup. `applicant.id` — which may be an Aadhaar number — is never
-    echoed.
+    resolution of the lookup. The identifier under `applicant` — which may be an Aadhaar
+    number — is never echoed.
 
   Every field carrying personal data is marked `x-oan-pii` in the pack, with a class and a
   handling list. That is documentation today, not something the validator enforces.
@@ -1347,7 +1349,7 @@ Every error comes back on the same HTTP response, never on a later `on_*`.
 | Envelope will not decrypt — PM-KISAN | `500` | NACK | `NET_INTERNAL_ERROR` |
 | No grievance found — the portal answered, and has no case matching the ticket or `case.filedOn` | `202` | ACK | `BIZ_NO_RESULTS_FOUND` |
 | No registration found — the portal answered, and holds nothing for that applicant | `202` | ACK | `BIZ_NO_RESULTS_FOUND` |
-| `applicant.id` does not match its declared `idType` | `400` | NACK | `SCH_SCHEMA_VALIDATION_FAILED` |
+| `applicant` carries no identifier, or more than one | `400` | NACK | `SCH_SCHEMA_VALIDATION_FAILED` |
 
 ### E.1 A failure
 
