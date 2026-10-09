@@ -712,8 +712,10 @@ one channel the pack validates.
 required:
   - check: |
       ($s := beckn.message.support; $ch := $s.channels[0];
-       $exists($s.orderId) and $exists($ch.cropYear) and $exists($ch.season))
-    message: "lodging a PMFBY grievance needs the application number, crop year and season"
+       $exists($s.orderId)
+       and $length($s.orderId) >= 10 and $length($s.orderId) <= 30
+       and $exists($ch.cropYear) and $exists($ch.season))
+    message: "lodging a PMFBY grievance needs the application number (10-30 characters), crop year and season"
   - check: |
       ($ch := beckn.message.support.channels[0];
        $exists($ch.grievance.category.code) and $exists($ch.grievance.subCategory.code))
@@ -736,9 +738,14 @@ the schema on every leg and the guard only has to say *both levels are present o
 one*. Only `orderId` still sits outside the channel, unseen by the validator — and the
 first guard covers it.
 
-No pattern is restated here. A guard that repeats a rule the pack already holds is a second
-copy to keep in step; the one the old version carried
-(`descriptor.code must be <category>.<subCategory>`) is gone with the dotted code itself.
+One rule *is* restated, and only one: `orderId`'s length. The usual objection holds — a
+guard repeating what the pack already enforces is a second copy to keep in step, and the
+one the old version carried (`descriptor.code must be <category>.<subCategory>`) is gone
+with the dotted code itself. This one is different because the pack does not enforce it
+here. `enrolmentId` carries `minLength: 10` and `maxLength: 30`, and on this leg the value
+sits at `message.support.orderId`, outside `channels[0]` and so outside everything the
+pack sees. Without the restatement the same field is bounded on `status` and unbounded on
+`support`. Keep the two in step by hand, or move the bound when the pack moves it.
 
 No guard checks `provider`, and none should: the binding key is built before the mapper
 runs, so a payload missing it never reaches a guard — it is refused as unroutable.
@@ -1167,8 +1174,10 @@ network does not need is an identifier it should not collect.
 required:
   - check: |
       ($s := beckn.message.support;
-       $count($match($s.orderId, /^[A-Za-z0-9]+$/)) > 0)
-    message: "orderId must be a non-empty alphanumeric registration number"
+       $count($match($s.orderId, /^[A-Za-z0-9]+$/)) > 0
+       and $length($s.orderId) <= 20
+       and $count($match($s.orderId, /^[0-9]{12}$/)) = 0)
+    message: "orderId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
   - check: |
       ($exists(beckn.message.support.channels[0].grievance.category.code))
     message: "lodging a PM-KISAN grievance needs a category"
@@ -1183,13 +1192,22 @@ on the description are both in the pack now, checked on `channels[0]` on every l
 guard only has to say that a category is present on *this* action — the pack cannot,
 because a case read legitimately carries none.
 
-**The identity guard is deliberately loose.** The legacy client never validates a
-registration number at all — anything that is not twelve digits falls through to the
-`Reg_No_*` path untouched. "Eleven alphanumeric characters" appears only in a tool
-docstring, and a guard built on a docstring rejects valid grievances at the adapter,
-before the farmer's complaint ever reaches the portal. So the check is only non-empty
-and alphanumeric. Tighten it to the exact format once the
-portal's integration document states one; see Open.
+**The identity guard is loose on format and strict on the two rules the pack states.**
+Loose, because the legacy client never validates a registration number at all — anything
+that is not twelve digits falls through to the `Reg_No_*` path untouched. "Eleven
+alphanumeric characters" appears only in a tool docstring, and a guard built on a
+docstring rejects valid grievances at the adapter, before the farmer's complaint ever
+reaches the portal. So the shape check is only non-empty and alphanumeric. Tighten it to
+the exact format once the portal's integration document states one; see Open.
+
+Strict on the other two, because the pack cannot reach them here. `enrolmentId` is capped
+at twenty characters and **refused outright when it is twelve bare digits** — that is an
+Aadhaar number, and this capability does not accept one. On `init` and `status` the pack
+enforces both, because the value rides in `commitmentAttributes` where the pack can see
+it. On `support` it sits at `message.support.orderId`, outside `channels[0]` and outside
+everything the pack validates, so without these two clauses an Aadhaar number passes the
+adapter and goes upstream as `IdentityNo` — refused on every other leg and accepted on
+the one that files. The guard closes that, and the restatement is the price.
 
 #### The challenge is verified before the portal is called
 

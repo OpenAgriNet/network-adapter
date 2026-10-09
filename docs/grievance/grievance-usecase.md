@@ -136,7 +136,11 @@ same HTTP response. Shortened here to the parts the scenarios use:
         "@type": "openagrinet:PMFBYGrievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-        "challengeMethods": []
+        "challengeMethods": [],
+        "grievanceOptions": {
+          "categories":    [ { "code": "3",  "descriptor": "…" } ],
+          "subCategories": [ { "code": "10", "descriptor": "…" } ]
+        }
       }
     }],
     "offers": [{ "id": "off:pmfby:grievance", "resourceIds": ["res:pmfby:grievance"] }]
@@ -150,8 +154,9 @@ What the scenarios take from that reply:
 |---|---|
 | `provider.id` | becomes `offer.provider.id`, and `channels[].provider.id` on `support` |
 | `offers[].id`, `resources[].id` | quoted verbatim in every commitment |
-| `resourceAttributes.@context` | the pack URL. Swap `context.jsonld` for `attributes.yaml` to see every field, bound and value the payloads are held to |
+| `resourceAttributes.@context` | the pack URL. Swap `context.jsonld` for `attributes.yaml` to see every field, bound and value the payloads are held to — including `x-beckn-path`, which names where a field sits on each action |
 | `resourceAttributes.challengeMethods` | whether this desk asks for an OTP |
+| `resourceAttributes.grievanceOptions` | the categories this desk accepts, so you need no list of your own |
 
 Quote the ids exactly as they came. The full catalogs are
 [Appendix F](#appendix-f--what-the-adapter-publishes).
@@ -168,6 +173,18 @@ not on the scheme name** — a portal can change what it needs, and the catalog 
 adapter states that on its behalf. Read the values, not the length: if a portal adds a
 second mechanism the list grows, and a caller that reads `method` keeps working. An empty
 array is not an oversight. It means this desk has nothing to ask for.
+
+`grievanceOptions` answers the other question a caller has before it can draw a form: what
+may go in `grievance.category`. Read it from the catalog rather than keeping a copy — each
+entry's `code` is a value the pack will accept, `name` is the portal's label for it, and
+`descriptor` is plain-language help text for the farmer. Two levels where the portal
+numbers two: PMFBY publishes `categories` and `subCategories`, PM-KISAN only `categories`,
+and the absence of the second is the statement that this desk has one level.
+
+Where a `name` is missing the portal has never published one — PMFBY is in that position —
+and the entry carries only what is known. That also means PMFBY's list is what works today
+rather than everything that would be accepted; PM-KISAN's ten are the portal's closed list
+and the pack refuses an eleventh.
 
 It does not say *which* calls are challenged. PM-KISAN challenges the lodge and the read
 alike. That, and everything else a call must carry, is
@@ -195,7 +212,9 @@ the only way to find the complaint again later — §3.2.
 
 - This is the first call, so you create the `transactionId` here. There is no contract —
   `support` does not use one.
-- **`orderId`** — the application number, the enrolment the complaint is about.
+- **`orderId`** — the application number. This is `enrolmentId`, in the one slot a
+  `support` message has for it; [Appendix A](#appendix-a--where-every-field-sits) says
+  why, once.
 - **`grievance`** — the complaint itself. `category.code` and `subCategory.code` are two
   separate fields. Never join them into one string like `3.10`. Send the codes alone: the
   portal reads ids only and drops any `name` beside them.
@@ -359,10 +378,9 @@ POST /status
 
 - **`grievance`** — the complaint as the portal now holds it. **`case`** — the record the
   portal keeps against it.
-- **`enrolmentId`** — the application number, under that name for the first time. On
-  `support` the same value travelled as `orderId`, because a `support` message has an
-  `orderId` field and a `Contract` does not. One value, two places. The request did not
-  send it; the portal returns it.
+- **`enrolmentId`** — the application number, under its own name for the first time: the
+  same value `support` sent as `orderId`. The request did not send it; the portal returns
+  it.
 - **`case.status`** — `code` is this network's word, `name` is the portal's own phrase when
   it gives one. Appendix B explains which to use.
 - **No remark.** PMFBY returns a status phrase and no reply text, so the schema refuses
@@ -656,8 +674,8 @@ POST /init
 - **The OTP is the one from the `init` above**, not from §4.1. That one was spent on the
   lodge and its window closed four days ago.
 - **`contract.id`** — the one `init` just minted, not the one from the session that filed.
-- **`enrolmentId`** — the registration number rides in `commitmentAttributes`, not
-  `orderId`, because a `Contract` has no `orderId`.
+- **`enrolmentId`** — the registration number, in `commitmentAttributes` as on every
+  contract leg.
 - **`case.filedOn`** — required, and it is the one from `on_support`. The portal has no
   per-grievance endpoint, so the date is what picks this grievance out of the farmer's list.
 
@@ -1043,8 +1061,23 @@ words are attribute fields, so the pack bounds each one.
 | | on `support` | on `init` / `status` |
 |---|---|---|
 | the bands above | `support.channels[0]`, selected by `@type` | `commitmentAttributes` |
-| `orderId` | `enrolmentId`, echoed unchanged on the reply | — (`Contract` has no `orderId`) |
+| `orderId` | where `enrolmentId` travels — see below | — (`Contract` has no `orderId`) |
 | `provider` | in the attributes, because a `SupportAction` has no `Contract` | `commitments[].offer.provider`; the attributes do **not** repeat it |
+
+**There is one field, and it is `enrolmentId`.** Beckn's `Support` object is sealed to
+`{orderId, descriptor, channels}`, so on `support` the value has nowhere to go but
+`orderId`; a `Contract` has no `orderId`, so everywhere else it travels under its own
+name. Two slots, one value, and the choice is the protocol's rather than ours. The pack
+states it once, machine-readably, so a caller reads it rather than remembers it:
+
+```yaml
+enrolmentId:
+  x-beckn-path:
+    support: message.support.orderId
+```
+
+Nothing else in this design moves between slots. Where you see `orderId` in the scenarios,
+it is this field.
 
 A band is absent when there is nothing in it. PM-KISAN's `init` asks for a challenge
 before the farmer has stated anything, so it carries no `grievance`. No request carries a
@@ -1364,7 +1397,17 @@ POST /catalog/publish
           "@type": "openagrinet:PMFBYGrievance",
           "informationMode": "OnDemand",
           "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-          "challengeMethods": []
+          "challengeMethods": [],
+          "grievanceOptions": {
+            "categories": [
+              { "code": "3",
+                "descriptor": "The only category this desk sends. PMFBY publishes no category list, so every grievance is filed under this one." }
+            ],
+            "subCategories": [
+              { "code": "10",
+                "descriptor": "The only sub-category this desk sends, paired with category 3." }
+            ]
+          }
         }
       }],
       "offers": [{
@@ -1383,6 +1426,11 @@ POST /catalog/publish
   declaration is the pack in `OnDemand` mode.
 - **`challengeMethods: []`** — tells a caller to open with `support`. It is published empty
   rather than omitted, because an empty list is an answer and a missing one is not.
+- **`grievanceOptions`** — one category, one sub-category, no `name` on either. PMFBY
+  publishes no list of the codes it accepts; it only names them back on a read. So this
+  is what is known to work rather than everything that would be accepted, and the pack
+  leaves the digit pattern open rather than pinning it to `3`. **Open with Amnex:** the
+  real category table, and whether any pair other than 3/10 is valid.
 - **`provider`** — carries no `availableAt`. A grievance desk has no premises.
 - **`visibleTo`** — omitted, so every caller can find it.
 
@@ -1429,7 +1477,31 @@ POST /catalog/publish
           "@type": "openagrinet:PMKISANGrievance",
           "informationMode": "OnDemand",
           "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-          "challengeMethods": ["SMS_OTP"]
+          "challengeMethods": ["SMS_OTP"],
+          "grievanceOptions": {
+            "categories": [
+              { "code": "G001", "name": "Account number not correct",
+                "descriptor": "The bank account held against your registration is wrong, so money cannot reach you." },
+              { "code": "G002", "name": "Online application pending for approval",
+                "descriptor": "You applied online and the application has not yet been approved." },
+              { "code": "G003", "name": "Installment not received",
+                "descriptor": "Your registration is approved but an instalment has not reached your account." },
+              { "code": "G004", "name": "Transaction failed",
+                "descriptor": "A payment was attempted and the transfer did not go through." },
+              { "code": "G005", "name": "Problem in Aadhaar correction",
+                "descriptor": "A correction to your Aadhaar details has not gone through." },
+              { "code": "G006", "name": "Gender not correct",
+                "descriptor": "The gender recorded against your registration is wrong." },
+              { "code": "G007", "name": "Payment related",
+                "descriptor": "Any other problem with a payment that the options above do not cover." },
+              { "code": "G008", "name": "Problem in OTP-based eKYC",
+                "descriptor": "eKYC by OTP is failing." },
+              { "code": "G009", "name": "Problem in biometric-based eKYC",
+                "descriptor": "eKYC by fingerprint or iris is failing." },
+              { "code": "G010", "name": "Problem in facial-based eKYC",
+                "descriptor": "eKYC by face scan is failing." }
+            ]
+          }
         }
       }],
       "offers": [{
@@ -1449,6 +1521,11 @@ POST /catalog/publish
 - **`challengeMethods: ["SMS_OTP"]`** — tells a caller to open with `init`. It does not say
   that PM-KISAN challenges the read as well as the lodge;
   [Appendix C.2](#c2-pm-kisan-grievance) does.
+- **`grievanceOptions`** — all ten types, and no `subCategories`: this portal classifies at
+  one level and the pack refuses a second. The codes are held to the same enum
+  `grievance.category.code` is, so a catalog offering an eleventh type is refused at
+  publish time. Each `name` is the portal's own label; each `descriptor` is ours, written
+  for the farmer's screen and sent nowhere.
 
 #### Finding it — `discover`
 
@@ -1538,6 +1615,9 @@ POST /catalog/publish
 - **Same `provider.id` as the grievance desk** — one participant, two capabilities.
   `@type` tells them apart, and the registry binds on it.
 - **`challengeMethods: ["SMS_OTP"]`** — tells a caller to open with `init`.
+- **No `grievanceOptions`** — this desk reads a record; it files nothing, so it has no
+  categories to offer. The pack refuses the field outright rather than leave it publishable
+  and empty, because an empty list would read as a grievance desk with nothing on its menu.
 
 #### Finding it — `discover`
 
