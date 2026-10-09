@@ -18,9 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -186,11 +184,11 @@ const (
 
 // ParseActionPaths reads the per-action binding paths from a step's flattened
 // config: a block named for an action arrives as providerIdAt-<action> and
-// capabilityCodeAt-<action>. Both halves or neither, for the reason
-// BindingPaths gives.
+// capabilityCodeAt-<action>. A block missing either half is refused by New,
+// whose Validate finds the empty path.
 //
 // EXPORTED for a domain plugin's cmd package, which hands the flat map over.
-func ParseActionPaths(config map[string]string) (map[string]Paths, error) {
+func ParseActionPaths(config map[string]string) map[string]Paths {
 	byAction := map[string]Paths{}
 	for key, value := range config {
 		setting, action, dashed := strings.Cut(key, "-")
@@ -208,14 +206,7 @@ func ParseActionPaths(config map[string]string) (map[string]Paths, error) {
 		}
 		byAction[action] = paths
 	}
-	// Sorted so a config with two mistakes reports the same one every run.
-	for _, action := range slices.Sorted(maps.Keys(byAction)) {
-		if paths := byAction[action]; paths.ProviderID == "" || paths.CapabilityCode == "" {
-			return nil, fmt.Errorf("%s: %s and %s are set together or not at all",
-				action, providerIDAtSetting, capabilityCodeAtSetting)
-		}
-	}
-	return byAction, nil
+	return byAction
 }
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.
