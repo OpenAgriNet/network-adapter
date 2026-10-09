@@ -543,21 +543,33 @@ modules:
                 tokenTtl: 10m
                 headerName: Authorization
 
-              # PM-KISAN reads and writes only AES-256-GCM, and authenticates
-              # with a service token INSIDE the encrypted body -- so auth is
-              # none, and the envelope does the work: it adds TokenNo and
-              # encrypts what the request half produces, and decrypts the
-              # answer before the response half reads it, so the mappings stay
-              # plain JSON.
+              # PM-KISAN is two services behind one registration number, and
+              # neither reads plain JSON. Each authenticates with a service
+              # token INSIDE the encrypted body -- so auth is none, and the
+              # envelope does the work: it adds the token and encrypts what the
+              # request half produces, and decrypts the answer before the
+              # response half reads it, so the mappings stay plain JSON.
               #
-              # The *Env settings name VARIABLES, never values. All three must
-              # be set in the adapter's environment; with any missing every
-              # PM-KISAN request fails with NET_INTERNAL_ERROR and nothing is
-              # sent -- there is no fallback to plaintext.
+              #   grievance service   support, status   AES-256-GCM, fixed key
+              #                                         and nonce, TokenNo
+              #   OTP service         init              AES-128-CBC, a fresh key
+              #                                         sent beside the cipher,
+              #                                         Token
               #
-              #   key     32 bytes, hex: AES-256
-              #   nonce   hex, the fixed value the portal issued
-              #   token   the portal's TokenNo
+              # support and status carry the farmer's OTP. The envelope verifies
+              # it on the OTP service (otpVerifyPath, on the host the registry
+              # names for init) before the lodge or the read is sent; a wrong
+              # OTP is a 400 and the call is never made.
+              #
+              # The *Env settings name VARIABLES, never values. All four must be
+              # set in the adapter's environment; with any missing, the calls
+              # that need it fail with NET_INTERNAL_ERROR and nothing is sent --
+              # there is no fallback to plaintext.
+              #
+              #   key        32 bytes, hex: AES-256, the grievance service
+              #   nonce      hex, the fixed value the portal issued
+              #   token      the grievance service's TokenNo
+              #   OTP token  the OTP service's Token -- a different token
               pmkisan:
                 authScheme: none
                 envelope: aesGcm
@@ -567,6 +579,14 @@ modules:
                 envelopeTokenField: TokenNo
                 envelopeRequestField: EncryptedRequest
                 envelopeResponsePaths: "d.output,output"
+                otpEnvelope: aesCbcKeyInBand
+                otpTokenEnv: PMKISAN_OTP_TOKEN
+                otpTokenField: Token
+                otpRequestField: EncryptedRequest
+                otpResponsePaths: "d.output,output"
+                otpActions: init
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: "support,status"
 
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the

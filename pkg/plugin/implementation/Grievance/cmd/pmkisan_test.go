@@ -29,6 +29,14 @@ func bothSchemesConfig() map[string]string {
 		"envelopeTokenField-pmkisan":    "TokenNo",
 		"envelopeRequestField-pmkisan":  "EncryptedRequest",
 		"envelopeResponsePaths-pmkisan": "d.output,output",
+		"otpEnvelope-pmkisan":           "aesCbcKeyInBand",
+		"otpTokenEnv-pmkisan":           "PMKISAN_OTP_TOKEN",
+		"otpTokenField-pmkisan":         "Token",
+		"otpRequestField-pmkisan":       "EncryptedRequest",
+		"otpResponsePaths-pmkisan":      "d.output,output",
+		"otpActions-pmkisan":            "init",
+		"otpVerifyPath-pmkisan":         "/ChatbotOTPVerified",
+		"otpVerifyActions-pmkisan":      "support,status",
 	} {
 		config[key] = value
 	}
@@ -60,6 +68,15 @@ func TestNew_BothSchemes_BuildsStep(t *testing.T) {
 		t.Fatal("New() returned no step")
 	}
 	_ = closer()
+}
+
+func TestParseConfig_IncompleteOTPRealm_Refused(t *testing.T) {
+	config := bothSchemesConfig()
+	delete(config, "otpVerifyActions-pmkisan")
+	if _, err := (grievanceProvider{}).parseConfig(config); err == nil ||
+		!strings.Contains(err.Error(), "otpVerifyActions") {
+		t.Fatalf("parseConfig() = %v, want the half-set verify named", err)
+	}
 }
 
 func TestParseConfig_IncompleteEnvelope_Refused(t *testing.T) {

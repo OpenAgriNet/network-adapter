@@ -12,6 +12,7 @@ package Grievance_test
 // adapter does, through their exported surface.
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -69,7 +70,8 @@ const pkSupportRequest = `{
         "grievance": {
           "category": { "code": "G003", "name": "Installment not received" },
           "description": "  Third instalment for 2026 has not been credited.  "
-        }
+        },
+        "challenge": { "method": "SMS_OTP", "value": "4821" }
       }]
     }
   }
@@ -98,7 +100,36 @@ const pkStatusRequest = `{
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "enrolmentId": "UP12345678A",
-        "case": { "filedOn": "2026-09-28" }
+        "case": { "filedOn": "2026-09-28" },
+        "challenge": { "method": "SMS_OTP", "value": "4821" }
+      }
+    }]
+  }}
+}`
+
+const pkInitRequest = `{
+  "context": {
+    "version": "2.0.0", "action": "init", "networkId": "openagrinet",
+    "transactionId": "7f3a0000-0000-4000-8000-000000000005",
+    "messageId": "1b850000-0000-4000-8000-000000000006",
+    "timestamp": "2026-09-28T10:58:00Z"
+  },
+  "message": { "contract": {
+    "id": "5e2704c8-9d31-4f6a-b8c0-1a73e6d2f094",
+    "commitments": [{
+      "status": { "descriptor": { "code": "DRAFT" } },
+      "offer": {
+        "id": "off:pmkisan:grievance",
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
+        "resourceIds": ["res:pmkisan:grievance"]
+      },
+      "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
+      "commitmentAttributes": {
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
+        "@type": "openagrinet:PMKISANGrievance",
+        "informationMode": "OnDemand",
+        "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+        "enrolmentId": "UP12345678A"
       }
     }]
   }}
@@ -188,6 +219,72 @@ func (p *pkPortal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `{"d":{"__type":"Grievance.Output","output":%q}}`, out)
 }
 
+// --- the stand-in OTP service ---------------------------------------------------
+
+const (
+	pkOTPToken = "test-otp-token"
+	pkValidOTP = "4821"
+	// A registration the OTP service will not send an OTP for.
+	pkNoOTPFor = "FAILOTP0000"
+)
+
+// pkOTPService stands in for PM-KISAN's OTP service: AES-128-CBC with the key
+// sent beside the ciphertext, /ChatbotOTP to send one and /ChatbotOTPVerified
+// to check it.
+type pkOTPService struct {
+	t     *testing.T
+	calls map[string]int
+	sent  map[string]map[string]string // per path, the decrypted request
+}
+
+func newPKOTPService(t *testing.T) *pkOTPService {
+	return &pkOTPService{t: t, calls: map[string]int{}, sent: map[string]map[string]string{}}
+}
+
+func pkCBCKey(keyString string) []byte {
+	key := make([]byte, aes.BlockSize)
+	copy(key, keyString)
+	return key
+}
+
+func (o *pkOTPService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	o.calls[r.URL.Path]++
+	body, _ := io.ReadAll(r.Body)
+	var envelope map[string]string
+	_ = json.Unmarshal(body, &envelope)
+	sealed, keyString, found := strings.Cut(envelope["EncryptedRequest"], "@")
+	if !found {
+		o.t.Errorf("the OTP service received %s, want base64(ciphertext)@key", body)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	raw, _ := base64.StdEncoding.DecodeString(sealed)
+	key := pkCBCKey(keyString)
+	block, _ := aes.NewCipher(key)
+	plain := make([]byte, len(raw))
+	cipher.NewCBCDecrypter(block, key).CryptBlocks(plain, raw)
+	plain = plain[:len(plain)-int(plain[len(plain)-1])]
+	sent := map[string]string{}
+	_ = json.Unmarshal(plain, &sent)
+	o.sent[r.URL.Path] = sent
+
+	answer := `{"Rsponce":"False","Message":"Request could not be processed"}`
+	switch {
+	case sent["Token"] != pkOTPToken:
+		answer = `{"Rsponce":"False","Message":"Invalid Token"}`
+	case r.URL.Path == "/ChatbotOTP" && sent["Values"] != pkNoOTPFor:
+		answer = `{"Rsponce":"True","Message":"OTP has been sent to the registered mobile number"}`
+	case r.URL.Path == "/ChatbotOTPVerified" && sent["OTP"] == pkValidOTP:
+		answer = `{"Rsponce":"True","Message":"OTP Verified"}`
+	}
+	padded := []byte(answer)
+	n := aes.BlockSize - len(padded)%aes.BlockSize
+	padded = append(padded, bytes.Repeat([]byte{byte(n)}, n)...)
+	out := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, key).CryptBlocks(out, padded)
+	fmt.Fprintf(w, `{"d":{"__type":"Chatbot.Output","output":%q}}`, base64.StdEncoding.EncodeToString(out))
+}
+
 // --- harness ----------------------------------------------------------------
 
 func pkServeMappings(t *testing.T) *httptest.Server {
@@ -215,13 +312,22 @@ func (s *pkRegistry) ProviderRecord(context.Context, string) (*model.ProviderRec
 // config/provider-adapter.yaml configures it.
 func runPMKISAN(t *testing.T, p *pkPortal, request string) ([]byte, error) {
 	t.Helper()
+	return runPMKISANWith(t, p, newPKOTPService(t), request)
+}
+
+// runPMKISANWith is runPMKISAN with the OTP service under the test's eye.
+func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string) ([]byte, error) {
+	t.Helper()
 	t.Setenv("TEST_PMKISAN_KEY", pkKeyHex)
 	t.Setenv("TEST_PMKISAN_NONCE", pkNonceHex)
 	t.Setenv("TEST_PMKISAN_TOKEN", pkToken)
+	t.Setenv("TEST_PMKISAN_OTP_TOKEN", pkOTPToken)
 
 	mappings := pkServeMappings(t)
 	upstream := httptest.NewServer(p)
 	t.Cleanup(upstream.Close)
+	otpHost := httptest.NewServer(otp)
+	t.Cleanup(otpHost.Close)
 
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
@@ -235,6 +341,9 @@ func runPMKISAN(t *testing.T, p *pkPortal, request string) ([]byte, error) {
 		CapabilityCode: pkCapability,
 		BaseURL:        upstream.URL,
 		Actions: map[string]model.ActionPlan{
+			// The OTP lives on another service: its own host on the registry row.
+			"init": {Method: http.MethodPost, Path: "/ChatbotOTP", BaseURL: otpHost.URL,
+				Mappings: mappings.URL + "/grievance.init.yaml", TimeoutMs: 20000},
 			"support": {Method: http.MethodPost, Path: "/LodgeGrievance",
 				Mappings: mappings.URL + "/grievance.support.yaml", TimeoutMs: 30000},
 			"status": {Method: http.MethodPost, Path: "/GrievanceStatusCheck",
@@ -252,6 +361,14 @@ func runPMKISAN(t *testing.T, p *pkPortal, request string) ([]byte, error) {
 		"envelopeTokenField-pmkisan":    "TokenNo",
 		"envelopeRequestField-pmkisan":  "EncryptedRequest",
 		"envelopeResponsePaths-pmkisan": "d.output,output",
+		"otpEnvelope-pmkisan":           "aesCbcKeyInBand",
+		"otpTokenEnv-pmkisan":           "TEST_PMKISAN_OTP_TOKEN",
+		"otpTokenField-pmkisan":         "Token",
+		"otpRequestField-pmkisan":       "EncryptedRequest",
+		"otpResponsePaths-pmkisan":      "d.output,output",
+		"otpActions-pmkisan":            "init",
+		"otpVerifyPath-pmkisan":         "/ChatbotOTPVerified",
+		"otpVerifyActions-pmkisan":      "support,status",
 	})
 	if err != nil {
 		t.Fatalf("ParseEnvelopes() = %v", err)
@@ -417,6 +534,9 @@ func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
 		{"no description", `,
           "description": "  Third instalment for 2026 has not been credited.  "`, ``, "SCH_REQUIRED_FIELD_MISSING"},
 		{"no category", `"category": { "code": "G003", "name": "Installment not received" },`, ``, "SCH_REQUIRED_FIELD_MISSING"},
+		{"no OTP", `,
+        "challenge": { "method": "SMS_OTP", "value": "4821" }`, ``, "SCH_REQUIRED_FIELD_MISSING"},
+		{"an OTP that is not digits", `"value": "4821"`, `"value": "48a1"`, "SCH_INVALID_FORMAT"},
 		// Malformed: refused by required.
 		{"a registration number in native script", `"orderId": "UP12345678A"`, `"orderId": "UP१२३४५"`, "SCH_INVALID_FORMAT"},
 		{"a category outside the portal's list", `"code": "G003"`, `"code": "G011"`, "SCH_INVALID_FORMAT"},
@@ -662,5 +782,147 @@ func TestPMKISANSupportReadsTheTicketFromEitherName(t *testing.T) {
 				t.Errorf("case.ticketNo = %v, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// --- init and the OTP ------------------------------------------------------------
+
+func TestPMKISANInitAsksTheOTPServiceForAnOTP(t *testing.T) {
+	p := newPKPortal(t, "")
+	otp := newPKOTPService(t)
+	body, err := runPMKISANWith(t, p, otp, pkInitRequest)
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+
+	// The OTP service was asked, by registration number, with its own token;
+	// the grievance service was not called at all.
+	sent := otp.sent["/ChatbotOTP"]
+	for field, want := range map[string]string{"Types": "Ben_id", "Values": pkRegistrationNo, "Token": pkOTPToken} {
+		if sent[field] != want {
+			t.Errorf("OTP service received %s = %q, want %q", field, sent[field], want)
+		}
+	}
+	if p.calls != 0 {
+		t.Errorf("the grievance service was called %d time(s) for an OTP", p.calls)
+	}
+
+	answer := pkDecode(t, body)
+	if got := pkAt(t, answer, "context", "action"); got != "on_init" {
+		t.Errorf("context.action = %v, want on_init", got)
+	}
+	commitment := pkAt(t, answer, "message", "contract", "commitments", 0)
+	if got := pkAt(t, commitment, "status", "descriptor", "code"); got != "DRAFT" {
+		t.Errorf("commitment status = %v, want DRAFT", got)
+	}
+	attributes := pkAt(t, commitment, "commitmentAttributes").(map[string]any)
+	if attributes["informationMode"] != "OnDemand" {
+		t.Errorf("informationMode = %v, want OnDemand: an acknowledgement carries no case", attributes["informationMode"])
+	}
+	issued, _ := attributes["challengeIssued"].(map[string]any)
+	if issued["method"] != "SMS_OTP" {
+		t.Errorf("challengeIssued.method = %v, want SMS_OTP", issued["method"])
+	}
+	if expires, _ := issued["expiresAt"].(string); expires == "" {
+		t.Error("challengeIssued.expiresAt is missing")
+	} else if at, err := time.Parse(time.RFC3339, expires); err != nil || at.Before(time.Now()) {
+		t.Errorf("challengeIssued.expiresAt = %q, want a future instant", expires)
+	}
+	if _, present := issued["sentTo"]; present {
+		t.Error("on_init carries sentTo; PM-KISAN does not disclose the number it texted")
+	}
+	if _, present := attributes["enrolmentId"]; present {
+		t.Error("on_init echoes enrolmentId")
+	}
+	if strings.Contains(string(body), pkOTPToken) {
+		t.Errorf("the answer carries the OTP service's token:\n%s", body)
+	}
+}
+
+func TestPMKISANInitReportsAnOTPServiceRefusal(t *testing.T) {
+	request := strings.Replace(pkInitRequest, `"enrolmentId": "UP12345678A"`, `"enrolmentId": "`+pkNoOTPFor+`"`, 1)
+	_, err := runPMKISAN(t, newPKPortal(t, ""), request)
+	beckn, status := pkBecknErr(t, err)
+	if status != http.StatusBadGateway || beckn.Code != "NET_DOWNSTREAM_UNAVAILABLE" {
+		t.Errorf("got %s/%d, want NET_DOWNSTREAM_UNAVAILABLE/502", beckn.Code, status)
+	}
+}
+
+func TestPMKISANInitRefusesWithoutARegistrationNumber(t *testing.T) {
+	request := strings.Replace(pkInitRequest, `,
+        "enrolmentId": "UP12345678A"`, ``, 1)
+	otp := newPKOTPService(t)
+	_, err := runPMKISANWith(t, newPKPortal(t, ""), otp, request)
+	beckn, status := pkBecknErr(t, err)
+	if status != http.StatusBadRequest || beckn.Code != "SCH_REQUIRED_FIELD_MISSING" {
+		t.Errorf("got %s/%d, want SCH_REQUIRED_FIELD_MISSING/400", beckn.Code, status)
+	}
+	if otp.calls["/ChatbotOTP"] != 0 {
+		t.Error("an OTP was requested with no registration number to send it against")
+	}
+}
+
+func TestPMKISANSupportVerifiesTheOTPAndKeepsItOutOfTheLodge(t *testing.T) {
+	p := newPKPortal(t, `{"Responce":"True","GrievanceID":"PMK1"}`)
+	otp := newPKOTPService(t)
+	body, err := runPMKISANWith(t, p, otp, pkSupportRequest)
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	verify := otp.sent["/ChatbotOTPVerified"]
+	for field, want := range map[string]string{"Types": "Ben_id", "Values": pkRegistrationNo, "OTP": pkValidOTP, "Token": pkOTPToken} {
+		if verify[field] != want {
+			t.Errorf("verify received %s = %q, want %q", field, verify[field], want)
+		}
+	}
+	for _, field := range []string{"OTP", "challenge", "Token"} {
+		if _, present := p.sent[field]; present {
+			t.Errorf("the lodge plaintext carries %s; the OTP goes to the verify and nowhere else", field)
+		}
+	}
+	if strings.Contains(string(body), pkValidOTP) {
+		t.Errorf("on_support echoes the OTP:\n%s", body)
+	}
+}
+
+func TestPMKISANAWrongOTPLodgesAndReadsNothing(t *testing.T) {
+	for name, request := range map[string]string{
+		"support": strings.Replace(pkSupportRequest, `"value": "4821"`, `"value": "0000"`, 1),
+		"status":  strings.Replace(pkStatusRequest, `"value": "4821"`, `"value": "0000"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := newPKPortal(t, pkStatusAnswer)
+			otp := newPKOTPService(t)
+			_, err := runPMKISANWith(t, p, otp, request)
+			beckn, status := pkBecknErr(t, err)
+			if status != http.StatusBadRequest || beckn.Code != "BIZ_GENERIC_ERROR" {
+				t.Errorf("got %s/%d, want BIZ_GENERIC_ERROR/400", beckn.Code, status)
+			}
+			if otp.calls["/ChatbotOTPVerified"] != 1 {
+				t.Errorf("verify called %d time(s), want 1", otp.calls["/ChatbotOTPVerified"])
+			}
+			if p.calls != 0 {
+				t.Errorf("the grievance service was called %d time(s) after a failed OTP", p.calls)
+			}
+		})
+	}
+}
+
+func TestPMKISANStatusRefusesWithoutAnOTP(t *testing.T) {
+	request := strings.Replace(pkStatusRequest, `,
+        "challenge": { "method": "SMS_OTP", "value": "4821" }`, ``, 1)
+	if request == pkStatusRequest {
+		t.Fatal("the edit did not apply to the request")
+	}
+	p := newPKPortal(t, pkStatusAnswer)
+	otp := newPKOTPService(t)
+	_, err := runPMKISANWith(t, p, otp, request)
+	beckn, status := pkBecknErr(t, err)
+	if status != http.StatusBadRequest || beckn.Code != "SCH_REQUIRED_FIELD_MISSING" {
+		t.Errorf("got %s/%d, want SCH_REQUIRED_FIELD_MISSING/400", beckn.Code, status)
+	}
+	if otp.calls["/ChatbotOTPVerified"] != 0 || p.calls != 0 {
+		t.Errorf("verify %d, read %d; a request refused before the call must reach neither service",
+			otp.calls["/ChatbotOTPVerified"], p.calls)
 	}
 }

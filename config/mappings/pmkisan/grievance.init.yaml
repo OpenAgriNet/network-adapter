@@ -1,0 +1,85 @@
+# PM-KISAN, openagrinet:PMKISANGrievance, init -> POST /ChatbotOTP.
+# Both directions, one file.
+#
+# Ask for an OTP. PM-KISAN challenges both the lodge and the read, so init runs
+# before each: once before support, and again, days later, before status.
+#
+# The OTP does not come from the grievance service. /ChatbotOTP is on PM-KISAN's
+# OTP service, another host with another cipher and another token, which the
+# registry row names as this action's own baseUrl. The Grievance plugin's
+# envelope sends this action through that realm (AES-128-CBC with the key in
+# band) and adds its token (Token); this file speaks plaintext.
+#
+# It carries the registration number and nothing else. No phone number crosses
+# the network: the portal texts the mobile it already holds against that
+# registration, and does not say which.
+
+# A format check; an absent registration number passes here and is refused by
+# the request half.
+required:
+  - check: |
+      (
+        $id := beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId;
+        $not($exists($id)) or ($type($id) = "string" and $exists($match($id, /^[A-Za-z0-9]+$/)[0]))
+      )
+    message: "enrolmentId must be the registration number: ASCII letters and digits only"
+
+# The plaintext /ChatbotOTP takes. Types is fixed: a grievance is filed against
+# a registration, so the identifier is never a mobile or an Aadhaar number, and
+# nothing is inferred from its shape. Token is added by the envelope.
+request: |
+  (
+    $ca := beckn.message.contract.commitments[0].commitmentAttributes;
+    $exists($ca.enrolmentId)
+    ? { "Types": "Ben_id", "Values": $ca.enrolmentId }
+    : { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                    "message": "requesting an OTP needs enrolmentId, the registration number" } }
+  )
+
+# The OTP service answers with a success flag and a sentence. "True" is the
+# only success: a missing flag, an empty answer or anything else is refused
+# rather than read as a sent OTP. The sentence is never returned.
+#
+# on_init carries challengeIssued -- method and expiresAt -- and no sentTo: the
+# portal does not disclose the number it texted. expiresAt is the adapter's
+# window, not the portal's: the OTP call names no expiry, so this states when
+# the network will stop expecting the OTP. The OTP itself is never returned,
+# the registration number is not echoed, and the commitment stays DRAFT --
+# OnDemand, because an acknowledgement carries no case.
+#
+# A 4xx from the OTP service reaches this half under _status; it is left to the
+# adapter's 502.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    $true := function($v) { $exists($v) and $lowercase($string($v)) = "true" };
+    $sent := $true(response.Rsponce) or $true(response.Responce) or $true(response.Status);
+    $commitment := beckn.message.contract.commitments[0];
+    $ca := $commitment.commitmentAttributes;
+    /* Ten minutes, the window this network holds an OTP open for. */
+    $otpWindowMillis := 10 * 60 * 1000;
+    $not($sent)
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN could not send the OTP" } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_init", "timestamp": $now() }]),
+      "message": {
+        "contract": $merge([beckn.message.contract, {
+          "commitments": [$merge([$commitment, {
+            "status": { "descriptor": { "code": "DRAFT" } },
+            "commitmentAttributes": {
+              "@context":        $ca.`@context`,
+              "@type":           $ca.`@type`,
+              "informationMode": "OnDemand",
+              "scheme":          $ca.scheme,
+              "challengeIssued": {
+                "method":    "SMS_OTP",
+                "expiresAt": $fromMillis($millis() + $otpWindowMillis)
+              }
+            }
+          }])]
+        }])
+      }
+    }
+  )
