@@ -17,30 +17,17 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
-// The envelope kinds this plugin knows. Each is a portal's wire format; the
-// field names inside it are configuration, so nothing here names a portal.
+// Envelope kinds. See gcm.go and cbc.go.
 const (
-	// AES-256-GCM with a key and nonce the portal issues, carried as
-	// base64(ciphertext || tag). See gcm.go.
-	envelopeAESGCM = "aesGcm"
-
-	// AES-128-CBC with a key generated per request and sent beside the
-	// ciphertext as base64(ciphertext)@key. See cbc.go.
-	envelopeAESCBCKeyInBand = "aesCbcKeyInBand"
+	envelopeAESGCM          = "aesGcm"          // fixed key and nonce
+	envelopeAESCBCKeyInBand = "aesCbcKeyInBand" // fresh key per request, sent as cipher@key
 )
 
-// codeInternal is reported when this adapter cannot do its own part.
+// codeInternal is returned when the adapter itself is misconfigured.
 const codeInternal = "NET_INTERNAL_ERROR"
 
-// envelopeFields are the settings an envelope reads from a provider's block,
-// and what each fills. ParseEnvelopes takes these out of the config before
-// common.ParseProviderAuth sees it, which would refuse them as unknown
-// credential settings.
-//
-// Two groups. envelope* is the provider's default wrapping. otp* is a second
-// realm some providers keep their OTP on -- another service, another host,
-// another cipher, another token -- used by the actions it names, and the
-// verification of an OTP before the actions that carry one.
+// envelopeFields maps each provider-block setting to its field. envelope* is the
+// default codec, otp* a separate OTP service, followUp* a second read.
 var envelopeFields = map[string]func(*envelopeSettings, string){
 	"envelope":              func(s *envelopeSettings, v string) { s.kind = v },
 	"envelopeKeyEnv":        func(s *envelopeSettings, v string) { s.keyEnv = v },
@@ -59,55 +46,33 @@ var envelopeFields = map[string]func(*envelopeSettings, string){
 	"otpActions":       func(s *envelopeSettings, v string) { s.otpActions = v },
 	"otpVerifyPath":    func(s *envelopeSettings, v string) { s.verifyPath = v },
 	"otpVerifyActions": func(s *envelopeSettings, v string) { s.verifyActions = v },
+
+	"followUpPath":    func(s *envelopeSettings, v string) { s.followUpPath = v },
+	"followUpField":   func(s *envelopeSettings, v string) { s.followUpField = v },
+	"followUpActions": func(s *envelopeSettings, v string) { s.followUpActions = v },
 }
 
 // envelopeSettings is one provider's envelope as written in config.
 type envelopeSettings struct {
 	kind, keyEnv, nonceEnv, tokenEnv, tokenField, requestField, responsePaths string
 
-	// The OTP realm: its codec, the actions sent through it, and where an OTP
-	// is verified before the actions that carry one.
 	otp           realmSettings
 	otpActions    string
 	verifyPath    string
 	verifyActions string
+
+	followUpPath, followUpField, followUpActions string
 }
 
-// realmSettings is a codec's own settings, for a realm that has no fixed key.
-//
-// baseURLEnv names the variable holding the realm's host. A Participant on the
-// registry carries one base URL for all its actions, and that is the
-// grievance service's; the OTP service is another host, so it is named here,
-// beside the realm's token, rather than on the registry.
+// realmSettings configures a CBC codec. baseURLEnv names the variable holding
+// the OTP service's host, which differs from the participant's.
 type realmSettings struct {
 	kind, baseURLEnv, tokenEnv, tokenField, requestField, responsePaths string
 }
 
-// ParseEnvelopes reads each provider's envelope out of a plugin's flattened
-// settings, and returns the settings with those keys removed.
-//
-// An operator writes them in the provider's block, beside its auth:
-//
-//	pmkisan:
-//	  authScheme: none
-//	  envelope: aesGcm                     # the grievance service
-//	  envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
-//	  envelopeNonceEnv: PMKISAN_GRIEVANCE_IV
-//	  envelopeTokenEnv: PMKISAN_SERVICE_TOKEN
-//	  envelopeTokenField: TokenNo
-//	  envelopeRequestField: EncryptedRequest
-//	  envelopeResponsePaths: d.output,output
-//	  otpEnvelope: aesCbcKeyInBand         # the OTP service
-//	  otpBaseUrlEnv: PMKISAN_OTP_BASE_URL
-//	  otpTokenEnv: PMKISAN_OTP_TOKEN
-//	  otpTokenField: Token
-//	  otpRequestField: EncryptedRequest
-//	  otpResponsePaths: d.output,output
-//	  otpActions: init
-//	  otpVerifyPath: /services/chatbotservice.asmx/ChatbotOTPVerified
-//	  otpVerifyActions: support,status
-//
-// which pkg/plugin flattens to envelope-pmkisan and friends.
+// ParseEnvelopes reads each provider's envelope settings (flattened as
+// "setting-provider") and returns the remaining settings. See the pmkisan and
+// pmkisan-chatbot blocks in config/provider-adapter.yaml.
 func ParseEnvelopes(config map[string]string) (map[string]common.Envelope, map[string]string, error) {
 	rest := make(map[string]string, len(config))
 	settings := map[string]*envelopeSettings{}
@@ -138,39 +103,29 @@ func ParseEnvelopes(config map[string]string) (map[string]common.Envelope, map[s
 	return envelopes, rest, nil
 }
 
-// codec is one wire format: it seals a request and returns the opener for the
-// answer to that request.
+// codec seals a request and returns the opener for its answer.
 type codec interface {
 	seal(ctx context.Context, mapped []byte) ([]byte, common.Opener, error)
 }
 
-// providerEnvelope is one provider's wrapping: which codec each action is sent
-// through, and whether an action's OTP is verified before it is sent.
+// providerEnvelope picks a codec per action and runs the OTP verify and
+// follow-up read where configured. A nil field means that feature is off.
 type providerEnvelope struct {
-	provider string
-
-	// The default codec, for every action not sent through the OTP realm.
-	// Nil means those actions go as plain JSON.
-	base codec
-
-	// The OTP realm's codec, the variable naming its host, and the actions
-	// sent through it.
+	provider      string
+	base          codec // nil: plain JSON
 	otp           codec
 	otpBaseURLEnv string
 	otpActions    map[string]bool
-
-	// Verification before the actions that carry an OTP. Nil means none.
-	verify *otpVerify
+	verify        *otpVerify
+	followUp      *followUp
 }
 
-// The step relies on these at runtime; prove them at compile time.
 var (
 	_ common.Envelope = (*providerEnvelope)(nil)
 	_ common.Router   = (*providerEnvelope)(nil)
 )
 
-// BaseURLFor sends the actions on the OTP realm to its host, and leaves every
-// other action on the participant's.
+// BaseURLFor sends OTP actions to the OTP host, everything else to the participant.
 func (e *providerEnvelope) BaseURLFor(ctx context.Context, action, participant string) (string, error) {
 	if !e.otpActions[action] {
 		return participant, nil
@@ -178,9 +133,8 @@ func (e *providerEnvelope) BaseURLFor(ctx context.Context, action, participant s
 	return e.otpHost(ctx)
 }
 
-// otpHost is the OTP realm's host, read when used like every other setting
-// that differs between environments. Unset, nothing is sent: the participant's
-// host is the grievance service, which has no OTP endpoint to fall back on.
+// otpHost reads the OTP host from the environment. Unset fails the call; there
+// is no fallback to the participant's host.
 func (e *providerEnvelope) otpHost(ctx context.Context) (string, error) {
 	host := strings.TrimSpace(os.Getenv(e.otpBaseURLEnv))
 	if host == "" {
@@ -189,12 +143,8 @@ func (e *providerEnvelope) otpHost(ctx context.Context) (string, error) {
 	return host, nil
 }
 
-// Seal verifies the action's OTP when it carries one, then wraps the mapped
-// request in the action's codec.
-//
-// The verification runs here, after the request half and before the call, so
-// a request the half refused never spends the farmer's OTP, and a wrong OTP
-// stops the call it guards: no grievance is lodged or read on a failed check.
+// Seal verifies the OTP if the action needs it, then seals the request. A wrong
+// OTP stops the call.
 func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error) {
 	if e.verify != nil && e.verify.actions[exchange.Action] {
 		if err := e.verify.check(ctx, exchange); err != nil {
@@ -208,16 +158,40 @@ func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, m
 	if c == nil {
 		return mapped, func(_ context.Context, answer []byte) ([]byte, error) { return answer, nil }, nil
 	}
-	return c.seal(ctx, mapped)
+	sealed, open, err := c.seal(ctx, mapped)
+	if err != nil || e.followUp == nil || !e.followUp.actions[exchange.Action] {
+		return sealed, open, err
+	}
+	participant := ""
+	if exchange.Plan != nil {
+		participant = exchange.Plan.BaseURL
+	}
+	base, err := e.BaseURLFor(ctx, exchange.Action, participant)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sealed, e.followUp.wrap(c, exchange, base, mapped, open), nil
 }
 
-// newProviderEnvelope checks a provider's envelope settings and builds it.
-// Their secret values are not read here: like every credential in this
-// adapter they are read when used.
+// newProviderEnvelope validates the settings. Secrets are read at call time.
 func newProviderEnvelope(provider string, s envelopeSettings) (*providerEnvelope, error) {
 	e := &providerEnvelope{provider: provider, otpBaseURLEnv: s.otp.baseURLEnv, otpActions: listSet(s.otpActions)}
 
-	if s.kind != "" {
+	switch s.kind {
+	case "":
+	case envelopeAESCBCKeyInBand:
+
+		if s.keyEnv != "" || s.nonceEnv != "" {
+			return nil, fmt.Errorf("%s: envelope %s carries its key in band; drop envelopeKeyEnv and envelopeNonceEnv",
+				provider, envelopeAESCBCKeyInBand)
+		}
+		base, err := newCBCCodecFrom(provider, "envelope", "envelope", realmSettings{kind: s.kind,
+			tokenEnv: s.tokenEnv, tokenField: s.tokenField, requestField: s.requestField, responsePaths: s.responsePaths})
+		if err != nil {
+			return nil, err
+		}
+		e.base = base
+	default:
 		base, err := newGCMCodec(provider, s)
 		if err != nil {
 			return nil, err
@@ -246,10 +220,32 @@ func newProviderEnvelope(provider string, s envelopeSettings) (*providerEnvelope
 	case s.verifyPath == "" && len(verifyActions) == 0:
 	case s.verifyPath == "" || len(verifyActions) == 0:
 		return nil, fmt.Errorf("%s: otpVerifyPath and otpVerifyActions are set together or not at all", provider)
-	case e.otp == nil:
-		return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope: the OTP is verified on the OTP realm", provider)
+	case e.otp != nil:
+		// Separate OTP service: verify there.
+		e.verify = newOTPVerify(provider, s.verifyPath, verifyActions, firstOf(s.otpActions), e.otp.(*cbcCodec),
+			func(ctx context.Context, _ common.Exchange) (string, error) { return e.otpHost(ctx) })
 	default:
-		e.verify = newOTPVerify(provider, s.verifyPath, verifyActions, firstOf(s.otpActions), e.otp.(*cbcCodec), e.otpHost)
+		// The participant is the OTP service: verify on its host.
+		cbc, onOTPService := e.base.(*cbcCodec)
+		if !onOTPService {
+			return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope, or envelope %s: the OTP is verified on the OTP service",
+				provider, envelopeAESCBCKeyInBand)
+		}
+		e.verify = newOTPVerify(provider, s.verifyPath, verifyActions, "", cbc, participantHost)
+	}
+
+	followUpActions := listSet(s.followUpActions)
+	switch {
+	case s.followUpPath == "" && s.followUpField == "" && len(followUpActions) == 0:
+	case s.followUpPath == "" || s.followUpField == "" || len(followUpActions) == 0:
+		return nil, fmt.Errorf("%s: followUpPath, followUpField and followUpActions are set together or not at all", provider)
+	default:
+		for action := range followUpActions {
+			if e.otpActions[action] && e.otp == nil || !e.otpActions[action] && e.base == nil {
+				return nil, fmt.Errorf("%s: followUpActions names %s, which has no envelope to send a follow-up through", provider, action)
+			}
+		}
+		e.followUp = newFollowUp(provider, s.followUpPath, s.followUpField, followUpActions)
 	}
 
 	if e.base == nil && e.otp == nil {
@@ -258,18 +254,22 @@ func newProviderEnvelope(provider string, s envelopeSettings) (*providerEnvelope
 	return e, nil
 }
 
+// participantHost is the registry's base URL for the provider.
+func participantHost(_ context.Context, exchange common.Exchange) (string, error) {
+	if exchange.Plan == nil || exchange.Plan.BaseURL == "" {
+		return "", errors.New("no call plan to find the provider's host on")
+	}
+	return exchange.Plan.BaseURL, nil
+}
+
 // --- shared by the codecs ----------------------------------------------------
 
-// withToken adds a provider's service token to the mapped request, when the
-// codec carries one. It goes into the plaintext because that is where the
-// portal reads it; it is added here rather than in the mapping because a
-// mapping file is published.
+// withToken adds the service token to the plaintext. It is added here, not in
+// the mapping, because mapping files are public.
 func withToken(ctx context.Context, provider string, mapped []byte, tokenEnv, tokenField string) ([]byte, error) {
 	fields := map[string]any{}
 	if len(mapped) > 0 {
 		if err := json.Unmarshal(mapped, &fields); err != nil {
-			// The request half produced something other than an object, so
-			// there is nowhere to put the token. A mapping fault.
 			return nil, fmt.Errorf("the %s request mapping must produce a JSON object: %w", provider, err)
 		}
 	}
@@ -279,8 +279,7 @@ func withToken(ctx context.Context, provider string, mapped []byte, tokenEnv, to
 			return nil, unconfigured(ctx, provider, tokenEnv+" is not set")
 		}
 		if _, present := fields[tokenField]; present {
-			// A published mapping setting the token's own key means a
-			// credential in a public file. Stopped rather than overwritten.
+			// A public mapping must never carry the token.
 			return nil, fmt.Errorf("the %s request mapping sets %s, which the envelope supplies; "+
 				"remove it from the mapping", provider, tokenField)
 		}
@@ -293,8 +292,7 @@ func withToken(ctx context.Context, provider string, mapped []byte, tokenEnv, to
 	return plain, nil
 }
 
-// checkToken refuses half a token setting: a name with no variable, or a
-// variable with nowhere to put it.
+// checkToken requires tokenEnv and tokenField together or not at all.
 func checkToken(tokenEnv, tokenField string, missing []string, prefix string) []string {
 	if (tokenEnv == "") != (tokenField == "") {
 		return append(missing, "both "+prefix+"TokenEnv and "+prefix+"TokenField, or neither")
@@ -340,10 +338,7 @@ func sealedAnswer(wire any, paths [][]string) (string, bool) {
 	return "", false
 }
 
-// unconfigured reports envelope configuration that cannot work. The detail --
-// which variable -- goes to the log. The wire learns only that this adapter
-// could not do its part: a variable name is the operator's business, not a
-// network peer's.
+// unconfigured returns a 500; the detail goes to the log, not the wire.
 func unconfigured(ctx context.Context, provider, detail string) error {
 	err := fmt.Errorf("the envelope for %s is not configured on this adapter", provider)
 	log.Errorf(ctx, err, "%s", detail)
@@ -361,13 +356,12 @@ func redactToken(text, tokenEnv string) string {
 	return text
 }
 
-// refused classifies an answer the portal gave that cannot be used as one.
+// refused is a 502: the portal's answer is unusable.
 func refused(err error) error {
 	return model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable, err)
 }
 
-// decodeHex reads hex as an operator might paste it: whitespace anywhere,
-// including a key wrapped across lines, is dropped.
+// decodeHex decodes hex, ignoring whitespace.
 func decodeHex(raw string) ([]byte, error) {
 	cleaned := strings.Join(strings.Fields(raw), "")
 	if cleaned == "" {
@@ -397,8 +391,7 @@ func firstOf(raw string) string {
 	return ""
 }
 
-// missingSettings reports the settings left empty, sorted so the message is
-// the same every run.
+// missingSettings lists empty settings, sorted.
 func missingSettings(settings map[string]string) []string {
 	var missing []string
 	for setting, value := range settings {

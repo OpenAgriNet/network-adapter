@@ -1,42 +1,15 @@
-# PM-KISAN, openagrinet:PMKISANGrievance, support -> POST /LodgeGrievance.
-# Both directions, one file.
-#
-# Step one of two: lodge the grievance. A support request composes no
-# contract, so everything is read off message.support:
-#
-#   orderId               the farmer's PM-KISAN registration number -- both the
-#                         identity the portal authenticates on and the
-#                         enrolment the complaint is against
-#   channels[0].provider  the provider to route to, provider.id
-#   channels[0].grievance the complaint: category (G001-G010) and description,
-#                         the farmer's own words. One level deep: PM-KISAN has
-#                         no sub-category, so one is refused.
-#   channels[0].challenge the OTP from on_init. The Grievance plugin's envelope
-#                         verifies it on PM-KISAN's OTP service before the
-#                         lodge is sent; a wrong OTP is a 400 and nothing is
-#                         lodged. It never reaches the lodge call and is never
-#                         echoed back.
-#
-# This file speaks PLAINTEXT. The portal reads and writes only AES-256-GCM, so
-# the Grievance plugin's envelope adds the service token (TokenNo) and encrypts
-# what the request half produces, and decrypts the answer before the response
-# half reads it. Neither the token nor the cipher can live here -- this file is
-# published.
+# PM-KISAN grievance, support -> POST /LodgeGrievance: lodge a grievance.
+#   orderId                registration number
+#   channels[0].grievance  category G001-G010 (no subCategory), description
+#   channels[0].challenge  OTP, verified by the envelope first; never forwarded
+# Plaintext here; the envelope adds TokenNo and encrypts (AES-256-GCM).
 
-# required holds format checks, which return SCH_INVALID_FORMAT and let an
-# absent field pass. A missing field is refused by the request half under
-# _error, which can name SCH_REQUIRED_FIELD_MISSING.
+# Format checks (SCH_INVALID_FORMAT). Missing fields are refused by the request half.
 required:
   - check: |
       (
         $id := beckn.message.support.orderId;
-        /* ASCII letters and digits only. The portal accepts native-script
-           digits and forwards them unconverted, so they are refused here. At
-           most twenty characters, and never twelve bare digits: that is an
-           Aadhaar number, which this capability does not accept. The pack
-           states both rules on enrolmentId, but on support the value sits in
-           orderId, outside everything the pack validates, so they are
-           restated here. */
+        /* ASCII alphanumeric, <= 20 chars, never 12 digits (Aadhaar). */
         $not($exists($id)) or ($type($id) = "string"
           and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
           and $not($exists($match($id, /^[0-9]{12}$/)[0])))
@@ -54,8 +27,7 @@ required:
   - check: |
       (
         $c := beckn.message.support.channels[0].challenge;
-        /* The OTP the farmer received by SMS: digits only. Its length is the
-           portal's business, so it is not fixed here. */
+        /* Digits only. */
         $not($exists($c))
           or ($c.method = "SMS_OTP" and $type($c.value) = "string" and $exists($match($c.value, /^[0-9]+$/)[0]))
       )
@@ -63,21 +35,19 @@ required:
   - check: |
       (
         $d := beckn.message.support.channels[0].grievance.description;
-        /* Measured after trimming, because the portal trims before it
-           measures: ten spaces would pass an untrimmed check here and fail
-           there. */
+        /* Measured trimmed, as the portal does. */
         $not($exists($d)) or ($type($d) = "string" and $length($trim($d)) >= 10 and $length($trim($d)) <= 2000)
       )
     message: "grievance.description must describe the problem in 10 to 2000 characters"
 
-# The plaintext /LodgeGrievance takes. TokenNo is added by the envelope.
+# TokenNo is added by the envelope.
 request: |
   (
     $s := beckn.message.support;
     $ch := $s.channels[0];
     $g := $ch.grievance;
     $at := "$.message.support.channels[0].";
-    /* The first required field the request lacks, with its path. */
+    /* First missing field, with its path. */
     $missing := [
       { "field": "orderId", "path": "$.message.support.orderId", "present": $exists($s.orderId) },
       { "field": "grievance.category.code", "path": $at & "grievance.category.code", "present": $exists($g.category.code) },
@@ -95,25 +65,10 @@ request: |
     }
   )
 
-# The portal says no inside a 200: a success sentinel that reads "False". It
-# arrives under Status, Responce or Rsponce -- misspelled, and not consistently
-# -- and status in places, so every spelling is read, case-insensitively. An
-# ABSENT sentinel is success on this endpoint, so only an explicit false
-# refuses. Its prose (Message, message or Remark) is never returned: what the
-# portal says about why is for the operator's log.
-#
-# Otherwise the reply is echoed and asserted. orderId, provider, scheme and the
-# grievance are the caller's own. case.ticketNo is the portal's handle for the
-# grievance, which it names GrievanceID or, where that is absent, GrievanceNo;
-# absent when it sends neither. case.status (Registered, with no name because
-# the portal stated no phrase) and case.filedOn are asserted: a lodge reply
-# carries no status and no date. filedOn is the IST date of the request's own
-# timestamp, so it names the day the farmer filed -- and the date a later
-# status matches on -- however long the call took.
-#
-# A 4xx from the portal reaches this half with its status under _status. None
-# is known to mean anything the farmer can fix, so each is left to the
-# adapter's 502.
+# A "False" flag (Status/Responce/Rsponce/status) is a 502; the portal's message
+# is never returned. Otherwise echo the request and add case: ticketNo from
+# GrievanceID or GrievanceNo, status Registered, filedOn = IST date of the
+# request timestamp. A 4xx (_status) becomes the adapter's 502.
 response: |
   $exists(_status)
   ? {}
@@ -121,7 +76,7 @@ response: |
     $false := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
     $refused := $false(response.Status) or $false(response.Responce)
       or $false(response.Rsponce) or $false(response.status);
-    /* A handle may arrive as text or as a number; empty is none. */
+    /* Text or number; empty is none. */
     $handle := function($v) {
       ($type($v) = "string" and $v != "") or $type($v) = "number" ? $string($v)
     };
@@ -130,7 +85,7 @@ response: |
       : $handle(response.GrievanceNo);
     $s := beckn.message.support;
     $ch := $s.channels[0];
-    /* Today in IST, from the request's own timestamp. */
+
     $filedOn := $exists(beckn.context.timestamp)
       ? $fromMillis($toMillis(beckn.context.timestamp), "[Y0001]-[M01]-[D01]", "+0530")
       : $now("[Y0001]-[M01]-[D01]", "+0530");
@@ -152,8 +107,7 @@ response: |
             "case": {
               "ticketNo": $ticketNo,
               "status":   { "code": "Registered" },
-              /* IST, not UTC: a UTC date is yesterday for anything filed
-                 before 05:30 IST, and status matches on this date. */
+              /* IST: status matches on this date. */
               "filedOn":  $filedOn
             }
           }]

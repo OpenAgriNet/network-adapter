@@ -1,84 +1,69 @@
 package Grievance
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
-// challengeMethod is the only challenge a caller may answer: an OTP by SMS.
+// challengeMethod is the only accepted challenge.
 const challengeMethod = "SMS_OTP"
 
-// identityType is how the OTP service is told the identifier is a registration
-// number. A grievance is filed against a registration, so it is never a mobile
-// or an Aadhaar number here; nothing is inferred from the value's shape.
+// identityType is the OTP service's type for a registration number (grievance).
 const identityType = "Ben_id"
 
-// maxVerifyAnswerBytes caps what is read from the verify call: its answer is a
-// flag and a sentence.
-const maxVerifyAnswerBytes = 64 << 10
+// applicantTypes maps applicant.idType to the OTP service's Types ("Aadhar" is
+// the upstream's spelling).
+var applicantTypes = map[string]string{
+	"Registration": "Ben_id",
+	"Mobile":       "Mobile",
+	"Aadhaar":      "Aadhar",
+}
 
-// otpVerify spends the farmer's OTP on the OTP realm before an action that
-// carries one -- the lodge or the read -- is sent.
-//
-// It is one call the registry has no action for: a precondition of support
-// and status, not an action of its own. It goes to the OTP realm's host
-// (otpBaseUrlEnv) at verifyPath, through the same codec and token as init, and
-// within init's time budget.
-//
-// The OTP goes here and nowhere else: it is not in the lodge or the read, it is
-// not logged, and it is not echoed.
+// otpVerify checks the farmer's OTP on the OTP service before the guarded call.
+// The OTP goes only here: never to the guarded call, the log or the reply.
 type otpVerify struct {
 	provider   string
 	path       string
 	actions    map[string]bool
 	hostAction string
 	codec      *cbcCodec
-	host       func(context.Context) (string, error)
+	host       func(context.Context, common.Exchange) (string, error)
 	client     *http.Client
 }
 
 func newOTPVerify(provider, path string, actions map[string]bool, hostAction string, codec *cbcCodec,
-	host func(context.Context) (string, error)) *otpVerify {
+	host func(context.Context, common.Exchange) (string, error)) *otpVerify {
 	return &otpVerify{provider: provider, path: path, actions: actions, hostAction: hostAction,
 		codec: codec, host: host, client: &http.Client{}}
 }
 
-// check verifies the exchange's challenge, refusing the call when it fails.
-//
-//   - challenge or identifier missing: 400 SCH_REQUIRED_FIELD_MISSING. The
-//     request half refuses these first; this is the guard behind it.
-//   - a method other than SMS_OTP: 400 SCH_INVALID_FORMAT.
-//   - the OTP realm cannot be reached or answers non-2xx: 502.
-//   - anything but a "True" success flag: 400 BIZ_GENERIC_ERROR -- the farmer's
-//     OTP is wrong, expired or already used, and the call it guards is not made.
-//     Not a 401: that means a Beckn signature failed to verify.
+// check verifies the challenge. Missing: 400 SCH_REQUIRED_FIELD_MISSING. Wrong
+// method: 400 SCH_INVALID_FORMAT. Unreachable: 502. Not "True": 400
+// BIZ_GENERIC_ERROR (not 401, which means a bad Beckn signature).
 func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
-	identity, method, otp := challengeIn(exchange)
-	if identity == "" || otp == "" {
+	kind, identity, method, otp := challengeIn(exchange)
+	if kind == "" || identity == "" || otp == "" {
 		return model.NewBadReqErr("SCH_REQUIRED_FIELD_MISSING", errors.New(
-			"this call needs the registration number and challenge.value, the OTP the farmer received"))
+			"this call needs the farmer's identifier and challenge.value, the OTP the farmer received"))
 	}
 	if method != challengeMethod {
 		return model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf(
 			"challenge.method must be %s", challengeMethod))
 	}
 
-	base, err := v.host(ctx)
+	base, err := v.host(ctx, exchange)
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]string{"Types": identityType, "Values": identity, "OTP": otp})
+	body, err := json.Marshal(map[string]string{"Types": kind, "Values": identity, "OTP": otp})
 	if err != nil {
 		return err
 	}
@@ -87,7 +72,15 @@ func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
 		return err
 	}
 
-	answer, err := v.post(ctx, exchange, base, sealed)
+	hostAction := v.hostAction
+	if hostAction == "" {
+		hostAction = exchange.Action
+	}
+	var call model.ActionPlan
+	if exchange.Plan != nil {
+		call = exchange.Plan.Actions[hostAction]
+	}
+	answer, err := postSealed(ctx, v.client, v.provider, "OTP verification", base, v.path, call, sealed)
 	if err != nil {
 		return err
 	}
@@ -96,8 +89,7 @@ func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
 		return err
 	}
 	if !succeeded(plain) {
-		// The portal's own words stay out of the reply and the log: its
-		// message can quote the farmer's details back.
+		// The portal's message is never logged or returned.
 		log.Warnf(ctx, "%s refused the OTP", v.provider)
 		return model.NewCodedErr(http.StatusBadRequest, "BIZ_GENERIC_ERROR",
 			errors.New("the OTP is wrong or has expired"))
@@ -105,53 +97,16 @@ func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
 	return nil
 }
 
-// post sends the sealed verify request to the OTP realm's host, within the
-// time budget of the realm's own action.
-func (v *otpVerify) post(ctx context.Context, exchange common.Exchange, base string, sealed []byte) ([]byte, error) {
-	var call model.ActionPlan
-	if exchange.Plan != nil {
-		call = exchange.Plan.Actions[v.hostAction]
-	}
-	endpoint, err := util.BuildEndpoint(base, model.ActionPlan{Method: http.MethodPost, Path: v.path}, nil)
-	if err != nil {
-		return nil, err
-	}
-	timeout, _ := util.Budget(call)
-	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, endpoint, bytes.NewReader(sealed))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := v.client.Do(req)
-	if err != nil {
-		log.Warnf(ctx, "%s's OTP service could not be reached for verification: %v", v.provider, err)
-		return nil, refused(fmt.Errorf("%s's OTP service did not answer", v.provider))
-	}
-	defer resp.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxVerifyAnswerBytes))
-	if err != nil {
-		return nil, refused(fmt.Errorf("%s's OTP service answer could not be read", v.provider))
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		log.Warnf(ctx, "%s's OTP service returned %s for verification", v.provider, resp.Status)
-		return nil, refused(fmt.Errorf("%s's OTP service returned %s", v.provider, resp.Status))
-	}
-	return answer, nil
-}
-
-// challengeIn reads the registration number and the challenge from where each
-// action carries them: on support's channel, with the registration in
-// orderId; on any contract action, in commitmentAttributes.
-func challengeIn(exchange common.Exchange) (identity, method, otp string) {
+// challengeIn reads the identifier and challenge: support's orderId and channel,
+// or commitmentAttributes' applicant (or enrolmentId). kind is empty for an
+// unknown idType.
+func challengeIn(exchange common.Exchange) (kind, identity, method, otp string) {
 	payload, _ := exchange.Beckn.(map[string]any)
 	message, _ := payload["message"].(map[string]any)
 
 	var holder map[string]any
 	if support, isSupport := message["support"].(map[string]any); isSupport {
-		identity = text(support["orderId"])
+		kind, identity = identityType, text(support["orderId"])
 		if channels, ok := support["channels"].([]any); ok && len(channels) > 0 {
 			holder, _ = channels[0].(map[string]any)
 		}
@@ -159,17 +114,20 @@ func challengeIn(exchange common.Exchange) (identity, method, otp string) {
 		if commitments, ok := contract["commitments"].([]any); ok && len(commitments) > 0 {
 			commitment, _ := commitments[0].(map[string]any)
 			holder, _ = commitment["commitmentAttributes"].(map[string]any)
-			identity = text(holder["enrolmentId"])
+			if applicant, declared := holder["applicant"].(map[string]any); declared {
+				kind, identity = applicantTypes[text(applicant["idType"])], text(applicant["id"])
+			} else {
+				kind, identity = identityType, text(holder["enrolmentId"])
+			}
 		}
 	}
 	if challenge, ok := holder["challenge"].(map[string]any); ok {
 		method, otp = text(challenge["method"]), text(challenge["value"])
 	}
-	return identity, method, otp
+	return kind, identity, method, otp
 }
 
-// succeeded reads the OTP realm's success flag. "True" is the only success:
-// a missing flag, an empty answer or any other value fails closed.
+// succeeded is true only for a "True" flag; anything else fails closed.
 func succeeded(plain []byte) bool {
 	var answer map[string]any
 	if json.Unmarshal(plain, &answer) != nil {
@@ -183,7 +141,7 @@ func succeeded(plain []byte) bool {
 	return false
 }
 
-// text is a JSON value as a trimmed string, or empty when it is not one.
+// text returns a trimmed string, or "" if the value is not one.
 func text(value any) string {
 	s, _ := value.(string)
 	return strings.TrimSpace(s)

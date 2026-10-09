@@ -1,37 +1,20 @@
-# PM-KISAN, openagrinet:PMKISANGrievance, init -> POST /ChatbotOTP.
-# Both directions, one file.
-#
-# Ask for an OTP. PM-KISAN challenges both the lodge and the read, so init runs
-# before each: once before support, and again, days later, before status.
-#
-# The OTP does not come from the grievance service. /ChatbotOTP is on PM-KISAN's
-# OTP service, another host with another cipher and another token. The registry
-# participant is the grievance service, so the Grievance plugin's envelope
-# names the OTP host (otpBaseUrlEnv), sends this action there through that
-# realm (AES-128-CBC with the key in band) and adds its token (Token); this
-# file speaks plaintext.
-#
-# It carries the registration number and nothing else. No phone number crosses
-# the network: the portal texts the mobile it already holds against that
-# registration, and does not say which.
+# PM-KISAN grievance, init -> POST /ChatbotOTP: send an OTP before support or
+# status. Goes to the OTP host (otpBaseUrlEnv); the envelope encrypts and adds
+# Token. Sends only the registration number; no phone number.
 
-# A format check; an absent registration number passes here and is refused by
-# the request half.
+# Format check; a missing value is refused by the request half.
 required:
   - check: |
       (
         $id := beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId;
-        /* At most twenty characters, and never twelve bare digits -- an
-           Aadhaar number, which this capability does not accept. */
+        /* <= 20 chars, never 12 digits (Aadhaar). */
         $not($exists($id)) or ($type($id) = "string"
           and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
           and $not($exists($match($id, /^[0-9]{12}$/)[0])))
       )
     message: "enrolmentId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
 
-# The plaintext /ChatbotOTP takes. Types is fixed: a grievance is filed against
-# a registration, so the identifier is never a mobile or an Aadhaar number, and
-# nothing is inferred from its shape. Token is added by the envelope.
+# Types is always Ben_id (registration number).
 request: |
   (
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
@@ -42,19 +25,9 @@ request: |
                     "path": "$.message.contract.commitments[0].commitmentAttributes.enrolmentId" } }
   )
 
-# The OTP service answers with a success flag and a sentence. "True" is the
-# only success: a missing flag, an empty answer or anything else is refused
-# rather than read as a sent OTP. The sentence is never returned.
-#
-# on_init carries challengeIssued -- method and expiresAt -- and no sentTo: the
-# portal does not disclose the number it texted. expiresAt is the adapter's
-# window, not the portal's: the OTP call names no expiry, so this states when
-# the network will stop expecting the OTP. The OTP itself is never returned,
-# the registration number is not echoed, and the commitment stays DRAFT --
-# OnDemand, because an acknowledgement carries no case.
-#
-# A 4xx from the OTP service reaches this half under _status; it is left to the
-# adapter's 502.
+# Only "True" means sent; anything else is a 502. on_init stays DRAFT with
+# challengeIssued (method, expiresAt; no sentTo). expiresAt is our own 10-minute
+# window. A 4xx (_status) becomes the adapter's 502.
 response: |
   $exists(_status)
   ? {}
@@ -63,7 +36,7 @@ response: |
     $sent := $true(response.Rsponce) or $true(response.Responce) or $true(response.Status);
     $commitment := beckn.message.contract.commitments[0];
     $ca := $commitment.commitmentAttributes;
-    /* Ten minutes, the window this network holds an OTP open for. */
+
     $otpWindowMillis := 10 * 60 * 1000;
     $not($sent)
     ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",

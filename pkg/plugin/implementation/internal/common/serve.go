@@ -157,10 +157,8 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
 	}
 
-	// The provider's envelope, when it has one. Sealed once, outside the
-	// retry loop -- after the request half, so a refusal it raised under
-	// _error never reaches here -- and opened once after the loop, so the
-	// response half reads plain JSON.
+	// The provider's envelope, if any: route, seal once before the retry
+	// loop, open once after it.
 	envelope, wrapped := s.config.EnvelopeByProvider[provider]
 	base := plan.BaseURL
 	if router, routes := envelope.(Router); wrapped && routes {

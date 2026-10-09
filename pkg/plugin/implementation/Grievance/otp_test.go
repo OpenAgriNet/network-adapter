@@ -286,3 +286,75 @@ func TestAProviderWithOnlyAnOTPRealmSendsItsOtherActionsPlain(t *testing.T) {
 		t.Errorf("open() = %s, want the answer untouched", got)
 	}
 }
+
+// chatbotSettings is a provider whose every call is on the OTP service, as
+// PM-KISAN's application status is.
+func chatbotSettings() envelopeSettings {
+	return envelopeSettings{kind: envelopeAESCBCKeyInBand, tokenEnv: testOTPTokenEnv, tokenField: "Token",
+		requestField: "EncryptedRequest", responsePaths: "d.output,output",
+		verifyPath: "/ChatbotOTPVerified", verifyActions: "status",
+		followUpPath: "/ChatbotBeneficiaryStatus", followUpField: "_beneficiaryStatus", followUpActions: "status"}
+}
+
+func TestAProviderWhollyOnTheOTPServiceVerifiesOnItsOwnHost(t *testing.T) {
+	t.Setenv(testOTPTokenEnv, testOTPToken)
+	e, err := newProviderEnvelope("pmkisan-chatbot", chatbotSettings())
+	if err != nil {
+		t.Fatalf("newProviderEnvelope() = %v", err)
+	}
+	otp := &otpService{t: t}
+	server := httptest.NewServer(otp)
+	defer server.Close()
+
+	payload := map[string]any{"message": map[string]any{"contract": map[string]any{"commitments": []any{
+		map[string]any{"commitmentAttributes": map[string]any{
+			"applicant": map[string]any{"idType": "Mobile", "id": "9812345670"},
+			"challenge": map[string]any{"method": "SMS_OTP", "value": validOTP},
+		}}}}}}
+	wire, _, err := e.Seal(context.Background(), common.Exchange{Action: "status", Beckn: payload,
+		Plan: &model.ProviderRecord{BaseURL: server.URL}}, []byte(`{"Types":"Mobile","Values":"9812345670"}`))
+	if err != nil {
+		t.Fatalf("Seal() = %v", err)
+	}
+	if otp.calls != 1 || otp.path != "/ChatbotOTPVerified" {
+		t.Fatalf("the participant's host saw %d call(s) at %q, want the verify", otp.calls, otp.path)
+	}
+	if otp.sent["Types"] != "Mobile" || otp.sent["Values"] != "9812345670" || otp.sent["OTP"] != validOTP {
+		t.Errorf("verify sent %v, want the declared kind, the id and the OTP", otp.sent)
+	}
+	var body map[string]string
+	_ = json.Unmarshal(wire, &body)
+	if !strings.Contains(body["EncryptedRequest"], "@") {
+		t.Errorf("status sealed %q, want the chatbot service's cipher@key", body["EncryptedRequest"])
+	}
+}
+
+func TestChallengeInReadsTheDeclaredKind(t *testing.T) {
+	for idType, want := range map[string]string{"Registration": "Ben_id", "Mobile": "Mobile", "Aadhaar": "Aadhar", "PAN": ""} {
+		payload := map[string]any{"message": map[string]any{"contract": map[string]any{"commitments": []any{
+			map[string]any{"commitmentAttributes": map[string]any{
+				"applicant": map[string]any{"idType": idType, "id": "x"}}}}}}}
+		if kind, _, _, _ := challengeIn(common.Exchange{Beckn: payload}); kind != want {
+			t.Errorf("challengeIn(%s) kind = %q, want %q", idType, kind, want)
+		}
+	}
+}
+
+func TestNewProviderEnvelopeRefusesInconsistentChatbotSettings(t *testing.T) {
+	for name, tweak := range map[string]func(*envelopeSettings){
+		"a fixed key on a key-in-band envelope": func(s *envelopeSettings) { s.keyEnv = "K" },
+		"follow-up with no field":               func(s *envelopeSettings) { s.followUpField = "" },
+		"follow-up with no actions":             func(s *envelopeSettings) { s.followUpActions = "" },
+		"follow-up with no path":                func(s *envelopeSettings) { s.followUpPath = "" },
+		"verify with no OTP service":            func(s *envelopeSettings) { *s = pmkisanSettings(); s.verifyPath, s.verifyActions = "/v", "status" },
+		"no request field":                      func(s *envelopeSettings) { s.requestField = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := chatbotSettings()
+			tweak(&s)
+			if _, err := newProviderEnvelope("pmkisan-chatbot", s); err == nil {
+				t.Fatal("newProviderEnvelope() accepted settings that cannot work")
+			}
+		})
+	}
+}

@@ -24,26 +24,10 @@ import (
 // keySeparator joins the ciphertext and its key on the wire: cipher@key.
 const keySeparator = "@"
 
-// cbcCodec is the AES-128-CBC wrapping with the key sent in band, as PM-KISAN's
-// OTP service reads and writes it:
-//
-//	key string   32 random hex characters, fresh for every request
-//	AES key, IV  both the first 16 BYTES of that string -- its first 16 hex
-//	             characters as ASCII -- zero-padded if it were ever shorter
-//	padding      PKCS#7
-//	request      {"<requestField>": "base64(ciphertext)@<key string>"}
-//	answer       "base64(ciphertext)" or "base64(ciphertext)@<reply key>" at a
-//	             response path; opened with the reply's key when it names one,
-//	             otherwise with the request's
-//
-// THIS IS OBFUSCATION, NOT ENCRYPTION. The key travels beside the ciphertext,
-// in the clear, and the IV is the key, so anyone who can read the request can
-// read the plaintext -- exactly who TLS already protects against. And the key
-// is 16 ASCII hex digits, 64 bits rather than 128. It is reproduced byte for
-// byte because the portal requires it; it is not a security control and must
-// not be recorded as one.
-//
-// The service token is the only secret, and it travels in the plaintext.
+// cbcCodec is PM-KISAN chatbot's AES-128-CBC envelope: a fresh 32-hex key string
+// per request, AES key = IV = its first 16 bytes, PKCS#7, sent as cipher@key.
+// Replies may carry their own key. The key travels in the clear, so this is
+// obfuscation, not security; the token is the only secret.
 type cbcCodec struct {
 	provider      string
 	tokenEnv      string
@@ -51,26 +35,31 @@ type cbcCodec struct {
 	requestField  string
 	responsePaths [][]string
 
-	// random is where key strings come from. crypto/rand outside tests.
+	// crypto/rand outside tests.
 	random io.Reader
 }
 
-// newCBCCodec checks the OTP realm's settings.
+// newCBCCodec validates otp* settings.
 func newCBCCodec(provider string, s realmSettings) (*cbcCodec, error) {
+	return newCBCCodecFrom(provider, "otp", "otpEnvelope", s)
+}
+
+// newCBCCodecFrom validates settings under the given prefix (otp or envelope).
+func newCBCCodecFrom(provider, prefix, kindSetting string, s realmSettings) (*cbcCodec, error) {
 	if s.kind != envelopeAESCBCKeyInBand {
-		return nil, fmt.Errorf("%s: otpEnvelope %q is not one this plugin knows; want %s",
-			provider, s.kind, envelopeAESCBCKeyInBand)
+		return nil, fmt.Errorf("%s: %s %q is not one this plugin knows; want %s",
+			provider, kindSetting, s.kind, envelopeAESCBCKeyInBand)
 	}
 	missing := missingSettings(map[string]string{
-		"otpRequestField":  s.requestField,
-		"otpResponsePaths": s.responsePaths,
+		prefix + "RequestField":  s.requestField,
+		prefix + "ResponsePaths": s.responsePaths,
 	})
-	missing = checkToken(s.tokenEnv, s.tokenField, missing, "otp")
+	missing = checkToken(s.tokenEnv, s.tokenField, missing, prefix)
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("%s: otpEnvelope %s needs %s", provider, envelopeAESCBCKeyInBand,
+		return nil, fmt.Errorf("%s: %s %s needs %s", provider, kindSetting, envelopeAESCBCKeyInBand,
 			strings.Join(missing, ", "))
 	}
-	paths, err := parsePaths(provider, "otpResponsePaths", s.responsePaths)
+	paths, err := parsePaths(provider, prefix+"ResponsePaths", s.responsePaths)
 	if err != nil {
 		return nil, err
 	}
@@ -78,8 +67,7 @@ func newCBCCodec(provider string, s realmSettings) (*cbcCodec, error) {
 		requestField: s.requestField, responsePaths: paths, random: rand.Reader}, nil
 }
 
-// seal adds the service token, encrypts under a fresh key string, and returns
-// the opener that knows that key.
+// seal adds the token, encrypts under a fresh key, and returns its opener.
 func (c *cbcCodec) seal(ctx context.Context, mapped []byte) ([]byte, common.Opener, error) {
 	plain, err := withToken(ctx, c.provider, mapped, c.tokenEnv, c.tokenField)
 	if err != nil {
@@ -102,9 +90,7 @@ func (c *cbcCodec) seal(ctx context.Context, mapped []byte) ([]byte, common.Open
 	}, nil
 }
 
-// open decrypts an answer, failing the same three ways the GCM codec does:
-// no envelope or words where it belongs (502), a ciphertext that will not open
-// (500), plaintext that is not JSON (502).
+// open decrypts an answer; failures as in gcmCodec.Open (502/500/502).
 func (c *cbcCodec) open(ctx context.Context, answer []byte, requestKey string) ([]byte, error) {
 	var wire any
 	if err := json.Unmarshal(answer, &wire); err != nil {
@@ -155,8 +141,7 @@ func (c *cbcCodec) newKeyString() (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
-// keyMaterial is the AES key and IV a key string stands for: its first 16
-// bytes, zero-padded.
+// keyMaterial is the first 16 bytes of the key string, zero-padded.
 func keyMaterial(keyString string) []byte {
 	key := make([]byte, aes.BlockSize)
 	copy(key, keyString)
@@ -176,8 +161,7 @@ func cbcEncrypt(keyString string, plain []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(out), nil
 }
 
-// cbcDecrypt reverses cbcEncrypt, refusing a ciphertext or padding that cannot
-// be right.
+// cbcDecrypt reverses cbcEncrypt.
 func cbcDecrypt(keyString string, raw []byte) ([]byte, error) {
 	if len(raw)%aes.BlockSize != 0 {
 		return nil, errors.New("ciphertext is not a whole number of blocks")

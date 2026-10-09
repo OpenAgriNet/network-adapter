@@ -17,27 +17,12 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
-// keyBytes is AES-256. A shorter key pasted by mistake is refused rather than
-// silently selecting AES-128, which the portal would not open.
+// keyBytes is AES-256; shorter keys are refused.
 const keyBytes = 32
 
-// gcmCodec is the AES-256-GCM wrapping: base64(ciphertext || tag), with a key
-// and nonce the portal issues, and the service token in the plaintext.
-//
-// PM-KISAN's grievance service is the portal it was written for.
-//
-// THE NONCE IS FIXED, and that is the portal's design rather than ours: it
-// decrypts with the one nonce it issued and reads none off the wire, so a
-// per-request random nonce would be unreadable to it. Reusing a GCM nonce under
-// one key is a known weakness -- identical plaintexts produce identical
-// ciphertexts, and two ciphertexts together leak their XOR -- and TLS is what
-// actually protects the exchange. The nonce is read per call rather than held,
-// so the day the portal accepts a nonce per message, the change is here and in
-// config, not a redesign.
-//
-// It holds variable NAMES only. Key, nonce and token are read from the
-// environment on every call, so a rotated secret needs no restart, and none of
-// them is ever logged or put in an error.
+// gcmCodec is PM-KISAN grievance's AES-256-GCM envelope: base64(ciphertext||tag).
+// The nonce is fixed because the portal requires it (a known GCM weakness; TLS
+// protects the exchange). Key, nonce and token are env var names, read per call.
 type gcmCodec struct {
 	provider                   string
 	keyEnv, nonceEnv, tokenEnv string
@@ -46,7 +31,7 @@ type gcmCodec struct {
 	responsePaths              [][]string
 }
 
-// newGCMCodec checks a provider's default-envelope settings.
+// newGCMCodec validates the settings.
 func newGCMCodec(provider string, s envelopeSettings) (*gcmCodec, error) {
 	if s.kind != envelopeAESGCM {
 		return nil, fmt.Errorf("%s: envelope %q is not one this plugin knows; want %s",
@@ -89,28 +74,13 @@ func (c *gcmCodec) Seal(ctx context.Context, mapped []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Seal appends the 16-byte tag to the ciphertext: exactly the
-	// ciphertext || tag layout the portal expects.
+	// Go appends the 16-byte tag, the layout the portal expects.
 	sealed := base64.StdEncoding.EncodeToString(gcm.Seal(nil, nonce, plain, nil))
 	return json.Marshal(map[string]string{c.requestField: sealed})
 }
 
-// Open decrypts the portal's answer into the plaintext JSON the response half
-// reads.
-//
-// Failures split by whose fault they are:
-//
-//   - no envelope, or words where the ciphertext belongs: the portal answered
-//     with something other than a sealed answer -- in practice a rejection it
-//     did not encrypt. 502, NET_DOWNSTREAM_UNAVAILABLE.
-//   - an envelope that will not open: our key or nonce has drifted from the
-//     portal's. 500, NET_INTERNAL_ERROR -- a 502 would blame a portal that
-//     answered correctly.
-//   - plaintext that is not JSON: the portal sealed a message, not an answer.
-//     502.
-//
-// Neither the ciphertext nor the plaintext is logged: either may be a record
-// about a farmer.
+// Open decrypts the answer. Missing or plain-text envelope: 502. Will not
+// decrypt (our key is wrong): 500. Not JSON: 502. Neither text is logged.
 func (c *gcmCodec) Open(ctx context.Context, answer []byte) ([]byte, error) {
 	var wire any
 	if err := json.Unmarshal(answer, &wire); err != nil {
@@ -125,9 +95,7 @@ func (c *gcmCodec) Open(ctx context.Context, answer []byte) ([]byte, error) {
 
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(sealed))
 	if err != nil {
-		// Where the ciphertext belongs, the portal wrote words: its message to
-		// us. Logged clipped, with the token removed in case it was quoted,
-		// and never returned -- the caller gets our words, not the portal's.
+		// A plain-text rejection: log it redacted, never return it.
 		log.Warnf(ctx, "%s answered with plain text where its envelope belongs: %s",
 			c.provider, redactToken(util.Explain([]byte(sealed)), c.tokenEnv))
 		return nil, refused(fmt.Errorf("%s rejected the request", c.provider))
@@ -174,9 +142,7 @@ func (c *gcmCodec) cipher(ctx context.Context) (cipher.AEAD, []byte, error) {
 	if err != nil {
 		return nil, nil, unconfigured(ctx, c.provider, "the AES key was refused: "+err.Error())
 	}
-	// The nonce is whatever length the portal issued. Twelve bytes is GCM's
-	// standard; any other length is still GCM, with the nonce hashed first,
-	// and is what NewGCMWithNonceSize exists for.
+	// Any nonce length the portal issued.
 	gcm, err := cipher.NewGCMWithNonceSize(block, len(nonce))
 	if err != nil {
 		return nil, nil, unconfigured(ctx, c.provider, "GCM could not be built: "+err.Error())

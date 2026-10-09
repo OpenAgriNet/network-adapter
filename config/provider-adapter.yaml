@@ -507,11 +507,12 @@ modules:
 
           # ------------------------------------------------------------------
           # Grievance -- support files a grievance, status reads it back.
-          # PM-KISAN: init sends an OTP first; support and status carry it.
+          # PM-KISAN: init (OTP), then support or status with the OTP.
+          # PM-KISAN application status: init (OTP), then status.
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:PMFBYGrievance,pmkisan|openagrinet:PMKISANGrievance"
+              bindingKeys: "pmfby|openagrinet:PMFBYGrievance,pmkisan|openagrinet:PMKISANGrievance,pmkisan-chatbot|openagrinet:PMKISANApplicationStatus"
 
               # Paired by position, tried in order: status names the binding on
               # its contract, support on its channel.
@@ -531,46 +532,13 @@ modules:
                 tokenTtl: 10m
                 headerName: Authorization
 
-              # PM-KISAN is two services behind one registration number, and
-              # neither reads plain JSON. Each authenticates with a service
-              # token INSIDE the encrypted body -- so auth is none, and the
-              # envelope does the work: it adds the token and encrypts what the
-              # request half produces, and decrypts the answer before the
-              # response half reads it, so the mappings stay plain JSON.
-              #
-              #   grievance service   support, status   AES-256-GCM, fixed key
-              #                                         and nonce, TokenNo
-              #   OTP service         init              AES-128-CBC, a fresh key
-              #                                         sent beside the cipher,
-              #                                         Token
-              #
-              # The registry's pmkisan participant is the grievance service;
-              # a Participant has one baseUrl for all its actions. The OTP
-              # service's host is named here instead (otpBaseUrlEnv), and init
-              # goes there.
-              #
-              # PMKISAN_OTP_BASE_URL is the bare host; the service path rides in
-              # each path -- init's on the registry row, the verify's in
-              # otpVerifyPath -- and the two must name the same service
-              # (chatbotservice.asmx in production, chatbotservicestaging.asmx
-              # on staging).
-              #
-              # support and status carry the farmer's OTP. The envelope verifies
-              # it on the OTP service (otpVerifyPath, on that same host) before
-              # the lodge or the read is sent; a wrong OTP is a 400 and the call
-              # is never made.
-              #
-              # The *Env settings name VARIABLES, never values. All five must be
-              # set in the adapter's environment; with any missing, the calls
-              # that need it fail with NET_INTERNAL_ERROR and nothing is sent --
-              # there is no fallback to plaintext or to the participant's host.
-              #
-              #   key        32 bytes, hex: AES-256, the grievance service
-              #   nonce      hex, the fixed value the portal issued
-              #   token      the grievance service's TokenNo
-              #   OTP token  the OTP service's Token -- a different token
-              #   OTP host   the OTP service's base URL, e.g.
-              #              https://exlink.pmkisan.gov.in
+              # PM-KISAN: the token travels inside the encrypted body, so auth
+              # is none and the envelope encrypts/decrypts.
+              #   grievance (support, status): AES-256-GCM, TokenNo
+              #   OTP service (init, verify):  AES-128-CBC, Token, on
+              #                                PMKISAN_OTP_BASE_URL (bare host)
+              # support and status verify the OTP first. *Env values are
+              # variable names; any unset fails the call with a 500.
               pmkisan:
                 authScheme: none
                 envelope: aesGcm
@@ -589,6 +557,23 @@ modules:
                 otpActions: init
                 otpVerifyPath: /services/chatbotservice.asmx/ChatbotOTPVerified
                 otpVerifyActions: "support,status"
+
+              # PM-KISAN application status: its own participant on the chatbot
+              # host, all AES-128-CBC. status verifies the OTP, reads
+              # /ChatbotUserDetails, then /ChatbotBeneficiaryStatus as
+              # _beneficiaryStatus (blockers absent if that call fails).
+              pmkisan-chatbot:
+                authScheme: none
+                envelope: aesCbcKeyInBand
+                envelopeTokenEnv: PMKISAN_OTP_TOKEN
+                envelopeTokenField: Token
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpVerifyPath: /services/chatbotservice.asmx/ChatbotOTPVerified
+                otpVerifyActions: status
+                followUpPath: /services/chatbotservice.asmx/ChatbotBeneficiaryStatus
+                followUpField: _beneficiaryStatus
+                followUpActions: status
 
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the

@@ -144,6 +144,12 @@ func TestShippedConfig_GrievanceEntry_BuildsStep(t *testing.T) {
 	if _, ok := cfg.EnvelopeByProvider["pmkisan"]; !ok {
 		t.Error("the shipped entry gives pmkisan no envelope; the portal would be sent plaintext")
 	}
+	if _, ok := cfg.EnvelopeByProvider["pmkisan-chatbot"]; !ok {
+		t.Error("the shipped entry gives pmkisan-chatbot no envelope; the chatbot service would be sent plaintext")
+	}
+	if cfg.AuthByProvider["pmkisan-chatbot"] == nil {
+		t.Error("the shipped entry gives pmkisan-chatbot no auth profile; application status would not start")
+	}
 	if _, _, err := (grievanceProvider{}).New(context.Background(), stubRegistry{}, stubMapper{}, shipped); err != nil {
 		t.Fatalf("the shipped entry does not build a step: %v", err)
 	}

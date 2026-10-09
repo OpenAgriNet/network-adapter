@@ -36,50 +36,24 @@ import (
 // still decides what the provider is asked for. Most capabilities need none.
 type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
 
-// Envelope wraps what a provider is sent and unwraps what it answers, for a
-// provider whose bodies are not plain JSON on the wire.
-//
-// A mapping cannot do this: JSONata has no cryptography, and a mapping file is
-// published, so it cannot hold the key or a credential that travels inside the
-// body. So the mapping produces and reads plain JSON, and the envelope works
-// on either side of it:
-//
-//	request half -> Seal -> HTTP -> open -> response half
-//
-// Seal runs once per request, after the request half -- so a request the half
-// refused under _error never reaches it -- and before the retry loop, so every
-// attempt sends the same sealed bytes. It returns the function that opens the
-// answer to THIS request: a codec whose key is fresh per request has to open
-// the reply with that same key. The opener runs once, after the loop, so
-// nothing it refuses is retried.
-//
-// Errors from either reach the caller as returned, so an envelope classifies
-// its own failures (model.NewCodedErr) and keeps plaintext and key material out
-// of them.
+// Envelope encrypts/decrypts a provider's bodies so mappings stay plain JSON:
+// request half -> Seal -> HTTP -> open -> response half. Seal runs once before
+// the retry loop and returns the opener for that request's answer. Errors are
+// returned as-is, so an envelope classifies its own.
 type Envelope interface {
 	Seal(ctx context.Context, exchange Exchange, mapped []byte) (sealed []byte, open Opener, err error)
 }
 
-// Router is an Envelope whose provider keeps some actions on another host than
-// the participant's -- PM-KISAN sends its OTP from a different service than the
-// one that takes the grievance. The registry names one host per participant,
-// so the other host is the envelope's configuration, not the registry's.
-//
-// BaseURLFor returns where the action's call goes: participant when the action
-// stays on the participant's host. It runs before Seal, so a host that is not
-// configured stops the call before anything is spent on it.
+// Router is an optional Envelope that sends some actions to a host other than
+// the participant's (e.g. PM-KISAN's OTP service). It runs before Seal.
 type Router interface {
 	BaseURLFor(ctx context.Context, action, participant string) (string, error)
 }
 
-// Opener unwraps the answer to the request it was returned with.
+// Opener decrypts the answer to one sealed request.
 type Opener func(ctx context.Context, answer []byte) ([]byte, error)
 
-// Exchange is what an envelope may need to know about the call it wraps
-// beyond the mapped body: which action, the inbound Beckn payload, and the
-// provider's call plan. An envelope that verifies something before the call --
-// a challenge carried in the payload, checked on another host -- reads them
-// here.
+// Exchange is the call an envelope wraps: action, Beckn payload and call plan.
 type Exchange struct {
 	Action string
 	Beckn  any
@@ -109,12 +83,8 @@ type Config struct {
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
-	// How each provider's bodies are wrapped on the wire, keyed by participant
-	// id like AuthByProvider. A provider not listed speaks plain JSON, which is
-	// every provider but the few that encrypt.
-	//
-	// Built by the domain package, which owns what the envelope is: common only
-	// calls it.
+	// EnvelopeByProvider, keyed by participant id. Unlisted providers get
+	// plain JSON. Built by the domain package.
 	EnvelopeByProvider map[string]Envelope `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
@@ -294,8 +264,7 @@ func applyDefaults(cfg *Config) error {
 		}
 	}
 
-	// An envelope for a provider the step does not serve is a typo applying to
-	// nothing -- and the provider it was meant for would be sent plaintext.
+	// An envelope for an unserved provider is a typo; refuse it.
 	for provider, envelope := range cfg.EnvelopeByProvider {
 		if !served[provider] {
 			return fmt.Errorf(
