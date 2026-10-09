@@ -8,6 +8,11 @@
 #                  Contract has no orderId, so it rides here rather than where
 #                  support carries it.
 #   case.filedOn   the date on_support returned, which picks this grievance out
+#   challenge      a fresh OTP, from the init before this status. The Grievance
+#                  plugin's envelope verifies it on PM-KISAN's OTP service
+#                  before the read is sent: a registration number alone would
+#                  return every grievance filed against it. It never reaches
+#                  the read and is never echoed.
 #
 # As with support, this file speaks plaintext: the Grievance plugin's envelope
 # adds TokenNo and encrypts on the way out, and decrypts before the response
@@ -28,6 +33,15 @@ required:
     message: "enrolmentId must be the registration number: ASCII letters and digits only"
   - check: |
       (
+        $c := beckn.message.contract.commitments[0].commitmentAttributes.challenge;
+        /* The OTP the farmer received by SMS: digits only. Its length is the
+           portal's business, so it is not fixed here. */
+        $not($exists($c))
+          or ($c.method = "SMS_OTP" and $type($c.value) = "string" and $exists($match($c.value, /^[0-9]+$/)[0]))
+      )
+    message: "challenge.method must be SMS_OTP and challenge.value the digits the farmer received"
+  - check: |
+      (
         $f := beckn.message.contract.commitments[0].commitmentAttributes.case.filedOn;
         $not($exists($f)) or ($type($f) = "string" and $exists($match($f, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)[0]))
       )
@@ -37,9 +51,9 @@ required:
 request: |
   (
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
-    $not($exists($ca.enrolmentId) and $exists($ca.case.filedOn))
+    $not($exists($ca.enrolmentId) and $exists($ca.case.filedOn) and $exists($ca.challenge.value))
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "reading a grievance needs enrolmentId (the registration number) and case.filedOn: the portal returns every grievance on a registration number, and the filing date picks this one out" } }
+                    "message": "reading a grievance needs enrolmentId (the registration number), case.filedOn -- the portal returns every grievance on a registration number, and the filing date picks this one out -- and challenge, a fresh OTP from init" } }
     : {
       "Type":       "Reg_No_Status",
       "IdentityNo": $ca.enrolmentId

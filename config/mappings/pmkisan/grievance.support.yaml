@@ -11,6 +11,11 @@
 #   channels[0].grievance the complaint: category (G001-G010) and description,
 #                         the farmer's own words. One level deep: PM-KISAN has
 #                         no sub-category, so one is refused.
+#   channels[0].challenge the OTP from on_init. The Grievance plugin's envelope
+#                         verifies it on PM-KISAN's OTP service before the
+#                         lodge is sent; a wrong OTP is a 400 and nothing is
+#                         lodged. It never reaches the lodge call and is never
+#                         echoed back.
 #
 # This file speaks PLAINTEXT. The portal reads and writes only AES-256-GCM, so
 # the Grievance plugin's envelope adds the service token (TokenNo) and encrypts
@@ -43,6 +48,15 @@ required:
     message: "grievance.subCategory is not accepted: PM-KISAN classifies a grievance one level deep"
   - check: |
       (
+        $c := beckn.message.support.channels[0].challenge;
+        /* The OTP the farmer received by SMS: digits only. Its length is the
+           portal's business, so it is not fixed here. */
+        $not($exists($c))
+          or ($c.method = "SMS_OTP" and $type($c.value) = "string" and $exists($match($c.value, /^[0-9]+$/)[0]))
+      )
+    message: "challenge.method must be SMS_OTP and challenge.value the digits the farmer received"
+  - check: |
+      (
         $d := beckn.message.support.channels[0].grievance.description;
         /* Measured after trimming, because the portal trims before it
            measures: ten spaces would pass an untrimmed check here and fail
@@ -56,10 +70,11 @@ request: |
   (
     $s := beckn.message.support;
     $g := $s.channels[0].grievance;
-    $complete := $exists($s.orderId) and $exists($g.category.code) and $exists($g.description);
+    $complete := $exists($s.orderId) and $exists($g.category.code) and $exists($g.description)
+      and $exists($s.channels[0].challenge.value);
     $not($complete)
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": "lodging a grievance needs orderId (the registration number) and, on channels[0], grievance.category.code and grievance.description" } }
+                    "message": "lodging a grievance needs orderId (the registration number) and, on channels[0], grievance.category.code, grievance.description and challenge, the OTP from on_init" } }
     : {
       "Type":                 "Reg_No_Details",
       "IdentityNo":           $s.orderId,
