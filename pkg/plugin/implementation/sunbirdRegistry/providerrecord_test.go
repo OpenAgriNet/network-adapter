@@ -184,6 +184,36 @@ func TestProviderRecordResolvesAnEndpointPerAction(t *testing.T) {
 	}
 }
 
+// An action may live on another host than the participant -- PM-KISAN's OTP
+// service is not its grievance service. Its own baseUrl is carried; an action
+// without one falls back to the participant's.
+func TestProviderRecordCarriesAnActionsOwnBaseURL(t *testing.T) {
+	t.Parallel()
+
+	const otpHost = "https://otp.example.gov.in/services/chatbotservice.asmx"
+	binding := bindingRecord()
+	binding.Actions = append(binding.Actions,
+		actionPlan{Action: "init", Method: "POST", Path: "/ChatbotOTP", Mappings: testMappings,
+			Status: "active", BaseURL: otpHost})
+
+	srv := newRegistryServer(t, envelopeJSON(t, binding), envelopeJSON(t, upstreamRecord()))
+	defer srv.Close()
+
+	got, err := resolvePlan(t, newTestClient(t, srv.URL, nil))
+	if err != nil {
+		t.Fatalf("ProviderRecord() returned an unexpected error: %v", err)
+	}
+	if got.Actions["init"].BaseURL != otpHost {
+		t.Errorf("init BaseURL = %q, want %q", got.Actions["init"].BaseURL, otpHost)
+	}
+	if got.BaseURLFor("init") != otpHost {
+		t.Errorf("BaseURLFor(init) = %q, want the action's own %q", got.BaseURLFor("init"), otpHost)
+	}
+	if got.BaseURLFor("select") != testBaseURL {
+		t.Errorf("BaseURLFor(select) = %q, want the participant's %q", got.BaseURLFor("select"), testBaseURL)
+	}
+}
+
 // The registry may omit the call budget. Zero means "the caller applies its own
 // default", and must not be mistaken for "no timeout and no retries".
 func TestProviderRecordLeavesAnAbsentBudgetAtZero(t *testing.T) {

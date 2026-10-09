@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
@@ -43,16 +44,34 @@ type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
 // body. So the mapping produces and reads plain JSON, and the envelope works
 // on either side of it:
 //
-//	request half -> Seal -> HTTP -> Open -> response half
+//	request half -> Seal -> HTTP -> open -> response half
 //
-// Seal runs once per request, before the retry loop, so every attempt sends
-// the same sealed bytes. Open runs after the loop, so nothing it refuses is
-// retried. Errors from either reach the caller as returned, so an envelope
-// classifies its own failures (model.NewCodedErr) and keeps plaintext and key
-// material out of them.
+// Seal runs once per request, after the request half -- so a request the half
+// refused under _error never reaches it -- and before the retry loop, so every
+// attempt sends the same sealed bytes. It returns the function that opens the
+// answer to THIS request: a codec whose key is fresh per request has to open
+// the reply with that same key. The opener runs once, after the loop, so
+// nothing it refuses is retried.
+//
+// Errors from either reach the caller as returned, so an envelope classifies
+// its own failures (model.NewCodedErr) and keeps plaintext and key material out
+// of them.
 type Envelope interface {
-	Seal(ctx context.Context, mapped []byte) ([]byte, error)
-	Open(ctx context.Context, answer []byte) ([]byte, error)
+	Seal(ctx context.Context, exchange Exchange, mapped []byte) (sealed []byte, open Opener, err error)
+}
+
+// Opener unwraps the answer to the request it was returned with.
+type Opener func(ctx context.Context, answer []byte) ([]byte, error)
+
+// Exchange is what an envelope may need to know about the call it wraps
+// beyond the mapped body: which action, the inbound Beckn payload, and the
+// provider's call plan. An envelope that verifies something before the call --
+// a challenge carried in the payload, checked against another host on the
+// plan -- reads them here.
+type Exchange struct {
+	Action string
+	Beckn  any
+	Plan   *model.ProviderRecord
 }
 
 // Config holds configuration parameters for the step.

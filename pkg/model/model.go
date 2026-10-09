@@ -130,6 +130,22 @@ type ActionPlan struct {
 	// a select that reads.
 	TimeoutMs int
 	RetryMax  int
+
+	// BaseURL, when set, is where this one action's call goes instead of the
+	// participant's base URL. Empty for almost every action. It exists for a
+	// provider whose actions live on more than one host -- PM-KISAN sends an
+	// OTP from a different service than the one that takes the grievance --
+	// where one base URL per participant cannot say both.
+	BaseURL string
+}
+
+// BaseURLFor returns where an action's call goes: its own base URL when the
+// registry publishes one, the participant's otherwise.
+func (r *ProviderRecord) BaseURLFor(action string) string {
+	if plan, ok := r.Actions[action]; ok && plan.BaseURL != "" {
+		return plan.BaseURL
+	}
+	return r.BaseURL
 }
 
 // Authorization-related constants for headers.

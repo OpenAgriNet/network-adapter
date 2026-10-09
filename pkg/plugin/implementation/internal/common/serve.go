@@ -160,19 +160,23 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// _error never reaches here -- and opened once after the loop, so the
 	// response half reads plain JSON.
 	envelope, wrapped := s.config.EnvelopeByProvider[provider]
+	var open Opener
 	if wrapped {
-		if upstreamRequest, err = envelope.Seal(ctx, upstreamRequest); err != nil {
+		exchange := Exchange{Action: action, Beckn: beckn, Plan: plan}
+		if upstreamRequest, open, err = envelope.Seal(ctx, exchange, upstreamRequest); err != nil {
 			return err
 		}
 	}
 
-	upstreamResponse, err := s.call(ctx, auth, plan.BaseURL, call, upstreamRequest)
+	// The action's own host when the registry names one, the participant's
+	// otherwise.
+	upstreamResponse, err := s.call(ctx, auth, plan.BaseURLFor(action), call, upstreamRequest)
 	if err != nil {
 		return err
 	}
 
-	if wrapped {
-		if upstreamResponse, err = envelope.Open(ctx, upstreamResponse); err != nil {
+	if wrapped && open != nil {
+		if upstreamResponse, err = open(ctx, upstreamResponse); err != nil {
 			return err
 		}
 	}
