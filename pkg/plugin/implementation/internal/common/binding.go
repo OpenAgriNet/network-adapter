@@ -48,12 +48,6 @@ func BindingFrom(paths Paths, body []byte) (Binding, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return Binding{}, fmt.Errorf("payload could not be read: %w", err)
 	}
-	return bindingIn(paths, payload)
-}
-
-// bindingIn is BindingFrom over a payload already decoded, so a step trying two
-// sets of paths reads the body once.
-func bindingIn(paths Paths, payload any) (Binding, error) {
 
 	// Checked before distinctness: N commitments naming the SAME provider and
 	// type collapse to one key, so they would pass unnoticed and the mapping
@@ -64,14 +58,10 @@ func bindingIn(paths Paths, payload any) (Binding, error) {
 	// absent leaf, so two commitments where one has no provider id would count
 	// as one.
 	if commitments := countAt(payload, paths.ProviderID); commitments > 1 {
-		// Named from the path, so a support request with two channels is told
-		// "2 channels" rather than "2 commitments".
-		array, _, _ := strings.Cut(paths.ProviderID, arrayMarker)
-		array = array[strings.LastIndex(array, ".")+1:]
 		return Binding{}, fmt.Errorf(
-			"payload carries %d %s; one request maps to one call, "+
+			"payload carries %d commitments; one request maps to one call, "+
 				"so send them separately rather than have all but the first dropped",
-			commitments, array)
+			commitments)
 	}
 
 	providers := distinct(ValuesAt(payload, paths.ProviderID))

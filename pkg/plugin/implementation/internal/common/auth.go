@@ -202,6 +202,10 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 			}
 			continue
 		}
+		if field == providerIDAtSetting || field == capabilityCodeAtSetting {
+			// A block named for an action, read by ParseActionPaths.
+			continue
+		}
 		set, isSetting := authFields[field]
 		if !isSetting {
 			// Nothing else on a provider step carries a dash, so this is a

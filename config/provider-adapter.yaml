@@ -519,11 +519,13 @@ modules:
               providerIdAt: "message.contract.commitments[].offer.provider.id"
               capabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type"
 
-              # A support request composes no contract, so it names its provider
-              # and type on its one channel instead. Tried only when the paths
-              # above find nothing. Both or neither, like the pair above.
-              fallbackProviderIdAt: "message.support.channels[].provider.id"
-              fallbackCapabilityCodeAt: "message.support.channels[].@type"
+              # Per action, where its payload puts them elsewhere. A support
+              # request composes no contract, so it names its provider and type
+              # on its one channel. Every action not listed here reads the pair
+              # above. Both or neither, like the pair above.
+              support:
+                providerIdAt: "message.support.channels[].provider.id"
+                capabilityCodeAt: "message.support.channels[].@type"
 
               # PMFBY issues its own token from its login endpoint
               # (.../krphapi/FGMS/NICUsersLogin) and reads it back as the bare
