@@ -56,11 +56,11 @@ func pmkisanSettings() envelopeSettings {
 	}
 }
 
-func testEnvelope(t *testing.T) *envelope {
+func testEnvelope(t *testing.T) *gcmCodec {
 	t.Helper()
-	e, err := newEnvelope("pmkisan", pmkisanSettings())
+	e, err := newGCMCodec("pmkisan", pmkisanSettings())
 	if err != nil {
-		t.Fatalf("newEnvelope() = %v", err)
+		t.Fatalf("newGCMCodec() = %v", err)
 	}
 	return e
 }
@@ -223,8 +223,8 @@ func TestNewEnvelopeRefusesIncompleteSettings(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			settings := pmkisanSettings()
 			tweak(&settings)
-			if _, err := newEnvelope("pmkisan", settings); err == nil {
-				t.Fatal("newEnvelope() accepted settings that cannot work")
+			if _, err := newGCMCodec("pmkisan", settings); err == nil {
+				t.Fatal("newGCMCodec() accepted settings that cannot work")
 			}
 		})
 	}
@@ -234,9 +234,9 @@ func TestNewEnvelopeWithoutATokenSendsNone(t *testing.T) {
 	setTestSecrets(t)
 	settings := pmkisanSettings()
 	settings.tokenEnv, settings.tokenField = "", ""
-	e, err := newEnvelope("pmkisan", settings)
+	e, err := newGCMCodec("pmkisan", settings)
 	if err != nil {
-		t.Fatalf("newEnvelope() = %v", err)
+		t.Fatalf("newGCMCodec() = %v", err)
 	}
 	wire, err := e.Seal(context.Background(), []byte(`{"a":1}`))
 	if err != nil {
