@@ -47,6 +47,7 @@ func recordingUpstream(t *testing.T, answer string, sent *string) string {
 type reversingEnvelope struct {
 	sealErr, openErr error
 	sealed, opened   int
+	exchange         Exchange
 }
 
 func reverse(b []byte) []byte {
@@ -57,20 +58,19 @@ func reverse(b []byte) []byte {
 	return out
 }
 
-func (e *reversingEnvelope) Seal(_ context.Context, mapped []byte) ([]byte, error) {
+func (e *reversingEnvelope) Seal(_ context.Context, exchange Exchange, mapped []byte) ([]byte, Opener, error) {
 	e.sealed++
+	e.exchange = exchange
 	if e.sealErr != nil {
-		return nil, e.sealErr
+		return nil, nil, e.sealErr
 	}
-	return reverse(mapped), nil
-}
-
-func (e *reversingEnvelope) Open(_ context.Context, answer []byte) ([]byte, error) {
-	e.opened++
-	if e.openErr != nil {
-		return nil, e.openErr
-	}
-	return reverse(answer), nil
+	return reverse(mapped), func(_ context.Context, answer []byte) ([]byte, error) {
+		e.opened++
+		if e.openErr != nil {
+			return nil, e.openErr
+		}
+		return reverse(answer), nil
+	}, nil
 }
 
 func envelopedStep(t *testing.T, url string, mapper definition.Mapper, envelope Envelope) *Step {
@@ -152,5 +152,38 @@ func TestRunSendsPlainJSONToAProviderWithNoEnvelope(t *testing.T) {
 	}
 	if sent != `{"ask":1}` {
 		t.Errorf("upstream received %q, want the mapped request untouched", sent)
+	}
+}
+
+func TestRunHandsTheEnvelopeTheExchange(t *testing.T) {
+	var sent string
+	url := recordingUpstream(t, string(reverse([]byte(`{}`))), &sent)
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"ok":true}`)}
+	envelope := &reversingEnvelope{}
+
+	if _, err := runStep(t, envelopedStep(t, url, mapper, envelope), selectBody); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if envelope.exchange.Action != "select" || envelope.exchange.Plan == nil || envelope.exchange.Beckn == nil {
+		t.Errorf("exchange = %+v, want the action, the plan and the inbound payload", envelope.exchange)
+	}
+}
+
+func TestRunCallsAnActionsOwnBaseURL(t *testing.T) {
+	var onAction, onParticipant string
+	actionHost := recordingUpstream(t, `{"ok":true}`, &onAction)
+	participantHost := recordingUpstream(t, `{"ok":true}`, &onParticipant)
+
+	plan := planWithAction(participantHost, "select")
+	call := plan.Actions["select"]
+	call.BaseURL = actionHost
+	plan.Actions["select"] = call
+
+	mapper := &stubMapper{requestResult: []byte(`{"ask":1}`), responseResult: []byte(`{"a":1}`)}
+	if _, err := runStep(t, newStep(t, &stubRegistry{plan: plan}, mapper), selectBody); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if onAction != `{"ask":1}` || onParticipant != "" {
+		t.Errorf("action host got %q, participant host got %q; want the action's own host called", onAction, onParticipant)
 	}
 }
