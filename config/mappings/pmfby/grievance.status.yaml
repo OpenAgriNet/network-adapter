@@ -85,15 +85,13 @@ response: |
                 },
                 "case": {
                   "ticketNo": $ca.case.ticketNo,
-                  /* code is the network's word, name the portal's phrase. PMFBY
-                     publishes no status vocabulary, so every phrase is one the
-                     adapter does not recognise and maps to UnderReview, which is
-                     never a closed state. Recognised phrases are added here once
-                     PMFBY confirms them. */
-                  "status": {
-                    "code": "UnderReview",
-                    "name": $isText($ticket.TicketStatus) ? $ticket.TicketStatus
-                  },
+                  /* A code and nothing else: the portal's TicketStatus phrase
+                     picks the code and is not forwarded. PMFBY publishes no
+                     status vocabulary, so every phrase is one the adapter does
+                     not recognise and maps to UnderReview, which is never a
+                     closed state. Recognised phrases are added here once PMFBY
+                     confirms them. */
+                  "status": { "code": "UnderReview" },
                   "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
                   "cropName": $isText($ticket.CropName) ? $ticket.CropName
                 }
