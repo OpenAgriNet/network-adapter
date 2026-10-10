@@ -110,11 +110,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		return nil, nil, err
 	}
 
-	paths, err := BindingPaths(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	pathList, err := splitPaths(paths)
+	pathList, err := bindingPathList(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -152,21 +148,33 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 // same way this step does -- AgricultureFacility, whose search.go fans one
 // request out over several capability types. The alternative is reading the
 // same two config fields a second time, which is how the two drift apart.
+//
+// A list of paths is refused here: such a caller reads one pair, and handed the
+// list as one path it would quietly match nothing.
 func BindingPaths(cfg *Config) (Paths, error) {
-	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
-		return BecknV2, nil
-	}
-	if cfg.ProviderIDAt == "" {
-		return Paths{}, errors.New("capabilityCodeAt is set without providerIdAt")
-	}
-	if cfg.CapabilityCodeAt == "" {
-		return Paths{}, errors.New("providerIdAt is set without capabilityCodeAt")
-	}
-	paths := Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
-	if err := paths.Validate(); err != nil {
+	pathList, err := bindingPathList(cfg)
+	if err != nil {
 		return Paths{}, err
 	}
-	return paths, nil
+	if len(pathList) > 1 {
+		return Paths{}, errors.New("providerIdAt and capabilityCodeAt list several paths, which only the step itself reads")
+	}
+	return pathList[0], nil
+}
+
+// bindingPathList resolves the pairs this step reads a binding key from, in
+// the order they are tried.
+func bindingPathList(cfg *Config) ([]Paths, error) {
+	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
+		return []Paths{BecknV2}, nil
+	}
+	if cfg.ProviderIDAt == "" {
+		return nil, errors.New("capabilityCodeAt is set without providerIdAt")
+	}
+	if cfg.CapabilityCodeAt == "" {
+		return nil, errors.New("providerIdAt is set without capabilityCodeAt")
+	}
+	return splitPaths(Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt})
 }
 
 // splitPaths pairs the comma-separated halves of paths by position, so each

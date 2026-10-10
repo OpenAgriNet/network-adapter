@@ -234,7 +234,8 @@ func refusalIn(mapped []byte) error {
 		return nil
 	}
 	var document map[string]json.RawMessage
-	if json.Unmarshal(mapped, &document) != nil || document["_error"] == nil {
+	// A JSON null decodes to the bytes "null", not to nil, so both mean none.
+	if json.Unmarshal(mapped, &document) != nil || document["_error"] == nil || string(document["_error"]) == "null" {
 		return nil
 	}
 	var r struct {
