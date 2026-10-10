@@ -1288,7 +1288,7 @@ func TestNewUsesTheBecknConventionByDefault(t *testing.T) {
 	t.Parallel()
 
 	step := newStep(t, &stubRegistry{}, &stubMapper{})
-	if step.paths != BecknV2 {
+	if !slices.Equal(step.paths, []Paths{BecknV2}) {
 		t.Errorf("paths = %+v, want the Beckn v2 convention", step.paths)
 	}
 }
@@ -2556,5 +2556,139 @@ func TestOAuth2DoesNotRetryAMissingCredential(t *testing.T) {
 	// failure must not be repeated.
 	if got := ts.calls.Load(); got != 0 {
 		t.Errorf("token endpoint called %d times, want 0", got)
+	}
+}
+
+// refusalStep is a step over mapper whose provider answers {"ok":true},
+// counting calls.
+func refusalStep(t *testing.T, mapper *stubMapper, calls *int) *Step {
+	t.Helper()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		*calls++
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(provider.Close)
+	return newStep(t, &stubRegistry{plan: testPlan(provider.URL, http.MethodPost)}, mapper)
+}
+
+// refusedAs reads the HTTP status and Beckn error a refusal is answered with,
+// whichever of the two step error types carries it.
+func refusedAs(t *testing.T, err error) (int, *model.Error) {
+	t.Helper()
+	var invalid *model.SchemaValidationErr
+	var coded *model.CodedErr
+	switch {
+	case errors.As(err, &invalid):
+		return http.StatusBadRequest, invalid.BecknError()
+	case errors.As(err, &coded):
+		return coded.HTTPStatus(), coded.BecknError()
+	}
+	t.Fatalf("error = %v (%T), want a refusal", err, err)
+	return 0, nil
+}
+
+func TestRefusal_RequestHalf_RefusesWithoutCallingProvider(t *testing.T) {
+	var calls int
+	mapper := &stubMapper{
+		requestResult: []byte(`{"_error":{"status":400,"code":"SCH_REQUIRED_FIELD_MISSING",
+			"message":"phone is required","path":"$.message.phone"}}`),
+		responseResult: []byte(`{"a":1}`),
+	}
+	_, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+
+	status, refused := refusedAs(t, err)
+	if status != http.StatusBadRequest || refused.Code != "SCH_REQUIRED_FIELD_MISSING" ||
+		refused.Message != "phone is required" || refused.Details == nil || refused.Details.Path != "$.message.phone" {
+		t.Fatalf("answer = %d %+v, want 400 SCH_REQUIRED_FIELD_MISSING at $.message.phone", status, refused)
+	}
+	if calls != 0 {
+		t.Errorf("provider called %d times for a refused request, want 0", calls)
+	}
+}
+
+func TestRefusal_ResponseHalf_ReturnsItsStatusAndCode(t *testing.T) {
+	for name, tc := range map[string]struct {
+		refusal string
+		status  int
+		code    string
+	}{
+		"explicit status": {`{"status":502,"code":"NET_DOWNSTREAM_UNAVAILABLE","message":"refused"}`, http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE"},
+		"status omitted":  {`{"code":"BIZ_GENERIC_ERROR","message":"refused"}`, http.StatusBadRequest, "BIZ_GENERIC_ERROR"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls int
+			mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"_error":` + tc.refusal + `}`)}
+			stepCtx, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+
+			if status, refused := refusedAs(t, err); status != tc.status || refused.Code != tc.code {
+				t.Fatalf("answer = %d %+v, want %d %s", status, refused, tc.status, tc.code)
+			}
+			if len(stepCtx.ResponseBody) != 0 {
+				t.Errorf("a refusal produced a response body: %s", stepCtx.ResponseBody)
+			}
+		})
+	}
+}
+
+func TestRefusal_Status202_ReturnsAckWithCode(t *testing.T) {
+	var calls int
+	mapper := &stubMapper{requestResult: []byte(`{}`),
+		responseResult: []byte(`{"_error":{"status":202,"code":"BIZ_NO_RESULTS_FOUND","message":"nothing on file"}}`)}
+	_, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+
+	var ack *model.AckNoCallbackErr
+	if !errors.As(err, &ack) {
+		t.Fatalf("error = %v (%T), want a 202 ACK", err, err)
+	}
+	if ack.Status != model.StatusACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" || ack.Err.Message != "nothing on file" {
+		t.Errorf("ack = %s %+v, want ACK BIZ_NO_RESULTS_FOUND with the mapping's message", ack.Status, ack.Err)
+	}
+}
+
+func TestRefusal_UnreadableError_FailsRatherThanAnswering(t *testing.T) {
+	for name, refusal := range map[string]string{
+		"no message": `{"_error":{"status":502,"code":"X"}}`,
+		"not object": `{"_error":"refused"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls int
+			mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(refusal)}
+			stepCtx, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+			if err == nil || len(stepCtx.ResponseBody) != 0 {
+				t.Errorf("Run() = %v with body %s, want an error and no answer", err, stepCtx.ResponseBody)
+			}
+		})
+	}
+}
+
+// A mapping that writes "_error": null means no error, not an unreadable one.
+func TestRefusal_NullErrorField_AnswersAsBefore(t *testing.T) {
+	var calls int
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"_error":null,"message":{"ok":true}}`)}
+	stepCtx, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+	if err != nil || calls != 1 || !strings.Contains(string(stepCtx.ResponseBody), `"ok":true`) {
+		t.Errorf("Run() = %v, body %s, %d calls; want the mapped answer after one call", err, stepCtx.ResponseBody, calls)
+	}
+}
+
+// A caller of BindingPaths reads one pair, so a list is refused rather than
+// handed over as one path that matches nothing.
+func TestBindingPaths_PathList_Refused(t *testing.T) {
+	cfg := &Config{ProviderIDAt: "a.id, b.id", CapabilityCodeAt: "a.@type, b.@type"}
+	if _, err := BindingPaths(cfg); err == nil {
+		t.Error("BindingPaths() accepted a path list")
+	}
+	cfg = &Config{ProviderIDAt: "a.id", CapabilityCodeAt: "a.@type"}
+	if got, err := BindingPaths(cfg); err != nil || got != (Paths{ProviderID: "a.id", CapabilityCode: "a.@type"}) {
+		t.Errorf("BindingPaths() = %+v, %v; want the single pair", got, err)
+	}
+}
+
+func TestRefusal_NoErrorField_AnswersAsBefore(t *testing.T) {
+	var calls int
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"message":{"ok":true}}`)}
+	stepCtx, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+	if err != nil || string(stepCtx.ResponseBody) != `{"message":{"ok":true}}` || calls != 1 {
+		t.Errorf("Run() = %v, body %s, %d calls; want the mapped answer after one call", err, stepCtx.ResponseBody, calls)
 	}
 }

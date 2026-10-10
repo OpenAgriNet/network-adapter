@@ -1,0 +1,104 @@
+# PMFBY, openagrinet:PMFBYGrievance, status -> POST /krphapi/FGMS/GetGrievenceTicketsStatus.
+# Both directions, one file.
+#
+# Step two of two: read a filed grievance back. PMFBY matches the ticket to the
+# phone it was filed from, so both are required. No OTP: PMFBY asks for none.
+#
+# The response is an allow-list. PMFBY's record also carries the farmer's name,
+# state, district and insurer; none of it is mapped.
+
+# required holds format checks, which return SCH_INVALID_FORMAT and let an
+# absent field pass. A missing field is refused by the request half under
+# _error, which can name SCH_REQUIRED_FIELD_MISSING and the field's path.
+required:
+  # A ten-digit Indian mobile, as text: PMFBY files the ticket against it and
+  # matches the read on it, so a number or a mangled one is refused here.
+  - check: |
+      (
+        $phone := beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone;
+        $not($exists($phone)) or ($type($phone) = "string" ? $exists($match($phone, /^[6-9][0-9]{9}$/)[0]) : false)
+      )
+    message: "applicantPhone must be a ten-digit mobile number, as text"
+
+request: |
+  (
+    $ca := beckn.message.contract.commitments[0].commitmentAttributes;
+    $at := "$.message.contract.commitments[0].commitmentAttributes.";
+    $missing := [
+      { "field": "applicantPhone", "path": $at & "applicantPhone", "present": $exists($ca.applicantPhone) },
+      { "field": "case.ticketNo", "path": $at & "case.ticketNo", "present": $exists($ca.case.ticketNo) }
+    ][$not(present)][0];
+    $missing
+    ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                    "message": $missing.field & " is required", "path": $missing.path } }
+    : {
+      "requestorMobileNo": $ca.applicantPhone,
+      "GrievenceSupportTicketNo": $ca.case.ticketNo
+    }
+  )
+
+# PMFBY says success with responseCode "1", seen as a string and as a number;
+# anything else is the portal refusing, a 502. A success with no case record is
+# not a failure -- PMFBY answered and has nothing on file -- so it is a 202 ACK
+# saying so. Otherwise the grievance is the complaint as PMFBY holds it, the
+# case is the record it keeps against it, and a field PMFBY does not return is
+# left out. The category comes back by name alone, and the ticket number not at
+# all, so the one the caller asked with is echoed.
+response: |
+  (
+    /* Tested as equal to "1", not unequal: a reply with no responseCode at
+       all is a failure, and an unequal test against a missing value is false.
+       The record is read as the first of the reply's, so one ticket sent as a
+       list of one reads the same as one sent bare. */
+    $ok := $string(response.responseCode) = "1";
+    $ticket := response.responseDynamic[0];
+    /* PMFBY may send null or "" for a field it has no value for; such a
+       field is dropped rather than mapped as "null" or failing the call. */
+    $isText := function($v) { $type($v) = "string" and $v != "" };
+    $not($ok)
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PMFBY could not read the grievance" } }
+    /* A record is one PMFBY filled: an empty or all-null one is no record,
+       or a grievance nobody filed would be reported as under review. */
+    : $not($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
+    ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
+                    "message": "No grievance matches this ticket and phone number." } }
+    : (
+      $commitment := beckn.message.contract.commitments[0];
+      $ca := $commitment.commitmentAttributes;
+      {
+        "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
+        "message": {
+          "contract": $merge([beckn.message.contract, {
+            "commitments": [$merge([$commitment, {
+              "status": { "descriptor": { "code": "ACTIVE" } },
+              "commitmentAttributes": {
+                "@context": $ca.`@context`,
+                "@type": $ca.`@type`,
+                "informationMode": "Direct",
+                "scheme": $ca.scheme,
+                "enrolmentId": $isText($ticket.ApplicationNo) ? $ticket.ApplicationNo,
+                "grievance": {
+                  "category": $isText($ticket.TicketCategoryName) ? { "name": $ticket.TicketCategoryName },
+                  "subCategory": $isText($ticket.TicketSubCategoryName) ? { "name": $ticket.TicketSubCategoryName },
+                  "description": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription
+                },
+                "case": {
+                  "ticketNo": $ca.case.ticketNo,
+                  /* A code and nothing else: the portal's TicketStatus phrase
+                     picks the code and is not forwarded. PMFBY publishes no
+                     status vocabulary, so every phrase is one the adapter does
+                     not recognise and maps to UnderReview, which is never a
+                     closed state. Recognised phrases are added here once PMFBY
+                     confirms them. */
+                  "status": { "code": "UnderReview" },
+                  "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
+                  "cropName": $isText($ticket.CropName) ? $ticket.CropName
+                }
+              }
+            }])]
+          }])
+        }
+      }
+    )
+  )

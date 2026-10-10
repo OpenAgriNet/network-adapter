@@ -3,10 +3,12 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -22,7 +24,21 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
-	binding, err := BindingFrom(s.paths, ctx.Body)
+	var binding Binding
+	err := errNoBinding
+	for i, paths := range s.paths {
+		binding, err = BindingFrom(paths, ctx.Body)
+		if errors.Is(err, errNoBinding) {
+			continue
+		}
+		// A later pair may read a container other capabilities share -- a
+		// support request's channels -- so a payload it cannot resolve is
+		// refused only when it names this step's own work.
+		if err != nil && i > 0 && !s.namesServed(paths, ctx.Body) {
+			return nil
+		}
+		break
+	}
 	if errors.Is(err, errNoBinding) {
 		return nil
 	}
@@ -80,6 +96,23 @@ func (s *Step) resolve(ctx context.Context, bindingKey string, beckn any) (map[s
 // cheaper than a map and config order survives into New's startup log.
 func (s *Step) serves(key string) bool {
 	return slices.Contains(s.config.BindingKeys, key)
+}
+
+// namesServed reports whether any provider and type the paths reach pair into
+// a binding this step serves.
+func (s *Step) namesServed(paths Paths, body []byte) bool {
+	var payload any
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	for _, provider := range ValuesAt(payload, paths.ProviderID) {
+		for _, capability := range ValuesAt(payload, paths.CapabilityCode) {
+			if s.serves(Binding{ParticipantID: provider, CapabilityCode: capability}.Key()) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // serve runs the exchange this step exists for: resolve, map out, call, map back.
@@ -145,6 +178,13 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	if err != nil {
 		return err
 	}
+	// What the reply means may be a refusal -- nothing on file -- which the
+	// response half says under _error. The provider's body is not logged: it can
+	// echo the farmer's own details, and redaction only covers credentials.
+	if err := refusalIn(becknResponse); err != nil {
+		log.Warnf(ctx, "%s refused the request: %v", plan.BindingKey, err)
+		return err
+	}
 	if len(becknResponse) == 0 {
 		// No response half, or its transform matched nothing. Either way there
 		// is no Beckn response, and returning the provider's own shape would
@@ -172,10 +212,50 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 	if err != nil {
 		return nil, err
 	}
+	// Refused before the provider is called, so a bad request costs no call.
+	if err := refusalIn(mapped); err != nil {
+		return nil, err
+	}
 	if len(mapped) == 0 {
 		log.Debugf(ctx, "the request half of %s produced nothing; sending an empty request", call.Mappings)
 	}
 	return mapped, nil
+}
+
+// refusalIn returns the error a mapping half asks for under the reserved
+// _error field -- {status, code, message, path}, status absent meaning 400 --
+// or nil when the document carries none. path is the JSONPath of the field at
+// fault, returned as details.path. 202 is an answer with nothing in it, so it
+// is an ACK carrying the reason.
+func refusalIn(mapped []byte) error {
+	// Checked as text first: every answer passes through here, and almost
+	// none carries the field, so most are spared a second decode.
+	if !bytes.Contains(mapped, []byte(`"_error"`)) {
+		return nil
+	}
+	var document map[string]json.RawMessage
+	// A JSON null decodes to the bytes "null", not to nil, so both mean none.
+	if json.Unmarshal(mapped, &document) != nil || document["_error"] == nil || string(document["_error"]) == "null" {
+		return nil
+	}
+	var r struct {
+		Status  int    `json:"status"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Path    string `json:"path"`
+	}
+	if json.Unmarshal(document["_error"], &r) != nil || r.Message == "" {
+		return errors.New("a mapping refused the call with an unreadable _error; it needs status, code and message")
+	}
+	switch r.Status {
+	case 0, http.StatusBadRequest:
+		// The one 400 that carries a path on the wire: CodedErr drops details.
+		return &model.SchemaValidationErr{Errors: []model.Error{*model.NewCodedErrorWithCause(r.Code, r.Message, r.Path, nil)}}
+	case http.StatusAccepted:
+		return model.NewAckNoCallbackErr(model.StatusACK, &model.Error{Code: r.Code, Message: r.Message})
+	default:
+		return model.NewCodedErr(r.Status, r.Code, errors.New(r.Message))
+	}
 }
 
 // extractAction reads the Beckn action a request is for.

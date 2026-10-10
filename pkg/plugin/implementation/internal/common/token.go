@@ -87,7 +87,7 @@ type tokenResponse struct {
 // issuer that failed. Unclassified they would surface as 500, telling a peer
 // this adapter broke when it did not.
 func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
-	if auth.cfg.Scheme == util.AuthSchemeTokenQuery {
+	if auth.cfg.Scheme == util.AuthSchemeTokenQuery || auth.cfg.Scheme == util.AuthSchemeTokenHeader {
 		return s.exchangeQueryToken(ctx, auth)
 	}
 	return s.exchangeOAuth2Token(ctx, auth)
@@ -103,7 +103,7 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 	cfg := auth.cfg
 	user, secret := os.Getenv(cfg.TokenUserEnv), os.Getenv(cfg.TokenSecretEnv)
 	if user == "" || secret == "" {
-		return "", 0, s.missingCredential(ctx, cfg.Provider, util.AuthSchemeTokenQuery,
+		return "", 0, s.missingCredential(ctx, cfg.Provider, cfg.Scheme,
 			cfg.TokenUserEnv+" and "+cfg.TokenSecretEnv)
 	}
 
@@ -125,16 +125,17 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 
 	// Decoded into a map because the field name is configured: a struct tag
 	// cannot be written for a key that is not known until config is read.
-	var fields map[string]any
+	var fields any
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return "", 0, s.permanentTokenErr(fmt.Errorf("token response from %s is not JSON: %w",
 			cfg.TokenURL, err))
 	}
-	token, ok := fields[cfg.TokenResponseField].(string)
-	if !ok || token == "" {
+	tokens := ValuesAt(fields, cfg.TokenResponseField)
+	if len(tokens) == 0 || tokens[0] == "" {
 		return "", 0, s.permanentTokenErr(fmt.Errorf(
 			"token response from %s carries no %s", cfg.TokenURL, cfg.TokenResponseField))
 	}
+	token := tokens[0]
 
 	// The skew is subtracted here for the same reason oauth2 subtracts it from
 	// expires_in: a request that passed the expiry check must not arrive after
