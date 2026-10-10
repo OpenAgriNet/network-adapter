@@ -535,6 +535,7 @@ func TestSupport_MalformedDateOrSource_Returns400WithoutCallingPMFBY(t *testing.
 	for name, field := range map[string][2]string{
 		"date": {"complaintDate", "20-09-2026"}, "source": {"receiptSourceId", "web"},
 		"crop year": {"cropYear", "last year"}, "short crop year": {"cropYear", "25"},
+		"short order id": {"orderId", "123456789"}, "long order id": {"orderId", strings.Repeat("1", 31)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
@@ -724,9 +725,9 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 		filed["ticketNo"] != knownTicket || filed["filedOn"] != "2026-10-04" || filed["cropName"] != "Paddy" {
 		t.Errorf("commitmentAttributes = %v", attributes)
 	}
-	// An unrecognised portal phrase is UnderReview, the phrase kept as the name.
-	if status := band(filed, "status"); status["code"] != "UnderReview" || status["name"] != "Under Review" {
-		t.Errorf("case.status = %v, want UnderReview / Under Review", status)
+	// An unrecognised portal phrase is UnderReview, and the phrase is not forwarded.
+	if status := band(filed, "status"); len(status) != 1 || status["code"] != "UnderReview" {
+		t.Errorf("case.status = %v, want code UnderReview alone", status)
 	}
 	if got.Context["action"] != "on_status" || got.status() != "ACTIVE" {
 		t.Errorf("action %v, status %v; want on_status, ACTIVE", got.Context["action"], got.status())

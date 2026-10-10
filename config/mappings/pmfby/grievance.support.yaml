@@ -12,6 +12,15 @@
 # absent field pass. A missing field is refused by the request half under
 # _error, which can name SCH_REQUIRED_FIELD_MISSING and the field's path.
 required:
+  # The application number's bounds, restated: the pack holds enrolmentId to
+  # 10-30 characters, but on support it rides in orderId, outside the channel
+  # the pack validates.
+  - check: |
+      (
+        $id := beckn.message.support.orderId;
+        $not($exists($id)) or ($type($id) = "string" ? ($length($id) >= 10 and $length($id) <= 30) : false)
+      )
+    message: "orderId, the application number, must be 10-30 characters"
   # A ten-digit Indian mobile, as text: PMFBY files the ticket against it and
   # matches the read on it, so a number or a mangled one is refused here.
   - check: |
