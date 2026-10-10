@@ -52,18 +52,20 @@ response: |
        list of one reads the same as one sent bare. */
     $ok := $string(response.responseCode) = "1";
     $ticket := response.responseDynamic[0];
+    /* PMFBY may send null or "" for a field it has no value for; such a
+       field is dropped rather than mapped as "null" or failing the call. */
+    $isText := function($v) { $type($v) = "string" and $v != "" };
     $not($ok)
     ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
                     "message": "PMFBY could not read the grievance" } }
-    : $type($ticket) != "object"
+    /* A record is one PMFBY filled: an empty or all-null one is no record,
+       or a grievance nobody filed would be reported as under review. */
+    : $not($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
     ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
                     "message": "No grievance matches this ticket and phone number." } }
     : (
       $commitment := beckn.message.contract.commitments[0];
       $ca := $commitment.commitmentAttributes;
-      /* PMFBY may send null or "" for a field it has no value for; such a
-         field is dropped rather than mapped as "null" or failing the call. */
-      $isText := function($v) { $type($v) = "string" and $v != "" };
       {
         "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
         "message": {

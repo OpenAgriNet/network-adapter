@@ -38,6 +38,13 @@ required:
           and $digits($ch.receiptSourceId)
       )
     message: "grievance.category.code, grievance.subCategory.code and receiptSourceId must be digits"
+  # Sent as requestYear, which PMFBY reads the same way as the ids above.
+  - check: |
+      (
+        $year := beckn.message.support.channels[0].cropYear;
+        $not($exists($year)) or $exists($match($string($year), /^[0-9]{4}$/)[0])
+      )
+    message: "cropYear must be a four-digit year"
   - check: |
       (
         $season := beckn.message.support.channels[0].season;

@@ -534,6 +534,7 @@ func TestSupport_CallerDateAndSource_SentInsteadOfDefaults(t *testing.T) {
 func TestSupport_MalformedDateOrSource_Returns400WithoutCallingPMFBY(t *testing.T) {
 	for name, field := range map[string][2]string{
 		"date": {"complaintDate", "20-09-2026"}, "source": {"receiptSourceId", "web"},
+		"crop year": {"cropYear", "last year"}, "short crop year": {"cropYear", "25"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
@@ -830,6 +831,26 @@ func TestStatus_PortalRefused_Returns502(t *testing.T) {
 }
 
 // One ticket sent as a list of one reads the same as one sent bare.
+// A record PMFBY left empty is no record: reporting it as under review would
+// describe a grievance nobody filed.
+func TestStatus_EmptyRecord_Returns202NoResultsFound(t *testing.T) {
+	for name, dynamic := range map[string]string{
+		"empty object":    `{}`,
+		"empty in list":   `[{}]`,
+		"all fields null": `{"ApplicationNo":null,"TicketStatus":null,"ComplaintDate":null,"CropName":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			record := `{"responseCode":"1","responseMessage":"Fetched","responseDynamic":` + dynamic + `}`
+			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+				send(t, request("status", statusAttributes()))
+			var ack *model.AckNoCallbackErr
+			if !errors.As(err, &ack) || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
+				t.Errorf("error = %v, want a 202 ACK BIZ_NO_RESULTS_FOUND", err)
+			}
+		})
+	}
+}
+
 func TestStatus_RecordInAList_ReadAsTheRecord(t *testing.T) {
 	record := strings.Replace(strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":[{`, 1), `}}`, `}]}`, 1)
 	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).

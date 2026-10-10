@@ -2433,6 +2433,29 @@ func TestRefusal_UnreadableError_FailsRatherThanAnswering(t *testing.T) {
 	}
 }
 
+// A mapping that writes "_error": null means no error, not an unreadable one.
+func TestRefusal_NullErrorField_AnswersAsBefore(t *testing.T) {
+	var calls int
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"_error":null,"message":{"ok":true}}`)}
+	stepCtx, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+	if err != nil || calls != 1 || !strings.Contains(string(stepCtx.ResponseBody), `"ok":true`) {
+		t.Errorf("Run() = %v, body %s, %d calls; want the mapped answer after one call", err, stepCtx.ResponseBody, calls)
+	}
+}
+
+// A caller of BindingPaths reads one pair, so a list is refused rather than
+// handed over as one path that matches nothing.
+func TestBindingPaths_PathList_Refused(t *testing.T) {
+	cfg := &Config{ProviderIDAt: "a.id, b.id", CapabilityCodeAt: "a.@type, b.@type"}
+	if _, err := BindingPaths(cfg); err == nil {
+		t.Error("BindingPaths() accepted a path list")
+	}
+	cfg = &Config{ProviderIDAt: "a.id", CapabilityCodeAt: "a.@type"}
+	if got, err := BindingPaths(cfg); err != nil || got != (Paths{ProviderID: "a.id", CapabilityCode: "a.@type"}) {
+		t.Errorf("BindingPaths() = %+v, %v; want the single pair", got, err)
+	}
+}
+
 func TestRefusal_NoErrorField_AnswersAsBefore(t *testing.T) {
 	var calls int
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"message":{"ok":true}}`)}
