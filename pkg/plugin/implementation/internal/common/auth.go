@@ -60,8 +60,7 @@ type AuthProfile struct {
 	TokenSecretName string
 	TokenSecretEnv  string
 
-	// Where the token sits in the response body, as a dotted path:
-	// "token" at the top level, "responseDynamic.token.Token" nested.
+	// Where the token sits in the response body, as a dotted path.
 	TokenResponseField string
 
 	// How long a token may be held, as written in config and as parsed.
@@ -315,7 +314,7 @@ func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+token)
 
 	case util.AuthSchemeTokenHeader:
-		// Exchanged like tokenQuery, placed like header: the bare token.
+		// Exchanged like tokenQuery, sent bare in the header.
 		token, err := s.providerToken(req.Context(), auth)
 		if err != nil {
 			return err

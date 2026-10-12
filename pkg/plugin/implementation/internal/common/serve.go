@@ -31,9 +31,8 @@ func (s *Step) Run(ctx *model.StepContext) error {
 		if errors.Is(err, errNoBinding) {
 			continue
 		}
-		// A later pair may read a container other capabilities share -- a
-		// support request's channels -- so a payload it cannot resolve is
-		// refused only when it names this step's own work.
+		// A later pair may read a shared container (support channels), so an
+		// unresolvable payload is refused only if it names this step's binding.
 		if err != nil && i > 0 && !s.namesServed(paths, ctx.Body) {
 			return nil
 		}
@@ -98,8 +97,7 @@ func (s *Step) serves(key string) bool {
 	return slices.Contains(s.config.BindingKeys, key)
 }
 
-// namesServed reports whether any provider and type the paths reach pair into
-// a binding this step serves.
+// namesServed reports whether the payload names a binding this step serves.
 func (s *Step) namesServed(paths Paths, body []byte) bool {
 	var payload any
 	if json.Unmarshal(body, &payload) != nil {
@@ -178,9 +176,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	if err != nil {
 		return err
 	}
-	// What the reply means may be a refusal -- nothing on file -- which the
-	// response half says under _error. The provider's body is not logged: it can
-	// echo the farmer's own details, and redaction only covers credentials.
+	// The provider body is not logged: it can carry the farmer's details.
 	if err := refusalIn(becknResponse); err != nil {
 		log.Warnf(ctx, "%s refused the request: %v", plan.BindingKey, err)
 		return err
@@ -212,7 +208,6 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 	if err != nil {
 		return nil, err
 	}
-	// Refused before the provider is called, so a bad request costs no call.
 	if err := refusalIn(mapped); err != nil {
 		return nil, err
 	}
@@ -222,19 +217,15 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 	return mapped, nil
 }
 
-// refusalIn returns the error a mapping half asks for under the reserved
-// _error field -- {status, code, message, path}, status absent meaning 400 --
-// or nil when the document carries none. path is the JSONPath of the field at
-// fault, returned as details.path. 202 is an answer with nothing in it, so it
-// is an ACK carrying the reason.
+// refusalIn returns the error a mapping asks for under the reserved _error
+// field {status, code, message, path}, or nil if there is none. Status 0 or
+// 400 is a 400 with details.path; 202 is an ACK carrying the reason.
 func refusalIn(mapped []byte) error {
-	// Checked as text first: every answer passes through here, and almost
-	// none carries the field, so most are spared a second decode.
+	// Cheap text check first: almost no answer carries the field.
 	if !bytes.Contains(mapped, []byte(`"_error"`)) {
 		return nil
 	}
 	var document map[string]json.RawMessage
-	// A JSON null decodes to the bytes "null", not to nil, so both mean none.
 	if json.Unmarshal(mapped, &document) != nil || document["_error"] == nil || string(document["_error"]) == "null" {
 		return nil
 	}
@@ -249,7 +240,7 @@ func refusalIn(mapped []byte) error {
 	}
 	switch r.Status {
 	case 0, http.StatusBadRequest:
-		// The one 400 that carries a path on the wire: CodedErr drops details.
+		// CodedErr drops details, so the path needs SchemaValidationErr.
 		return &model.SchemaValidationErr{Errors: []model.Error{*model.NewCodedErrorWithCause(r.Code, r.Message, r.Path, nil)}}
 	case http.StatusAccepted:
 		return model.NewAckNoCallbackErr(model.StatusACK, &model.Error{Code: r.Code, Message: r.Message})

@@ -1,8 +1,7 @@
 package Grievance_test
 
-// mappings_test.go runs the shipped PMFBY mapping files through the real mapper
-// and the real grievance step, against a stub PMFBY that logs in, sends an OTP,
-// files a ticket and reads it back.
+// mappings_test.go runs the shipped PMFBY mappings through the real step,
+// against a stub PMFBY that logs in, files a ticket and reads it back.
 
 import (
 	"context"
@@ -36,8 +35,7 @@ const (
 )
 
 // knownTicketRecord is PMFBY's record for knownTicket, personal data included.
-// The category comes back by name alone: a case read carries no category id.
-// The ticket number is not returned either, only PMFBY's internal ticket id.
+// It carries the category by name only, and no ticket number.
 const knownTicketRecord = `{"responseCode":"1","responseMessage":"Fetched","recordCount":1,"responseDynamic":{
 	"GrievenceSupportTicketID":109301,"TicketStatus":"Under Review",
 	"ComplaintDate":"2026-10-04","ApplicationNo":"040108251010160770605",
@@ -46,9 +44,7 @@ const knownTicketRecord = `{"responseCode":"1","responseMessage":"Fetched","reco
 	"FarmerName":"Ramesh","StateMasterName":"Karnataka","DistrictMasterName":"Mysuru",
 	"InsuranceCompany":"Insurer"}}`
 
-// pmfbyStub stands in for PMFBY's FGMS: a login that nests its token in the
-// reply envelope, and replies whose responseCode "1" is success. Every field
-// left zero gives the ordinary answer.
+// pmfbyStub stands in for PMFBY's FGMS. Zero fields give the ordinary answer.
 type pmfbyStub struct {
 	down      bool              // 503 on every call but the login
 	loginDown bool              // 401 on the login
@@ -112,15 +108,13 @@ func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderR
 }
 
 // harness is the real step over the shipped mappings, wired to a stub PMFBY.
-// One harness serves several requests, so a held token carries across them.
 type harness struct {
 	pmfby *pmfbyStub
 	step  definition.Step
 }
 
-// newHarness builds the step. statusRetries is the registry's retryMax for
-// status; support gets 0, as the seed ships it. tweak edits the
-// shipped config before the step is built.
+// newHarness builds the step. statusRetries is status's retryMax (support
+// gets 0); tweak edits the config first.
 func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func(*Grievance.Config)) *harness {
 	t.Helper()
 	t.Setenv("PMFBY_USER", "user")
@@ -153,8 +147,7 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 	}}
 
 	cfg := &Grievance.Config{
-		BindingKeys: []string{shippedBindingKey},
-		// A support request composes no contract; its channel names both.
+		BindingKeys:      []string{shippedBindingKey},
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id, message.support.channels[].provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type, message.support.channels[].@type",
 		AuthByProvider: map[string]*common.AuthProfile{"pmfby": {
@@ -211,8 +204,7 @@ func (a *answer) status() string {
 	return a.Message.Contract.Commitments[0].Status.Descriptor.Code
 }
 
-// band reads one of the nested objects a payload groups its fields in: the
-// grievance, the case, or a status inside a case.
+// band reads a nested object: the grievance, the case, or its status.
 func band(of map[string]any, name string) map[string]any {
 	inner, _ := of[name].(map[string]any)
 	return inner
@@ -250,19 +242,17 @@ func (h *harness) mustSend(t *testing.T, body []byte) *answer {
 
 const packContext = "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld"
 
-// scheme is what every PMFBY payload names, in both directions.
+// scheme is what every PMFBY payload names.
 var scheme = map[string]any{"code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana"}
 
-// provider is the portal a support request names on its channel, since it
-// composes no contract to name it on.
+// provider is the portal a support channel names.
 var provider = map[string]any{"id": "pmfby", "descriptor": map[string]any{"name": "PMFBY Grievance Portal"}}
 
 func becknContext(action string) map[string]any {
 	return map[string]any{"version": "2.0.0", "action": action, "transactionId": "txn-1", "messageId": "msg-1"}
 }
 
-// request builds a Beckn grievance payload for status: a contract whose
-// one commitment carries these attributes.
+// request builds a status payload whose one commitment carries attributes.
 func request(action string, attributes map[string]any) []byte {
 	attributes["@context"] = packContext
 	attributes["@type"] = "openagrinet:PMFBYGrievance"
@@ -283,10 +273,9 @@ func request(action string, attributes map[string]any) []byte {
 	return body
 }
 
-// support builds a Beckn support request, which composes no contract. fields is
-// flat: orderId goes on support; categoryCode, subCategoryCode and description
-// make channels[0].grievance; everything else goes on channels[0]. A field left
-// out is absent from the payload.
+// support builds a support request from flat fields: orderId on support,
+// categoryCode, subCategoryCode and description under grievance, the rest on
+// channels[0].
 func support(fields map[string]any) []byte {
 	channel := map[string]any{"@context": packContext, "@type": "openagrinet:PMFBYGrievance",
 		"informationMode": "OnDemand", "scheme": scheme, "provider": provider}
@@ -325,8 +314,7 @@ func statusAttributes() map[string]any {
 	return map[string]any{"applicantPhone": phone, "case": map[string]any{"ticketNo": knownTicket}}
 }
 
-// refusal is the HTTP status and Beckn error a failed request is answered
-// with, whichever of the two step error types carries it.
+// refusal is the HTTP status and Beckn error a failed request is answered with.
 func refusal(t *testing.T, err error) (int, *model.Error) {
 	t.Helper()
 	var invalid *model.SchemaValidationErr
@@ -360,8 +348,7 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
 	got := h.mustSend(t, support(supportFields()))
 
-	// No OTP: PMFBY's grievance service asks for none. Every value goes as a
-	// string, the season as its code.
+	// Every value goes as a string, the season as its code.
 	want := map[string]any{
 		"requestorMobileNo": phone, "applicationNo": "040108251010160770605",
 		"requestYear": "2025", "requestSeason": "1", "ticketCategoryID": "3", "ticketSubCategoryID": "10",
@@ -380,7 +367,7 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	if got.Context["action"] != "on_support" || got.Context["transactionId"] != "txn-1" {
 		t.Errorf("context = %v, want on_support on the request's transaction", got.Context)
 	}
-	// orderId and the grievance are the caller's own, echoed unchanged.
+	// orderId and the grievance are echoed unchanged.
 	channel := got.channel()
 	grievance := band(channel, "grievance")
 	if got.Message.Support.OrderID != "040108251010160770605" || band(grievance, "category")["code"] != "3" ||
@@ -515,8 +502,7 @@ func TestSupport_UnknownSeason_Returns400WithoutCallingPMFBY(t *testing.T) {
 	}
 }
 
-// complaintDate and receiptSourceId are optional: sent when the caller has
-// them, and filedOn restates the date that went.
+// complaintDate and receiptSourceId are sent when given; filedOn echoes the date.
 func TestSupport_CallerDateAndSource_SentInsteadOfDefaults(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
 	fields := supportFields()
@@ -574,8 +560,7 @@ func TestSupport_MalformedPhoneOrDescription_Returns400WithoutCallingPMFBY(t *te
 	}
 }
 
-// With no complaintDate, the date is the request's own, in IST, on both the
-// lodge call and filedOn: a call crossing midnight cannot report a different day.
+// With no complaintDate, both the call and filedOn use the request's date in IST.
 func TestSupport_NoComplaintDate_DatesFromTheRequestInIST(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
 	var payload map[string]any
@@ -592,8 +577,7 @@ func TestSupport_NoComplaintDate_DatesFromTheRequestInIST(t *testing.T) {
 	}
 }
 
-// PMFBY answers its own refusal with HTTP 200 and a responseCode other than
-// "1". That filed nothing, so it is never reported as Registered.
+// PMFBY refuses with HTTP 200 and a responseCode other than "1".
 func TestSupport_PortalDidNotRegister_Returns502(t *testing.T) {
 	for name, reply := range map[string]string{
 		"refused":            `{"responseCode":"0","responseMessage":"Invalid application number","responseDynamic":null}`,
@@ -611,7 +595,7 @@ func TestSupport_PortalDidNotRegister_Returns502(t *testing.T) {
 	}
 }
 
-// A 4xx is PMFBY's refusal: no OTP is involved, so nothing is the farmer's to fix.
+// A 4xx from PMFBY is its refusal.
 func TestSupport_PortalAnswers4xx_Returns502(t *testing.T) {
 	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -655,8 +639,7 @@ func TestSupport_SecondChannel_Returns400WithoutCallingPMFBY(t *testing.T) {
 	}
 }
 
-// The channel paths are what make a support request reachable at all: without
-// them it composes no contract the plugin can read a binding from.
+// Without the channel paths a support request names no binding the step reads.
 func TestSupport_ChannelPathsNotConfigured_PassesThroughUntouched(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0, func(c *Grievance.Config) {
 		c.ProviderIDAt = "message.contract.commitments[].offer.provider.id"
@@ -671,8 +654,7 @@ func TestSupport_ChannelPathsNotConfigured_PassesThroughUntouched(t *testing.T) 
 	}
 }
 
-// Two channels is refused only when they name this step's work: another
-// capability's support request reaches this step too and must pass through.
+// Two channels are refused only when they name this step's binding.
 func TestSupport_OtherProviderTwoChannels_PassesThrough(t *testing.T) {
 	var payload map[string]any
 	_ = json.Unmarshal(support(supportFields()), &payload)
@@ -713,7 +695,7 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 		t.Errorf("PMFBY was sent %v, want the ticket and the phone alone", sent)
 	}
 	attributes := got.attributes()
-	// The complaint as PMFBY holds it: the category by name, with no code.
+	// The category comes back by name, with no code.
 	grievance := band(attributes, "grievance")
 	category, subCategory := band(grievance, "category"), band(grievance, "subCategory")
 	if len(category) != 1 || category["name"] != "Claim" || len(subCategory) != 1 ||
@@ -725,7 +707,7 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 		filed["ticketNo"] != knownTicket || filed["filedOn"] != "2026-10-04" || filed["cropName"] != "Paddy" {
 		t.Errorf("commitmentAttributes = %v", attributes)
 	}
-	// An unrecognised portal phrase is UnderReview, and the phrase is not forwarded.
+	// Any portal phrase maps to UnderReview and is not forwarded.
 	if status := band(filed, "status"); len(status) != 1 || status["code"] != "UnderReview" {
 		t.Errorf("case.status = %v, want code UnderReview alone", status)
 	}
@@ -756,8 +738,7 @@ func TestStatus_KnownTicket_DropsPersonalAndInternalFields(t *testing.T) {
 	}
 }
 
-// A case read always carries a status, so a missing phrase still says
-// UnderReview; only the name, which would quote the portal, is dropped.
+// A missing phrase still maps to UnderReview.
 func TestStatus_NoStatusPhrase_UnderReviewWithoutName(t *testing.T) {
 	for name, phrase := range map[string]string{"null": `null`, "empty": `""`} {
 		t.Run(name, func(t *testing.T) {
@@ -816,8 +797,7 @@ func TestStatus_NoRecordInReply_Returns202NoResultsFound(t *testing.T) {
 	}
 }
 
-// A reply without FGMS's success code is a failure, never "nothing on file" --
-// including one with no envelope at all.
+// A reply without the success code, or with no envelope, is a failure.
 func TestStatus_PortalRefused_Returns502(t *testing.T) {
 	for name, reply := range map[string]string{
 		"refused":     `{"responseCode":"0","responseMessage":"Session expired"}`,
@@ -831,9 +811,7 @@ func TestStatus_PortalRefused_Returns502(t *testing.T) {
 	}
 }
 
-// One ticket sent as a list of one reads the same as one sent bare.
-// A record PMFBY left empty is no record: reporting it as under review would
-// describe a grievance nobody filed.
+// A list of one reads like a bare record; an empty record is no record.
 func TestStatus_EmptyRecord_Returns202NoResultsFound(t *testing.T) {
 	for name, dynamic := range map[string]string{
 		"empty object":    `{}`,
@@ -919,7 +897,7 @@ func TestFlow_AnswerNotJSON_ReturnsErrorWithoutMapping(t *testing.T) {
 	}
 }
 
-// init included: PMFBY publishes no challenge, so there is no init to serve.
+// init included: PMFBY has no OTP, so there is no init.
 func TestFlow_UnservedAction_Returns400WithoutCallingPMFBY(t *testing.T) {
 	for _, action := range []string{"init", "select"} {
 		t.Run(action, func(t *testing.T) {

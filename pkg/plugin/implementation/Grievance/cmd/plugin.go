@@ -1,7 +1,5 @@
-// Command plugin builds the grievance provider step as a loadable plugin.
-//
-// The filename of the built .so is the id a deployment names in providerSteps,
-// so this package is grievance's whole public surface: a config map in, a step out.
+// Command plugin builds the grievance provider step as a loadable plugin. The
+// .so's filename is the id a deployment names in providerSteps.
 package main
 
 import (
@@ -23,14 +21,11 @@ type grievanceProvider struct{}
 // newStepFunc creates a new step. Indirected for tests.
 var newStepFunc = Grievance.New
 
-// parseConfig turns the plugin config map into a typed Config. Anything absent
-// is left zero: Grievance.New applies the defaults and validates the auth scheme,
-// so those rules live in one place.
+// parseConfig turns the plugin config map into a typed Config. Defaults and
+// validation are left to Grievance.New.
 func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Config, error) {
 	cfg := &Grievance.Config{
-		BindingKeys: splitList(config["bindingKeys"]),
-		// Absent means the Beckn v2 convention. See common.Config for why
-		// this is a default rather than something to set.
+		BindingKeys:      splitList(config["bindingKeys"]),
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
 	}
@@ -46,10 +41,7 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 		cfg.MaxResponseBytes = value
 	}
 
-	// One credential profile per provider, read from the flattened
-	// authScheme-<participantId> settings. Shared with the other capability
-	// plugins: each used to copy the same field list, so a scheme added in one
-	// had to be remembered in three.
+	// One credential profile per provider.
 	auth, err := common.ParseProviderAuth(config)
 	if err != nil {
 		return nil, err
@@ -81,16 +73,9 @@ func (p grievanceProvider) New(ctx context.Context, registry definition.Provider
 	return step, closer, nil
 }
 
-// splitList reads a comma-separated config value, which is how a list reaches a
-// plugin -- the config is map[string]string. Blanks are dropped and spaces
-// trimmed, so a trailing comma or a wrapped line is not a config error.
-//
-// A comma is unambiguous here: a binding key separates its own halves with a
-// pipe.
+// splitList reads a comma-separated config value, trimming spaces and dropping
+// blanks.
 func splitList(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
 	var out []string
 	for _, part := range strings.Split(raw, ",") {
 		if trimmed := strings.TrimSpace(part); trimmed != "" {
@@ -103,6 +88,5 @@ func splitList(raw string) []string {
 // Provider is the exported plugin instance.
 var Provider = grievanceProvider{}
 
-// Compile-time proof the provider satisfies the interface the manager asserts
-// against. A mismatch is otherwise a runtime cast failure at startup.
+// Compile-time check that Provider satisfies the interface.
 var _ definition.ProviderStepProvider = Provider
