@@ -281,6 +281,8 @@ POST /support
         "cropYear": "2026",
         "season": "Kharif",
         "grievance": {
+          // category and subCategory are optional — shown here for illustration.
+          // Omit them and the adapter sends PMFBY's published pair, 3 and 10.
           "category": { "code": "3" },
           "subCategory": { "code": "10" },
           "description": "Claim for my Kharif 2026 paddy enrolment has not been credited to my account."
