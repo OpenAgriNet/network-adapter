@@ -154,7 +154,7 @@ What the scenarios take from that reply:
 |---|---|
 | `provider.id` | becomes `offer.provider.id`, and `channels[].provider.id` on `support` |
 | `offers[].id`, `resources[].id` | quoted verbatim in every commitment |
-| `resourceAttributes.@context` | the pack URL. Swap `context.jsonld` for `attributes.yaml` to see every field, bound and value the payloads are held to — including `x-beckn-path`, which names where a field sits on each action |
+| `resourceAttributes.@context` | the pack URL. Swap `context.jsonld` for `attributes.yaml` to see every field, bound and value the payloads are held to — including `x-beckn-container-by-action`, which names the container each action uses |
 | `resourceAttributes.challengeMethods` | whether this desk asks for an OTP |
 | `resourceAttributes.grievanceOptions` | the categories this desk accepts, so you need no list of your own |
 
@@ -234,8 +234,8 @@ the only way to find the complaint again later — §3.2.
 
 - This is the first call, so you create the `transactionId` here. There is no contract —
   `support` does not use one.
-- **`orderId`** — the application number. This is `enrolmentId`, in the one slot a
-  `support` message has for it; [Appendix A](#appendix-a--where-every-field-sits) says
+- **`enrolmentId`** — the application number, inside the channel with everything else.
+  `Support.orderId` is not used; [Appendix A](#appendix-a--where-every-field-sits) says
   why, once.
 - **`grievance`** — the complaint itself. `category.code` and `subCategory.code` are two
   separate fields. Never join them into one string like `3.10`. Send the codes alone: the
@@ -265,7 +265,6 @@ POST /support
   },
   "message": {
     "support": {
-      "orderId": "KA2026KH00123456",
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
@@ -275,6 +274,7 @@ POST /support
           "descriptor": { "name": "PMFBY Grievance Portal" }
         },
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
+        "enrolmentId": "KA2026KH00123456",
         "applicantPhone": "9876543210",
         "cropYear": "2026",
         "season": "Kharif",
@@ -291,7 +291,7 @@ POST /support
 
 #### What comes back — `on_support`
 
-- **`orderId`** — comes back unchanged.
+- **`enrolmentId`** — comes back unchanged, in the same place it was sent.
 - **`case.ticketNo`** — the ticket the portal just issued.
 - **`informationMode`** — flips to `Direct`.
 - **`case.status`, `case.filedOn`, `provider`** — the adapter's words, not the portal's.
@@ -303,7 +303,6 @@ POST /support
   "context": { "action": "on_support", "messageId": "9d44…", "…": "…" },
   "message": {
     "support": {
-      "orderId": "KA2026KH00123456",
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMFBYGrievance",
@@ -313,6 +312,7 @@ POST /support
           "descriptor": { "name": "PMFBY Grievance Portal" }
         },
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
+        "enrolmentId": "KA2026KH00123456",
         "grievance": {
           "category": { "code": "3" },
           "subCategory": { "code": "10" },
@@ -400,9 +400,8 @@ POST /status
 
 - **`grievance`** — the complaint as the portal now holds it. **`case`** — the record the
   portal keeps against it.
-- **`enrolmentId`** — the application number, under its own name for the first time: the
-  same value `support` sent as `orderId`. The request did not send it; the portal returns
-  it.
+- **`enrolmentId`** — the application number, the same value and the same place `support`
+  used. The request did not send it; the portal returns it.
 - **`case.status`** — a `CaseStatusCode` and nothing else. FGMS's own `TicketStatus`
   phrase picks the code and then stops there; it is not forwarded. Appendix B says why.
 - **No remark.** PMFBY returns a status phrase and no reply text, so the schema refuses
@@ -545,13 +544,14 @@ POST /init
 
 #### The call — `support`
 
-- **`orderId`** — the registration number, the same one sent on `init`.
+- **`enrolmentId`** — the registration number, the same one sent on `init`, inside the
+  channel with everything else. `Support.orderId` is not used.
 - **`grievance.category.code`** — one of the pack's ten codes. Send the code alone: the
   portal reads `GrievanceType` and nothing else, and drops any `name`, as on PMFBY.
 - **`challenge.value`** — the four-digit OTP from `on_init`. It never reaches the portal's
   lodge call and is never echoed back.
-- **`channels[0]`** — the `provider`, the scheme, the `grievance` band and the `challenge`.
-  No phone number and no contract: `support` composes neither.
+- **`channels[0]`** — the `provider`, the scheme, the `enrolmentId`, the `grievance` band
+  and the `challenge`. No phone number and no contract: `support` composes neither.
 
 ```json
 POST /support
@@ -563,7 +563,6 @@ POST /support
   },
   "message": {
     "support": {
-      "orderId": "UP12345678A",
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
@@ -573,6 +572,7 @@ POST /support
           "descriptor": { "name": "PM-KISAN Portal" }
         },
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+        "enrolmentId": "UP12345678A",
         "grievance": {
           "category": { "code": "G003" },
           "description": "Third instalment for 2026 has not been credited."
@@ -598,7 +598,7 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
 
 #### What comes back — `on_support`
 
-- **`orderId`** — echoed as it went up, as on PMFBY.
+- **`enrolmentId`** — echoed as it went up, in the same place, as on PMFBY.
 - **`case.ticketNo`** — the portal's handle. The lodge reply carries `GrievanceID`, or
   `GrievanceNo` where that is absent; the portal uses both names for the same thing, and
   whichever arrives lands here.
@@ -613,7 +613,6 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
   "context": { "action": "on_support", "messageId": "4a1e…", "…": "…" },
   "message": {
     "support": {
-      "orderId": "UP12345678A",
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
@@ -623,6 +622,7 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
           "descriptor": { "name": "PM-KISAN Portal" }
         },
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+        "enrolmentId": "UP12345678A",
         "grievance": {
           "category": { "code": "G003" },
           "description": "Third instalment for 2026 has not been credited."
@@ -822,22 +822,23 @@ registration.
 
 She knows her mobile number but not her registration number, and that is enough. This
 capability accepts a registration number, a mobile number or an Aadhaar number, and the
-caller says which of the three it is sending. The registration number comes back in the
-answer.
+caller says which of the three it is sending by the slot it puts it in. The registration
+number comes back in the answer either way.
 
     init(applicant) → on_init(challengeIssued) → status(+ challenge) → on_status
 
 #### The call — `init`
 
-- **`applicant`** — and nothing else. Exactly one identifier, written into the member that
-  names its kind: `registration`, `mobile` or `aadhaar`. Where the OTP goes follows from
-  which member is used: for `registration` and `aadhaar` the portal looks up the mobile it
-  holds, and the caller never learns it; for `mobile` the identifier *is* a phone number,
-  so the OTP goes there. The example below is a `mobile` lookup, which is why a number
-  appears in the payload.
-- **One identifier, not two and not none.** Either is a validation error. Because the
-  member names the kind, there is no declared type left to disagree with the value beside
-  it.
+- **One identifier, and the slot names its kind.** A registration number goes in
+  `enrolmentId` — the same field under the same name as on the grievance packs. A mobile
+  or an Aadhaar number goes in `applicant.mobile` or `applicant.aadhaar`. Where the OTP
+  goes follows from which was used: for a registration number and for an Aadhaar number
+  the portal looks up the mobile it holds, and the caller never learns it; for a mobile
+  the identifier *is* a phone number, so the OTP goes there. The example below is a
+  `mobile` lookup, which is why a number appears in the payload.
+- **Exactly one, not two and not none.** `enrolmentId` and `applicant` are mutually
+  exclusive, and a payload carrying neither is refused. Because the slot names the kind,
+  there is no declared type left to disagree with the value beside it.
 - **`DRAFT`.** The caller mints `contract.id` here and quotes the same value on `status`.
 
 ```json
@@ -893,7 +894,8 @@ POST /init
 
 #### The call — `status`
 
-- **`applicant`** — the same one sent on `init`, plus the four-digit OTP.
+- **The same identifier sent on `init`** — `enrolmentId` or `applicant`, unchanged — plus
+  the four-digit OTP.
 - **`contract.id`** — the one minted on `init`. The commitment moves to `ACTIVE`.
 - **`challenge.value` never reaches the status call upstream.** The adapter spends it on
   the portal's verify endpoint first and sends nothing of it onward. Never logged, traced
@@ -934,9 +936,11 @@ POST /status
 
 - **`informationMode`** — flips to `Direct`. This one carries a real record.
 - **`enrolmentId`** — the registration number the portal **resolved the lookup to**. The
-  caller sent a mobile number; the registration comes back. It is the only identifier
-  returned, and this is the only capability where `enrolmentId` is answer-only.
-- **`applicant`** — not echoed.
+  caller sent a mobile number; the registration comes back under the same name a caller
+  would have used to ask by it. It is the only identifier returned.
+- **`applicant`** — not echoed. The schema refuses it outright beside `enrolmentId`, so a
+  response cannot put an Aadhaar number back on the wire next to the registration it
+  resolved to.
 - **`blockers`** — a set. Two blockers are two separate things for the farmer to fix.
 - **`CLOSED`.** The question is answered and nothing remains open.
 
@@ -1088,23 +1092,30 @@ words are attribute fields, so the pack bounds each one.
 | | on `support` | on `init` / `status` |
 |---|---|---|
 | the bands above | `support.channels[0]`, selected by `@type` | `commitmentAttributes` |
-| `orderId` | where `enrolmentId` travels — see below | — (`Contract` has no `orderId`) |
 | `provider` | in the attributes, because a `SupportAction` has no `Contract` | `commitments[].offer.provider`; the attributes do **not** repeat it |
 
-**There is one field, and it is `enrolmentId`.** Beckn's `Support` object is sealed to
-`{orderId, descriptor, channels}`, so on `support` the value has nowhere to go but
-`orderId`; a `Contract` has no `orderId`, so everywhere else it travels under its own
-name. Two slots, one value, and the choice is the protocol's rather than ours. The pack
-states it once, machine-readably, so a caller reads it rather than remembers it:
+**No field moves between slots.** The container changes — `support.channels[0]` on one
+leg, `commitmentAttributes` on the others — and every field keeps its name and its
+position inside it. A reader writes `.enrolmentId` once and it works on every action.
 
-```yaml
-enrolmentId:
-  x-beckn-path:
-    support: message.support.orderId
-```
+`Support.orderId` is not used, and the temptation to use it is worth naming. Beckn's
+`Support` object is sealed to `{orderId, descriptor, channels}`, which makes `orderId`
+look like the only slot a bare value could take on that leg. It is not: sealing
+constrains the *siblings* of `channels`, not the contents of the attributes objects
+inside it, and `enrolmentId` sits inside one of those. Nor is `orderId` required —
+`Support` has no `required` array at all.
 
-Nothing else in this design moves between slots. Where you see `orderId` in the scenarios,
-it is this field.
+What settles it is meaning rather than room. `orderId` is "the order against which
+support is required", and nothing here is an order: a grievance is lodged with `support`,
+not `confirm`, and no `Order` is ever composed. A consumer who reads an order id and
+resolves it to nothing is worse off than one who reads none. Using it would also make a
+single field readable at two different paths depending on the leg — the one thing this
+appendix exists to rule out.
+
+The v1 adapter is evidence rather than counter-evidence here: it put the OTP in
+`order_id` and carried the enrolment reference in a tag, so there is no inherited
+placement to preserve, and v1's actual use of the slot — for a credential — is one this
+design forbids outright.
 
 A band is absent when there is nothing in it. PM-KISAN's `init` asks for a challenge
 before the farmer has stated anything, so it carries no `grievance`. No request carries a
@@ -1210,7 +1221,7 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 | field | `support` | `status` |
 |---|---|---|
 | `contract.id` | — no contract | required — caller-minted |
-| `support.orderId` | required — the application number | — |
+| `enrolmentId` | required — the application number | — the portal returns it on `on_status` |
 | `applicantPhone` | required | required |
 | `cropYear` | required — four digits | — |
 | `season` | required — `Kharif`, `Rabi` or `Zaid` | — |
@@ -1226,8 +1237,7 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 | field | `init` | `support` | `status` |
 |---|---|---|---|
 | `contract.id` | required — caller-minted | — no contract | required — the same value as the `init` before it |
-| `support.orderId` | — | required — the registration number | — |
-| `enrolmentId` | required — the registration number | — | required — the same registration number |
+| `enrolmentId` | required — the registration number | required — the same value | required — the same value |
 | `grievance.category.code` | — | required — one of `G001`–`G010` | — |
 | `grievance.description` | — | required — 10 to 2000 characters | — |
 | `challenge.method` | — | required — `SMS_OTP` | required — `SMS_OTP` |
@@ -1247,26 +1257,40 @@ PM-KISAN uses no `applicantPhone`, `cropYear` or `season`, and its pack refuses
 | field | `init` | `status` |
 |---|---|---|
 | `contract.id` | required — caller-minted | required — the same value as the `init` before it |
-| `applicant` | required — exactly one of `registration`, `mobile`, `aadhaar` | required — the same member, the same value |
+| `enrolmentId` | one of these two — the registration number | the same value |
+| `applicant` | one of these two — exactly one of `mobile`, `aadhaar` | the same member, the same value |
 | `challenge.method` | — | required — `SMS_OTP` |
 | `challenge.value` | — | required — the four-digit OTP from `on_init` |
 
-There is no `support` row: this capability has no `support` leg, so nothing moves into
-`Support.orderId` and no field carries an `x-beckn-path`. `enrolmentId` appears only on the
-way back, as the registration the portal resolved the lookup to — a caller never sends it.
+**Exactly one of `enrolmentId` and `applicant`, never both and never neither.** The two
+are mutually exclusive: sending both names the same farmer twice with no rule for which
+wins, and it is also the shape a response would take if it leaked an Aadhaar number back
+beside the registration it resolved to. Neither leg lists an identifier in
+`x-oan-required-by-action`, because that key takes flat all-of lists and naming either
+field there would be false for the other half of the callers. The requirement is a
+top-level `anyOf` gate instead, which is the only place it can actually be enforced.
+
+There is no `support` row: this capability has no `support` leg, so nothing composes a
+`Support` object at all. Nothing moves out of the attributes object here either — no
+field in this family carries an `x-beckn-path`.
+
+`enrolmentId` travels both ways. A caller who holds the registration number sends it; a
+caller who holds only a mobile or an Aadhaar number sends `applicant` and reads the
+registration back under `enrolmentId`, as the portal's resolution of the lookup. It is
+the same field under the same name as on the grievance packs.
 
 The kind is named rather than inferred because the portal guesses it from the *shape* of
 the value: ten digits beginning 6–9 is a mobile number, twelve digits an Aadhaar number,
 anything else a registration number. So a registration number that happens to look like a
 phone number becomes a phone lookup, silently, and returns nothing or somebody else's
-record. Writing the identifier into a member that names its kind closes that off — the
-adapter sends the kind outright, and each member is held to its own shape:
+record. Putting each kind in a slot that names it closes that off — the adapter sends the
+kind outright, and each slot is held to its own shape:
 
-| member | the shape required | sent upstream as |
+| slot | the shape required | sent upstream as |
 |---|---|---|
-| `registration` | ASCII alphanumeric, up to 20 — no digit rule, which is the whole point | `Ben_id` |
-| `mobile` | `^[6-9][0-9]{9}$` | `Mobile` |
-| `aadhaar` | `^[0-9]{12}$` | `Aadhar` — the upstream's spelling, not ours |
+| `enrolmentId` | ASCII alphanumeric, up to 20 — no digit rule, which is the whole point; twelve bare digits is refused, so an Aadhaar number cannot be smuggled in here | `Ben_id` |
+| `applicant.mobile` | `^[6-9][0-9]{9}$` | `Mobile` |
+| `applicant.aadhaar` | `^[0-9]{12}$` | `Aadhar` — the upstream's spelling, not ours |
 
 Everything else is optional. The `name` beside any `code`, `provider.descriptor.name` and
 `scheme.name` are display text: send them or omit them, the adapter matches on `code` and
@@ -1285,12 +1309,15 @@ Everything else is optional. The `name` beside any `code`, `provider.descriptor.
   - `challenge` is sent, never returned, never logged. `challenge.value` never reaches the
     lodge call.
   - `challengeIssued` is the other half: returned, never sent, never secret.
-  - `enrolmentId` is an identifier, not a secret, so it does come back — echoed in
-    `orderId` on `on_support`, and again in `commitmentAttributes` on PMFBY's `on_status`.
-    It stays `no-log` and `no-trace` either way.
-  - On application status `enrolmentId` is never sent, and comes back as the portal's
-    resolution of the lookup. The identifier under `applicant` — which may be an Aadhaar
-    number — is never echoed.
+  - `enrolmentId` is an identifier, not a secret, so it does come back — echoed on
+    `on_support`, and returned again on PMFBY's `on_status`. It sits in the attributes
+    object every time, and stays `no-log` and `no-trace` either way. PM-KISAN's grievance
+    case read is the one exception: it drops the value rather than echoing it, by mapping
+    rule rather than by structure.
+  - On application status `enrolmentId` is either sent by the caller or resolved by the
+    portal from a mobile or Aadhaar lookup, and it comes back either way. The identifier
+    under `applicant` — which may be an Aadhaar number — is never echoed, and the schema
+    refuses it beside `enrolmentId` so a response cannot carry both.
 
   Every field carrying personal data is marked `x-oan-pii` in the pack, with a class and a
   handling list. That is documentation today, not something the validator enforces.
@@ -1393,8 +1420,9 @@ Three rules, for every error on this page:
 - **`details.path` follows the field, not the action.** A missing phone is
   `$.message.support.channels[0].applicantPhone` on `support` and
   `$.message.contract.commitments[0].commitmentAttributes.applicantPhone` on `status`. The
-  pack's `x-beckn-container-by-action` names each of those two roots. `x-beckn-path` is a
-  different keyword and sits on one field only, `enrolmentId` — the one field that moves.
+  pack's `x-beckn-container-by-action` names each of those two roots. That is the only
+  thing that varies: no field moves out of the attributes object, so the tail of the path
+  is the same on every action.
 - **The portal's own message is never passed through** — Appendix D.
 - **A wrong OTP is not a `401`.** `401` means the Beckn signature failed to verify. The
   enum has no OTP-specific value, and PM-KISAN publishes no clean success signal for the
