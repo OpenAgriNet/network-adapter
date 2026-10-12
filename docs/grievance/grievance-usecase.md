@@ -1345,6 +1345,14 @@ Everything else is optional. The `name` beside any `code`, `provider.descriptor.
   absent here is withheld on purpose, not overlooked.
 - **The portal's own message is never returned.** It may carry a stack trace, an internal
   hostname or a quoted-back credential. Log it redacted and return our own message.
+- **How many wrong OTPs are allowed is unknown.** Neither portal shape nor the v1 adapter
+  counts attempts or records a lockout, so the behaviour on repeated failure is not known.
+  If PM-KISAN locks a registration after a number of failures, callers need that number
+  before they build a retry loop. Ask for it; it needs no schema change.
+- **An `init` acknowledgement is not delivery.** It says the portal accepted the request,
+  not that the farmer received anything. PM-KISAN returns no `sentTo`, so a caller cannot
+  show which number it went to, and there is no resend distinct from a fresh `init`. What
+  a farmer should do when no SMS arrives is an open question for PM-KISAN.
 
 ### D.1 Why PMFBY publishes no challenge
 
@@ -1433,6 +1441,43 @@ Three rules, for every error on this page:
 - **A wrong OTP is not a `401`.** `401` means the Beckn signature failed to verify. The
   enum has no OTP-specific value, and PM-KISAN publishes no clean success signal for the
   verify step, so that row is provisional. It cannot arise on PMFBY, which has no challenge.
+
+### E.3 When the OTP fails
+
+`BIZ_GENERIC_ERROR` on a guarded call means the OTP did not verify. PM-KISAN only; PMFBY
+has no challenge to fail.
+
+```json
+{
+  "message": {
+    "status": "NACK",
+    "messageId": "7b31…",
+    "error": {
+      "code": "BIZ_GENERIC_ERROR",
+      "message": "The OTP could not be verified. Request a new one.",
+      "details": {
+        "path": "$.message.contract.commitments[0].commitmentAttributes.challenge.value"
+      }
+    }
+  }
+}
+```
+
+Recovery is to start the challenge again:
+
+- **Call `init` again.** It mints a new `contract.id` and sends a new OTP. Reusing the
+  previous `contract.id` will not work — that contract's challenge is finished.
+- **The old OTP is dead**, whether it was wrong, expired or already spent. This network
+  assumes single use — [§4.2](#42-scenario--checking-it-four-days-later) records that
+  as an open question with PM-KISAN.
+- **Nothing was filed.** A failed verify means the call it guarded was never made. No
+  ticket exists and no partial state is left behind, so the farmer can begin again safely.
+- **One code covers all three causes.** PM-KISAN publishes no clean signal separating
+  wrong from expired from already used, so the adapter cannot tell them apart and neither
+  can you. Treat every OTP failure the same way: ask for a new one. Do not offer a
+  retype-the-same-code path — it cannot succeed if the code was already spent.
+- **The OTP never appears in the error.** `details.path` names where the value belongs;
+  the value itself is never echoed, logged or traced — Appendix D.
 
 ---
 
