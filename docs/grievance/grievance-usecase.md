@@ -285,7 +285,7 @@ POST /support
           // Omit them and the adapter sends PMFBY's published pair, 3 and 10.
           "category": { "code": "3" },
           "subCategory": { "code": "10" },
-          "description": "Claim for my Kharif 2026 paddy enrolment has not been credited to my account."
+          "description": "Claim for my Kharif 2026 enrolment has not been credited to my account."
         }
       }]
     }
@@ -320,7 +320,7 @@ POST /support
         "grievance": {
           "category": { "code": "3" },
           "subCategory": { "code": "10" },
-          "description": "Claim for my Kharif 2026 paddy enrolment has not been credited to my account."
+          "description": "Claim for my Kharif 2026 enrolment has not been credited to my account."
         },
         "case": {
           "ticketNo": "100626000099001",
@@ -410,7 +410,9 @@ POST /status
   phrase picks the code and then stops there; it is not forwarded. Appendix B says why.
 - **No remark.** PMFBY returns a status phrase and no reply text, so the schema refuses
   `case.remark` and `case.remarkedOn`.
-- **`case.cropName`** — the insured crop. PMFBY alone returns it.
+- **`case.cropName`** — the insured crop, as the portal names it. PMFBY alone returns
+  it, and it resolves it from the application number: the policy says which crop. Never
+  sent, and never read out of the farmer's description.
 - **The category comes back as a name with no code**, because the portal returns
   `TicketCategoryName` and `TicketSubCategoryName` and no ids at all. Both are shown as `…`
   below. PMFBY publishes no category master and this network invents none — the catalog
@@ -440,7 +442,7 @@ POST /status
         "grievance": {
           "category": { "name": "…" },
           "subCategory": { "name": "…" },
-          "description": "Claim for my Kharif 2026 paddy enrolment has not been credited to my account."
+          "description": "Claim for my Kharif 2026 enrolment has not been credited to my account."
         },
         "case": {
           "ticketNo": "100626000099001",
