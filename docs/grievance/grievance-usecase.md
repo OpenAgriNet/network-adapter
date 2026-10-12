@@ -100,16 +100,6 @@ POST /discover
 The filter above asks for PMFBY. Swap in `PM-KISAN` for either PM-KISAN scenario, or drop
 the filter to get everything.
 
-Filters are JSONPath, and only `resourceAttributes` is reachable from an expression:
-
-```
-"$.catalogs[*].resources[*] ? (@.resourceAttributes.scheme.code == \"PM-KISAN\")"
-"$.catalogs[*].resources[*] ? (@.resourceAttributes.challengeMethods[*] == \"SMS_OTP\")"
-```
-
-No expression separates the two PM-KISAN desks: both carry `scheme.code: PM-KISAN` and
-both publish `["SMS_OTP"]`. Tell them apart by `resourceAttributes.@type` in the reply.
-
 `on_discover` returns the matching catalogs whole, `resourceAttributes` included, on the
 same HTTP response. Shortened here to the parts the scenarios use:
 
