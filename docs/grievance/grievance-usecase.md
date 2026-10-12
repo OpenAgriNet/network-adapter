@@ -51,10 +51,9 @@ Three parties take part:
 Every call is synchronous. You send a request and get the answer on the same HTTP
 response. Nothing arrives later on a callback.
 
-One rule shapes everything below: **the catalog says whether a desk asks for an OTP.**
-PM-KISAN's two desks publish `["SMS_OTP"]`; PMFBY's publishes `[]`. That is why the
-PM-KISAN scenarios have an extra call at the front. Branch on the published field, not on
-the scheme name — [§2](#2-before-any-scenario--discover).
+One rule shapes everything below: **the catalog says whether a desk asks for an OTP**,
+which is why the PM-KISAN scenarios have an extra call at the front —
+[§2](#2-before-any-scenario--discover).
 
 At a glance, the three differ like this:
 
@@ -65,9 +64,6 @@ At a glance, the three differ like this:
 | Farmer is known by | application number on the way in, ticket number on the way back; the phone is an unverified contact | registration number | registration, mobile or Aadhaar number — the caller says which |
 | What comes back | ticket number, status, crop | ticket number, status, remarks | instalments paid, eKYC, what is blocking payment |
 | `@type` | `openagrinet:PMFBYGrievance` | `openagrinet:PMKISANGrievance` | `openagrinet:PMKISANApplicationStatus` |
-
-The two PM-KISAN capabilities share a desk, an OTP service and a base schema — but not a
-subject, so they are two packs.
 
 ![Grievance flow of execution](grievance-flow.svg)
 
@@ -999,10 +995,9 @@ crop. Both return `status` and `filedOn`. `ticketNo` comes back on every PMFBY c
 PM-KISAN's lodge, but not on a PM-KISAN read — that call answers per identity, not per
 ticket.
 
-The two challenge bands belong to PM-KISAN alone. PMFBY's grievance service has no OTP
-endpoint, so its pack carries neither band and its catalog publishes no challenge —
-[§2](#2-before-any-scenario--discover). PM-KISAN's OTP is four digits, and its
-`challengeIssued` carries no `sentTo`: the portal does not say where it sent the OTP.
+The two challenge bands belong to PM-KISAN alone; PMFBY carries neither. PM-KISAN's OTP
+is four digits, and its `challengeIssued` carries no `sentTo` — the portal does not say
+where it sent the OTP.
 
 **PM-KISAN application status swaps two bands for two others.** It refuses `grievance` and
 `case` — nothing is filed there and nothing has a lifecycle. In their place:
@@ -1017,12 +1012,12 @@ hands: `enrolmentId` is written by the *portal* there, not the caller —
 [§5](#5-pm-kisan-application-status).
 
 Nothing rides in a Beckn `descriptor`. The category, the sub-category and the farmer's
-words are attribute fields, so the pack bounds each one.
+words are all attribute fields.
 
 | | on `support` | on `init` / `status` |
 |---|---|---|
 | the bands above | `support.channels[0]`, selected by `@type` | `commitmentAttributes` |
-| `provider` | in the attributes, because a `SupportAction` has no `Contract` | `commitments[].offer.provider`; the attributes do **not** repeat it |
+| `provider` | in the attributes | `commitments[].offer.provider`; the attributes do **not** repeat it |
 
 **No field moves between slots.** The container changes — `support.channels[0]` on one
 leg, `commitmentAttributes` on the others — and every field keeps its name and its
@@ -1031,9 +1026,8 @@ position inside it. A reader writes `.enrolmentId` once and it works on every ac
 `Support.orderId` is not used: nothing here is an order, and `enrolmentId` is an
 attribute like every other.
 
-A band is absent when there is nothing in it. PM-KISAN's `init` asks for a challenge
-before the farmer has stated anything, so it carries no `grievance`. No request carries a
-`case`, because only the portal writes one.
+PM-KISAN's `init` carries no `grievance` — nothing has been stated yet. No request ever
+carries a `case`; only the portal writes one.
 
 `provider` is the same shape everywhere — `{ "id": …, "descriptor": { "name": … } }`. The
 adapter routes on `id`; `name` is display text.
@@ -1043,17 +1037,16 @@ the payload rides on `commitmentAttributes`. The commitment's one resource stays
 resource id from the catalog plus the `quantity` the spec requires — send `{"count": 1}` in
 both directions. That id is fixed per provider and names the catalog entry, never the case.
 
-**On `support` there is no contract** — a `SupportAction` has no `contract` property. The
-payload rides in `support.channels[0]`. A request carries exactly one channel, the
-complaint; the adapter refuses a second. On a reply, address the entry by `@type`, not by
+**On `support` there is no contract.** The payload rides in `support.channels[0]`. A
+request carries exactly one channel, the complaint; the adapter refuses a second. On a reply, address the entry by `@type`, not by
 index — a helpline channel could sit beside the case.
 
 ---
 
 ## Appendix B — Reading `code`, `name` and the contract lifecycle
 
-Several fields carry a `code`, and some of them carry a `name` beside it. The pair does not
-mean the same thing everywhere, which is why it is worth one page.
+Several fields carry a `code`, and some of them carry a `name` beside it. The pair does
+not mean the same thing everywhere.
 
 **Both members ours.** `scheme`, and a `category` on a catalog entry. `code` is the handle,
 `name` is the longer rendering of the same fact — `PMFBY` and `Pradhan Mantri Fasal Bima
@@ -1068,25 +1061,17 @@ longer do:
 
 - **`case.status` is a `CaseStatusCode` and nothing else** — `Registered`, `UnderReview`,
   `AwaitingApplicant`, `Replied`, `Resolved`, `Rejected`, `Closed`. The last three are
-  terminal and the adapter never assigns one on its own; an unrecognised portal phrase falls
-  to `UnderReview`. The adapter still reads the portal's phrase to pick the code — it just
-  does not forward it. Neither portal has supplied its status vocabulary and no captured
-  response carrying one exists, so there is nothing to carry that we could vouch for.
-  [Appendix D](#appendix-d--rules-that-apply-everywhere) tracks getting those lists; if a list
-  arrives and says more than the code does, `name` comes back as an optional member and
-  nothing a caller wrote breaks.
-- **`application.ekyc` is `Done` or `Pending`.** The portal sends the single character `Y`
-  or `N`, so there is no phrase of its own to carry. Any `name` would be our wording
-  dressed up as the portal's.
+  terminal and the adapter never assigns one on its own; an unrecognised portal phrase
+  falls to `UnderReview`.
+- **`application.ekyc` is `Done` or `Pending`**, and carries no `name`.
 
 So: branch on `code`, and render your own label from it. Where a `name` is present it is
 the portal's word and worth showing; where there is none, there was never a word to show.
 
 One field looks like these and is not: a commitment's `status.descriptor`. It sits in the
-same payload as `case.status` and answers a different question.
-
-`case.status` says how the grievance is going. `status.descriptor.code` is Beckn's contract
-lifecycle, and nothing the portal reports ever moves it:
+same payload as `case.status` and answers a different question. `case.status` says how the
+grievance is going; `status.descriptor.code` is Beckn's contract lifecycle, and nothing
+the portal reports ever moves it:
 
 - `DRAFT` — a challenge is outstanding
 - `ACTIVE` — what the contract is for is under way
@@ -1105,12 +1090,9 @@ So: `case.status` to tell the farmer anything; `status.descriptor` never.
 
 ## Appendix C — Required fields by call
 
-The schema pack states the shape of every field — its type, its pattern, its closed value
-space. What a *particular* call must carry is declared in the pack as
-`x-oan-fields-by-action` and enforced by the adapter. That key says more than these tables
-do — it also names what a call *may* send and what comes back — and the `mustSend` list
-under each action is the part the tables below render. A missing field is a `400` NACK
-with `SCH_REQUIRED_FIELD_MISSING`, returned before the portal is called.
+What a call must carry is declared in the pack as `x-oan-fields-by-action`; the tables
+below render its `mustSend` lists. A missing field is a `400` NACK with
+`SCH_REQUIRED_FIELD_MISSING`, returned before the portal is called.
 
 Two things are required on every call and are not repeated in the tables:
 
