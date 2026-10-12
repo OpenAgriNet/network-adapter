@@ -652,8 +652,7 @@ func TestPMKISANStatusAnswersTheGrievanceFiledOnThatDate(t *testing.T) {
 			t.Errorf("case.%s = %v, want %v", field, got, want)
 		}
 	}
-	// No GrievanceStatus on this record, and a remark exists: inferred, so
-	// the network's code and no name.
+	// No GrievanceStatus on this record, and a remark exists: Replied.
 	if got := pkAt(t, attributes, "case", "status"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "Replied"}) {
 		t.Errorf("case.status = %v, want {code: Replied} with no name", got)
 	}
@@ -693,8 +692,8 @@ func TestPMKISANStatusMapsThePortalsPhraseToTheNetworksCode(t *testing.T) {
 				t.Fatalf("Run() = %v", err)
 			}
 			status := pkAt(t, pkDecode(t, body), "message", "contract", "commitments", 0, "commitmentAttributes", "case", "status")
-			if fmt.Sprint(status) != fmt.Sprint(map[string]any{"code": code, "name": phrase}) {
-				t.Errorf("case.status = %v, want code %s with the phrase kept in name", status, code)
+			if fmt.Sprint(status) != fmt.Sprint(map[string]any{"code": code}) {
+				t.Errorf("case.status = %v, want {code: %s} and no name: the pack refuses it", status, code)
 			}
 		})
 	}

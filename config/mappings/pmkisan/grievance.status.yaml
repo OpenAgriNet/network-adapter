@@ -53,9 +53,9 @@ request: |
 # "False" flag: 502. No record on case.filedOn: 202 BIZ_NO_RESULTS_FOUND.
 # Otherwise on_status (ACTIVE), allow-list only -- personal data is dropped:
 #   GrievanceDescription -> grievance.description
-#   GrievanceStatus      -> case.status (name verbatim; code mapped, Disposed ->
-#                           Replied, unknown -> UnderReview; no phrase: Replied
-#                           if a remark exists, else UnderReview)
+#   GrievanceStatus      -> case.status.code only (Disposed -> Replied, unknown
+#                           -> UnderReview; no phrase: Replied if a remark
+#                           exists, else UnderReview). The phrase is not sent.
 #   GrievanceDate        -> case.filedOn
 #   OfficerReply/Date    -> case.remark / case.remarkedOn
 # A 4xx (_status) becomes the adapter's 502.
@@ -122,15 +122,14 @@ response: |
               "scheme":          $ca.scheme,
               "grievance": $complaint ? { "description": $complaint },
               "case": {
-                "status": $phrase
-                  ? {
-                      "code": (
-                        $known := $lookup($codes, $lowercase($replace($phrase, /[^A-Za-z]/, "")));
-                        $exists($known) ? $known : "UnderReview"
-                      ),
-                      "name": $phrase
-                    }
-                  : { "code": $remark ? "Replied" : "UnderReview" },
+                "status": {
+                  "code": $phrase
+                    ? (
+                      $known := $lookup($codes, $lowercase($replace($phrase, /[^A-Za-z]/, "")));
+                      $exists($known) ? $known : "UnderReview"
+                    )
+                    : ($remark ? "Replied" : "UnderReview")
+                },
                 "filedOn":    $iso($record.GrievanceDate),
                 "remark":     $remark,
                 "remarkedOn": $remark ? $iso($record.OfficeReplyDate)
