@@ -4,9 +4,6 @@ Three capabilities across two schemes, written as the journeys a farmer actually
 Each scenario is complete on its own: the calls in order, and the payloads they carry.
 Everything explaining *why* a field is shaped the way it is sits in the appendices.
 
-> `grievance-upstream-contracts.md` records what the portals actually accept and return,
-> one line per field. Where it and this page disagree, it wins.
-
 ---
 
 ## Contents
@@ -70,8 +67,7 @@ At a glance, the three differ like this:
 | `@type` | `openagrinet:PMFBYGrievance` | `openagrinet:PMKISANGrievance` | `openagrinet:PMKISANApplicationStatus` |
 
 The two PM-KISAN capabilities share a desk, an OTP service and a base schema — but not a
-subject. They are kept apart on purpose: a status read has no case, no ticket and no
-lifecycle, so merging it into the grievance pack would leave `case` permanently empty.
+subject, so they are two packs.
 
 ![Grievance flow of execution](grievance-flow.svg)
 
@@ -171,8 +167,7 @@ Quote the ids exactly as they came. The full catalogs are
 PMFBY publishes `[]`. Both PM-KISAN desks publish `["SMS_OTP"]`. **Branch on this field,
 not on the scheme name** — a portal can change what it needs, and the catalog is where the
 adapter states that on its behalf. Read the values, not the length: if a portal adds a
-second mechanism the list grows, and a caller that reads `method` keeps working. An empty
-array is not an oversight. It means this desk has nothing to ask for.
+second mechanism the list grows, and a caller that reads `method` keeps working.
 
 `grievanceOptions` answers the other question a caller has before it can draw a form: what
 may go in `grievance.category`. Read it from the catalog rather than keeping a copy — each
@@ -188,8 +183,7 @@ and the pack refuses an eleventh.
 
 **What travels, and what does not.** The catalog entry carries three things per option and
 a payload carries at most two of them, so the examples further down show a `category` with
-a bare `code` on the way up and — on PMFBY only — a bare `name` on the way back. That is
-not an inconsistency between them:
+a bare `code` on the way up and — on PMFBY only — a bare `name` on the way back.
 
 | | on the ask | on the read | on the catalog entry |
 |---|---|---|---|
@@ -198,9 +192,7 @@ not an inconsistency between them:
 | `descriptor` | never — a payload `category` is `{code, name}` and has no such field | never | published, and it is ours rather than the portal's |
 
 Send the code. Take the label from the catalog you have already read — that is what
-`grievanceOptions` is for, and it is why the label does not need to travel. Keeping
-`descriptor` off the wire is deliberate: it is this network's plain-language help text, and
-anything echoed back inside a `grievance` band would be read as the portal's own words.
+`grievanceOptions` is for, and it is why the label does not need to travel.
 
 One consequence is worth planning for. A PMFBY read answers with a name and no id, so it
 cannot be joined back to the catalog entry the caller chose — FGMS returns no id, so the
@@ -235,8 +227,6 @@ the only way to find the complaint again later — §3.2.
 - This is the first call, so you create the `transactionId` here. There is no contract —
   `support` does not use one.
 - **`enrolmentId`** — the application number, inside the channel with everything else.
-  `Support.orderId` is not used; [Appendix A](#appendix-a--where-every-field-sits) says
-  why, once.
 - **`grievance`** — the complaint itself. `description` is required. `category.code` and
   `subCategory.code` are optional: PMFBY publishes one category and one sub-category, so
   leave them out and the adapter sends the published pair. Send them only when the catalog
@@ -254,10 +244,8 @@ the only way to find the complaint again later — §3.2.
   comes back as `case.filedOn`. Ramesh is filing live, so the example omits it.
 - **`receiptSourceId`** — optional, normally omitted. The adapter sends its own configured
   id. Send yours only if PMFBY gave you one directly.
-- **One channel only.** The adapter rejects a second. Beckn sets no limit, so this is the
-  adapter's rule, not the schema's.
 
-```json
+```jsonc
 POST /support
 {
   "context": {
@@ -333,9 +321,7 @@ POST /support
 }
 ```
 
-Neither scheme publishes a helpline channel, so only one channel comes back. If one is
-added later it becomes a second entry in `channels`. **Pick the case record by `@type`,
-never by position.**
+**Pick the case record by `@type`, never by position.**
 
 **Keep for later:** `case.ticketNo`, and the phone number you sent. The phone is not in
 the response, so the app must remember what it submitted. Those two are all §3.2 needs from
@@ -364,8 +350,7 @@ and resource ids below come from the catalog, as on every call.
   that state means a challenge is waiting, and PMFBY issues none — Appendix B.
 
 > **Nothing in PMFBY is authenticated.** Anyone with a ticket number and the filing phone
-> number can read the case. Reading is a little safer than filing, because you cannot guess
-> a ticket number from a phone number. Why this network publishes no challenge instead of
+> number can read the case. Why this network publishes no challenge instead of
 > borrowing the OTP PMFBY does operate is
 > [Appendix D.1](#d1-why-pmfby-publishes-no-challenge).
 
@@ -404,8 +389,8 @@ POST /status
 
 - **`grievance`** — the complaint as the portal now holds it. **`case`** — the record the
   portal keeps against it.
-- **`enrolmentId`** — the application number, the same value and the same place `support`
-  used. The request did not send it; the portal returns it.
+- **`enrolmentId`** — the application number, the same value under the same name
+  `support` used. The request did not send it; the portal returns it.
 - **`case.status`** — a `CaseStatusCode` and nothing else. FGMS's own `TicketStatus`
   phrase picks the code and then stops there; it is not forwarded. Appendix B says why.
 - **No remark.** PMFBY returns a status phrase and no reply text, so the schema refuses
@@ -551,7 +536,7 @@ POST /init
 #### The call — `support`
 
 - **`enrolmentId`** — the registration number, the same one sent on `init`, inside the
-  channel with everything else. `Support.orderId` is not used.
+  channel with everything else.
 - **`grievance.category.code`** — one of the pack's ten codes. Send the code alone: the
   portal reads `GrievanceType` and nothing else, and drops any `name`, as on PMFBY.
 - **`challenge.value`** — the four-digit OTP from `on_init`. It never reaches the portal's
@@ -944,9 +929,9 @@ POST /status
 - **`enrolmentId`** — the registration number the portal **resolved the lookup to**. The
   caller sent a mobile number; the registration comes back under the same name a caller
   would have used to ask by it. It is the only identifier returned.
-- **`applicant`** — not echoed. The schema refuses it outright beside `enrolmentId`, so a
-  response cannot put an Aadhaar number back on the wire next to the registration it
-  resolved to.
+- **`applicant`** — not echoed. The schema refuses `applicant` and `enrolmentId`
+  together, so a response cannot put an Aadhaar number back on the wire next to the
+  registration it resolved to.
 - **`blockers`** — a set. Two blockers are two separate things for the farmer to fix.
 - **`CLOSED`.** The question is answered and nothing remains open.
 
@@ -1045,9 +1030,6 @@ full address, state, district, sub-district and village. **None of it is modelle
 of it is emitted.** The caller already knows who they asked about, and returning it would
 disclose more than the identity this design works to withhold — Appendix D.
 
-This is a deliberate break from v1, which showed the farmer their own name and village back
-to them.
-
 Lakshmi can ask again whenever she likes. Each read opens a contract of its own and needs
 a fresh OTP: `CLOSED` closes that one question, not the capability.
 
@@ -1104,24 +1086,8 @@ words are attribute fields, so the pack bounds each one.
 leg, `commitmentAttributes` on the others — and every field keeps its name and its
 position inside it. A reader writes `.enrolmentId` once and it works on every action.
 
-`Support.orderId` is not used, and the temptation to use it is worth naming. Beckn's
-`Support` object is sealed to `{orderId, descriptor, channels}`, which makes `orderId`
-look like the only slot a bare value could take on that leg. It is not: sealing
-constrains the *siblings* of `channels`, not the contents of the attributes objects
-inside it, and `enrolmentId` sits inside one of those. Nor is `orderId` required —
-`Support` has no `required` array at all.
-
-What settles it is meaning rather than room. `orderId` is "the order against which
-support is required", and nothing here is an order: a grievance is lodged with `support`,
-not `confirm`, and no `Order` is ever composed. A consumer who reads an order id and
-resolves it to nothing is worse off than one who reads none. Using it would also make a
-single field readable at two different paths depending on the leg — the one thing this
-appendix exists to rule out.
-
-The v1 adapter is evidence rather than counter-evidence here: it put the OTP in
-`order_id` and carried the enrolment reference in a tag, so there is no inherited
-placement to preserve, and v1's actual use of the slot — for a credential — is one this
-design forbids outright.
+`Support.orderId` is not used: nothing here is an order, and `enrolmentId` is an
+attribute like every other.
 
 A band is absent when there is nothing in it. PM-KISAN's `init` asks for a challenge
 before the farmer has stated anything, so it carries no `grievance`. No request carries a
@@ -1199,9 +1165,10 @@ So: `case.status` to tell the farmer anything; `status.descriptor` never.
 
 The schema pack states the shape of every field — its type, its pattern, its closed value
 space. What a *particular* call must carry is declared in the pack as
-`x-oan-required-by-action` and enforced by the adapter. The tables below are the readable
-form of it. A missing field is a `400` NACK with `SCH_REQUIRED_FIELD_MISSING`, returned
-before the portal is called.
+`x-oan-fields-by-action` and enforced by the adapter. That key says more than these tables
+do — it also names what a call *may* send and what comes back — and the `mustSend` list
+under each action is the part the tables below render. A missing field is a `400` NACK
+with `SCH_REQUIRED_FIELD_MISSING`, returned before the portal is called.
 
 Two things are required on every call and are not repeated in the tables:
 
@@ -1272,9 +1239,10 @@ PM-KISAN uses no `applicantPhone`, `cropYear` or `season`, and its pack refuses
 are mutually exclusive: sending both names the same farmer twice with no rule for which
 wins, and it is also the shape a response would take if it leaked an Aadhaar number back
 beside the registration it resolved to. Neither leg lists an identifier in
-`x-oan-required-by-action`, because that key takes flat all-of lists and naming either
-field there would be false for the other half of the callers. The requirement is a
-top-level `anyOf` gate instead, which is the only place it can actually be enforced.
+the `mustSend` list of `x-oan-fields-by-action`, because those lists are flat and all-of:
+naming either field there would be false for the other half of the callers. Both appear
+under `maySend`, with the rule written beside them, and the requirement itself is a
+top-level `anyOf` gate — the only place it can actually be enforced.
 
 There is no `support` row: this capability has no `support` leg, so nothing composes a
 `Support` object at all. Nothing moves out of the attributes object here either — no
@@ -1752,8 +1720,7 @@ POST /catalog/publish
   here, `PM-KISAN Grievance Desk` in F.2. That is the field a caller shows a farmer.
 - **`challengeMethods: ["SMS_OTP"]`** — tells a caller to open with `init`.
 - **No `grievanceOptions`** — this desk reads a record; it files nothing, so it has no
-  categories to offer. The pack refuses the field outright rather than leave it publishable
-  and empty, because an empty list would read as a grievance desk with nothing on its menu.
+  categories to offer. The pack refuses the field.
 
 #### Finding it — `discover`
 
