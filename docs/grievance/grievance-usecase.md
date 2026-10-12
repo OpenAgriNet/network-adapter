@@ -229,18 +229,16 @@ the only way to find the complaint again later — §3.2.
 - **`grievance`** — the complaint itself. `description` is required. `category.code` and
   `subCategory.code` are optional: PMFBY publishes one category and one sub-category, so
   leave them out and the adapter sends the published pair. Send them only when the catalog
-  offers a choice. They are two separate fields. Never join them into one string like
-  `3.10`. The portal reads ids only and drops any `name` beside them.
+  offers a choice. They are two separate fields — never join them into one string
+  like `3.10`. Send `code`; any `name` beside it is dropped.
 - **`channels[0]`** — the provider to route to, plus everything identifying the enrolment.
-  There is no `challenge`: PMFBY's grievance service has no OTP endpoint. `applicantPhone`
-  is only a contact number the portal files on the ticket. Nobody has proved it belongs to
-  the caller.
-- **`cropYear`, `season`** — both required when filing. They say *which enrolment*, not
-  what went wrong. `season` is `Kharif`, `Rabi` or `Zaid`, and the adapter maps the name to
-  the number PMFBY wants. Neither comes back on a read.
+  No `challenge`: PMFBY asks for no OTP. `applicantPhone` is a contact number the portal
+  files on the ticket; it is never verified.
+- **`cropYear`, `season`** — both required when filing, and both identify the enrolment.
+  `season` is `Kharif`, `Rabi` or `Zaid`. Neither comes back on a read.
 - **`complaintDate`** — optional. Leave it out and the adapter stamps today's date in IST.
   Send it only if the farmer filed earlier, such as an offline form replayed later. It
-  comes back as `case.filedOn`. Ramesh is filing live, so the example omits it.
+  comes back as `case.filedOn`.
 - **`receiptSourceId`** — optional, normally omitted. The adapter sends its own configured
   id. Send yours only if PMFBY gave you one directly.
 
@@ -285,9 +283,8 @@ POST /support
 - **`enrolmentId`** — comes back unchanged, in the same place it was sent.
 - **`case.ticketNo`** — the ticket the portal just issued.
 - **`informationMode`** — flips to `Direct`.
-- **`case.status`, `case.filedOn`, `provider`** — the adapter's words, not the portal's.
-  The `grievance` band is the caller's own text echoed back.
-- **`applicantPhone`** — dropped. The response is an allow-list — Appendix D.
+- **`grievance`** — the caller's own text, echoed back.
+- **`applicantPhone`** — not returned. Keep what you sent.
 
 ```json
 {
@@ -335,15 +332,13 @@ and resource ids below come from the catalog, as on every call.
 
 #### The call — `status`
 
-- **New `transactionId` and new `contract.id`** — a separate session four days later. The
-  filing call made no contract, so there is nothing to carry over. Nothing upstream reads
-  either value.
+- **New `transactionId` and new `contract.id`** — a separate session. Nothing carries over
+  from the filing call.
 - **No `grievance` band.** This call names a ticket; it does not repeat the complaint.
-- **`case.ticketNo` and `applicantPhone`** — those two are the entire upstream request.
+- **`case.ticketNo` and `applicantPhone`** — those two identify the case. Nothing else does.
 - **No `challenge`.** There is no OTP anywhere in PMFBY.
 - **`status.descriptor.code`** — the *contract's* lifecycle, not the grievance's. Open at
-  `ACTIVE`, because what the contract is for already exists. PMFBY never sends `DRAFT`:
-  that state means a challenge is waiting, and PMFBY issues none — Appendix B.
+  `ACTIVE`. `DRAFT` means a challenge is waiting, and PMFBY never uses it — Appendix B.
 
 > **Nothing in PMFBY is authenticated.** Anyone with a ticket number and the filing phone
 > number can read the case. Why this network publishes no challenge instead of
@@ -387,18 +382,14 @@ POST /status
   portal keeps against it.
 - **`enrolmentId`** — the application number, the same value under the same name
   `support` used. The request did not send it; the portal returns it.
-- **`case.status`** — a `CaseStatusCode` and nothing else. FGMS's own `TicketStatus`
-  phrase picks the code and then stops there; it is not forwarded. Appendix B says why.
-- **No remark.** PMFBY returns a status phrase and no reply text, so the schema refuses
-  `case.remark` and `case.remarkedOn`.
-- **`case.cropName`** — the insured crop, as the portal names it. PMFBY alone returns
-  it, and it resolves it from the application number: the policy says which crop. Never
-  sent, and never read out of the farmer's description.
-- **The category comes back as a name with no code**, because the portal returns
-  `TicketCategoryName` and `TicketSubCategoryName` and no ids at all. Both are shown as `…`
-  below. PMFBY publishes no category master and this network invents none — the catalog
-  entry omits `name` for the same reason — so whatever the portal returns is what you
-  show.
+- **`case.status`** — a `CaseStatusCode` and nothing else. The portal's own phrase is
+  not forwarded — Appendix B.
+- **No remark.** PMFBY sends no reply text, so `case.remark` and `case.remarkedOn` never
+  appear.
+- **`case.cropName`** — the insured crop, as the portal names it. PMFBY alone returns it,
+  and it is never sent.
+- **The category comes back as a name with no code**, shown as `…` below. It cannot be
+  joined back to the catalog entry, so show the name the portal sent.
 - **Dropped:** the farmer's name, state, district, the insurer and an internal ticket key.
 
 ```json
@@ -471,8 +462,8 @@ OTP. The second carries it, together with the complaint.
 - **`enrolmentId`** — the registration number, and nothing else.
 - **No phone number.** The portal texts the mobile it holds against that registration.
 - **No `grievance` band** — the farmer has not stated a complaint yet.
-- **`DRAFT`.** The caller mints `contract.id` here. The lodge that follows has no contract
-  to carry it into, so this contract ends with the `init`. The read later opens its own.
+- **`DRAFT`.** The caller mints `contract.id` here. `support` composes no contract, so the
+  value is not carried forward.
 
 ```json
 POST /init
@@ -533,10 +524,9 @@ POST /init
 
 - **`enrolmentId`** — the registration number, the same one sent on `init`, inside the
   channel with everything else.
-- **`grievance.category.code`** — one of the pack's ten codes. Send the code alone: the
-  portal reads `GrievanceType` and nothing else, and drops any `name`, as on PMFBY.
-- **`challenge.value`** — the four-digit OTP from `on_init`. It never reaches the portal's
-  lodge call and is never echoed back.
+- **`grievance.category.code`** — one of the pack's ten codes. Send the code alone; any
+  `name` beside it is dropped, as on PMFBY.
+- **`challenge.value`** — the four-digit OTP from `on_init`. Never echoed back.
 - **`channels[0]`** — the `provider`, the scheme, the `enrolmentId`, the `grievance` band
   and the `challenge`. No phone number and no contract: `support` composes neither.
 
@@ -586,14 +576,8 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
 #### What comes back — `on_support`
 
 - **`enrolmentId`** — echoed as it went up, in the same place, as on PMFBY.
-- **`case.ticketNo`** — the portal's handle. The lodge reply carries `GrievanceID`, or
-  `GrievanceNo` where that is absent; the portal uses both names for the same thing, and
-  whichever arrives lands here.
-- **The success flag** arrives under `Status`, `Responce` or `Rsponce`. `"False"` is a
-  refusal and becomes a NACK. The message text arrives under `Message`, `message` or
-  `Remark`, and is logged redacted, never returned.
-- **`case.status` and `case.filedOn` are the adapter's**, because the portal sends no date
-  and no status on a lodge. The `grievance` band is the caller's own words echoed back.
+- **`case.ticketNo`** — the portal's handle for the case. Keep it.
+- **`grievance`** — the caller's own words, echoed back.
 
 ```json
 {
@@ -736,15 +720,14 @@ POST /status
   are filtered out; each has its own contract.
 - **Not echoed:** `enrolmentId`, and the `challenge`.
 - **Dropped:** the farmer's name, father's name, gender, mobile number, address and
-  `Reg_No`. Five of the record's fourteen fields survive.
+  `Reg_No`.
 - **`grievance` carries `description` alone**, because the record holds no category.
 - **No `case.ticketNo` comes back.** The portal's status call answers per identity, not per
   ticket, and does not repeat the handle on each record. Show Suresh the ticket he kept
   from `on_support`; this read will not return it.
-- **`status` is a code and nothing else.** The portal's own wording does not travel — see
-  Appendix B. `Replied` here is read off the presence of the remark, and it is not terminal:
-  a reply is not a resolution, so the contract stays `ACTIVE` and Suresh can read again. An
-  adapter may infer a state; it never infers that a case is over.
+- **`status` is a code and nothing else** — the portal's own wording does not travel, see
+  Appendix B. `Replied` is not terminal: a reply is not a resolution, so the contract stays
+  `ACTIVE` and Suresh can read again.
 
 ```json
 {
@@ -823,8 +806,7 @@ number comes back in the answer either way.
   the identifier *is* a phone number, so the OTP goes there. The example below is a
   `mobile` lookup, which is why a number appears in the payload.
 - **Exactly one, not two and not none.** `enrolmentId` and `applicant` are mutually
-  exclusive, and a payload carrying neither is refused. Because the slot names the kind,
-  there is no declared type left to disagree with the value beside it.
+  exclusive, and a payload carrying neither is refused.
 - **`DRAFT`.** The caller mints `contract.id` here and quotes the same value on `status`.
 
 ```json
@@ -922,11 +904,8 @@ POST /status
 
 - **`informationMode`** — flips to `Direct`. This one carries a real record.
 - **`enrolmentId`** — the registration number the portal **resolved the lookup to**. The
-  caller sent a mobile number; the registration comes back under the same name a caller
-  would have used to ask by it. It is the only identifier returned.
-- **`applicant`** — not echoed. The schema refuses `applicant` and `enrolmentId`
-  together, so a response cannot put an Aadhaar number back on the wire next to the
-  registration it resolved to.
+  caller asked by mobile and gets the registration back. It is the only identifier returned.
+- **`applicant`** — never echoed, whichever way the ask was made.
 - **`blockers`** — a set. Two blockers are two separate things for the farmer to fix.
 - **`CLOSED`.** The question is answered and nothing remains open.
 
