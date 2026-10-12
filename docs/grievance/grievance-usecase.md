@@ -224,8 +224,7 @@ the only way to find the complaint again later — §3.2.
 
 #### The call — `support`
 
-- This is the first call, so you create the `transactionId` here. There is no contract —
-  `support` does not use one.
+- This is the first call, so you create the `transactionId` here.
 - **`enrolmentId`** — the application number, inside the channel with everything else.
 - **`grievance`** — the complaint itself. `description` is required. `category.code` and
   `subCategory.code` are optional: PMFBY publishes one category and one sub-category, so
@@ -321,11 +320,8 @@ POST /support
 }
 ```
 
-**Pick the case record by `@type`, never by position.**
-
-**Keep for later:** `case.ticketNo`, and the phone number you sent. The phone is not in
-the response, so the app must remember what it submitted. Those two are all §3.2 needs from
-this call — the ids it quotes come from the catalog.
+**Keep for later:** `case.ticketNo` and the phone number you sent. §3.2 needs both, and
+the phone is not in the response.
 
 ### 3.2 Scenario — the same farmer checks his complaint four days later
 
@@ -629,9 +625,8 @@ G005 problem in Aadhaar correction     G010 problem in facial eKYC
 }
 ```
 
-**Keep for later:** the registration number and `case.filedOn` — the read four days later
-is matched on those two. Keep `case.ticketNo` as well, to show the farmer. `support`
-composes no contract, so there is nothing else to carry forward.
+**Keep for later:** the registration number and `case.filedOn` — the read four days
+later is matched on those two. Keep `case.ticketNo` as well, to show the farmer.
 
 ### 4.2 Scenario — checking it four days later
 
