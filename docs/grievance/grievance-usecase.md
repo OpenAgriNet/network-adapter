@@ -237,9 +237,11 @@ the only way to find the complaint again later — §3.2.
 - **`enrolmentId`** — the application number, inside the channel with everything else.
   `Support.orderId` is not used; [Appendix A](#appendix-a--where-every-field-sits) says
   why, once.
-- **`grievance`** — the complaint itself. `category.code` and `subCategory.code` are two
-  separate fields. Never join them into one string like `3.10`. Send the codes alone: the
-  portal reads ids only and drops any `name` beside them.
+- **`grievance`** — the complaint itself. `description` is required. `category.code` and
+  `subCategory.code` are optional: PMFBY publishes one category and one sub-category, so
+  leave them out and the adapter sends the published pair. Send them only when the catalog
+  offers a choice. They are two separate fields. Never join them into one string like
+  `3.10`. The portal reads ids only and drops any `name` beside them.
 - **`channels[0]`** — the provider to route to, plus everything identifying the enrolment.
   There is no `challenge`: PMFBY's grievance service has no OTP endpoint. `applicantPhone`
   is only a contact number the portal files on the ticket. Nobody has proved it belongs to
@@ -1227,8 +1229,8 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 | `season` | required — `Kharif`, `Rabi` or `Zaid` | — |
 | `complaintDate` | optional — `YYYY-MM-DD`; defaults to today in IST | — |
 | `receiptSourceId` | optional — your PMFBY channel id; defaults to the adapter's | — |
-| `grievance.category.code` | required | — |
-| `grievance.subCategory.code` | required | — |
+| `grievance.category.code` | optional — defaults to the published pair | — |
+| `grievance.subCategory.code` | optional — defaults to the published pair | — |
 | `grievance.description` | required — 10 to 2000 characters | — |
 | `case.ticketNo` | — | required — from `on_support` |
 
