@@ -88,7 +88,6 @@ POST /discover
   },
   "message": {
     "intent": {
-      "textSearch": "grievance",
       "filters": {
         "type": "jsonpath",
         "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.scheme.code == \"PMFBY\")"
@@ -1457,7 +1456,13 @@ POST /catalog/publish
 - **`provider`** — carries no `availableAt`. A grievance desk has no premises.
 - **`visibleTo`** — omitted, so every caller can find it.
 
-The `discover` that finds it is shown in full in [§2](#2-before-any-scenario--discover).
+#### Finding it — `discover`
+
+The [§2](#2-before-any-scenario--discover) filter with `PMFBY` returns this catalog alone.
+Take `provider.id`, `offers[].id` and `resources[].id` from it —
+[§3.1](#31-scenario--a-claim-that-never-arrived) and
+[§3.2](#32-scenario--the-same-farmer-checks-his-complaint-four-days-later) quote them
+verbatim.
 
 ### F.2 PM-KISAN grievance
 
@@ -1552,32 +1557,12 @@ POST /catalog/publish
 
 #### Finding it — `discover`
 
-```json
-POST /discover
-{
-  "context": {
-    "version": "2.0.0", "action": "discover", "networkId": "openagrinet",
-    "transactionId": "9d4a6f12-7e58-4b03-a2c6-1f8b3e5d7c40",
-    "messageId": "2c7e9b40-5a13-46d8-91f2-8e0d4a6c3b57",
-    "timestamp": "2026-09-20T09:14:00Z"
-  },
-  "message": {
-    "intent": {
-      "textSearch": "grievance",
-      "filters": {
-        "type": "jsonpath",
-        "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.scheme.code == \"PM-KISAN\")"
-      }
-    }
-  }
-}
-```
-
-Filtering on the scheme returns **both** PM-KISAN catalogs — this one and the
-application-status desk in [F.3](#f3-pm-kisan-application-status). Pick this one out of the
-reply by `resourceAttributes.@type`, then take `provider.id`, `offers[].id` and
-`resources[].id` from it — [§4.1](#41-scenario--filing-a-complaint-with-the-registration-proved-first)
-and [§4.2](#42-scenario--checking-it-four-days-later) quote them verbatim.
+The [§2](#2-before-any-scenario--discover) filter with `PM-KISAN` returns **both**
+PM-KISAN catalogs — this one and the application-status desk in
+[F.3](#f3-pm-kisan-application-status). Take `provider.id`, `offers[].id` and
+`resources[].id` from the entry whose `@type` is `openagrinet:PMKISANGrievance` —
+[§4.1](#41-scenario--filing-a-complaint-with-the-registration-proved-first) and
+[§4.2](#42-scenario--checking-it-four-days-later) quote them verbatim.
 
 ### F.3 PM-KISAN application status
 
@@ -1648,32 +1633,10 @@ POST /catalog/publish
 
 #### Finding it — `discover`
 
-Filtering on the scheme returns **both** PM-KISAN catalogs — the grievance desk and this
-one. Pick this one out of the reply by `resourceAttributes.@type`; the filter expression
-reaches `resourceAttributes` but is not the place to match a key beginning with `@`.
-
-```json
-POST /discover
-{
-  "context": {
-    "version": "2.0.0", "action": "discover", "networkId": "openagrinet",
-    "transactionId": "d0f6c418-9b25-4e73-85a1-7c2e4b60f9d8",
-    "messageId": "8a2c5f90-3d41-47b6-a0e8-5c9170b4d2e3",
-    "timestamp": "2026-09-20T09:16:00Z"
-  },
-  "message": {
-    "intent": {
-      "textSearch": "application status",
-      "filters": {
-        "type": "jsonpath",
-        "expression": "$.catalogs[*].resources[*] ? (@.resourceAttributes.scheme.code == \"PM-KISAN\")"
-      }
-    }
-  }
-}
-```
-
-Take `provider.id`, `offers[].id` and `resources[].id` from the reply —
+The [§2](#2-before-any-scenario--discover) filter with `PM-KISAN` returns **both**
+PM-KISAN catalogs — the grievance desk in [F.2](#f2-pm-kisan-grievance) and this one.
+Take `provider.id`, `offers[].id` and `resources[].id` from the entry whose `@type` is
+`openagrinet:PMKISANApplicationStatus` —
 [§5.1](#51-scenario--the-instalment-has-not-arrived) quotes them verbatim.
 
 ---
