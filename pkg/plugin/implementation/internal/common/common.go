@@ -53,9 +53,8 @@ type Config struct {
 	// requests silently fail to match. Configurable only so a spec change can
 	// be tracked without waiting for a release. Both or neither.
 	//
-	// Either may list several paths, comma-separated, paired by position and
-	// tried in order until one pair finds a binding: a support request composes
-	// no contract and names its provider and type on its channel instead.
+	// Either may list several comma-separated paths, paired by position and
+	// tried in order until one finds a binding.
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
@@ -149,8 +148,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 // request out over several capability types. The alternative is reading the
 // same two config fields a second time, which is how the two drift apart.
 //
-// A list of paths is refused here: such a caller reads one pair, and handed the
-// list as one path it would quietly match nothing.
+// A path list is refused: such a caller reads only one pair.
 func BindingPaths(cfg *Config) (Paths, error) {
 	pathList, err := bindingPathList(cfg)
 	if err != nil {
@@ -162,8 +160,8 @@ func BindingPaths(cfg *Config) (Paths, error) {
 	return pathList[0], nil
 }
 
-// bindingPathList resolves the pairs this step reads a binding key from, in
-// the order they are tried.
+// bindingPathList returns the path pairs to try, in order: the comma-separated
+// halves paired by position.
 func bindingPathList(cfg *Config) ([]Paths, error) {
 	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
 		return []Paths{BecknV2}, nil
@@ -174,14 +172,8 @@ func bindingPathList(cfg *Config) ([]Paths, error) {
 	if cfg.CapabilityCodeAt == "" {
 		return nil, errors.New("providerIdAt is set without capabilityCodeAt")
 	}
-	return splitPaths(Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt})
-}
-
-// splitPaths pairs the comma-separated halves of paths by position, so each
-// pair is one place a binding key may sit.
-func splitPaths(paths Paths) ([]Paths, error) {
-	providers := strings.Split(paths.ProviderID, ",")
-	capabilities := strings.Split(paths.CapabilityCode, ",")
+	providers := strings.Split(cfg.ProviderIDAt, ",")
+	capabilities := strings.Split(cfg.CapabilityCodeAt, ",")
 	if len(providers) != len(capabilities) {
 		return nil, fmt.Errorf("providerIdAt lists %d paths and capabilityCodeAt %d; they pair by position",
 			len(providers), len(capabilities))

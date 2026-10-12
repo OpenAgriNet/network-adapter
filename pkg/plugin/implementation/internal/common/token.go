@@ -123,8 +123,7 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 		return "", 0, err
 	}
 
-	// Decoded into a map because the field name is configured: a struct tag
-	// cannot be written for a key that is not known until config is read.
+	// Decoded generically because the token's path is configured.
 	var fields any
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return "", 0, s.permanentTokenErr(fmt.Errorf("token response from %s is not JSON: %w",
