@@ -31,22 +31,31 @@ request: |
     }
   )
 
-# responseCode other than "1": 502. Success with no record: 202
-# BIZ_NO_RESULTS_FOUND. Otherwise the record is mapped; fields PMFBY leaves
-# empty are dropped, and the ticket number is echoed from the request.
+# No record: 202 BIZ_NO_RESULTS_FOUND. Any other responseCode than "1": 502.
+# Otherwise the record is mapped; fields PMFBY leaves empty are dropped.
 response: |
   (
     /* A missing responseCode is a failure. [0] reads a bare record or a
        list of one alike. */
     $ok := $string(response.responseCode) = "1";
     $ticket := response.responseDynamic[0];
+    $asked := $string(beckn.message.contract.commitments[0].commitmentAttributes.case.ticketNo);
     /* PMFBY sends null or "" for missing values. */
     $isText := function($v) { $type($v) = "string" and $v != "" };
-    $not($ok)
+    /* PMFBY answers "No record found" as responseCode "0" with an empty list,
+       which JSONata reads as no value; a refusal sends null or no key. */
+    $notFound := $string(response.responseCode) = "0" and "responseDynamic" in $keys(response)
+      and $not($exists(response.responseDynamic));
+    $notFound
+    ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
+                    "message": "No grievance matches this ticket and phone number." } }
+    : $not($ok)
     ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
                     "message": "PMFBY could not read the grievance" } }
-    /* An empty or all-null record means nothing on file. */
+    /* An empty or all-null record, or one for another ticket, is no record:
+       PMFBY may answer an unknown ticket with the phone's other ticket. */
     : $not($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
+      or ($exists($ticket.GrievenceSupportTicketNo) and $string($ticket.GrievenceSupportTicketNo) != $asked)
     ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
                     "message": "No grievance matches this ticket and phone number." } }
     : (

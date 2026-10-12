@@ -35,7 +35,7 @@ const (
 )
 
 // knownTicketRecord is PMFBY's record for knownTicket, personal data included.
-// It carries the category by name only, and no ticket number.
+// It carries the category by name only.
 const knownTicketRecord = `{"responseCode":"1","responseMessage":"Fetched","recordCount":1,"responseDynamic":{
 	"GrievenceSupportTicketID":109301,"TicketStatus":"Under Review",
 	"ComplaintDate":"2026-10-04","ApplicationNo":"040108251010160770605",
@@ -92,7 +92,7 @@ func (p *pmfbyStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"responseCode":"1","responseMessage":"Ticket created","responseDynamic":{"GrievenceSupportTicketNo":%q,"GrievenceSupportTicketID":8842317}}`, knownTicket)
 	case statusPath:
 		if body["GrievenceSupportTicketNo"] != knownTicket {
-			fmt.Fprint(w, `{"responseCode":"1","responseMessage":"No record found","responseDynamic":null}`)
+			fmt.Fprint(w, `{"responseCode":"0","responseMessage":"No record found","responseDynamic":[]}`)
 			return
 		}
 		fmt.Fprint(w, knownTicketRecord)
@@ -800,8 +800,9 @@ func TestStatus_NoRecordInReply_Returns202NoResultsFound(t *testing.T) {
 // A reply without the success code, or with no envelope, is a failure.
 func TestStatus_PortalRefused_Returns502(t *testing.T) {
 	for name, reply := range map[string]string{
-		"refused":     `{"responseCode":"0","responseMessage":"Session expired"}`,
-		"no envelope": `{"message":"An error has occurred."}`,
+		"refused":        `{"responseCode":"0","responseMessage":"Session expired"}`,
+		"token required": `{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`,
+		"no envelope":    `{"message":"An error has occurred."}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: reply}}, 0)
@@ -814,6 +815,7 @@ func TestStatus_PortalRefused_Returns502(t *testing.T) {
 // A list of one reads like a bare record; an empty record is no record.
 func TestStatus_EmptyRecord_Returns202NoResultsFound(t *testing.T) {
 	for name, dynamic := range map[string]string{
+		"null":            `null`,
 		"empty object":    `{}`,
 		"empty in list":   `[{}]`,
 		"all fields null": `{"ApplicationNo":null,"TicketStatus":null,"ComplaintDate":null,"CropName":null}`,
@@ -827,6 +829,26 @@ func TestStatus_EmptyRecord_Returns202NoResultsFound(t *testing.T) {
 				t.Errorf("error = %v, want a 202 ACK BIZ_NO_RESULTS_FOUND", err)
 			}
 		})
+	}
+}
+
+// PMFBY may answer an unknown ticket with the phone's other ticket.
+func TestStatus_RecordForAnotherTicket_Returns202NoResultsFound(t *testing.T) {
+	record := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{"GrievenceSupportTicketNo":"100626000099002",`, 1)
+	_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+		send(t, request("status", statusAttributes()))
+	var ack *model.AckNoCallbackErr
+	if !errors.As(err, &ack) || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
+		t.Errorf("error = %v, want a 202 ACK BIZ_NO_RESULTS_FOUND", err)
+	}
+}
+
+func TestStatus_RecordNamingTheTicket_ReturnsIt(t *testing.T) {
+	record := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{"GrievenceSupportTicketNo":"`+knownTicket+`",`, 1)
+	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+		mustSend(t, request("status", statusAttributes()))
+	if no := band(got.attributes(), "case")["ticketNo"]; no != knownTicket {
+		t.Errorf("ticketNo = %v, want %s", no, knownTicket)
 	}
 }
 
