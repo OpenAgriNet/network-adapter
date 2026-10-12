@@ -135,9 +135,7 @@ What the scenarios take from that reply:
 |---|---|
 | `provider.id` | becomes `offer.provider.id`, and `channels[].provider.id` on `support` |
 | `offers[].id`, `resources[].id` | quoted verbatim in every commitment |
-| `resourceAttributes.@context` | the pack URL. Swap `context.jsonld` for `attributes.yaml` to see every field, bound and value the payloads are held to — including `x-beckn-container-by-action`, which names the container each action uses |
-| `resourceAttributes.challengeMethods` | whether this desk asks for an OTP |
-| `resourceAttributes.grievanceOptions` | the categories this desk accepts, so you need no list of your own |
+| `resourceAttributes.@context` | the pack URL. Swap `context.jsonld` for `attributes.yaml` to see every field and its bounds |
 
 Quote the ids exactly as they came. The full catalogs are
 [Appendix F](#appendix-f--what-the-adapter-publishes).
@@ -456,12 +454,9 @@ POST /init
 
 - **Stays `DRAFT`.** The OTP is never returned.
 - **`challengeIssued`** — `method` and `expiresAt` only. **There is no `sentTo`.** PM-KISAN
-  does not disclose the number it texted, and the pack refuses the field rather than invent
-  a mask the farmer would not recognise. No capability on this page returns one.
-- **`expiresAt` is the adapter's, not the portal's.** The OTP call answers with a success
-  flag and a sentence, and names no expiry. The adapter stamps its own window so a caller
-  has something to count down against. Read it as this network's promise about when it will
-  stop accepting the OTP, not as a portal deadline.
+  does not disclose the number it texted, and no capability on this page returns one.
+- **`expiresAt` is the adapter's window, not a portal deadline** — it is when this network
+  stops accepting the OTP.
 - **Branch on `method`.** Do not hard-code "four digits".
 - **`informationMode`** — stays `OnDemand`. An acknowledgement is not a case.
 
@@ -634,10 +629,8 @@ POST /init
 > portal issues nothing that would tell them apart.
 
 > **Open with PM-KISAN — is an OTP single-use?** This network assumes it is, which is why
-> every read opens its own `init`. The portal's request shapes say neither way, and the v1
-> adapter's error text — *"incorrect, expired, or already used"* — only shows that v1
-> assumed it too. If an OTP can in fact be used twice inside its window, a farmer who files
-> and checks straight away could be spared a second SMS.
+> every read opens its own `init`. If an OTP can in fact be used twice inside its window, a
+> farmer who files and checks straight away could be spared a second SMS.
 
 ```json
 POST /status
@@ -732,10 +725,8 @@ refuses the `grievance` and `case` bands outright — a payload carrying either 
 not quietly ignored. [Appendix A](#appendix-a--where-every-field-sits) has the two bands it
 uses instead.
 
-- **The OTP is shared with the grievance capability.** The same service issues it and the
-  same four digits satisfy it. Whether one can be spent twice is undocumented, so this
-  network assumes single use and opens a fresh `init` for every read —
-  [§4.2](#42-scenario--checking-it-four-days-later).
+- **The OTP is shared with the grievance capability**, and every read opens a fresh `init`
+  — [§4.2](#42-scenario--checking-it-four-days-later).
 - **Aadhaar is accepted here and refused on the grievance capability.** This is a read of
   the farmer's own record behind an OTP, and the upstream does take an Aadhaar number as a
   lookup key. Neither it nor any token derived from it is logged, traced or returned.
@@ -925,30 +916,24 @@ farmer's record, which is why the other values differ too:
 | `blockers: []` | the check ran and found nothing. Payment is clear |
 | `blockers: [ … ]` | these are the reasons payment is not arriving |
 
-The first two are different answers, and v1 rendered them the same. **Never treat an
-absent array as an empty one.**
-
-One Beckn `status` is two reads upstream: the record, then the blockers. Only the first is
-mandatory, so a reply can carry a complete `application` with no `blockers` key. That means
-the registration was found but the reason for the hold-up could not be established. Say so;
-do not report it as clear.
+The first two are different answers. **Never treat an absent array as an empty one** — a
+reply can carry a complete `application` with no `blockers` key, meaning the registration
+was found but the reason for the hold-up could not be established. Say so; do not report
+payment as clear.
 
 `blockers[].code` is governed by the network — `IncomeTaxPayee`, `LandSeedingPending`,
 `Other` — and is what you branch on. `blockers[].name` is the portal's phrase, verbatim,
-and is what you show. Only two codes are governed because only two were ever seen
-upstream. Everything else arrives as `Other` with the portal's own wording intact, so an
-`Other` blocker still reads fine.
+and is what you show. Anything the network does not classify arrives as `Other` with the
+portal's own wording intact, so an `Other` blocker still reads fine.
 
-`application.ekyc.code` is `Done` or `Pending`. The upstream sends `Y` or `N`; anything the
-adapter does not recognise becomes `Pending`, never a guess at `Done`.
+`application.ekyc.code` is `Done` or `Pending`. Anything the adapter cannot read becomes
+`Pending`, never a guess at `Done`.
 
 `latestInstallmentPaid` is a count of instalments paid, not an instalment number. `0` is an
 answer, not a missing value.
 
-`registeredOn` is a date-time because the portal's `DateOfRegistration` carries a time —
-but no offset, so it is a bare local timestamp, in practice midnight. The adapter reads it
-as IST and emits a full instant, which is why the `+05:30` in the examples is the adapter's
-conversion and not the portal's. Show the calendar date; the time is not meaningful.
+`registeredOn` is a date-time, but only the date is meaningful — the time is always
+midnight IST. Show the calendar date.
 
 #### What the portal returns and this capability does not
 
@@ -1027,8 +1012,9 @@ resource id from the catalog plus the `quantity` the spec requires — send `{"c
 both directions. That id is fixed per provider and names the catalog entry, never the case.
 
 **On `support` there is no contract.** The payload rides in `support.channels[0]`. A
-request carries exactly one channel, the complaint; the adapter refuses a second. On a reply, address the entry by `@type`, not by
-index — a helpline channel could sit beside the case.
+request carries exactly one channel, the complaint; the adapter refuses a second. On a
+reply, address the entry by `@type`, not by index — a helpline channel could sit beside
+the case.
 
 ---
 
@@ -1148,30 +1134,22 @@ PM-KISAN uses no `applicantPhone`, `cropYear` or `season`, and its pack refuses
 | `challenge.method` | — | required — `SMS_OTP` |
 | `challenge.value` | — | required — the four-digit OTP from `on_init` |
 
-**Exactly one of `enrolmentId` and `applicant`, never both and never neither.** The two
-are mutually exclusive: sending both names the same farmer twice with no rule for which
-wins, and it is also the shape a response would take if it leaked an Aadhaar number back
-beside the registration it resolved to. Neither leg lists an identifier in
-the `mustSend` list of `x-oan-fields-by-action`, because those lists are flat and all-of:
-naming either field there would be false for the other half of the callers. Both appear
-under `maySend`, with the rule written beside them, and the requirement itself is a
-top-level `anyOf` gate — the only place it can actually be enforced.
+**Exactly one of `enrolmentId` and `applicant`, never both and never neither.** Sending
+both names the same farmer twice with no rule for which wins; sending neither names no one.
+A payload doing either is refused — [Appendix E](#appendix-e--errors).
 
-There is no `support` row: this capability has no `support` leg, so nothing composes a
-`Support` object at all. Nothing moves out of the attributes object here either — no
-field in this family carries an `x-beckn-path`.
+There is no `support` row: this capability has no `support` leg.
 
 `enrolmentId` travels both ways. A caller who holds the registration number sends it; a
 caller who holds only a mobile or an Aadhaar number sends `applicant` and reads the
 registration back under `enrolmentId`, as the portal's resolution of the lookup. It is
 the same field under the same name as on the grievance packs.
 
-The kind is named rather than inferred because the portal guesses it from the *shape* of
-the value: ten digits beginning 6–9 is a mobile number, twelve digits an Aadhaar number,
-anything else a registration number. So a registration number that happens to look like a
-phone number becomes a phone lookup, silently, and returns nothing or somebody else's
-record. Putting each kind in a slot that names it closes that off — the adapter sends the
-kind outright, and each slot is held to its own shape:
+**Put the value in the slot that names its kind.** The portal would otherwise guess from
+the shape of the value — ten digits beginning 6–9 a mobile, twelve digits an Aadhaar,
+anything else a registration — and a registration number that looks like a phone number
+would silently become a phone lookup returning nothing, or somebody else's record. Each
+slot is held to its own shape:
 
 | slot | the shape required | sent upstream as |
 |---|---|---|
@@ -1205,21 +1183,14 @@ Everything else is optional. The `name` beside any `code`, `provider.descriptor.
     portal from a mobile or Aadhaar lookup, and it comes back either way. The identifier
     under `applicant` — which may be an Aadhaar number — is never echoed, and the schema
     refuses it beside `enrolmentId` so a response cannot carry both.
-
-  Every field carrying personal data is marked `x-oan-pii` in the pack, with a class and a
-  handling list. That is documentation today, not something the validator enforces.
 - **Nothing is closed yet.** Neither portal documents a terminal status, so no case read
   yields `Resolved`, `Rejected` or `Closed` today. An unrecognised phrase maps to
   `UnderReview`, never to a terminal code. This is a grievance rule; application status has
   no lifecycle to close.
-- **Neither status vocabulary is confirmed.** PMFBY returns `TicketStatus` and PM-KISAN
-  returns `GrievanceStatus`, and no captured response carrying either exists anywhere in the
-  legacy tree — v1 forwarded both into display tags and never mapped them. Until each portal
-  supplies its phrase list, the mapping has nothing to look up and every phrase falls to
-  `UnderReview`, so in practice only the inferred codes are ever emitted. Those two lists are
-  the single input that turns `case.status` from a two-value fallback into the full seven.
-  Ask for them; neither needs a schema change, and if a list turns out to say more than the
-  code can, that is the evidence for putting `name` back.
+- **Neither status vocabulary is confirmed.** Until each portal supplies its phrase list,
+  every phrase falls to `UnderReview`, so in practice `case.status` is `Registered` on a
+  lodge and `UnderReview` on a read. Those two lists are what turns it into the full seven.
+  **Open with both portals.**
 - **The response is an allow-list, not a passthrough.** Both portals return far more about
   the farmer than any of these capabilities surface — name, parentage, gender, phone, full
   address. The adapter maps the fields the pack names and drops the rest. A field that is
@@ -1319,9 +1290,8 @@ Three rules, for every error on this page:
   thing that varies: no field moves out of the attributes object, so the tail of the path
   is the same on every action.
 - **The portal's own message is never passed through** — Appendix D.
-- **A wrong OTP is not a `401`.** `401` means the Beckn signature failed to verify. The
-  enum has no OTP-specific value, and PM-KISAN publishes no clean success signal for the
-  verify step, so that row is provisional. It cannot arise on PMFBY, which has no challenge.
+- **A wrong OTP is not a `401`.** `401` means the Beckn signature failed to verify. It
+  cannot arise on PMFBY, which has no challenge.
 
 ### E.3 When the OTP fails
 
@@ -1353,10 +1323,9 @@ Recovery is to start the challenge again:
   as an open question with PM-KISAN.
 - **Nothing was filed.** A failed verify means the call it guarded was never made. No
   ticket exists and no partial state is left behind, so the farmer can begin again safely.
-- **One code covers all three causes.** PM-KISAN publishes no clean signal separating
-  wrong from expired from already used, so the adapter cannot tell them apart and neither
-  can you. Treat every OTP failure the same way: ask for a new one. Do not offer a
-  retype-the-same-code path — it cannot succeed if the code was already spent.
+- **One code covers all three causes.** Wrong, expired and already used are
+  indistinguishable, so treat every OTP failure the same way: ask for a new one. Do not
+  offer a retype-the-same-code path — it cannot succeed if the code was already spent.
 - **The OTP never appears in the error.** `details.path` names where the value belongs;
   the value itself is never echoed, logged or traced — Appendix D.
 
