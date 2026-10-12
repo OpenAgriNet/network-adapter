@@ -165,44 +165,16 @@ Quote the ids exactly as they came. The full catalogs are
 | `["SMS_OTP"]` | an OTP is needed | call `init` first, every time |
 
 PMFBY publishes `[]`. Both PM-KISAN desks publish `["SMS_OTP"]`. **Branch on this field,
-not on the scheme name** — a portal can change what it needs, and the catalog is where the
-adapter states that on its behalf. Read the values, not the length: if a portal adds a
-second mechanism the list grows, and a caller that reads `method` keeps working.
+not on the scheme name.** It does not say *which* calls are challenged — PM-KISAN
+challenges the lodge and the read alike. That, and everything else a call must carry, is
+[Appendix C](#appendix-c--required-fields-by-call).
 
-`grievanceOptions` answers the other question a caller has before it can draw a form: what
-may go in `grievance.category`. Read it from the catalog rather than keeping a copy — each
-entry's `code` is a value the pack will accept, `name` is the portal's label for it, and
-`descriptor` is plain-language help text for the farmer. Two levels where the portal
-numbers two: PMFBY publishes `categories` and `subCategories`, PM-KISAN only `categories`,
-and the absence of the second is the statement that this desk has one level.
+`grievanceOptions` is the category list to draw the form from. `code` is what you send,
+`name` is the portal's label, `descriptor` is plain-language help text for the farmer.
+PMFBY publishes `categories` and `subCategories`, with no `name` on either, so show the
+`descriptor`. PM-KISAN publishes `categories` only — ten of them, a closed list.
 
-Where a `name` is missing the portal has never published one — PMFBY is in that position —
-and the entry carries only what is known. That also means PMFBY's list is what works today
-rather than everything that would be accepted; PM-KISAN's ten are the portal's closed list
-and the pack refuses an eleventh.
-
-**What travels, and what does not.** The catalog entry carries three things per option and
-a payload carries at most two of them, so the examples further down show a `category` with
-a bare `code` on the way up and — on PMFBY only — a bare `name` on the way back.
-
-| | on the ask | on the read | on the catalog entry |
-|---|---|---|---|
-| `code` | sent, and it is the whole of what goes upstream | PMFBY returns none; PM-KISAN returns no `category` at all | published |
-| `name` | may be sent and is dropped — both portals read ids only | PMFBY only, in the portal's own wording | PM-KISAN only; PMFBY has never published one |
-| `descriptor` | never — a payload `category` is `{code, name}` and has no such field | never | published, and it is ours rather than the portal's |
-
-Send the code. Take the label from the catalog you have already read — that is what
-`grievanceOptions` is for, and it is why the label does not need to travel.
-
-One consequence is worth planning for. A PMFBY read answers with a name and no id, so it
-cannot be joined back to the catalog entry the caller chose — FGMS returns no id, so the
-adapter has nothing to join on either. Show the name the portal sent; do not try to resolve
-it to a code.
-
-It does not say *which* calls are challenged. PM-KISAN challenges the lodge and the read
-alike. That, and everything else a call must carry, is
-[Appendix C](#appendix-c--required-fields-by-call). Why PMFBY has no challenge at all is
-[Appendix D.1](#d1-why-pmfby-publishes-no-challenge).
+**Send `code` alone.** A `name` beside it is dropped, and `descriptor` never travels.
 
 ---
 
@@ -389,7 +361,7 @@ POST /status
 - **`case.cropName`** — the insured crop, as the portal names it. PMFBY alone returns it,
   and it is never sent.
 - **The category comes back as a name with no code**, shown as `…` below. It cannot be
-  joined back to the catalog entry, so show the name the portal sent.
+  joined back to the catalog entry; show what the portal sent.
 - **Dropped:** the farmer's name, state, district, the insurer and an internal ticket key.
 
 ```json
@@ -799,12 +771,10 @@ number comes back in the answer either way.
 #### The call — `init`
 
 - **One identifier, and the slot names its kind.** A registration number goes in
-  `enrolmentId` — the same field under the same name as on the grievance packs. A mobile
-  or an Aadhaar number goes in `applicant.mobile` or `applicant.aadhaar`. Where the OTP
-  goes follows from which was used: for a registration number and for an Aadhaar number
-  the portal looks up the mobile it holds, and the caller never learns it; for a mobile
-  the identifier *is* a phone number, so the OTP goes there. The example below is a
-  `mobile` lookup, which is why a number appears in the payload.
+  `enrolmentId`, a mobile number in `applicant.mobile`, an Aadhaar number in
+  `applicant.aadhaar`. The OTP goes to the mobile the portal holds against the
+  registration, except on a `mobile` lookup, where it goes to the number you sent. The
+  example below is a `mobile` lookup.
 - **Exactly one, not two and not none.** `enrolmentId` and `applicant` are mutually
   exclusive, and a payload carrying neither is refused.
 - **`DRAFT`.** The caller mints `contract.id` here and quotes the same value on `status`.
@@ -865,9 +835,7 @@ POST /init
 - **The same identifier sent on `init`** — `enrolmentId` or `applicant`, unchanged — plus
   the four-digit OTP.
 - **`contract.id`** — the one minted on `init`. The commitment moves to `ACTIVE`.
-- **`challenge.value` never reaches the status call upstream.** The adapter spends it on
-  the portal's verify endpoint first and sends nothing of it onward. Never logged, traced
-  or echoed.
+- **`challenge.value`** — the four-digit OTP. Never echoed back, logged or traced.
 
 ```json
 POST /status
