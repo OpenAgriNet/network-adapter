@@ -802,10 +802,10 @@ func TestStatus_NoRecordInReply_Returns202NoResultsFound(t *testing.T) {
 
 	var ack *model.AckNoCallbackErr
 	if !errors.As(err, &ack) {
-		t.Fatalf("error = %v, want a 202 ACK", err)
+		t.Fatalf("error = %v, want a 202 NACK", err)
 	}
-	if ack.Status != model.StatusACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
-		t.Errorf("answer = %s %s, want ACK BIZ_NO_RESULTS_FOUND", ack.Status, ack.Err.Code)
+	if ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
+		t.Errorf("answer = %s %s, want NACK BIZ_NO_RESULTS_FOUND", ack.Status, ack.Err.Code)
 	}
 }
 
@@ -837,8 +837,8 @@ func TestStatus_EmptyRecord_Returns202NoResultsFound(t *testing.T) {
 			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
 				send(t, request("status", statusAttributes()))
 			var ack *model.AckNoCallbackErr
-			if !errors.As(err, &ack) || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
-				t.Errorf("error = %v, want a 202 ACK BIZ_NO_RESULTS_FOUND", err)
+			if !errors.As(err, &ack) || ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
+				t.Errorf("error = %v, want a 202 NACK BIZ_NO_RESULTS_FOUND", err)
 			}
 		})
 	}
@@ -850,8 +850,8 @@ func TestStatus_RecordForAnotherTicket_Returns202NoResultsFound(t *testing.T) {
 	_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
 		send(t, request("status", statusAttributes()))
 	var ack *model.AckNoCallbackErr
-	if !errors.As(err, &ack) || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
-		t.Errorf("error = %v, want a 202 ACK BIZ_NO_RESULTS_FOUND", err)
+	if !errors.As(err, &ack) || ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
+		t.Errorf("error = %v, want a 202 NACK BIZ_NO_RESULTS_FOUND", err)
 	}
 }
 
