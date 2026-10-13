@@ -1,5 +1,5 @@
 # PM-KISAN application status, status -> POST /ChatbotUserDetails.
-# Carries the init's applicant plus the 4-digit OTP, which the envelope
+# Carries the init's identifier plus the 4-digit OTP, which the envelope
 # verifies first (/ChatbotOTPVerified). The envelope then calls
 # /ChatbotBeneficiaryStatus and adds its answer as _beneficiaryStatus (absent
 # if that call fails). Plaintext here; the envelope adds Token and encrypts.
@@ -11,8 +11,6 @@ required:
         $not($exists($ca.grievance) or $exists($ca.case) or $exists($ca.grievanceOptions))
       )
     message: "grievance, case and grievanceOptions are not accepted: application status files nothing"
-  - check: $not($exists(beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId))
-    message: "enrolmentId is not sent on application status: name the farmer with applicant, and the registration comes back as enrolmentId"
   - check: |
       (
         $c := beckn.message.contract.commitments[0].commitmentAttributes.challenge;
@@ -28,32 +26,32 @@ request: |
     $ca := beckn.message.contract.commitments[0].commitmentAttributes;
     $a := $ca.applicant;
     $at := "$.message.contract.commitments[0].commitmentAttributes.";
-    $types := { "Registration": "Ben_id", "Mobile": "Mobile", "Aadhaar": "Aadhar" };
-    $fits := function($kind, $id) {
-      $type($id) = "string" and (
-        $kind = "Registration" ? $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
-        : $kind = "Mobile" ? $exists($match($id, /^[6-9][0-9]{9}$/)[0])
-        : $kind = "Aadhaar" ? $exists($match($id, /^[0-9]{12}$/)[0])
-        : false
-      )
-    };
-    $missing := [
-      { "field": "applicant.idType", "present": $exists($a.idType) },
-      { "field": "applicant.id", "present": $exists($a.id) },
-      { "field": "challenge.value", "present": $exists($ca.challenge.value) }
-    ][$not(present)][0];
-    $missing
+    /* The identifiers sent: slot, upstream Types, and whether it fits the slot. */
+    $sent := [
+      $exists($ca.enrolmentId) ? { "slot": "enrolmentId", "Types": "Ben_id", "Values": $ca.enrolmentId,
+        "fits": $type($ca.enrolmentId) = "string"
+          and $exists($match($ca.enrolmentId, /^[A-Za-z0-9]{1,20}$/)[0])
+          and $not($exists($match($ca.enrolmentId, /^[0-9]{12}$/)[0])) },
+      $exists($a.mobile) ? { "slot": "applicant.mobile", "Types": "Mobile", "Values": $a.mobile,
+        "fits": $type($a.mobile) = "string" and $exists($match($a.mobile, /^[6-9][0-9]{9}$/)[0]) },
+      $exists($a.aadhaar) ? { "slot": "applicant.aadhaar", "Types": "Aadhar", "Values": $a.aadhaar,
+        "fits": $type($a.aadhaar) = "string" and $exists($match($a.aadhaar, /^[0-9]{12}$/)[0]) }
+    ];
+    $id := $sent[0];
+    $count($sent) != 1
+    ? { "_error": { "status": 400, "code": "SCH_SCHEMA_VALIDATION_FAILED",
+                    "message": "send exactly one of enrolmentId, applicant.mobile or applicant.aadhaar",
+                    "path": $at & ($exists($a) ? "applicant" : "enrolmentId") } }
+    : $not($id.fits)
+    ? { "_error": { "status": 400, "code": "SCH_SCHEMA_VALIDATION_FAILED",
+                    "message": $id.slot = "enrolmentId"
+                      ? "enrolmentId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
+                      : $id.slot & " is not a " & ($id.slot = "applicant.mobile" ? "mobile" : "Aadhaar") & " number",
+                    "path": $at & $id.slot } }
+    : $not($exists($ca.challenge.value))
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": $missing.field & " is required", "path": $at & $missing.field } }
-    : $not($exists($lookup($types, $string($a.idType))))
-    ? { "_error": { "status": 400, "code": "SCH_SCHEMA_VALIDATION_FAILED",
-                    "message": "applicant.idType must be Registration, Mobile or Aadhaar",
-                    "path": $at & "applicant.idType" } }
-    : $not($fits($a.idType, $a.id))
-    ? { "_error": { "status": 400, "code": "SCH_SCHEMA_VALIDATION_FAILED",
-                    "message": "applicant.id is not a " & $a.idType & " number",
-                    "path": $at & "applicant.id" } }
-    : { "Types": $lookup($types, $a.idType), "Values": $a.id }
+                    "message": "challenge.value is required", "path": $at & "challenge.value" } }
+    : { "Types": $id.Types, "Values": $id.Values }
   )
 
 # "False": 202 BIZ_NO_RESULTS_FOUND. No "True" or no instalment count: 502.

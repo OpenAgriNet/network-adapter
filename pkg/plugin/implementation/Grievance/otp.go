@@ -16,15 +16,14 @@ import (
 // challengeMethod is the only accepted challenge.
 const challengeMethod = "SMS_OTP"
 
-// identityType is the OTP service's type for a registration number (grievance).
+// identityType is the OTP service's type for a registration number (enrolmentId).
 const identityType = "Ben_id"
 
-// applicantTypes maps applicant.idType to the OTP service's Types ("Aadhar" is
+// applicantTypes maps an applicant slot to the OTP service's Types ("Aadhar" is
 // the upstream's spelling).
 var applicantTypes = map[string]string{
-	"Registration": "Ben_id",
-	"Mobile":       "Mobile",
-	"Aadhaar":      "Aadhar",
+	"mobile":  "Mobile",
+	"aadhaar": "Aadhar",
 }
 
 // otpVerify checks the farmer's OTP on the OTP service before the guarded call.
@@ -97,16 +96,16 @@ func (v *otpVerify) check(ctx context.Context, exchange common.Exchange) error {
 	return nil
 }
 
-// challengeIn reads the identifier and challenge: support's orderId and channel,
-// or commitmentAttributes' applicant (or enrolmentId). kind is empty for an
-// unknown idType.
+// challengeIn reads the identifier and challenge from support's channel or the
+// commitment's attributes: enrolmentId, else applicant.mobile, else
+// applicant.aadhaar. The mapping has already refused more than one; kind is
+// empty when there is none.
 func challengeIn(exchange common.Exchange) (kind, identity, method, otp string) {
 	payload, _ := exchange.Beckn.(map[string]any)
 	message, _ := payload["message"].(map[string]any)
 
 	var holder map[string]any
 	if support, isSupport := message["support"].(map[string]any); isSupport {
-		kind, identity = identityType, text(support["orderId"])
 		if channels, ok := support["channels"].([]any); ok && len(channels) > 0 {
 			holder, _ = channels[0].(map[string]any)
 		}
@@ -114,10 +113,15 @@ func challengeIn(exchange common.Exchange) (kind, identity, method, otp string) 
 		if commitments, ok := contract["commitments"].([]any); ok && len(commitments) > 0 {
 			commitment, _ := commitments[0].(map[string]any)
 			holder, _ = commitment["commitmentAttributes"].(map[string]any)
-			if applicant, declared := holder["applicant"].(map[string]any); declared {
-				kind, identity = applicantTypes[text(applicant["idType"])], text(applicant["id"])
-			} else {
-				kind, identity = identityType, text(holder["enrolmentId"])
+		}
+	}
+	if id := text(holder["enrolmentId"]); id != "" {
+		kind, identity = identityType, id
+	} else if applicant, ok := holder["applicant"].(map[string]any); ok {
+		for _, slot := range []string{"mobile", "aadhaar"} {
+			if id := text(applicant[slot]); id != "" {
+				kind, identity = applicantTypes[slot], id
+				break
 			}
 		}
 	}

@@ -56,7 +56,7 @@ const asInitRequest = `{
         "@type": "openagrinet:PMKISANApplicationStatus",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicant": { "idType": "Mobile", "id": "9812345670" }
+        "applicant": { "mobile": "9812345670" }
       }
     }]
   }}
@@ -84,7 +84,7 @@ const asStatusRequest = `{
         "@type": "openagrinet:PMKISANApplicationStatus",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicant": { "idType": "Mobile", "id": "9812345670" },
+        "applicant": { "mobile": "9812345670" },
         "challenge": { "method": "SMS_OTP", "value": "4821" }
       }
     }]
@@ -255,16 +255,16 @@ func asAttributes(t *testing.T, body []byte) map[string]any {
 
 // --- init -------------------------------------------------------------------
 
-func TestAppStatusInitAsksForAnOTPByTheDeclaredKind(t *testing.T) {
-	for _, tc := range []struct{ idType, id, types string }{
-		{"Mobile", "9812345670", "Mobile"},
-		{"Registration", "UP45678901C", "Ben_id"},
-		{"Aadhaar", "123456789012", "Aadhar"},
+// The slot names the kind: enrolmentId, applicant.mobile or applicant.aadhaar.
+func TestAppStatusInitAsksForAnOTPByTheSlotItIsIn(t *testing.T) {
+	for _, tc := range []struct{ name, slot, id, types string }{
+		{"mobile", `"applicant": { "mobile": "9812345670" }`, "9812345670", "Mobile"},
+		{"registration", `"enrolmentId": "UP45678901C"`, "UP45678901C", "Ben_id"},
+		{"aadhaar", `"applicant": { "aadhaar": "123456789012" }`, "123456789012", "Aadhar"},
 	} {
-		t.Run(tc.idType, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			chatbot := newASChatbot(t)
-			request := strings.Replace(asInitRequest, `"applicant": { "idType": "Mobile", "id": "9812345670" }`,
-				fmt.Sprintf(`"applicant": { "idType": %q, "id": %q }`, tc.idType, tc.id), 1)
+			request := strings.Replace(asInitRequest, `"applicant": { "mobile": "9812345670" }`, tc.slot, 1)
 			body, err := runAppStatus(t, chatbot, request)
 			if err != nil {
 				t.Fatalf("Run() = %v", err)
@@ -287,8 +287,8 @@ func TestAppStatusInitAsksForAnOTPByTheDeclaredKind(t *testing.T) {
 				issued["expiresAt"] == nil || issued["sentTo"] != nil {
 				t.Errorf("challengeIssued = %v, want method, length 4, valueType NUMERIC, expiresAt and no sentTo", issued)
 			}
-			if attributes["applicant"] != nil || attributes["informationMode"] != "OnDemand" {
-				t.Errorf("attributes = %v, want OnDemand with applicant not echoed", attributes)
+			if attributes["applicant"] != nil || attributes["enrolmentId"] != nil || attributes["informationMode"] != "OnDemand" {
+				t.Errorf("attributes = %v, want OnDemand with the identifier not echoed", attributes)
 			}
 			if strings.Contains(string(body), tc.id) {
 				t.Errorf("on_init carries the applicant's id: %s", body)
@@ -299,18 +299,21 @@ func TestAppStatusInitAsksForAnOTPByTheDeclaredKind(t *testing.T) {
 
 func TestAppStatusRefusesAnApplicantBeforeCallingAnything(t *testing.T) {
 	at := "$.message.contract.commitments[0].commitmentAttributes."
-	applicant := `"applicant": { "idType": "Mobile", "id": "9812345670" }`
+	applicant := `"applicant": { "mobile": "9812345670" }`
+	bad := "SCH_SCHEMA_VALIDATION_FAILED"
 	for _, tc := range []struct {
 		name, to, code, path string
 	}{
-		{"no applicant", `"x": 1`, "SCH_REQUIRED_FIELD_MISSING", at + "applicant.idType"},
-		{"no id", `"applicant": { "idType": "Mobile" }`, "SCH_REQUIRED_FIELD_MISSING", at + "applicant.id"},
-		{"an unknown kind", `"applicant": { "idType": "PAN", "id": "ABCDE1234F" }`, "SCH_SCHEMA_VALIDATION_FAILED", at + "applicant.idType"},
-		{"a mobile that is not one", `"applicant": { "idType": "Mobile", "id": "UP45678901" }`, "SCH_SCHEMA_VALIDATION_FAILED", at + "applicant.id"},
-		{"a mobile starting 5", `"applicant": { "idType": "Mobile", "id": "5812345670" }`, "SCH_SCHEMA_VALIDATION_FAILED", at + "applicant.id"},
-		{"an Aadhaar of eleven digits", `"applicant": { "idType": "Aadhaar", "id": "12345678901" }`, "SCH_SCHEMA_VALIDATION_FAILED", at + "applicant.id"},
-		{"a registration in native script", `"applicant": { "idType": "Registration", "id": "UP१२३४५" }`, "SCH_SCHEMA_VALIDATION_FAILED", at + "applicant.id"},
-		{"an enrolmentId, which is answer-only", applicant + `, "enrolmentId": "UP45678901C"`, "SCH_INVALID_FORMAT", ""},
+		{"no identifier", `"x": 1`, bad, at + "enrolmentId"},
+		{"an empty applicant", `"applicant": {}`, bad, at + "applicant"},
+		{"the old idType shape", `"applicant": { "idType": "Mobile", "id": "9812345670" }`, bad, at + "applicant"},
+		{"both enrolmentId and applicant", applicant + `, "enrolmentId": "UP45678901C"`, bad, at + "applicant"},
+		{"both a mobile and an Aadhaar", `"applicant": { "mobile": "9812345670", "aadhaar": "123456789012" }`, bad, at + "applicant"},
+		{"a mobile that is not one", `"applicant": { "mobile": "UP45678901" }`, bad, at + "applicant.mobile"},
+		{"a mobile starting 5", `"applicant": { "mobile": "5812345670" }`, bad, at + "applicant.mobile"},
+		{"an Aadhaar of eleven digits", `"applicant": { "aadhaar": "12345678901" }`, bad, at + "applicant.aadhaar"},
+		{"a registration in native script", `"enrolmentId": "UP१२३४५"`, bad, at + "enrolmentId"},
+		{"an Aadhaar number as the registration", `"enrolmentId": "123456789012"`, bad, at + "enrolmentId"},
 		{"a grievance band", applicant + `, "grievance": { "description": "where is my money" }`, "SCH_INVALID_FORMAT", ""},
 	} {
 		for name, request := range map[string]string{"init": asInitRequest, "status": asStatusRequest} {
@@ -330,7 +333,8 @@ func TestAppStatusRefusesAnApplicantBeforeCallingAnything(t *testing.T) {
 				if len(chatbot.calls) != 0 {
 					t.Errorf("the chatbot service was called %v for a refused payload", chatbot.calls)
 				}
-				if strings.Contains(beckn.Message, "9812345670") || strings.Contains(beckn.Message, "UP45678901") {
+				if strings.Contains(beckn.Message, "9812345670") || strings.Contains(beckn.Message, "UP45678901") ||
+					strings.Contains(beckn.Message, "123456789012") {
 					t.Errorf("the error %q carries the applicant's id", beckn.Message)
 				}
 			})

@@ -60,13 +60,13 @@ const pkSupportRequest = `{
   },
   "message": {
     "support": {
-      "orderId": "UP12345678A",
       "channels": [{
         "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
         "@type": "openagrinet:PMKISANGrievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
+        "enrolmentId": "UP12345678A",
         "grievance": {
           "category": { "code": "G003", "name": "Installment not received" },
           "description": "  Third instalment for 2026 has not been credited.  "
@@ -481,8 +481,8 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 		t.Errorf("context.action = %v, want on_support", got)
 	}
 	support := pkAt(t, answer, "message", "support")
-	if got := pkAt(t, support, "orderId"); got != pkRegistrationNo {
-		t.Errorf("orderId = %v, want it echoed unchanged", got)
+	if _, present := support.(map[string]any)["orderId"]; present {
+		t.Error("on_support carries orderId; the registration travels as the channel's enrolmentId")
 	}
 	if _, present := support.(map[string]any)["descriptor"]; present {
 		t.Error("on_support carries a descriptor; the grievance now travels on the channel")
@@ -502,6 +502,12 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 	}
 	if got := pkAt(t, channel, "grievance", "category", "code"); got != "G003" {
 		t.Errorf("grievance.category.code = %v, want it echoed", got)
+	}
+	if got := pkAt(t, channel, "grievance", "category"); fmt.Sprint(got) != fmt.Sprint(map[string]any{"code": "G003"}) {
+		t.Errorf("grievance.category = %v, want the code alone: the pack returns no name on a lodge", got)
+	}
+	if got := pkAt(t, channel, "enrolmentId"); got != pkRegistrationNo {
+		t.Errorf("enrolmentId = %v, want the registration number echoed on the channel", got)
 	}
 	// The case band: the portal's handle, and the adapter's assertions -- the
 	// network's code with no name, and today in IST, the date a later status
@@ -531,7 +537,8 @@ func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
 		name, from, to, code, path string
 	}{
 		// Missing: refused by the request half under _error, naming the field.
-		{"no registration number", `"orderId": "UP12345678A",`, ``, "SCH_REQUIRED_FIELD_MISSING", "$.message.support.orderId"},
+		{"no registration number", `
+        "enrolmentId": "UP12345678A",`, ``, "SCH_REQUIRED_FIELD_MISSING", at + "enrolmentId"},
 		{"no description", `,
           "description": "  Third instalment for 2026 has not been credited.  "`, ``, "SCH_REQUIRED_FIELD_MISSING", at + "grievance.description"},
 		{"no category", `"category": { "code": "G003", "name": "Installment not received" },`, ``, "SCH_REQUIRED_FIELD_MISSING", at + "grievance.category.code"},
@@ -541,9 +548,9 @@ func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
 		{"an OTP longer than on_init announced", `"value": "4821"`, `"value": "48210"`, "SCH_INVALID_FORMAT", ""},
 		{"an OTP shorter than on_init announced", `"value": "4821"`, `"value": "482"`, "SCH_INVALID_FORMAT", ""},
 		// Malformed: refused by required.
-		{"a registration number in native script", `"orderId": "UP12345678A"`, `"orderId": "UP१२३४५"`, "SCH_INVALID_FORMAT", ""},
-		{"an Aadhaar number where the registration belongs", `"orderId": "UP12345678A"`, `"orderId": "123456789012"`, "SCH_INVALID_FORMAT", ""},
-		{"a registration number past 20 characters", `"orderId": "UP12345678A"`, `"orderId": "UP1234567890123456789"`, "SCH_INVALID_FORMAT", ""},
+		{"a registration number in native script", `"enrolmentId": "UP12345678A"`, `"enrolmentId": "UP१२३४५"`, "SCH_INVALID_FORMAT", ""},
+		{"an Aadhaar number where the registration belongs", `"enrolmentId": "UP12345678A"`, `"enrolmentId": "123456789012"`, "SCH_INVALID_FORMAT", ""},
+		{"a registration number past 20 characters", `"enrolmentId": "UP12345678A"`, `"enrolmentId": "UP1234567890123456789"`, "SCH_INVALID_FORMAT", ""},
 		{"a category outside the portal's list", `"code": "G003"`, `"code": "G011"`, "SCH_INVALID_FORMAT", ""},
 		{"a description past 2000 characters", `"  Third instalment for 2026 has not been credited.  "`,
 			`"` + strings.Repeat("x", 2001) + `"`, "SCH_INVALID_FORMAT", ""},
@@ -701,7 +708,7 @@ func TestPMKISANStatusMapsThePortalsPhraseToTheNetworksCode(t *testing.T) {
 	}
 }
 
-func TestPMKISANStatusReportsNothingOnFileAsAnAcceptedAnswer(t *testing.T) {
+func TestPMKISANStatusReportsNothingOnFileAsA202(t *testing.T) {
 	request := strings.Replace(pkStatusRequest, `"case": { "filedOn": "2026-09-28" }`, `"case": { "filedOn": "2026-09-29" }`, 1)
 	_, err := runPMKISAN(t, newPKPortal(t, pkStatusAnswer), request)
 	if err == nil {
@@ -711,8 +718,8 @@ func TestPMKISANStatusReportsNothingOnFileAsAnAcceptedAnswer(t *testing.T) {
 	if !errors.As(err, &ack) {
 		t.Fatalf("error %v (%T), want an AckNoCallbackErr", err, err)
 	}
-	if ack.Status != model.StatusACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
-		t.Errorf("got %s/%s, want ACK/BIZ_NO_RESULTS_FOUND", ack.Status, ack.Err.Code)
+	if ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
+		t.Errorf("got %s/%s, want NACK/BIZ_NO_RESULTS_FOUND", ack.Status, ack.Err.Code)
 	}
 }
 

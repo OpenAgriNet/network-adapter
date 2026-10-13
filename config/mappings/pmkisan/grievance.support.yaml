@@ -1,20 +1,20 @@
 # PM-KISAN grievance, support -> POST /LodgeGrievance: lodge a grievance.
-#   orderId                registration number
-#   channels[0].grievance  category G001-G010 (no subCategory), description
-#   channels[0].challenge  OTP, verified by the envelope first; never forwarded
+#   channels[0].enrolmentId  registration number
+#   channels[0].grievance    category G001-G010 (no subCategory), description
+#   channels[0].challenge    OTP, verified by the envelope first; never forwarded
 # Plaintext here; the envelope adds TokenNo and encrypts (AES-256-GCM).
 
 # Format checks (SCH_INVALID_FORMAT). Missing fields are refused by the request half.
 required:
   - check: |
       (
-        $id := beckn.message.support.orderId;
+        $id := beckn.message.support.channels[0].enrolmentId;
         /* ASCII alphanumeric, <= 20 chars, never 12 digits (Aadhaar). */
         $not($exists($id)) or ($type($id) = "string"
           and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
           and $not($exists($match($id, /^[0-9]{12}$/)[0])))
       )
-    message: "orderId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
+    message: "enrolmentId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
   - check: |
       (
         $code := beckn.message.support.channels[0].grievance.category.code;
@@ -43,13 +43,12 @@ required:
 # TokenNo is added by the envelope.
 request: |
   (
-    $s := beckn.message.support;
-    $ch := $s.channels[0];
+    $ch := beckn.message.support.channels[0];
     $g := $ch.grievance;
     $at := "$.message.support.channels[0].";
     /* First missing field, with its path. */
     $missing := [
-      { "field": "orderId", "path": "$.message.support.orderId", "present": $exists($s.orderId) },
+      { "field": "enrolmentId", "path": $at & "enrolmentId", "present": $exists($ch.enrolmentId) },
       { "field": "grievance.category.code", "path": $at & "grievance.category.code", "present": $exists($g.category.code) },
       { "field": "grievance.description", "path": $at & "grievance.description", "present": $exists($g.description) },
       { "field": "challenge.value", "path": $at & "challenge.value", "present": $exists($ch.challenge.value) }
@@ -59,14 +58,14 @@ request: |
                     "message": $missing.field & " is required", "path": $missing.path } }
     : {
       "Type":                 "Reg_No_Details",
-      "IdentityNo":           $s.orderId,
+      "IdentityNo":           $ch.enrolmentId,
       "GrievanceType":        $g.category.code,
       "GrievanceDescription": $trim($g.description)
     }
   )
 
 # A "False" flag (Status/Responce/Rsponce/status) is a 502; the portal's message
-# is never returned. Otherwise echo the request and add case: ticketNo from
+# is never returned. Otherwise echo the pack's fields and add case: ticketNo from
 # GrievanceID or GrievanceNo, status Registered, filedOn = IST date of the
 # request timestamp. A 4xx (_status) becomes the adapter's 502.
 response: |
@@ -83,8 +82,7 @@ response: |
     $ticketNo := $exists($handle(response.GrievanceID))
       ? $handle(response.GrievanceID)
       : $handle(response.GrievanceNo);
-    $s := beckn.message.support;
-    $ch := $s.channels[0];
+    $ch := beckn.message.support.channels[0];
 
     $filedOn := $exists(beckn.context.timestamp)
       ? $fromMillis($toMillis(beckn.context.timestamp), "[Y0001]-[M01]-[D01]", "+0530")
@@ -96,14 +94,18 @@ response: |
       "context": $merge([beckn.context, { "action": "on_support", "timestamp": $now() }]),
       "message": {
         "support": {
-          "orderId": $s.orderId,
           "channels": [{
             "@context":        $ch.`@context`,
             "@type":           $ch.`@type`,
             "informationMode": "Direct",
             "provider":        $ch.provider,
             "scheme":          $ch.scheme,
-            "grievance":       $ch.grievance,
+            "enrolmentId":     $ch.enrolmentId,
+            /* The code and description sent; a name beside the code is dropped. */
+            "grievance": {
+              "category":    { "code": $ch.grievance.category.code },
+              "description": $ch.grievance.description
+            },
             "case": {
               "ticketNo": $ticketNo,
               "status":   { "code": "Registered" },

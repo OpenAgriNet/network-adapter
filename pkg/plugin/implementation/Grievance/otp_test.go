@@ -94,12 +94,12 @@ func planOn(t *testing.T, url string) *model.ProviderRecord {
 }
 
 func supportPayload(otp string) map[string]any {
-	channel := map[string]any{"provider": map[string]any{"id": "pmkisan"}}
+	channel := map[string]any{"provider": map[string]any{"id": "pmkisan"}, "enrolmentId": "UP12345678A"}
 	if otp != "" {
 		channel["challenge"] = map[string]any{"method": "SMS_OTP", "value": otp}
 	}
 	return map[string]any{"message": map[string]any{"support": map[string]any{
-		"orderId": "UP12345678A", "channels": []any{channel}}}}
+		"channels": []any{channel}}}}
 }
 
 func statusPayload(otp string) map[string]any {
@@ -308,7 +308,7 @@ func TestAProviderWhollyOnTheOTPServiceVerifiesOnItsOwnHost(t *testing.T) {
 
 	payload := map[string]any{"message": map[string]any{"contract": map[string]any{"commitments": []any{
 		map[string]any{"commitmentAttributes": map[string]any{
-			"applicant": map[string]any{"idType": "Mobile", "id": "9812345670"},
+			"applicant": map[string]any{"mobile": "9812345670"},
 			"challenge": map[string]any{"method": "SMS_OTP", "value": validOTP},
 		}}}}}}
 	wire, _, err := e.Seal(context.Background(), common.Exchange{Action: "status", Beckn: payload,
@@ -329,14 +329,28 @@ func TestAProviderWhollyOnTheOTPServiceVerifiesOnItsOwnHost(t *testing.T) {
 	}
 }
 
-func TestChallengeInReadsTheDeclaredKind(t *testing.T) {
-	for idType, want := range map[string]string{"Registration": "Ben_id", "Mobile": "Mobile", "Aadhaar": "Aadhar", "PAN": ""} {
+// The slot names the kind: enrolmentId, applicant.mobile or applicant.aadhaar.
+func TestChallengeInReadsTheKindFromTheSlot(t *testing.T) {
+	for name, tc := range map[string]struct {
+		attributes map[string]any
+		kind, id   string
+	}{
+		"enrolmentId":          {map[string]any{"enrolmentId": "UP12345678A"}, "Ben_id", "UP12345678A"},
+		"mobile":               {map[string]any{"applicant": map[string]any{"mobile": "9812345670"}}, "Mobile", "9812345670"},
+		"aadhaar":              {map[string]any{"applicant": map[string]any{"aadhaar": "123456789012"}}, "Aadhar", "123456789012"},
+		"the old idType shape": {map[string]any{"applicant": map[string]any{"idType": "Mobile", "id": "9812345670"}}, "", ""},
+		"nothing":              {map[string]any{}, "", ""},
+	} {
 		payload := map[string]any{"message": map[string]any{"contract": map[string]any{"commitments": []any{
-			map[string]any{"commitmentAttributes": map[string]any{
-				"applicant": map[string]any{"idType": idType, "id": "x"}}}}}}}
-		if kind, _, _, _ := challengeIn(common.Exchange{Beckn: payload}); kind != want {
-			t.Errorf("challengeIn(%s) kind = %q, want %q", idType, kind, want)
+			map[string]any{"commitmentAttributes": tc.attributes}}}}}
+		if kind, id, _, _ := challengeIn(common.Exchange{Beckn: payload}); kind != tc.kind || id != tc.id {
+			t.Errorf("challengeIn(%s) = %q, %q, want %q, %q", name, kind, id, tc.kind, tc.id)
 		}
+	}
+	support := map[string]any{"message": map[string]any{"support": map[string]any{"orderId": "UP12345678A",
+		"channels": []any{map[string]any{"enrolmentId": "BR295454592"}}}}}
+	if kind, id, _, _ := challengeIn(common.Exchange{Beckn: support}); kind != "Ben_id" || id != "BR295454592" {
+		t.Errorf("challengeIn(support) = %q, %q, want the channel's enrolmentId, not orderId", kind, id)
 	}
 }
 
