@@ -1644,8 +1644,10 @@ Treat the deployed copy as the real one and update the design copy to match.
 
 Two things left to settle. `schemaUrl` points at `raw.githubusercontent.com` on the pack
 branch rather than the Pages site, which is not published until the PR merges. And
-`SchemaRegistry.schemaUrl` allows only `/schema/`, so the pattern has to widen to
-`(schema|api-schemas)` before these three records validate. And the `mappings` files do
+`SchemaRegistry.schemaUrl` rejects all three records for two separate reasons: it allows
+only `/schema/` in the path, where the packs sit under `/api-schemas/`, and its ref
+segment is `[A-Za-z0-9_-]+`, which has no dot, so the branch `api-schema-packs-v0.1`
+fails even once the path is allowed. Both have to widen. The `mappings` files also do
 not exist on the branch named below; fix the ref when you register.
 
 ### G.1 PMFBY grievance
