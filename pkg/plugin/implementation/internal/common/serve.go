@@ -219,7 +219,7 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 
 // refusalIn returns the error a mapping asks for under the reserved _error
 // field {status, code, message, path}, or nil if there is none. Status 0 or
-// 400 is a 400 with details.path; 202 is an ACK carrying the reason.
+// 400 is a 400 with details.path; 202 is a NACK carrying the reason.
 func refusalIn(mapped []byte) error {
 	// Cheap text check first: almost no answer carries the field.
 	if !bytes.Contains(mapped, []byte(`"_error"`)) {
@@ -243,7 +243,7 @@ func refusalIn(mapped []byte) error {
 		// CodedErr drops details, so the path needs SchemaValidationErr.
 		return &model.SchemaValidationErr{Errors: []model.Error{*model.NewCodedErrorWithCause(r.Code, r.Message, r.Path, nil)}}
 	case http.StatusAccepted:
-		return model.NewAckNoCallbackErr(model.StatusACK, &model.Error{Code: r.Code, Message: r.Message})
+		return model.NewAckNoCallbackErr(model.StatusNACK, &model.Error{Code: r.Code, Message: r.Message})
 	default:
 		return model.NewCodedErr(r.Status, r.Code, errors.New(r.Message))
 	}
