@@ -6,6 +6,8 @@ package util
 
 import (
 	"time"
+
+	"github.com/beckn-one/beckn-onix/pkg/model"
 )
 
 // Defaults applied when the registry or the operator leaves a setting out.
@@ -83,8 +85,11 @@ const (
 )
 
 // CodeUpstreamUnavailable: the provider could not be reached or failed. Not
-// this adapter's fault and not the caller's.
-const CodeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
+// this adapter's fault and not the caller's. An alias, not a second
+// definition -- pkg/model.CodeUpstreamUnavailable is the canonical value,
+// shared with core/module/handler's fan-out executor, which cannot import
+// this internal package.
+const CodeUpstreamUnavailable = model.CodeUpstreamUnavailable
 
 // How early an exchanged token stops being trusted. Must exceed the round trip
 // to the provider, so a request that passed the expiry check cannot arrive

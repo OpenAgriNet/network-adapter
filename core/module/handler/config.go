@@ -159,6 +159,18 @@ type HttpClientConfig struct {
 	// ResponseHeaderTimeout, if non-zero, specifies the amount of time to wait
 	// for a server's response headers after fully writing the request.
 	ResponseHeaderTimeout time.Duration `yaml:"responseHeaderTimeout"`
+
+	// Timeout specifies the maximum duration for an outbound request round trip.
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+// FanoutConfig holds concurrency and timeout limits for multi-target routing.
+type FanoutConfig struct {
+	// MaxConcurrency caps the number of targets called simultaneously.
+	MaxConcurrency int `yaml:"maxConcurrency"`
+
+	// Timeout specifies the overall execution budget for the entire fan-out.
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 // Config holds the configuration for request processing handlers.
@@ -170,6 +182,8 @@ type Config struct {
 	Role             model.Role
 	SubscriberID     string           `yaml:"subscriberId"`
 	HttpClientConfig HttpClientConfig `yaml:"httpClientConfig"`
+	// Fanout configures execution limits for multi-target routing rules.
+	Fanout FanoutConfig `yaml:"fanout"`
 	// BasePath is the HTTP path prefix at which this module is mounted (e.g.
 	// "/bap/receiver/"). Set by the module layer from module.Config.Path; not
 	// read from YAML. Steps use it to strip the prefix before calling plugins.

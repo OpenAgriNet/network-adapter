@@ -1,0 +1,69 @@
+# Sample fan-out routing config (v2). See [#22] -- the consumer adapter's
+# discover reaches several networks at once, and their answers are merged
+# into one response.
+#
+# `targetType: "urls"` (plural, with `target.urls`, at least 2 entries) is
+# the fan-out type -- a sibling of `targetType: "url"`, not inferred from
+# how many entries `urls:` happens to have. Every target is called in
+# parallel; a target that fails, answers non-2xx, or misses the handler's
+# fanout timeout is counted in the X-Beckn-Degraded response header and the
+# rest still answer -- only a total failure is a NACK.
+#
+# `mergeFieldPath` is the full dot path, from the envelope root, to the array
+# the fan-out merges across targets. It is required for targetType "urls",
+# and must start with "message." (or be exactly "message") -- both checked
+# at load time. What is NOT checked: giving a
+# fan-out rule several endpoints applies that one path to all of them, which
+# is wrong the moment they nest their array at different depths (discover's
+# is message.catalogs, select's is message.contract.commitments). So an
+# action needing a different path gets its own rule below -- one endpoint per
+# fan-out rule is a convention this file follows, not something the loader
+# enforces.
+#
+# Fan-out config lives in two homes, deliberately: mergeFieldPath is HERE,
+# per-action semantics, because the extraction point depends on what the
+# action's reply looks like; maxConcurrency and timeout are operational, and
+# live in the handler's own config, under its own top-level fanout: key
+# (a sibling of httpClientConfig, not nested inside it -- see config.go's
+# Config struct) instead, since they are about how hard to hit the network
+# rather than what a reply means.
+#
+# mergeFieldPath is also the ONLY part of merge policy that varies per
+# deployment. Ordering (concatenation, in rule order) and donor selection
+# (first target in rule order that carries the path) are fixed in pkg/merge, not
+# configurable here -- that is deliberate, not an unfinished asymmetry: no
+# deployment has needed a different order or a different donor rule yet, and
+# adding knobs for that ahead of an actual need is exactly the "someone tries
+# to finish it later" this comment exists to head off.
+routingRules:
+  - version: "2.0.0"
+    targetType: "urls"
+    target:
+      urls:
+        - "http://network-adapter-bharat-vistar:9201"
+        - "http://network-adapter-maha-vistar:9201"
+    mergeFieldPath: message.catalogs
+    endpoints:
+      - discover
+
+  # select nests its array elsewhere (message.contract.commitments), so it
+  # is its own fan-out rule rather than sharing discover's above.
+  - version: "2.0.0"
+    targetType: "urls"
+    target:
+      urls:
+        - "http://network-adapter-bharat-vistar:9201"
+        - "http://network-adapter-maha-vistar:9201"
+    mergeFieldPath: message.contract.commitments
+    endpoints:
+      - select
+
+  # Everything else -- no fan-out, single target.
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://provider-adapter:9200"
+    endpoints:
+      - init
+      - confirm
+      - status
