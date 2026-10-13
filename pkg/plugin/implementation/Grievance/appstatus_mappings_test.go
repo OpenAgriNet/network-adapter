@@ -283,8 +283,9 @@ func TestAppStatusInitAsksForAnOTPByTheDeclaredKind(t *testing.T) {
 			}
 			attributes := asAttributes(t, body)
 			issued, _ := attributes["challengeIssued"].(map[string]any)
-			if issued["method"] != "SMS_OTP" || issued["expiresAt"] == nil || issued["sentTo"] != nil {
-				t.Errorf("challengeIssued = %v, want method and expiresAt and no sentTo", issued)
+			if issued["method"] != "SMS_OTP" || issued["length"] != float64(4) || issued["valueType"] != "NUMERIC" ||
+				issued["expiresAt"] == nil || issued["sentTo"] != nil {
+				t.Errorf("challengeIssued = %v, want method, length 4, valueType NUMERIC, expiresAt and no sentTo", issued)
 			}
 			if attributes["applicant"] != nil || attributes["informationMode"] != "OnDemand" {
 				t.Errorf("attributes = %v, want OnDemand with applicant not echoed", attributes)

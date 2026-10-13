@@ -26,8 +26,8 @@ request: |
   )
 
 # Only "True" means sent; anything else is a 502. on_init stays DRAFT with
-# challengeIssued (method, expiresAt; no sentTo). expiresAt is our own 10-minute
-# window. A 4xx (_status) becomes the adapter's 502.
+# challengeIssued (method, length, valueType, expiresAt; no sentTo). expiresAt
+# is our own 10-minute window. A 4xx (_status) becomes the adapter's 502.
 response: |
   $exists(_status)
   ? {}
@@ -54,6 +54,8 @@ response: |
               "scheme":          $ca.scheme,
               "challengeIssued": {
                 "method":    "SMS_OTP",
+                "length":    4,
+                "valueType": "NUMERIC",
                 "expiresAt": $fromMillis($millis() + $otpWindowMillis)
               }
             }

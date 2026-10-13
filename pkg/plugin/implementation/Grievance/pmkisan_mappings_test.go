@@ -538,6 +538,8 @@ func TestPMKISANSupportRefusesBeforeCallingThePortal(t *testing.T) {
 		{"no OTP", `,
         "challenge": { "method": "SMS_OTP", "value": "4821" }`, ``, "SCH_REQUIRED_FIELD_MISSING", at + "challenge.value"},
 		{"an OTP that is not digits", `"value": "4821"`, `"value": "48a1"`, "SCH_INVALID_FORMAT", ""},
+		{"an OTP longer than on_init announced", `"value": "4821"`, `"value": "48210"`, "SCH_INVALID_FORMAT", ""},
+		{"an OTP shorter than on_init announced", `"value": "4821"`, `"value": "482"`, "SCH_INVALID_FORMAT", ""},
 		// Malformed: refused by required.
 		{"a registration number in native script", `"orderId": "UP12345678A"`, `"orderId": "UP१२३४५"`, "SCH_INVALID_FORMAT", ""},
 		{"an Aadhaar number where the registration belongs", `"orderId": "UP12345678A"`, `"orderId": "123456789012"`, "SCH_INVALID_FORMAT", ""},
@@ -833,6 +835,9 @@ func TestPMKISANInitAsksTheOTPServiceForAnOTP(t *testing.T) {
 	if issued["method"] != "SMS_OTP" {
 		t.Errorf("challengeIssued.method = %v, want SMS_OTP", issued["method"])
 	}
+	if issued["length"] != float64(4) || issued["valueType"] != "NUMERIC" {
+		t.Errorf("challengeIssued length, valueType = %v, %v, want 4, NUMERIC", issued["length"], issued["valueType"])
+	}
 	if expires, _ := issued["expiresAt"].(string); expires == "" {
 		t.Error("challengeIssued.expiresAt is missing")
 	} else if at, err := time.Parse(time.RFC3339, expires); err != nil || at.Before(time.Now()) {
@@ -958,6 +963,30 @@ func TestPMKISANStatusRefusesWithoutAnOTP(t *testing.T) {
 	if otp.calls["/ChatbotOTPVerified"] != 0 || p.calls != 0 {
 		t.Errorf("verify %d, read %d; a request refused before the call must reach neither service",
 			otp.calls["/ChatbotOTPVerified"], p.calls)
+	}
+}
+
+// The read takes exactly the four digits on_init announced, refused before
+// either service is called.
+func TestPMKISANStatusRefusesAnOTPOfTheWrongLength(t *testing.T) {
+	for name, value := range map[string]string{"five digits": "48210", "three digits": "482"} {
+		t.Run(name, func(t *testing.T) {
+			request := strings.Replace(pkStatusRequest, `"value": "4821"`, `"value": "`+value+`"`, 1)
+			if request == pkStatusRequest {
+				t.Fatal("the edit did not apply to the request")
+			}
+			p := newPKPortal(t, pkStatusAnswer)
+			otp := newPKOTPService(t)
+			_, err := runPMKISANWith(t, p, otp, request)
+			beckn, status := pkBecknErr(t, err)
+			if status != http.StatusBadRequest || beckn.Code != "SCH_INVALID_FORMAT" {
+				t.Errorf("got %s/%d, want SCH_INVALID_FORMAT/400", beckn.Code, status)
+			}
+			if otp.calls["/ChatbotOTPVerified"] != 0 || p.calls != 0 {
+				t.Errorf("verify %d, read %d; a malformed OTP must reach neither service",
+					otp.calls["/ChatbotOTPVerified"], p.calls)
+			}
+		})
 	}
 }
 

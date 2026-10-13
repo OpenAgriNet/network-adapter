@@ -18,11 +18,11 @@ required:
   - check: |
       (
         $c := beckn.message.contract.commitments[0].commitmentAttributes.challenge;
-        /* Digits only. */
+        /* The length and valueType on_init announced: 4, NUMERIC. */
         $not($exists($c))
-          or ($c.method = "SMS_OTP" and $type($c.value) = "string" and $exists($match($c.value, /^[0-9]+$/)[0]))
+          or ($c.method = "SMS_OTP" and $type($c.value) = "string" and $exists($match($c.value, /^[0-9]{4}$/)[0]))
       )
-    message: "challenge.method must be SMS_OTP and challenge.value the digits the farmer received"
+    message: "challenge.method must be SMS_OTP and challenge.value the four digits the farmer received"
   - check: |
       (
         $f := beckn.message.contract.commitments[0].commitmentAttributes.case.filedOn;
