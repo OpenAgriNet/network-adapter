@@ -17,10 +17,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
-// keyBytes is AES-256; shorter keys are refused.
-const keyBytes = 32
+// keySizes are the AES key lengths in bytes. The key is hex, so PM-KISAN's
+// 32-character GRIEVANCE_KEY_1 is 16 bytes: AES-128.
+var keySizes = map[int]bool{16: true, 24: true, 32: true}
 
-// gcmCodec is PM-KISAN grievance's AES-256-GCM envelope: base64(ciphertext||tag).
+// gcmCodec is PM-KISAN grievance's AES-GCM envelope: base64(ciphertext||tag).
 // The nonce is fixed because the portal requires it (a known GCM weakness; TLS
 // protects the exchange). Key, nonce and token are env var names, read per call.
 type gcmCodec struct {
@@ -129,9 +130,9 @@ func (c *gcmCodec) cipher(ctx context.Context) (cipher.AEAD, []byte, error) {
 	if err != nil {
 		return nil, nil, unconfigured(ctx, c.provider, c.keyEnv+" is not hex")
 	}
-	if len(key) != keyBytes {
-		return nil, nil, unconfigured(ctx, c.provider, fmt.Sprintf("%s decodes to %d bytes; AES-256 needs %d",
-			c.keyEnv, len(key), keyBytes))
+	if !keySizes[len(key)] {
+		return nil, nil, unconfigured(ctx, c.provider, fmt.Sprintf("%s decodes to %d bytes; AES needs 16, 24 or 32",
+			c.keyEnv, len(key)))
 	}
 	nonce, err := decodeHex(rawNonce)
 	if err != nil {

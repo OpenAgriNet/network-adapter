@@ -2,7 +2,7 @@
 #   channels[0].enrolmentId  registration number
 #   channels[0].grievance    category G001-G010 (no subCategory), description
 #   channels[0].challenge    OTP, verified by the envelope first; never forwarded
-# Plaintext here; the envelope adds TokenNo and encrypts (AES-256-GCM).
+# Plaintext here; the envelope adds TokenNo and encrypts (AES-GCM).
 
 # Format checks (SCH_INVALID_FORMAT). Missing fields are refused by the request half.
 required:

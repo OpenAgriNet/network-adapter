@@ -534,7 +534,7 @@ modules:
 
               # PM-KISAN: the token travels inside the encrypted body, so auth
               # is none and the envelope encrypts/decrypts.
-              #   grievance (support, status): AES-256-GCM, TokenNo
+              #   grievance (support, status): AES-GCM, hex key, TokenNo
               #   OTP service (init, verify):  AES-128-CBC, Token, on
               #                                PMKISAN_OTP_BASE_URL (bare host)
               # support and status verify the OTP first. *Env values are

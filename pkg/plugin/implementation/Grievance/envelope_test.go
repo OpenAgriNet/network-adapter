@@ -2,9 +2,13 @@ package Grievance
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -161,11 +165,49 @@ func TestSealFailsClosedWithoutItsSecrets(t *testing.T) {
 	}
 }
 
-func TestSealRefusesAKeyThatIsNotAES256(t *testing.T) {
+// The key is hex: PM-KISAN's 32-character key is 16 bytes, AES-128. Any AES
+// length is taken; anything else is refused.
+func TestSealTakesAnyAESKeyLength(t *testing.T) {
+	for hexChars, ok := range map[int]bool{32: true, 48: true, 64: true, 20: false, 40: false} {
+		t.Run(fmt.Sprintf("%d hex characters", hexChars), func(t *testing.T) {
+			setTestSecrets(t)
+			t.Setenv(testKeyEnv, strings.Repeat("ab", hexChars/2))
+			_, err := testEnvelope(t).Seal(context.Background(), []byte(`{}`))
+			if ok && err != nil {
+				t.Fatalf("Seal() = %v, want a %d-byte key accepted", err, hexChars/2)
+			}
+			if !ok && err == nil {
+				t.Fatalf("Seal() accepted a %d-byte key, want it refused", hexChars/2)
+			}
+		})
+	}
+}
+
+// A 16-byte key seals with AES-128-GCM: what PM-KISAN decrypts with the same
+// hex key and nonce.
+func TestSealWithASixteenByteKeyIsAES128GCM(t *testing.T) {
 	setTestSecrets(t)
-	t.Setenv(testKeyEnv, testKeyHex[:32]) // 16 bytes: AES-128
-	if _, err := testEnvelope(t).Seal(context.Background(), []byte(`{}`)); err == nil {
-		t.Fatal("Seal() accepted a 16-byte key, want it refused")
+	key := testKeyHex[:32]
+	t.Setenv(testKeyEnv, key)
+	wire, err := testEnvelope(t).Seal(context.Background(), []byte(`{"Type":"Reg_No_Status"}`))
+	if err != nil {
+		t.Fatalf("Seal() = %v", err)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(wire, &body); err != nil {
+		t.Fatalf("sealed body %s: %v", wire, err)
+	}
+	sealed, _ := base64.StdEncoding.DecodeString(body["EncryptedRequest"])
+	rawKey, _ := hex.DecodeString(key)
+	nonce, _ := hex.DecodeString(testNonceHex)
+	block, _ := aes.NewCipher(rawKey)
+	gcm, _ := cipher.NewGCMWithNonceSize(block, len(nonce))
+	plain, err := gcm.Open(nil, nonce, sealed, nil)
+	if err != nil {
+		t.Fatalf("AES-128-GCM could not open what Seal() sent: %v", err)
+	}
+	if !strings.Contains(string(plain), `"Type":"Reg_No_Status"`) || !strings.Contains(string(plain), testToken) {
+		t.Errorf("opened %s, want the request with the service token", plain)
 	}
 }
 
