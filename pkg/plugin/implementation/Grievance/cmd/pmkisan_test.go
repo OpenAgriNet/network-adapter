@@ -36,7 +36,7 @@ func bothSchemesConfig() map[string]string {
 		"otpRequestField-pmkisan":       "EncryptedRequest",
 		"otpResponsePaths-pmkisan":      "d.output,output",
 		"otpActions-pmkisan":            "init",
-		"otpVerifyPath-pmkisan":         "/services/chatbotservice.asmx/ChatbotOTPVerified",
+		"otpVerifyPath-pmkisan":         "/ChatbotOTPVerified",
 		"otpVerifyActions-pmkisan":      "support,status",
 	} {
 		config[key] = value

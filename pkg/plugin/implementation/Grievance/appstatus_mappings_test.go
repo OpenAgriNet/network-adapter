@@ -29,8 +29,8 @@ const (
 	asCapability = "openagrinet:PMKISANApplicationStatus"
 	asBindingKey = "pmkisan-chatbot|" + asCapability
 
-	// The chatbot service's path, as the registry rows and the verify path
-	// carry it: the participant's baseUrl is a bare host.
+	// The chatbot service, named by the participant's baseUrl; the registry
+	// rows and the plugin paths carry the method alone.
 	asService = "/services/chatbotservice.asmx"
 )
 
@@ -198,11 +198,11 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 		BindingKey:     asBindingKey,
 		ParticipantID:  "pmkisan-chatbot",
 		CapabilityCode: asCapability,
-		BaseURL:        host.URL,
+		BaseURL:        host.URL + asService,
 		Actions: map[string]model.ActionPlan{
-			"init": {Method: http.MethodPost, Path: asService + "/ChatbotOTP",
+			"init": {Method: http.MethodPost, Path: "/ChatbotOTP",
 				Mappings: mappings.URL + "/application-status.init.yaml", TimeoutMs: 20000},
-			"status": {Method: http.MethodPost, Path: asService + "/ChatbotUserDetails",
+			"status": {Method: http.MethodPost, Path: "/ChatbotUserDetails",
 				Mappings: mappings.URL + "/application-status.status.yaml", TimeoutMs: 30000},
 		},
 	}}
@@ -213,9 +213,9 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 		"envelopeTokenField-pmkisan-chatbot":    "Token",
 		"envelopeRequestField-pmkisan-chatbot":  "EncryptedRequest",
 		"envelopeResponsePaths-pmkisan-chatbot": "d.output,output",
-		"otpVerifyPath-pmkisan-chatbot":         asService + "/ChatbotOTPVerified",
+		"otpVerifyPath-pmkisan-chatbot":         "/ChatbotOTPVerified",
 		"otpVerifyActions-pmkisan-chatbot":      "status",
-		"followUpPath-pmkisan-chatbot":          asService + "/ChatbotBeneficiaryStatus",
+		"followUpPath-pmkisan-chatbot":          "/ChatbotBeneficiaryStatus",
 		"followUpField-pmkisan-chatbot":         "_beneficiaryStatus",
 		"followUpActions-pmkisan-chatbot":       "status",
 	})
