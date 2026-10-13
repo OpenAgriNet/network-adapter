@@ -185,7 +185,6 @@ type answer struct {
 			} `json:"commitments"`
 		} `json:"contract"`
 		Support struct {
-			OrderID  string           `json:"orderId"`
 			Channels []map[string]any `json:"channels"`
 		} `json:"support"`
 	} `json:"message"`
@@ -273,9 +272,8 @@ func request(action string, attributes map[string]any) []byte {
 	return body
 }
 
-// support builds a support request from flat fields: orderId on support,
-// categoryCode, subCategoryCode and description under grievance, the rest on
-// channels[0].
+// support builds a support request from flat fields: categoryCode,
+// subCategoryCode and description under grievance, the rest on channels[0].
 func support(fields map[string]any) []byte {
 	channel := map[string]any{"@context": packContext, "@type": "openagrinet:PMFBYGrievance",
 		"informationMode": "OnDemand", "scheme": scheme, "provider": provider}
@@ -283,8 +281,6 @@ func support(fields map[string]any) []byte {
 	grievance := map[string]any{}
 	for field, value := range fields {
 		switch field {
-		case "orderId":
-			body["orderId"] = value
 		case "categoryCode":
 			grievance["category"] = map[string]any{"code": value, "name": "Claim"}
 		case "subCategoryCode":
@@ -304,7 +300,7 @@ func support(fields map[string]any) []byte {
 
 func supportFields() map[string]any {
 	return map[string]any{
-		"orderId": "040108251010160770605", "categoryCode": "3", "subCategoryCode": "10",
+		"enrolmentId": "040108251010160770605", "categoryCode": "3", "subCategoryCode": "10",
 		"description": "  Claim not received  ", "applicantPhone": phone,
 		"cropYear": "2025", "season": "Kharif",
 	}
@@ -367,12 +363,13 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	if got.Context["action"] != "on_support" || got.Context["transactionId"] != "txn-1" {
 		t.Errorf("context = %v, want on_support on the request's transaction", got.Context)
 	}
-	// orderId and the grievance are echoed unchanged.
+	// enrolmentId and the grievance are echoed; a name beside a code is dropped.
 	channel := got.channel()
 	grievance := band(channel, "grievance")
-	if got.Message.Support.OrderID != "040108251010160770605" || band(grievance, "category")["code"] != "3" ||
-		band(grievance, "subCategory")["code"] != "10" || grievance["description"] != "  Claim not received  " {
-		t.Errorf("support = %+v, want orderId and grievance echoed", got.Message.Support)
+	if channel["enrolmentId"] != "040108251010160770605" || len(band(grievance, "category")) != 1 ||
+		band(grievance, "category")["code"] != "3" || band(grievance, "subCategory")["code"] != "10" ||
+		grievance["description"] != "  Claim not received  " {
+		t.Errorf("channel = %v, want enrolmentId and grievance echoed", channel)
 	}
 	filed := band(channel, "case")
 	status := band(filed, "status")
@@ -436,12 +433,28 @@ func TestSupport_CategoryCodes_SentAsGiven(t *testing.T) {
 	}
 }
 
+// Without category codes, PMFBY's published pair is sent and echoed.
+func TestSupport_NoCategoryCodes_SendsAndEchoesDefaults(t *testing.T) {
+	h := newHarness(t, &pmfbyStub{}, 0)
+	fields := supportFields()
+	delete(fields, "categoryCode")
+	delete(fields, "subCategoryCode")
+	got := h.mustSend(t, support(fields))
+	sent := h.pmfby.bodies[insertPath]
+	if sent["ticketCategoryID"] != "3" || sent["ticketSubCategoryID"] != "10" {
+		t.Errorf("sent %v / %v, want 3 / 10", sent["ticketCategoryID"], sent["ticketSubCategoryID"])
+	}
+	grievance := band(got.channel(), "grievance")
+	if band(grievance, "category")["code"] != "3" || band(grievance, "subCategory")["code"] != "10" {
+		t.Errorf("grievance = %v, want the defaults echoed", grievance)
+	}
+}
+
 func TestSupport_MissingField_Returns400NamingItsPath(t *testing.T) {
 	channel := "$.message.support.channels[0]."
 	for field, path := range map[string]string{
-		"orderId": "$.message.support.orderId", "applicantPhone": channel + "applicantPhone",
+		"enrolmentId": channel + "enrolmentId", "applicantPhone": channel + "applicantPhone",
 		"cropYear": channel + "cropYear", "season": channel + "season",
-		"categoryCode": channel + "grievance.category.code", "subCategoryCode": channel + "grievance.subCategory.code",
 		"description": channel + "grievance.description",
 	} {
 		t.Run(field, func(t *testing.T) {
@@ -521,7 +534,6 @@ func TestSupport_MalformedDateOrSource_Returns400WithoutCallingPMFBY(t *testing.
 	for name, field := range map[string][2]string{
 		"date": {"complaintDate", "20-09-2026"}, "source": {"receiptSourceId", "web"},
 		"crop year": {"cropYear", "last year"}, "short crop year": {"cropYear", "25"},
-		"short order id": {"orderId", "123456789"}, "long order id": {"orderId", strings.Repeat("1", 31)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
