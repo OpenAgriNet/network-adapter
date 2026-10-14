@@ -39,10 +39,10 @@ response: |
     /* PMFBY's TicketStatus as a CaseStatusCode; a phrase not listed is UnderReview. */
     $statusOf := { "resolved": "Resolved" };
     $status := $isText($ticket.TicketStatus) ? $lookup($statusOf, $lowercase($trim($ticket.TicketStatus)));
-    /* InsertDateTime is "YYYY-MM-DD HH:MM:SS" in IST. */
+    /* InsertDateTime is an RFC 3339 time, e.g. "2026-10-12T11:02:49.000Z". */
     $inserted := $ticket.InsertDateTime;
-    $filedOn := $isText($inserted) and $contains($inserted, /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$/)
-      ? $fromMillis($toMillis($replace($inserted, " ", "T") & "+05:30"), "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
+    $filedOn := $isText($inserted) and $contains($inserted, /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/)
+      ? $fromMillis($toMillis($inserted), "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
     $found
     ? (
       $commitment := beckn.message.contract.commitments[0];

@@ -39,7 +39,7 @@ const (
 // It carries the category by name only.
 const knownTicketRecord = `{"responseCode":"1","responseMessage":"Fetched","recordCount":1,"responseDynamic":{
 	"GrievenceSupportTicketID":109301,"TicketStatus":"Under Review",
-	"ComplaintDate":"2026-10-04","InsertDateTime":"2026-10-04 15:30:00","ApplicationNo":"040108251010160770605",
+	"ComplaintDate":"2026-10-04","InsertDateTime":"2026-10-04T10:00:00.000Z","ApplicationNo":"040108251010160770605",
 	"GrievenceDescription":"Claim not received",
 	"TicketCategoryName":"Claim","TicketSubCategoryName":"Claim not received","CropName":"Paddy",
 	"FarmerName":"Ramesh","StateMasterName":"Karnataka","DistrictMasterName":"Mysuru",
@@ -725,6 +725,16 @@ func TestStatus_KnownTicket_DropsPersonalAndInternalFields(t *testing.T) {
 	}
 }
 
+// InsertDateTime comes back as filedOn in UTC, whatever offset PMFBY states.
+func TestStatus_InsertDateTimeWithOffset_FiledOnInUTC(t *testing.T) {
+	record := strings.Replace(knownTicketRecord, `"2026-10-04T10:00:00.000Z"`, `"2026-10-04T15:30:00+05:30"`, 1)
+	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+		mustSend(t, request("status", statusAttributes()))
+	if filed := band(got.attributes(), "case")["filedOn"]; filed != "2026-10-04T10:00:00Z" {
+		t.Errorf("filedOn = %v, want 2026-10-04T10:00:00Z", filed)
+	}
+}
+
 func TestStatus_BareScheme_ReturnsSchemeName(t *testing.T) {
 	attributes := statusAttributes()
 	attributes["scheme"] = map[string]any{"code": "PMFBY"}
@@ -757,8 +767,8 @@ func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
 		"null category name":  {`"TicketCategoryName":"Claim"`, `"TicketCategoryName":null`, "grievance", "category"},
 		"empty sub-category":  {`"TicketSubCategoryName":"Claim not received"`, `"TicketSubCategoryName":""`, "grievance", "subCategory"},
 		"null description":    {`"GrievenceDescription":"Claim not received"`, `"GrievenceDescription":null`, "grievance", "description"},
-		"null insert time":    {`"InsertDateTime":"2026-10-04 15:30:00"`, `"InsertDateTime":null`, "case", "filedOn"},
-		"date-only insert":    {`"InsertDateTime":"2026-10-04 15:30:00"`, `"InsertDateTime":"2026-10-04"`, "case", "filedOn"},
+		"null insert time":    {`"InsertDateTime":"2026-10-04T10:00:00.000Z"`, `"InsertDateTime":null`, "case", "filedOn"},
+		"date-only insert":    {`"InsertDateTime":"2026-10-04T10:00:00.000Z"`, `"InsertDateTime":"2026-10-04"`, "case", "filedOn"},
 		"null application no": {`"ApplicationNo":"040108251010160770605"`, `"ApplicationNo":null`, "", "enrolmentId"},
 		"empty crop":          {`"CropName":"Paddy"`, `"CropName":""`, "case", "cropName"},
 	} {
