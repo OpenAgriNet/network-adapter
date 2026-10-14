@@ -518,7 +518,8 @@ modules:
               capabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type, message.support.channels[].@type"
 
               # Logs in at PMFBY's NICUsersLogin and sends the token bare in
-              # Authorization. tokenUrl is set per deployment.
+              # Authorization, held until the login reply's expirationTime.
+              # tokenUrl is set per deployment.
               pmfby:
                 authScheme: tokenHeader
                 tokenUrl: <>
@@ -527,7 +528,7 @@ modules:
                 tokenSecretField: appAccessPWD
                 tokenSecretEnv: PMFBY_ACCESS_PWD
                 tokenResponseField: responseDynamic.token.Token
-                tokenTtl: 10m
+                tokenExpiryField: responseDynamic.token.expirationTime
                 headerName: Authorization
 
       # Declaring a step above is not enough: THIS list is what runs. A step
