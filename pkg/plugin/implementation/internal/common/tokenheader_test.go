@@ -303,7 +303,7 @@ func expiryLoginStep(t *testing.T, reply string, logins *atomic.Int32) *Step {
 			profile := tokenHeaderProfile(login.URL)
 			profile.TokenResponseField = "responseDynamic.token.Token"
 			profile.TokenTTLRaw = ""
-			profile.TokenExpiryField = "responseDynamic.token.expirationTime"
+			profile.TokenExpiryField = "responseDynamic.token.validTo"
 			if err := profile.validate(); err != nil {
 				t.Fatalf("profile does not validate: %v", err)
 			}
@@ -311,9 +311,11 @@ func expiryLoginStep(t *testing.T, reply string, logins *atomic.Int32) *Step {
 		})
 }
 
-func pmfbyLoginReply(expirationTime string) string {
+// pmfbyLoginReply is PMFBY's login reply. Its expirationTime is the moment of
+// issue, not the expiry; validTo is the expiry.
+func pmfbyLoginReply(validTo string) string {
 	return `{"responseCode":"1","responseDynamic":{"token":{"Token":"tok",` +
-		`"expirationTime":` + expirationTime + `}}}`
+		fmt.Sprintf(`"expirationTime":%d,"validTo":%s}}}`, time.Now().Unix(), validTo)
 }
 
 func TestTokenHeader_ExpiryInReply_HeldWithoutTokenTtl(t *testing.T) {
@@ -321,7 +323,7 @@ func TestTokenHeader_ExpiryInReply_HeldWithoutTokenTtl(t *testing.T) {
 	t.Setenv("TEST_TQ_SECRET", "secret")
 
 	var logins atomic.Int32
-	inHalfAnHour := fmt.Sprintf("%d.367", time.Now().Add(30*time.Minute).Unix())
+	inHalfAnHour := `"` + time.Now().Add(30*time.Minute).UTC().Format("2006-01-02T15:04:05.000Z") + `"`
 	step := expiryLoginStep(t, pmfbyLoginReply(inHalfAnHour), &logins)
 
 	for i := 0; i < 3; i++ {
@@ -335,17 +337,17 @@ func TestTokenHeader_ExpiryInReply_HeldWithoutTokenTtl(t *testing.T) {
 }
 
 func TestTokenHeader_ExpiryMissingOrPast_Returns502AndCachesNothing(t *testing.T) {
-	for name, expirationTime := range map[string]string{
+	for name, validTo := range map[string]string{
 		"missing":    "null",
-		"not number": `"soon"`,
-		"past":       fmt.Sprintf("%d", time.Now().Add(-time.Minute).Unix()),
+		"not a time": `"soon"`,
+		"past":       `"` + time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) + `"`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("TEST_TQ_USER", "user")
 			t.Setenv("TEST_TQ_SECRET", "secret")
 
 			var logins atomic.Int32
-			step := expiryLoginStep(t, pmfbyLoginReply(expirationTime), &logins)
+			step := expiryLoginStep(t, pmfbyLoginReply(validTo), &logins)
 
 			_, err := runStep(t, step, selectBody)
 			assertStatus(t, err, http.StatusBadGateway)
@@ -358,19 +360,25 @@ func TestTokenHeader_ExpiryMissingOrPast_Returns502AndCachesNothing(t *testing.T
 }
 
 func TestExpiryLifetime_FutureExpiry_ReturnsTimeLeftLessSkew(t *testing.T) {
-	expiry := float64(time.Now().Add(30 * time.Minute).Unix())
-	lifetime, ok := expiryLifetime(map[string]any{"token": map[string]any{"expirationTime": expiry}},
-		"token.expirationTime")
-	want := 30*time.Minute - util.TokenRefreshSkew
-	if !ok || lifetime > want || lifetime < want-2*time.Second {
-		t.Errorf("expiryLifetime() = %s, %v; want about %s", lifetime, ok, want)
+	expiry := time.Now().Add(30 * time.Minute)
+	for name, stated := range map[string]any{
+		"unix seconds": float64(expiry.Unix()),
+		"rfc 3339":     expiry.UTC().Format(time.RFC3339Nano),
+	} {
+		t.Run(name, func(t *testing.T) {
+			lifetime, ok := expiryLifetime(map[string]any{"token": map[string]any{"expiry": stated}}, "token.expiry")
+			want := 30*time.Minute - util.TokenRefreshSkew
+			if !ok || lifetime > want || lifetime < want-2*time.Second {
+				t.Errorf("expiryLifetime() = %s, %v; want about %s", lifetime, ok, want)
+			}
+		})
 	}
 }
 
 func TestTokenHeader_TtlAndExpiryField_RefusedAtStartup(t *testing.T) {
 	profile := tokenHeaderProfile("https://login.example")
 	profile.Provider = "pmfby"
-	profile.TokenExpiryField = "responseDynamic.token.expirationTime"
+	profile.TokenExpiryField = "responseDynamic.token.validTo"
 	if err := profile.validate(); err == nil || !strings.Contains(err.Error(), "not both") {
 		t.Errorf("validate() = %v, want tokenTtl and tokenExpiryField refused together", err)
 	}
@@ -385,7 +393,7 @@ func TestParseProviderAuth_TokenExpiryField_BuildsProfileWithoutTtl(t *testing.T
 		"tokenSecretField-pmfby":   "password",
 		"tokenSecretEnv-pmfby":     "PMFBY_PASSWORD",
 		"tokenResponseField-pmfby": "responseDynamic.token.Token",
-		"tokenExpiryField-pmfby":   "responseDynamic.token.expirationTime",
+		"tokenExpiryField-pmfby":   "responseDynamic.token.validTo",
 		"headerName-pmfby":         "Authorization",
 	})
 	if err != nil {

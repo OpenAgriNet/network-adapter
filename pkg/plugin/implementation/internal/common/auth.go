@@ -69,7 +69,8 @@ type AuthProfile struct {
 	TokenTTL    time.Duration
 
 	// Where the response states the token's expiry, as a dotted path to Unix
-	// seconds. Set this or tokenTtl: the issuer's own expiry beats an estimate.
+	// seconds or an RFC 3339 time. Set this or tokenTtl: the issuer's own
+	// expiry beats an estimate.
 	TokenExpiryField string
 }
 
