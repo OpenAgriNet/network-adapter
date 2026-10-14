@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
@@ -278,5 +280,118 @@ func TestParseProviderAuth_TokenHeaderBlock_BuildsProfile(t *testing.T) {
 	}
 	if err := profile.validate(); err != nil {
 		t.Errorf("validate() = %v, want the parsed profile accepted", err)
+	}
+}
+
+// expiryLoginStep logs in at a server whose reply states the token's expiry, as
+// PMFBY's does, and counts the logins.
+func expiryLoginStep(t *testing.T, reply string, logins *atomic.Int32) *Step {
+	t.Helper()
+	login := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		logins.Add(1)
+		fmt.Fprint(w, reply)
+	}))
+	t.Cleanup(login.Close)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	t.Cleanup(provider.Close)
+
+	return newStep(t, &stubRegistry{plan: testPlan(provider.URL, http.MethodPost)},
+		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"a":1}`)},
+		func(c *Config) {
+			profile := tokenHeaderProfile(login.URL)
+			profile.TokenResponseField = "responseDynamic.token.Token"
+			profile.TokenTTLRaw = ""
+			profile.TokenExpiryField = "responseDynamic.token.expirationTime"
+			if err := profile.validate(); err != nil {
+				t.Fatalf("profile does not validate: %v", err)
+			}
+			c.setProviderAuth(profile)
+		})
+}
+
+func pmfbyLoginReply(expirationTime string) string {
+	return `{"responseCode":"1","responseDynamic":{"token":{"Token":"tok",` +
+		`"expirationTime":` + expirationTime + `}}}`
+}
+
+func TestTokenHeader_ExpiryInReply_HeldWithoutTokenTtl(t *testing.T) {
+	t.Setenv("TEST_TQ_USER", "user")
+	t.Setenv("TEST_TQ_SECRET", "secret")
+
+	var logins atomic.Int32
+	inHalfAnHour := fmt.Sprintf("%d.367", time.Now().Add(30*time.Minute).Unix())
+	step := expiryLoginStep(t, pmfbyLoginReply(inHalfAnHour), &logins)
+
+	for i := 0; i < 3; i++ {
+		if _, err := runStep(t, step, selectBody); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if got := logins.Load(); got != 1 {
+		t.Errorf("login called %d times for 3 requests, want 1", got)
+	}
+}
+
+func TestTokenHeader_ExpiryMissingOrPast_Returns502AndCachesNothing(t *testing.T) {
+	for name, expirationTime := range map[string]string{
+		"missing":    "null",
+		"not number": `"soon"`,
+		"past":       fmt.Sprintf("%d", time.Now().Add(-time.Minute).Unix()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("TEST_TQ_USER", "user")
+			t.Setenv("TEST_TQ_SECRET", "secret")
+
+			var logins atomic.Int32
+			step := expiryLoginStep(t, pmfbyLoginReply(expirationTime), &logins)
+
+			_, err := runStep(t, step, selectBody)
+			assertStatus(t, err, http.StatusBadGateway)
+			_, _ = runStep(t, step, selectBody)
+			if got := logins.Load(); got != 2 {
+				t.Errorf("login called %d times for 2 requests, want 2: nothing is cached", got)
+			}
+		})
+	}
+}
+
+func TestExpiryLifetime_FutureExpiry_ReturnsTimeLeftLessSkew(t *testing.T) {
+	expiry := float64(time.Now().Add(30 * time.Minute).Unix())
+	lifetime, ok := expiryLifetime(map[string]any{"token": map[string]any{"expirationTime": expiry}},
+		"token.expirationTime")
+	want := 30*time.Minute - util.TokenRefreshSkew
+	if !ok || lifetime > want || lifetime < want-2*time.Second {
+		t.Errorf("expiryLifetime() = %s, %v; want about %s", lifetime, ok, want)
+	}
+}
+
+func TestTokenHeader_TtlAndExpiryField_RefusedAtStartup(t *testing.T) {
+	profile := tokenHeaderProfile("https://login.example")
+	profile.Provider = "pmfby"
+	profile.TokenExpiryField = "responseDynamic.token.expirationTime"
+	if err := profile.validate(); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Errorf("validate() = %v, want tokenTtl and tokenExpiryField refused together", err)
+	}
+}
+
+func TestParseProviderAuth_TokenExpiryField_BuildsProfileWithoutTtl(t *testing.T) {
+	profiles, err := ParseProviderAuth(map[string]string{
+		"authScheme-pmfby":         "tokenHeader",
+		"tokenUrl-pmfby":           "https://login.example",
+		"tokenUserField-pmfby":     "userName",
+		"tokenUserEnv-pmfby":       "PMFBY_USER",
+		"tokenSecretField-pmfby":   "password",
+		"tokenSecretEnv-pmfby":     "PMFBY_PASSWORD",
+		"tokenResponseField-pmfby": "responseDynamic.token.Token",
+		"tokenExpiryField-pmfby":   "responseDynamic.token.expirationTime",
+		"headerName-pmfby":         "Authorization",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := profiles["pmfby"].validate(); err != nil {
+		t.Errorf("validate() = %v, want the profile accepted without tokenTtl", err)
 	}
 }

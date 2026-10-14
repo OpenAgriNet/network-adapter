@@ -96,9 +96,8 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 // exchangeQueryToken POSTs a JSON body of configured field names and reads the
 // token out of a configured response field.
 //
-// The lifetime comes from config, not from the response: this endpoint says
-// nothing about how long its token lives. That is the whole reason tokenTtl is
-// required rather than defaulted -- see AuthProfile.
+// The lifetime is read from tokenExpiryField when the endpoint states one, and
+// taken from tokenTtl when it does not -- see AuthProfile.
 func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	cfg := auth.cfg
 	user, secret := os.Getenv(cfg.TokenUserEnv), os.Getenv(cfg.TokenSecretEnv)
@@ -135,6 +134,17 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 			"token response from %s carries no %s", cfg.TokenURL, cfg.TokenResponseField))
 	}
 	token := tokens[0]
+
+	if cfg.TokenExpiryField != "" {
+		lifetime, ok := expiryLifetime(fields, cfg.TokenExpiryField)
+		if !ok {
+			// Not cached for a guessed period, the same rule as oauth2.
+			return "", 0, s.permanentTokenErr(fmt.Errorf(
+				"token response from %s carries no future %s, so its lifetime is unknown",
+				cfg.TokenURL, cfg.TokenExpiryField))
+		}
+		return token, lifetime, nil
+	}
 
 	// The skew is subtracted here for the same reason oauth2 subtracts it from
 	// expires_in: a request that passed the expiry check must not arrive after
@@ -244,6 +254,21 @@ func (s *Step) tokenErr(err error) error {
 // issuer will keep sending in the same shape.
 func (s *Step) permanentTokenErr(err error) error {
 	return util.DoNotRetry(s.tokenErr(err))
+}
+
+// expiryLifetime reads an expiry stated as Unix seconds and returns how long the
+// token may be held, false when it is absent, not a number, or already past.
+func expiryLifetime(fields any, path string) (time.Duration, bool) {
+	leaves := LeavesAt(fields, path)
+	if len(leaves) == 0 {
+		return 0, false
+	}
+	seconds, ok := leaves[0].(float64)
+	if !ok {
+		return 0, false
+	}
+	remaining := time.Until(time.Unix(int64(seconds), 0))
+	return tokenLifetime(int(remaining/time.Second), util.TokenRefreshSkew)
 }
 
 // tokenLifetime turns expires_in into how long the token may be held, or
