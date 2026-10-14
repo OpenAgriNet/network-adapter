@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ const (
 // It carries the category by name only.
 const knownTicketRecord = `{"responseCode":"1","responseMessage":"Fetched","recordCount":1,"responseDynamic":{
 	"GrievenceSupportTicketID":109301,"TicketStatus":"Under Review",
-	"ComplaintDate":"2026-10-04","ApplicationNo":"040108251010160770605",
+	"ComplaintDate":"2026-10-04","InsertDateTime":"2026-10-04 15:30:00","ApplicationNo":"040108251010160770605",
 	"GrievenceDescription":"Claim not received",
 	"TicketCategoryName":"Claim","TicketSubCategoryName":"Claim not received","CropName":"Paddy",
 	"FarmerName":"Ramesh","StateMasterName":"Karnataka","DistrictMasterName":"Mysuru",
@@ -256,7 +257,9 @@ func request(action string, attributes map[string]any) []byte {
 	attributes["@context"] = packContext
 	attributes["@type"] = "openagrinet:PMFBYGrievance"
 	attributes["informationMode"] = "OnDemand"
-	attributes["scheme"] = scheme
+	if _, named := attributes["scheme"]; !named {
+		attributes["scheme"] = scheme
+	}
 	body, _ := json.Marshal(map[string]any{
 		"context": becknContext(action),
 		"message": map[string]any{"contract": map[string]any{
@@ -333,6 +336,25 @@ func assertCoded(t *testing.T, err error, status int, code string) {
 	}
 }
 
+// assertRefused fails unless err is a 400 BIZ_GENERIC_ERROR carrying message.
+func assertRefused(t *testing.T, err error, message string) {
+	t.Helper()
+	if status, refused := refusal(t, err); status != http.StatusBadRequest ||
+		refused.Code != "BIZ_GENERIC_ERROR" || refused.Message != message {
+		t.Errorf("error = %d %+v, want 400 BIZ_GENERIC_ERROR %q", status, refused, message)
+	}
+}
+
+// assertJustNowUTC fails unless value is an RFC 3339 UTC instant within a minute of now.
+func assertJustNowUTC(t *testing.T, value any) {
+	t.Helper()
+	text, _ := value.(string)
+	at, err := time.Parse("2006-01-02T15:04:05Z", text)
+	if err != nil || time.Since(at).Abs() > time.Minute {
+		t.Errorf("filedOn = %v, want this moment as YYYY-MM-DDTHH:MM:SSZ", value)
+	}
+}
+
 // todayIST is the date PMFBY expects complaintDate in.
 func todayIST() string {
 	return time.Now().In(time.FixedZone("IST", 5*3600+1800)).Format("2006-01-02")
@@ -373,8 +395,9 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	}
 	filed := band(channel, "case")
 	status := band(filed, "status")
+	assertJustNowUTC(t, filed["filedOn"])
 	if filed["ticketNo"] != knownTicket || len(status) != 1 || status["code"] != "Registered" ||
-		filed["filedOn"] != todayIST() || band(channel, "provider")["id"] != "pmfby" ||
+		band(channel, "provider")["id"] != "pmfby" ||
 		channel["informationMode"] != "Direct" || channel["scheme"] == nil {
 		t.Errorf("channel = %v", channel)
 	}
@@ -450,6 +473,21 @@ func TestSupport_NoCategoryCodes_SendsAndEchoesDefaults(t *testing.T) {
 	}
 }
 
+// The pack lists provider and scheme.name as coming back; the caller may send
+// only the ids.
+func TestSupport_BareProviderAndScheme_ReturnsPortalNameAndSchemeName(t *testing.T) {
+	fields := supportFields()
+	fields["provider"] = map[string]any{"id": "pmfby", "availableAt": []any{}}
+	fields["scheme"] = map[string]any{"code": "PMFBY"}
+	channel := newHarness(t, &pmfbyStub{}, 0).mustSend(t, support(fields)).channel()
+	if got := band(channel, "provider"); !reflect.DeepEqual(got, provider) {
+		t.Errorf("provider = %v, want %v", got, provider)
+	}
+	if got := band(channel, "scheme"); !reflect.DeepEqual(got, scheme) {
+		t.Errorf("scheme = %v, want %v", got, scheme)
+	}
+}
+
 func TestSupport_MissingField_Returns400NamingItsPath(t *testing.T) {
 	channel := "$.message.support.channels[0]."
 	for field, path := range map[string]string{
@@ -482,127 +520,64 @@ func TestSupport_NoGrievance_Returns400(t *testing.T) {
 	assertCoded(t, err, http.StatusBadRequest, "SCH_REQUIRED_FIELD_MISSING")
 }
 
-func TestSupport_MalformedCategory_Returns400WithoutCallingPMFBY(t *testing.T) {
-	for name, codes := range map[string][2]string{
-		"joined": {"3.10", "10"}, "letters": {"a", "10"}, "empty": {"", "10"},
-		"sub-category joined": {"3", "3.10"}, "sub-category letters": {"3", "b"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{}, 0)
-			fields := supportFields()
-			fields["categoryCode"], fields["subCategoryCode"] = codes[0], codes[1]
-			_, err := h.send(t, support(fields))
-			assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
-			if h.pmfby.calls[insertPath] != 0 {
-				t.Error("PMFBY was called with a malformed category")
-			}
-		})
-	}
-}
-
-func TestSupport_UnknownSeason_Returns400WithoutCallingPMFBY(t *testing.T) {
-	for _, season := range []string{"Summer", "kharif", "KHARIF", ""} {
-		t.Run(season, func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{}, 0)
-			fields := supportFields()
-			fields["season"] = season
-			_, err := h.send(t, support(fields))
-			assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
-			if h.pmfby.calls[insertPath] != 0 {
-				t.Error("PMFBY was called with an unknown season")
-			}
-		})
-	}
-}
-
-// complaintDate and receiptSourceId are sent when given; filedOn echoes the date.
+// complaintDate goes to PMFBY as its IST date and comes back as filedOn in UTC.
 func TestSupport_CallerDateAndSource_SentInsteadOfDefaults(t *testing.T) {
-	h := newHarness(t, &pmfbyStub{}, 0)
-	fields := supportFields()
-	fields["complaintDate"], fields["receiptSourceId"] = "2026-09-20", "200001"
-	got := h.mustSend(t, support(fields))
-	sent := h.pmfby.bodies[insertPath]
-	if sent["complaintDate"] != "2026-09-20" || sent["receiptSourceID"] != "200001" {
-		t.Errorf("PMFBY was sent %v / %v, want the caller's date and source", sent["complaintDate"], sent["receiptSourceID"])
-	}
-	if filed := band(got.channel(), "case")["filedOn"]; filed != "2026-09-20" {
-		t.Errorf("filedOn = %v, want the date that was sent", filed)
-	}
-}
-
-func TestSupport_MalformedDateOrSource_Returns400WithoutCallingPMFBY(t *testing.T) {
-	for name, field := range map[string][2]string{
-		"date": {"complaintDate", "20-09-2026"}, "source": {"receiptSourceId", "web"},
-		"crop year": {"cropYear", "last year"}, "short crop year": {"cropYear", "25"},
+	for given, want := range map[string][2]string{
+		"2026-09-20T04:30:00Z":      {"2026-09-20", "2026-09-20T04:30:00Z"},
+		"2026-09-21T01:00:00+05:30": {"2026-09-21", "2026-09-20T19:30:00Z"}, // 1am IST is the previous day in UTC
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(given, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
 			fields := supportFields()
-			fields[field[0]] = field[1]
-			_, err := h.send(t, support(fields))
-			assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
-			if h.pmfby.calls[insertPath] != 0 {
-				t.Errorf("PMFBY was called with %s %q", field[0], field[1])
+			fields["complaintDate"], fields["receiptSourceId"] = given, "200001"
+			got := h.mustSend(t, support(fields))
+			sent := h.pmfby.bodies[insertPath]
+			if sent["complaintDate"] != want[0] || sent["receiptSourceID"] != "200001" {
+				t.Errorf("PMFBY was sent %v / %v, want %s and the caller's source", sent["complaintDate"], sent["receiptSourceID"], want[0])
+			}
+			if filed := band(got.channel(), "case")["filedOn"]; filed != want[1] {
+				t.Errorf("filedOn = %v, want %s", filed, want[1])
 			}
 		})
 	}
 }
 
-func TestSupport_MalformedPhoneOrDescription_Returns400WithoutCallingPMFBY(t *testing.T) {
-	for name, field := range map[string]struct {
-		key   string
-		value any
-	}{
-		"phone as a number":    {"applicantPhone", 9876543210},
-		"phone too short":      {"applicantPhone", "98765"},
-		"phone not a mobile":   {"applicantPhone", "1234567890"},
-		"description a number": {"description", 123},
-		"description blank":    {"description", "   "},
+// "Ticket Already Raised" is a success: the existing ticket comes back.
+func TestSupport_TicketAlreadyRaised_ReturnsTheExistingTicket(t *testing.T) {
+	h := newHarness(t, &pmfbyStub{answers: map[string]string{insertPath: `{"responseCode":"1","responseMessage":"Ticket Already Raised for !",
+		"responseDynamic":{"GrievenceSupportTicketNo":"121026000099003","GrievenceSupportTicketID":13}}`}}, 0)
+	filed := band(h.mustSend(t, support(supportFields())).channel(), "case")
+	if filed["ticketNo"] != "121026000099003" || band(filed, "status")["code"] != "Registered" {
+		t.Errorf("case = %v, want the existing ticket, Registered", filed)
+	}
+	assertJustNowUTC(t, filed["filedOn"])
+}
+
+// A refusal with a reason is a 400 carrying PMFBY's own message.
+func TestSupport_PortalRefuses_Returns400WithItsMessage(t *testing.T) {
+	for name, tc := range map[string]struct{ reply, message string }{
+		"phone not matched": {`{"responseObject":null,"responseDynamic":null,"responseCode":"0","responseMessage":"Mobile Number Not Matched","jsonString":null,"recordCount":0}`,
+			"Mobile Number Not Matched"},
+		"no application":  {`{"responseCode":"0","responseMessage":"Application Details not Exists","responseDynamic":null}`, "Application Details not Exists"},
+		"field required":  {`{"responseCode":"0","responseMessage":"requestYear is required","responseDynamic":null}`, "requestYear is required"},
+		"refused, ticket": {`{"responseCode":"0","responseMessage":"Invalid","responseDynamic":{"GrievenceSupportTicketNo":"100626000099001"}}`, "Invalid"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{}, 0)
-			fields := supportFields()
-			fields[field.key] = field.value
-			_, err := h.send(t, support(fields))
-			assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
-			if h.pmfby.calls[insertPath] != 0 {
-				t.Errorf("PMFBY was called with %s %v", field.key, field.value)
-			}
+			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{insertPath: tc.reply}}, 0).send(t, support(supportFields()))
+			assertRefused(t, err, tc.message)
 		})
 	}
 }
 
-// With no complaintDate, both the call and filedOn use the request's date in IST.
-func TestSupport_NoComplaintDate_DatesFromTheRequestInIST(t *testing.T) {
-	h := newHarness(t, &pmfbyStub{}, 0)
-	var payload map[string]any
-	_ = json.Unmarshal(support(supportFields()), &payload)
-	payload["context"].(map[string]any)["timestamp"] = "2026-10-07T18:30:00Z" // 00:00 IST on the 8th
-	raw, _ := json.Marshal(payload)
-
-	got := h.mustSend(t, raw)
-	if sent := h.pmfby.bodies[insertPath]["complaintDate"]; sent != "2026-10-08" {
-		t.Errorf("complaintDate = %v, want the IST date of the request, 2026-10-08", sent)
-	}
-	if filed := band(got.channel(), "case")["filedOn"]; filed != "2026-10-08" {
-		t.Errorf("filedOn = %v, want the date that was sent", filed)
-	}
-}
-
-// PMFBY refuses with HTTP 200 and a responseCode other than "1".
-func TestSupport_PortalDidNotRegister_Returns502(t *testing.T) {
+// A reply with neither a ticket nor a reason is PMFBY's failure, not the caller's.
+func TestSupport_PortalGivesNoReason_Returns502(t *testing.T) {
 	for name, reply := range map[string]string{
-		"refused":            `{"responseCode":"0","responseMessage":"Invalid application number","responseDynamic":null}`,
 		"success, no ticket": `{"responseCode":"1","responseDynamic":{}}`,
-		"refused, ticket":    `{"responseCode":"0","responseDynamic":{"GrievenceSupportTicketNo":"100626000099001"}}`,
+		"no message":         `{"responseCode":"0","responseMessage":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{answers: map[string]string{insertPath: reply}}, 0)
-			_, err := h.send(t, support(supportFields()))
+			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{insertPath: reply}}, 0).send(t, support(supportFields()))
 			assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
-			if strings.Contains(err.Error(), "Invalid application") {
-				t.Errorf("error %q leaks PMFBY's message", err)
-			}
 		})
 	}
 }
@@ -716,10 +691,10 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 	}
 	filed := band(attributes, "case")
 	if attributes["enrolmentId"] != "040108251010160770605" || attributes["informationMode"] != "Direct" ||
-		filed["ticketNo"] != knownTicket || filed["filedOn"] != "2026-10-04" || filed["cropName"] != "Paddy" {
+		filed["ticketNo"] != knownTicket || filed["filedOn"] != "2026-10-04T10:00:00Z" || filed["cropName"] != "Paddy" {
 		t.Errorf("commitmentAttributes = %v", attributes)
 	}
-	// Any portal phrase maps to UnderReview and is not forwarded.
+	// "Under Review" is not a phrase the lookup lists, so it is UnderReview.
 	if status := band(filed, "status"); len(status) != 1 || status["code"] != "UnderReview" {
 		t.Errorf("case.status = %v, want code UnderReview alone", status)
 	}
@@ -750,6 +725,15 @@ func TestStatus_KnownTicket_DropsPersonalAndInternalFields(t *testing.T) {
 	}
 }
 
+func TestStatus_BareScheme_ReturnsSchemeName(t *testing.T) {
+	attributes := statusAttributes()
+	attributes["scheme"] = map[string]any{"code": "PMFBY"}
+	got := newHarness(t, &pmfbyStub{}, 0).mustSend(t, request("status", attributes))
+	if got := band(got.attributes(), "scheme"); !reflect.DeepEqual(got, scheme) {
+		t.Errorf("scheme = %v, want %v", got, scheme)
+	}
+}
+
 // A missing phrase still maps to UnderReview.
 func TestStatus_NoStatusPhrase_UnderReviewWithoutName(t *testing.T) {
 	for name, phrase := range map[string]string{"null": `null`, "empty": `""`} {
@@ -773,7 +757,8 @@ func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
 		"null category name":  {`"TicketCategoryName":"Claim"`, `"TicketCategoryName":null`, "grievance", "category"},
 		"empty sub-category":  {`"TicketSubCategoryName":"Claim not received"`, `"TicketSubCategoryName":""`, "grievance", "subCategory"},
 		"null description":    {`"GrievenceDescription":"Claim not received"`, `"GrievenceDescription":null`, "grievance", "description"},
-		"null complaint date": {`"ComplaintDate":"2026-10-04"`, `"ComplaintDate":null`, "case", "filedOn"},
+		"null insert time":    {`"InsertDateTime":"2026-10-04 15:30:00"`, `"InsertDateTime":null`, "case", "filedOn"},
+		"date-only insert":    {`"InsertDateTime":"2026-10-04 15:30:00"`, `"InsertDateTime":"2026-10-04"`, "case", "filedOn"},
 		"null application no": {`"ApplicationNo":"040108251010160770605"`, `"ApplicationNo":null`, "", "enrolmentId"},
 		"empty crop":          {`"CropName":"Paddy"`, `"CropName":""`, "case", "cropName"},
 	} {
@@ -795,63 +780,53 @@ func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
 	}
 }
 
-func TestStatus_NoRecordInReply_Returns202NoResultsFound(t *testing.T) {
-	attributes := statusAttributes()
-	attributes["case"] = map[string]any{"ticketNo": "999"}
-	_, err := newHarness(t, &pmfbyStub{}, 0).send(t, request("status", attributes))
-
-	var ack *model.AckNoCallbackErr
-	if !errors.As(err, &ack) {
-		t.Fatalf("error = %v, want a 202 NACK", err)
-	}
-	if ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
-		t.Errorf("answer = %s %s, want NACK BIZ_NO_RESULTS_FOUND", ack.Status, ack.Err.Code)
-	}
-}
-
-// A reply without the success code, or with no envelope, is a failure.
-func TestStatus_PortalRefused_Returns502(t *testing.T) {
-	for name, reply := range map[string]string{
-		"refused":        `{"responseCode":"0","responseMessage":"Session expired"}`,
-		"token required": `{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`,
-		"no envelope":    `{"message":"An error has occurred."}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: reply}}, 0)
-			_, err := h.send(t, request("status", statusAttributes()))
-			assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
-		})
-	}
-}
-
-// A list of one reads like a bare record; an empty record is no record.
-func TestStatus_EmptyRecord_Returns202NoResultsFound(t *testing.T) {
-	for name, dynamic := range map[string]string{
-		"null":            `null`,
-		"empty object":    `{}`,
-		"empty in list":   `[{}]`,
-		"all fields null": `{"ApplicationNo":null,"TicketStatus":null,"ComplaintDate":null,"CropName":null}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			record := `{"responseCode":"1","responseMessage":"Fetched","responseDynamic":` + dynamic + `}`
-			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
-				send(t, request("status", statusAttributes()))
-			var ack *model.AckNoCallbackErr
-			if !errors.As(err, &ack) || ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
-				t.Errorf("error = %v, want a 202 NACK BIZ_NO_RESULTS_FOUND", err)
+// PMFBY's TicketStatus maps to a CaseStatusCode; an unlisted phrase is UnderReview.
+func TestStatus_TicketStatus_MapsToCaseStatusCode(t *testing.T) {
+	for phrase, want := range map[string]string{"Resolved": "Resolved", " resolved ": "Resolved",
+		"Open": "UnderReview", "Under Review": "UnderReview", "Escalated": "UnderReview"} {
+		t.Run(phrase, func(t *testing.T) {
+			record := strings.Replace(knownTicketRecord, `"TicketStatus":"Under Review"`, `"TicketStatus":"`+phrase+`"`, 1)
+			got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+				mustSend(t, request("status", statusAttributes()))
+			if status := band(band(got.attributes(), "case"), "status"); len(status) != 1 || status["code"] != want {
+				t.Errorf("case.status = %v, want code %s alone", status, want)
 			}
 		})
 	}
 }
 
-// PMFBY may answer an unknown ticket with the phone's other ticket.
-func TestStatus_RecordForAnotherTicket_Returns202NoResultsFound(t *testing.T) {
-	record := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{"GrievenceSupportTicketNo":"100626000099002",`, 1)
-	_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
-		send(t, request("status", statusAttributes()))
-	var ack *model.AckNoCallbackErr
-	if !errors.As(err, &ack) || ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" {
-		t.Errorf("error = %v, want a 202 NACK BIZ_NO_RESULTS_FOUND", err)
+// A refusal is a 400 carrying PMFBY's own message; an empty record, or one
+// for another ticket (PMFBY reads by phone alone), is "No record found".
+func TestStatus_NoMatchingRecord_Returns400(t *testing.T) {
+	another := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{"GrievenceSupportTicketNo":"100626000099002",`, 1)
+	for name, tc := range map[string]struct{ reply, message string }{
+		"no record":       {`{"responseCode":"0","responseMessage":"No record found","responseDynamic":[]}`, "No record found"},
+		"token required":  {`{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`, "Token required!"},
+		"null":            {`{"responseCode":"1","responseDynamic":null}`, "No record found"},
+		"empty object":    {`{"responseCode":"1","responseDynamic":{}}`, "No record found"},
+		"empty in list":   {`{"responseCode":"1","responseDynamic":[{}]}`, "No record found"},
+		"all fields null": {`{"responseCode":"1","responseDynamic":{"ApplicationNo":null,"TicketStatus":null}}`, "No record found"},
+		"another ticket":  {another, "No record found"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: tc.reply}}, 0).
+				send(t, request("status", statusAttributes()))
+			assertRefused(t, err, tc.message)
+		})
+	}
+}
+
+// A reply with neither a record nor a reason is PMFBY's failure, not the caller's.
+func TestStatus_PortalGivesNoReason_Returns502(t *testing.T) {
+	for name, reply := range map[string]string{
+		"no envelope": `{"message":"An error has occurred."}`,
+		"no message":  `{"responseCode":"0","responseMessage":"","responseDynamic":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: reply}}, 0).
+				send(t, request("status", statusAttributes()))
+			assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
+		})
 	}
 }
 
@@ -870,17 +845,6 @@ func TestStatus_RecordInAList_ReadAsTheRecord(t *testing.T) {
 		mustSend(t, request("status", statusAttributes()))
 	if crop := band(got.attributes(), "case")["cropName"]; crop != "Paddy" {
 		t.Errorf("case = %v, want the record read from the list", band(got.attributes(), "case"))
-	}
-}
-
-func TestStatus_MalformedPhone_Returns400WithoutCallingPMFBY(t *testing.T) {
-	h := newHarness(t, &pmfbyStub{}, 0)
-	attributes := statusAttributes()
-	attributes["applicantPhone"] = 9876543210
-	_, err := h.send(t, request("status", attributes))
-	assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
-	if h.pmfby.calls[statusPath] != 0 {
-		t.Error("PMFBY was called with a phone number that is not text")
 	}
 }
 

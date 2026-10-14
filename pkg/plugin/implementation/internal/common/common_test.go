@@ -2630,21 +2630,6 @@ func TestRefusal_ResponseHalf_ReturnsItsStatusAndCode(t *testing.T) {
 	}
 }
 
-func TestRefusal_Status202_ReturnsNackWithCode(t *testing.T) {
-	var calls int
-	mapper := &stubMapper{requestResult: []byte(`{}`),
-		responseResult: []byte(`{"_error":{"status":202,"code":"BIZ_NO_RESULTS_FOUND","message":"nothing on file"}}`)}
-	_, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
-
-	var ack *model.AckNoCallbackErr
-	if !errors.As(err, &ack) {
-		t.Fatalf("error = %v (%T), want a 202 NACK", err, err)
-	}
-	if ack.Status != model.StatusNACK || ack.Err.Code != "BIZ_NO_RESULTS_FOUND" || ack.Err.Message != "nothing on file" {
-		t.Errorf("ack = %s %+v, want NACK BIZ_NO_RESULTS_FOUND with the mapping's message", ack.Status, ack.Err)
-	}
-}
-
 func TestRefusal_UnreadableError_FailsRatherThanAnswering(t *testing.T) {
 	for name, refusal := range map[string]string{
 		"no message": `{"_error":{"status":502,"code":"X"}}`,
