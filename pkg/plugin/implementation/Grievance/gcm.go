@@ -17,8 +17,9 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
-// keySizes are the AES key lengths in bytes. The key is hex, so PM-KISAN's
-// 32-character GRIEVANCE_KEY_1 is 16 bytes: AES-128.
+// keySizes are the AES key lengths in bytes, decoded from hex. PM-KISAN's
+// GRIEVANCE_KEY_1 is 64 hex characters, AES-256; its nonce, GRIEVANCE_KEY_2,
+// is 16 bytes.
 var keySizes = map[int]bool{16: true, 24: true, 32: true}
 
 // gcmCodec is PM-KISAN grievance's AES-GCM envelope: base64(ciphertext||tag).

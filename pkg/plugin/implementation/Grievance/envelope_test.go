@@ -165,8 +165,7 @@ func TestSealFailsClosedWithoutItsSecrets(t *testing.T) {
 	}
 }
 
-// The key is hex: PM-KISAN's 32-character key is 16 bytes, AES-128. Any AES
-// length is taken; anything else is refused.
+// The key is hex. Any AES length is taken; anything else is refused.
 func TestSealTakesAnyAESKeyLength(t *testing.T) {
 	for hexChars, ok := range map[int]bool{32: true, 48: true, 64: true, 20: false, 40: false} {
 		t.Run(fmt.Sprintf("%d hex characters", hexChars), func(t *testing.T) {
@@ -183,8 +182,8 @@ func TestSealTakesAnyAESKeyLength(t *testing.T) {
 	}
 }
 
-// A 16-byte key seals with AES-128-GCM: what PM-KISAN decrypts with the same
-// hex key and nonce.
+// A 16-byte key seals with AES-128-GCM, readable with the same hex key and
+// nonce by any standard implementation.
 func TestSealWithASixteenByteKeyIsAES128GCM(t *testing.T) {
 	setTestSecrets(t)
 	key := testKeyHex[:32]
