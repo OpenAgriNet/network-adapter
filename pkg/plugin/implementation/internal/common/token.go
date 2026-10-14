@@ -256,19 +256,28 @@ func (s *Step) permanentTokenErr(err error) error {
 	return util.DoNotRetry(s.tokenErr(err))
 }
 
-// expiryLifetime reads an expiry stated as Unix seconds and returns how long the
-// token may be held, false when it is absent, not a number, or already past.
+// expiryLifetime reads an expiry stated as Unix seconds or an RFC 3339 time and
+// returns how long the token may be held, false when it is absent, unreadable,
+// or already past.
 func expiryLifetime(fields any, path string) (time.Duration, bool) {
 	leaves := LeavesAt(fields, path)
 	if len(leaves) == 0 {
 		return 0, false
 	}
-	seconds, ok := leaves[0].(float64)
-	if !ok {
+	var expiry time.Time
+	switch value := leaves[0].(type) {
+	case float64:
+		expiry = time.Unix(int64(value), 0)
+	case string:
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return 0, false
+		}
+		expiry = parsed
+	default:
 		return 0, false
 	}
-	remaining := time.Until(time.Unix(int64(seconds), 0))
-	return tokenLifetime(int(remaining/time.Second), util.TokenRefreshSkew)
+	return tokenLifetime(int(time.Until(expiry)/time.Second), util.TokenRefreshSkew)
 }
 
 // tokenLifetime turns expires_in into how long the token may be held, or
