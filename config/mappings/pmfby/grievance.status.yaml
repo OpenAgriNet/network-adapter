@@ -1,18 +1,7 @@
 # PMFBY status -> POST /krphapi/FGMS/GetGrievenceTicketsStatus.
 # Reads a grievance back by ticket number and the phone it was filed from.
 # The response maps an allow-list; the farmer's name, location and insurer
-# are dropped.
-
-# Format checks (SCH_INVALID_FORMAT); an absent field passes here and is
-# refused by the request half with SCH_REQUIRED_FIELD_MISSING.
-required:
-  # PMFBY files and reads the ticket by this number.
-  - check: |
-      (
-        $phone := beckn.message.contract.commitments[0].commitmentAttributes.applicantPhone;
-        $not($exists($phone)) or ($type($phone) = "string" ? $exists($match($phone, /^[6-9][0-9]{9}$/)[0]) : false)
-      )
-    message: "applicantPhone must be a ten-digit mobile number, as text"
+# are dropped. Field formats are the pack's.
 
 request: |
   (
@@ -31,34 +20,31 @@ request: |
     }
   )
 
-# No record: 202 BIZ_NO_RESULTS_FOUND. Any other responseCode than "1": 502.
-# Otherwise the record is mapped; fields PMFBY leaves empty are dropped.
+# The record is mapped; fields PMFBY leaves empty are dropped. No record, or
+# one for another ticket, is a 400 "No record found"; a refusal is a 400 with
+# PMFBY's own message; a reply with no reason is a 502.
 response: |
   (
-    /* A missing responseCode is a failure. [0] reads a bare record or a
-       list of one alike. */
-    $ok := $string(response.responseCode) = "1";
+    /* [0] reads a bare record or a list of one alike. */
     $ticket := response.responseDynamic[0];
     $asked := $string(beckn.message.contract.commitments[0].commitmentAttributes.case.ticketNo);
+    $said := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
     /* PMFBY sends null or "" for missing values. */
     $isText := function($v) { $type($v) = "string" and $v != "" };
-    /* PMFBY answers "No record found" as responseCode "0" with an empty list,
-       which JSONata reads as no value; a refusal sends null or no key. */
-    $notFound := $string(response.responseCode) = "0" and "responseDynamic" in $keys(response)
-      and $not($exists(response.responseDynamic));
-    $notFound
-    ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
-                    "message": "No grievance matches this ticket and phone number." } }
-    : $not($ok)
-    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
-                    "message": "PMFBY could not read the grievance" } }
-    /* An empty or all-null record, or one for another ticket, is no record:
-       PMFBY may answer an unknown ticket with the phone's other ticket. */
-    : $not($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
-      or ($exists($ticket.GrievenceSupportTicketNo) and $string($ticket.GrievenceSupportTicketNo) != $asked)
-    ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
-                    "message": "No grievance matches this ticket and phone number." } }
-    : (
+    $ok := $string(response.responseCode) = "1";
+    /* PMFBY reads by phone alone, so a record for another ticket is no record. */
+    $found := $ok
+      and ($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
+      and $not($exists($ticket.GrievenceSupportTicketNo) and $string($ticket.GrievenceSupportTicketNo) != $asked);
+    /* PMFBY's TicketStatus as a CaseStatusCode; a phrase not listed is UnderReview. */
+    $statusOf := { "resolved": "Resolved" };
+    $status := $isText($ticket.TicketStatus) ? $lookup($statusOf, $lowercase($trim($ticket.TicketStatus)));
+    /* InsertDateTime is "YYYY-MM-DD HH:MM:SS" in IST. */
+    $inserted := $ticket.InsertDateTime;
+    $filedOn := $isText($inserted) and $contains($inserted, /^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$/)
+      ? $fromMillis($toMillis($replace($inserted, " ", "T") & "+05:30"), "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
+    $found
+    ? (
       $commitment := beckn.message.contract.commitments[0];
       $ca := $commitment.commitmentAttributes;
       {
@@ -71,7 +57,8 @@ response: |
                 "@context": $ca.`@context`,
                 "@type": $ca.`@type`,
                 "informationMode": "Direct",
-                "scheme": $ca.scheme,
+                /* Stated, not echoed: the caller may send only the code. */
+                "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
                 "enrolmentId": $isText($ticket.ApplicationNo) ? $ticket.ApplicationNo,
                 "grievance": {
                   "category": $isText($ticket.TicketCategoryName) ? { "name": $ticket.TicketCategoryName },
@@ -80,10 +67,8 @@ response: |
                 },
                 "case": {
                   "ticketNo": $ca.case.ticketNo,
-                  /* PMFBY publishes no status vocabulary, so every
-                     TicketStatus maps to UnderReview until it does. */
-                  "status": { "code": "UnderReview" },
-                  "filedOn": $isText($ticket.ComplaintDate) ? $ticket.ComplaintDate,
+                  "status": { "code": $exists($status) ? $status : "UnderReview" },
+                  "filedOn": $filedOn,
                   "cropName": $isText($ticket.CropName) ? $ticket.CropName
                 }
               }
@@ -92,4 +77,10 @@ response: |
         }
       }
     )
+    : $ok
+    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": "No record found" } }
+    : $isText($said)
+    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $said } }
+    : { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PMFBY replied with neither a record nor a reason" } }
   )
