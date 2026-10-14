@@ -41,8 +41,15 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 		cfg.MaxResponseBytes = value
 	}
 
+	// Envelope settings first: the auth parser refuses unknown settings.
+	envelopes, rest, err := Grievance.ParseEnvelopes(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg.EnvelopeByProvider = envelopes
+
 	// One credential profile per provider.
-	auth, err := common.ParseProviderAuth(config)
+	auth, err := common.ParseProviderAuth(rest)
 	if err != nil {
 		return nil, err
 	}

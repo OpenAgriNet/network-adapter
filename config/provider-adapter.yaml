@@ -507,10 +507,12 @@ modules:
 
           # ------------------------------------------------------------------
           # Grievance -- support files a grievance, status reads it back.
+          # PM-KISAN: init (OTP), then support or status with the OTP.
+          # PM-KISAN application status: init (OTP), then status.
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:PMFBYGrievance"
+              bindingKeys: "pmfby|openagrinet:PMFBYGrievance,pmkisan|openagrinet:PMKISANGrievance,pmkisan-chatbot|openagrinet:PMKISANApplicationStatus"
 
               # Paired by position, tried in order: status names the binding on
               # its contract, support on its channel.
@@ -530,6 +532,51 @@ modules:
                 tokenResponseField: responseDynamic.token.Token
                 tokenExpiryField: responseDynamic.token.validTo
                 headerName: Authorization
+
+              # PM-KISAN: the token travels inside the encrypted body, so auth
+              # is none and the envelope encrypts/decrypts.
+              #   grievance (support, status): AES-GCM, hex key, TokenNo
+              #   OTP service (init, verify):  AES-128-CBC, Token, on
+              #                                PMKISAN_OTP_BASE_URL
+              # The base URL names the service (…/chatbotservice.asmx, or
+              # chatbotservicestaging.asmx on staging); paths are the method only.
+              # support and status verify the OTP first. *Env values are
+              # variable names; any unset fails the call with a 500.
+              pmkisan:
+                authScheme: none
+                envelope: aesGcm
+                envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
+                envelopeNonceEnv: PMKISAN_GRIEVANCE_IV
+                envelopeTokenEnv: PMKISAN_SERVICE_TOKEN
+                envelopeTokenField: TokenNo
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpEnvelope: aesCbcKeyInBand
+                otpBaseUrlEnv: PMKISAN_OTP_BASE_URL
+                otpTokenEnv: PMKISAN_OTP_TOKEN
+                otpTokenField: Token
+                otpRequestField: EncryptedRequest
+                otpResponsePaths: "d.output,output"
+                otpActions: init
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: "support,status"
+
+              # PM-KISAN application status: its own participant on the chatbot
+              # service (baseUrl names the .asmx, as above), all AES-128-CBC. status verifies the OTP, reads
+              # /ChatbotUserDetails, then /ChatbotBeneficiaryStatus as
+              # _beneficiaryStatus (blockers absent if that call fails).
+              pmkisan-chatbot:
+                authScheme: none
+                envelope: aesCbcKeyInBand
+                envelopeTokenEnv: PMKISAN_OTP_TOKEN
+                envelopeTokenField: Token
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: status
+                followUpPath: /ChatbotBeneficiaryStatus
+                followUpField: _beneficiaryStatus
+                followUpActions: status
 
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the

@@ -1,0 +1,73 @@
+package Grievance
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+
+	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
+)
+
+// followUp makes a second read after a successful call and adds its answer
+// under field (e.g. /ChatbotBeneficiaryStatus after /ChatbotUserDetails). On
+// failure the field is left absent, never empty: absent means "not checked".
+type followUp struct {
+	provider string
+	path     string
+	field    string
+	actions  map[string]bool
+	client   *http.Client
+}
+
+func newFollowUp(provider, path, field string, actions map[string]bool) *followUp {
+	return &followUp{provider: provider, path: path, field: field, actions: actions, client: &http.Client{}}
+}
+
+// wrap opens the first answer and, if it succeeded, adds the follow-up's.
+func (f *followUp) wrap(c codec, exchange common.Exchange, base string, mapped []byte, open common.Opener) common.Opener {
+	return func(ctx context.Context, answer []byte) ([]byte, error) {
+		plain, err := open(ctx, answer)
+		if err != nil || !succeeded(plain) {
+			return plain, err
+		}
+		extra, ok := f.read(ctx, c, exchange, base, mapped)
+		if !ok {
+			return plain, nil
+		}
+		var first map[string]any
+		if json.Unmarshal(plain, &first) != nil {
+			return plain, nil
+		}
+		first[f.field] = extra
+		return json.Marshal(first)
+	}
+}
+
+// read makes the follow-up call. A failure is logged, never returned.
+func (f *followUp) read(ctx context.Context, c codec, exchange common.Exchange, base string, mapped []byte) (any, bool) {
+	sealed, open, err := c.seal(ctx, mapped)
+	if err != nil {
+		log.Warnf(ctx, "%s's follow-up %s was not sent: %v", f.provider, f.path, err)
+		return nil, false
+	}
+	var call model.ActionPlan
+	if exchange.Plan != nil {
+		call = exchange.Plan.Actions[exchange.Action]
+	}
+	answer, err := postSealed(ctx, f.client, f.provider, "the follow-up read", base, f.path, call, sealed)
+	if err != nil {
+		return nil, false
+	}
+	plain, err := open(ctx, answer)
+	if err != nil {
+		log.Warnf(ctx, "%s's follow-up %s answered with nothing usable", f.provider, f.path)
+		return nil, false
+	}
+	var extra any
+	if json.Unmarshal(plain, &extra) != nil {
+		return nil, false
+	}
+	return extra, true
+}

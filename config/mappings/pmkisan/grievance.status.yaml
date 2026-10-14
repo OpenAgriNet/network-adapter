@@ -1,0 +1,142 @@
+# PM-KISAN grievance, status -> POST /GrievanceStatusCheck: read a grievance.
+#   enrolmentId   registration number
+#   case.filedOn  from on_support; picks the grievance (the portal returns all)
+#   challenge     fresh OTP, verified by the envelope first; never forwarded
+# Same-day grievances can't be told apart; the first is returned.
+
+# Format checks; missing fields are refused by the request half.
+required:
+  - check: |
+      (
+        $id := beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId;
+        /* <= 20 chars, never 12 digits (Aadhaar). */
+        $not($exists($id)) or ($type($id) = "string"
+          and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
+          and $not($exists($match($id, /^[0-9]{12}$/)[0])))
+      )
+    message: "enrolmentId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
+  - check: |
+      (
+        $c := beckn.message.contract.commitments[0].commitmentAttributes.challenge;
+        /* The length and valueType on_init announced: 4, NUMERIC. */
+        $not($exists($c))
+          or ($c.method = "SMS_OTP" and $type($c.value) = "string" and $exists($match($c.value, /^[0-9]{4}$/)[0]))
+      )
+    message: "challenge.method must be SMS_OTP and challenge.value the four digits the farmer received"
+  - check: |
+      (
+        $f := beckn.message.contract.commitments[0].commitmentAttributes.case.filedOn;
+        $not($exists($f)) or ($type($f) = "string" and $exists($match($f, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)[0]))
+      )
+    message: "case.filedOn must be a date, YYYY-MM-DD, as on_support returned it"
+
+# TokenNo is added by the envelope.
+request: |
+  (
+    $ca := beckn.message.contract.commitments[0].commitmentAttributes;
+    $at := "$.message.contract.commitments[0].commitmentAttributes.";
+    /* First missing field, with its path. */
+    $missing := [
+      { "field": "enrolmentId", "path": $at & "enrolmentId", "present": $exists($ca.enrolmentId) },
+      { "field": "case.filedOn", "path": $at & "case.filedOn", "present": $exists($ca.case.filedOn) },
+      { "field": "challenge.value", "path": $at & "challenge.value", "present": $exists($ca.challenge.value) }
+    ][$not(present)][0];
+    $missing
+    ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                    "message": $missing.field & " is required", "path": $missing.path } }
+    : {
+      "Type":       "Reg_No_Status",
+      "IdentityNo": $ca.enrolmentId
+    }
+  )
+
+# "False" flag: 502. No record on case.filedOn: 202 BIZ_NO_RESULTS_FOUND.
+# Otherwise on_status (ACTIVE), allow-list only -- personal data is dropped:
+#   GrievanceDescription -> grievance.description
+#   GrievanceStatus      -> case.status.code only (Disposed -> Replied, unknown
+#                           -> UnderReview; no phrase: Replied if a remark
+#                           exists, else UnderReview). The phrase is not sent.
+#   GrievanceDate        -> case.filedOn
+#   OfficerReply/Date    -> case.remark / case.remarkedOn
+# A 4xx (_status) becomes the adapter's 502.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    $false := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
+    $refused := $false(response.Status) or $false(response.Responce)
+      or $false(response.Rsponce) or $false(response.status);
+
+    $c  := beckn.message.contract.commitments[0];
+    $ca := $c.commitmentAttributes;
+    $records := $type(response) = "array" ? response
+              : $type(response.details) = "array" ? response.details
+              : $exists(response.details) ? [response.details]
+              : [];
+
+    /* ISO or dd/MM/yyyy (or dd-MM-yyyy) to ISO; time dropped. */
+    $iso := function($d) {
+      (
+        $day := $type($d) = "string" ? $split($trim($d), /[ T]/)[0];
+        $exists($match($day, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)[0]) ? $day
+        : $exists($match($day, /^[0-9]{2}[\/-][0-9]{2}[\/-][0-9]{4}$/)[0])
+          ? $substring($day, 6, 4) & "-" & $substring($day, 3, 2) & "-" & $substring($day, 0, 2)
+      )
+    };
+    /* Non-empty trimmed string, else absent. */
+    $text := function($v) {
+      $type($v) = "string" and $length($trim($v)) > 0 ? $trim($v)
+    };
+    /* CaseStatusCode by lowercased, letters-only phrase. */
+    $codes := {
+      "registered": "Registered", "underreview": "UnderReview",
+      "awaitingapplicant": "AwaitingApplicant", "replied": "Replied",
+      "disposed": "Replied",
+      "resolved": "Resolved", "rejected": "Rejected", "closed": "Closed"
+    };
+
+    $record := $filter($records, function($r) { $iso($r.GrievanceDate) = $ca.case.filedOn })[0];
+    $phrase := $text($record.GrievanceStatus);
+    $remark := $text($record.OfficerReply);
+    $complaint := $text($record.GrievanceDescription);
+
+    $refused
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN could not read the grievance" } }
+    : $not($exists($record))
+    ? { "_error": { "status": 202, "code": "BIZ_NO_RESULTS_FOUND",
+                    "message": "No grievance matches this registration number and filing date." } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
+      "message": {
+        "contract": {
+          "id": beckn.message.contract.id,
+          "commitments": [{
+            "status": { "descriptor": { "code": "ACTIVE" } },
+            "offer":     $c.offer,
+            "resources": $c.resources,
+            "commitmentAttributes": {
+              "@context":        $ca.`@context`,
+              "@type":           $ca.`@type`,
+              "informationMode": "Direct",
+              "scheme":          $ca.scheme,
+              "grievance": $complaint ? { "description": $complaint },
+              "case": {
+                "status": {
+                  "code": $phrase
+                    ? (
+                      $known := $lookup($codes, $lowercase($replace($phrase, /[^A-Za-z]/, "")));
+                      $exists($known) ? $known : "UnderReview"
+                    )
+                    : ($remark ? "Replied" : "UnderReview")
+                },
+                "filedOn":    $iso($record.GrievanceDate),
+                "remark":     $remark,
+                "remarkedOn": $remark ? $iso($record.OfficeReplyDate)
+              }
+            }
+          }]
+        }
+      }
+    }
+  )

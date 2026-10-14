@@ -1,0 +1,66 @@
+# PM-KISAN grievance, init -> POST /ChatbotOTP: send an OTP before support or
+# status. Goes to the OTP host (otpBaseUrlEnv); the envelope encrypts and adds
+# Token. Sends only the registration number; no phone number.
+
+# Format check; a missing value is refused by the request half.
+required:
+  - check: |
+      (
+        $id := beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId;
+        /* <= 20 chars, never 12 digits (Aadhaar). */
+        $not($exists($id)) or ($type($id) = "string"
+          and $exists($match($id, /^[A-Za-z0-9]{1,20}$/)[0])
+          and $not($exists($match($id, /^[0-9]{12}$/)[0])))
+      )
+    message: "enrolmentId must be an alphanumeric registration number of at most 20 characters, and must not be an Aadhaar number"
+
+# Types is always Ben_id (registration number).
+request: |
+  (
+    $ca := beckn.message.contract.commitments[0].commitmentAttributes;
+    $exists($ca.enrolmentId)
+    ? { "Types": "Ben_id", "Values": $ca.enrolmentId }
+    : { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
+                    "message": "enrolmentId is required",
+                    "path": "$.message.contract.commitments[0].commitmentAttributes.enrolmentId" } }
+  )
+
+# Only "True" means sent; anything else is a 502. on_init stays DRAFT with
+# challengeIssued (method, length, valueType, expiresAt; no sentTo). expiresAt
+# is our own 10-minute window. A 4xx (_status) becomes the adapter's 502.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    $true := function($v) { $exists($v) and $lowercase($string($v)) = "true" };
+    $sent := $true(response.Rsponce) or $true(response.Responce) or $true(response.Status);
+    $commitment := beckn.message.contract.commitments[0];
+    $ca := $commitment.commitmentAttributes;
+
+    $otpWindowMillis := 10 * 60 * 1000;
+    $not($sent)
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN could not send the OTP" } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_init", "timestamp": $now() }]),
+      "message": {
+        "contract": $merge([beckn.message.contract, {
+          "commitments": [$merge([$commitment, {
+            "status": { "descriptor": { "code": "DRAFT" } },
+            "commitmentAttributes": {
+              "@context":        $ca.`@context`,
+              "@type":           $ca.`@type`,
+              "informationMode": "OnDemand",
+              "scheme":          $ca.scheme,
+              "challengeIssued": {
+                "method":    "SMS_OTP",
+                "length":    4,
+                "valueType": "NUMERIC",
+                "expiresAt": $fromMillis($millis() + $otpWindowMillis)
+              }
+            }
+          }])]
+        }])
+      }
+    }
+  )
