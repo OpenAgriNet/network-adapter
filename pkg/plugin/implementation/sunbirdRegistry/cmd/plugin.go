@@ -128,6 +128,16 @@ func (o sunbirdRegistryProvider) parseConfig(config map[string]string) (*sunbird
 		cfg.RetryWaitMax = retryWaitMax
 	}
 
+	// Parse crossNetworkCheck. Absent means off, so a deployment that
+	// federates with nobody behaves exactly as before.
+	if checkStr, exists := config["crossNetworkCheck"]; exists && checkStr != "" {
+		check, err := strconv.ParseBool(checkStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid crossNetworkCheck value '%s': %w", checkStr, err)
+		}
+		cfg.CrossNetworkCheck = check
+	}
+
 	if cfg.RetryWaitMin > cfg.RetryWaitMax {
 		return nil, fmt.Errorf("retry_wait_min (%v) must not exceed retry_wait_max (%v)", cfg.RetryWaitMin, cfg.RetryWaitMax)
 	}

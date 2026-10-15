@@ -33,6 +33,10 @@ type Subscription struct {
 	Updated            time.Time `json:"updated,omitzero" format:"date-time"`
 	Nonce              string    `json:"nonce,omitzero"`
 	NetworkMemberships []string  `json:"network_memberships,omitempty"`
+
+	// FederationRole is set only on a network we admitted, and says which way
+	// round we agreed. Empty on every other participant.
+	FederationRole string `json:"federation_role,omitempty"`
 }
 
 // nonUsableKeySubscriptionStatuses are the Subscription.Status values that mean a
@@ -390,10 +394,14 @@ type Keyset struct {
 // StepContext holds context information for a request processing step.
 type StepContext struct {
 	context.Context
-	Request              *http.Request
-	Body                 []byte
-	Route                *Route
-	SubID                string
+	Request *http.Request
+	Body    []byte
+	Route   *Route
+	SubID   string
+
+	// OwnSubscriberID is who THIS module is, from its own config. SubID comes
+	// from the body, so on a cross-network request SubID is THEM.
+	OwnSubscriberID      string
 	Role                 Role
 	RespHeader           http.Header
 	ProtocolVersion      string // Protocol version parsed from context.version (e.g. "2.0.0")

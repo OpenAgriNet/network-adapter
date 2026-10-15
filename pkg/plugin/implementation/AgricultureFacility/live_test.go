@@ -208,7 +208,7 @@ func TestLiveAgainstPocra(t *testing.T) {
 	for _, facilityType := range governedTypes {
 		t.Run(facilityType, func(t *testing.T) {
 			captured = nil
-			stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(liveRequest(t, facilityType))}
+			stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(liveRequest(t, facilityType))}
 			started := time.Now()
 			if err := step.Run(stepCtx); err != nil {
 				t.Fatalf("Run() returned an unexpected error: %v", err)
@@ -360,7 +360,7 @@ func TestLiveCategoryLeakIsFiltered(t *testing.T) {
 		}
 
 		captured = nil
-		stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+		stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: body}
 		if err := step.Run(stepCtx); err != nil {
 			t.Fatalf("%s: Run() returned an unexpected error: %v", facilityType, err)
 		}
