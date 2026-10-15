@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn/catalog-core/pkg/catalog/crawlmanager"
@@ -36,10 +37,26 @@ func TestProvider_New_RequiresRegistry(t *testing.T) {
 	}
 }
 
-func TestProvider_New_RequiresDBDSN(t *testing.T) {
-	_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{}, map[string]string{cfgDiscoveryURL: "https://x"})
-	if err == nil {
-		t.Fatal("expected an error with no dbDsn configured")
+func TestCrawlingOtherNetworksNeedsNoDatabase(t *testing.T) {
+	_, closer, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{},
+		map[string]string{cfgDiscoveryURL: "https://x/publish"})
+	if err != nil {
+		t.Fatalf("a crawler that keeps no record was refused for want of a database: %v", err)
+	}
+	if closer != nil {
+		_ = closer()
+	}
+}
+
+func TestWorkThatKeepsARecordStillNeedsADatabase(t *testing.T) {
+	for _, needs := range []string{cfgStaticIndexURLs, cfgNetworks, cfgPublishPipelines} {
+		t.Run(needs, func(t *testing.T) {
+			_, _, err := Provider{}.New(context.Background(), fakeRegistry{}, fakeRegistry{},
+				map[string]string{cfgDiscoveryURL: "https://x/publish", needs: "something"})
+			if err == nil {
+				t.Errorf("%s was accepted with no dbDsn, and it has nowhere to keep what it finds", needs)
+			}
+		})
 	}
 }
 
@@ -247,5 +264,32 @@ func TestInt64Or_FallsBackOnInvalid(t *testing.T) {
 		if got := int64Or(in, 7); got != want {
 			t.Errorf("int64Or(%q, 7) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+func TestWithNoStoreOnlyTheRidingJobsRun(t *testing.T) {
+	src := &countingSource{}
+	ran := make(chan struct{}, 1)
+	sched := NewScheduler(crawlmanager.Params{Source: src},
+		SchedulerConfig{IndexInterval: time.Hour, CatalogInterval: time.Hour}, quietLog())
+	if err := sched.AfterCatalogSync(func(context.Context) {
+		select {
+		case ran <- struct{}{}:
+		default:
+		}
+	}); err != nil {
+		t.Fatalf("AfterCatalogSync: %v", err)
+	}
+
+	sched.Start(context.Background())
+	defer sched.Stop()
+
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the riding job never ran, so a crawler with no database does nothing at all")
+	}
+	if n := src.n.Load(); n != 0 {
+		t.Errorf("polled indexes %d times with no store to put them in", n)
 	}
 }
