@@ -4,6 +4,10 @@ Three capabilities across two schemes, written as the journeys a farmer actually
 Each scenario is complete on its own: the calls in order, and the payloads they carry.
 The appendices explain *why* each field is shaped the way it is.
 
+Two schema packs cover the three. **`Grievance`** serves both schemes — one `@type`, with
+`scheme.code` naming the desk — and **`SchemeApplication`** serves the application-status
+read. See [Appendix A](#appendix-a--where-every-field-sits).
+
 ---
 
 ## Contents
@@ -70,8 +74,9 @@ At a glance, the three differ like this:
 | Calls | `support` → `status` | `init` → `support`, then `init` → `status` | `init` → `status` |
 | Identity proof | none — PMFBY publishes no challenge | `SMS_OTP`, four digits, on the lodge **and** on the read | `SMS_OTP`, four digits, on the read |
 | Farmer is known by | application number on the way in, ticket number on the way back; the phone is an unverified contact | registration number | registration, mobile or Aadhaar number — the caller says which |
-| What comes back | ticket number, status, crop | ticket number, status, remarks | instalments paid, eKYC, what is blocking payment |
-| `@type` | `openagrinet:PMFBYGrievance` | `openagrinet:PMKISANGrievance` | `openagrinet:PMKISANApplicationStatus` |
+| What comes back | ticket number, status, crop | ticket number, status, the officer's reply | instalments paid, eKYC, what is blocking payment |
+| `@type` | `openagrinet:Grievance` | `openagrinet:Grievance` | `openagrinet:SchemeApplication` |
+| Told apart by | `scheme.code: PMFBY` | `scheme.code: PM-KISAN` | its own `@type` |
 
 ![Grievance flow of execution](grievance-flow.svg)
 
@@ -121,14 +126,13 @@ same HTTP response. Shortened here to the parts the scenarios use:
     "resources": [{
       "id": "res:pmfby:grievance",
       "resourceAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMFBYGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-        "challengeMethods": [],
         "grievanceOptions": {
-          "categories":    [ { "code": "3",  "descriptor": "…" } ],
-          "subCategories": [ { "code": "10", "descriptor": "…" } ]
+          "categories":    [ { "code": "3",  "name": "Enrollment / Portal Issues", "descriptor": "…" } ],
+          "subCategories": [ { "code": "10", "name": "Login",                      "descriptor": "…" } ]
         }
       }
     }],
@@ -148,26 +152,102 @@ What the scenarios take from that reply:
 Quote the ids exactly as they came. The full catalogs are
 [Appendix F](#appendix-f--what-the-adapter-publishes).
 
-`challengeMethods`, in that same excerpt, tells you whether the scenario needs an OTP:
+**Whether a desk asks for an OTP is read off the `challenge` object**, in that same
+excerpt:
 
-| `challengeMethods` | what it means | what you do |
+| in the catalog entry | what it means | what you do |
 |---|---|---|
-| `[]` | no OTP | go straight to the first real call |
-| `[{ "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC" }]` | an OTP is needed | call `init` first, every time; `length` and `valueType` size the input |
+| no `challenge` at all | no OTP | go straight to the first real call |
+| `challenge.methods: [{ "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC" }]` | an OTP is needed | call `init` first, every time; `length` and `valueType` size the input |
 
-PMFBY publishes `[]`. Both PM-KISAN desks publish one `SMS_OTP` entry. **Branch on
-`method`, not on the scheme name.** Each entry describes the whole mechanism, so you
-can design the OTP screen from this reply, before any transaction starts. It does not say
-*which* calls need an OTP. PM-KISAN asks for one on both the lodge and the read. That,
-and everything else a call must carry, is
+PMFBY's entry carries no `challenge`. Both PM-KISAN desks carry one with a single
+`SMS_OTP` entry under `methods`.
+
+**Absence is the answer here, not a question**, and that is a change from an earlier
+revision which published `challenge.methods: []`. The `Grievance` pack refuses the whole
+`challenge` object on its PMFBY branch — the declaration, the acknowledgement and the
+answer together — so a PMFBY entry cannot carry an empty list even if it wanted to.
+`scheme.code: PMFBY` already selects a branch on which no OTP can appear, so a caller
+reading a PMFBY entry without a `challenge` knows to open at `support`. Nothing is left
+ambiguous by the omission.
+
+**Branch on `method`, not on the scheme name.** Each entry describes the whole mechanism,
+so you can design the OTP screen from this reply, before any transaction starts. It does
+not say *which* calls need an OTP. PM-KISAN asks for one on both the lodge and the read.
+That, and everything else a call must carry, is
 [Appendix C](#appendix-c--required-fields-by-call).
 
 Draw the complaint form from `grievanceOptions`. `code` is what you send,
 `name` is the portal's label, `descriptor` is plain-language help text for the farmer.
-PMFBY publishes `categories` and `subCategories`, with no `name` on either, so show the
-`descriptor`. PM-KISAN publishes `categories` only: ten of them, a closed list.
+PMFBY publishes `categories` and `subCategories` — one of each, the only pair known to
+work. PM-KISAN publishes `categories` only: ten of them, a closed list.
 
 **Send `code` alone.** A `name` beside it is dropped, and `descriptor` never travels.
+That rule is about a code you looked up: sending a name that disagrees with the code you
+picked is a bug waiting to happen, so only the code travels. `scheme` is not a lookup —
+you may send `scheme.name` beside `scheme.code` and the adapter ignores it.
+
+### What you hold after `discover`, and what to call next
+
+`discover` is the only call that tells you anything about a desk you have not used
+before. Everything in the table below comes out of that one reply, and all of it is
+reusable: cache it and start each new grievance from the values you already have.
+
+| you now hold | from | you use it to |
+|---|---|---|
+| `provider.id` | `catalogs[].provider.id` | address every later call — as `offer.provider.id` on `init` and `status`, as `channels[].provider.id` on `support` |
+| `offers[].id`, `resources[].id` | the catalog | quote back, unchanged, in every commitment |
+| `scheme.code` | `resourceAttributes.scheme.code` | send on every call; it is what picks PMFBY or PM-KISAN inside one shared `@type` |
+| whether `challenge` is present | `resourceAttributes.challenge` | decide whether an `init` call comes first |
+| `challenge.methods[].length`, `.valueType` | the same object | size and type the OTP box before the farmer ever starts |
+| `grievanceOptions.categories`, `.subCategories` | the same object | build the complaint form |
+| `@context` | `resourceAttributes.@context` | the pack URL; swap `context.jsonld` for `attributes.yaml` to read every field and its bounds |
+
+Then pick the sequence from what the farmer wants:
+
+| the farmer wants to | the desk | you call |
+|---|---|---|
+| file a complaint | PMFBY — no `challenge` in its entry | `support` |
+| file a complaint | PM-KISAN — `challenge` present | `init`, then `support` |
+| check a complaint | PMFBY | `status` |
+| check a complaint | PM-KISAN | `init`, then `status` |
+| check an application | PM-KISAN, the `SchemeApplication` entry | `init`, then `status` |
+
+The rule behind the table is one line: **`challenge` in the catalog entry means an `init`
+call goes in front of every guarded call** — and for PM-KISAN that means both the lodge
+and the read, one fresh OTP each.
+
+### What each call hands to the next
+
+Within a scenario, each response carries the value the following request needs. This is
+the part `discover` cannot give you, because it only exists once a farmer is in the flow.
+
+| after | you hold | which the next call sends as |
+|---|---|---|
+| `on_init` | the window the OTP is valid for — `challenge.issued.expiresAt` | nothing. The farmer types the OTP; you send it as `challenge.response.value` with `challenge.response.method` copied from `challenge.issued.method` |
+| `on_support` (PMFBY) | `case.ticketNo` | `case.ticketNo` on the `status` call |
+| `on_support` (PM-KISAN) | `case.ticketNo`, `case.filedOn`, `enrolmentId` | `case.filedOn` and `enrolmentId` on the `status` call — that desk reads by date, not by ticket, so the ticket number is for showing the farmer, not for the next call |
+| `on_status` | the record itself | nothing. It is the end of the sequence |
+
+**Not every required field comes from a response.** A `status` call needs more than the
+response before it handed back, and the rest has to come from what the Experience layer
+is already holding for that farmer:
+
+| to call `status` on | you must send | which comes from |
+|---|---|---|
+| PMFBY | `case.ticketNo` | `on_support`, or the farmer typing it in |
+| PMFBY | `applicantMobile` | your own session. No response ever returns it — the schema refuses it on an answer |
+| PM-KISAN grievance | `enrolmentId`, `case.filedOn` | `on_support` |
+| PM-KISAN grievance | `challenge.response.method`, `challenge.response.value` | a fresh `init`, then the farmer |
+| PM-KISAN application | `challenge.response.method`, `challenge.response.value` | a fresh `init`, then the farmer |
+
+Two things never travel between calls. **The OTP is spent on the call it is sent with**
+— a PM-KISAN lodge and a later read need two separate `init` calls. And
+**`transactionId` is new for each scenario**, not reused across a lodge and a read: they
+are two transactions about one case, tied together by what identifies the case on that
+desk — the ticket number on PMFBY, `enrolmentId` with `case.filedOn` on PM-KISAN — and
+not by the context. Within one scenario `contract.id` does carry across, from `init` to
+the `status` that follows it. See [Appendix C](#appendix-c--required-fields-by-call).
 
 ---
 
@@ -197,10 +277,10 @@ the only way to find the complaint again later. See §3.2.
   offers a choice. They are two separate fields. Never join them into one string
   like `3.10`. Send `code`; any `name` beside it is dropped.
 - **`channels[0]`** — the provider to route to, plus everything identifying the enrolment.
-  No `challenge`: PMFBY asks for no OTP. `applicantPhone` is a contact number the portal
-  files on the ticket; it is never verified.
+  No `challenge`: the PMFBY branch refuses the whole object. `applicantMobile` is a
+  contact number the portal files on the ticket; it is never verified.
 - **`cropYear`, `season`** — both required when filing, and both identify the enrolment.
-  `season` is `Kharif`, `Rabi` or `Zaid`. Neither comes back on a read.
+  `season` is `Kharif`, `Rabi` or `Zaid`. The portal returns both on a read.
 - **`complaintDate`** — optional. Leave it out and the adapter stamps today's date in IST.
   Send it only if the farmer filed earlier, such as an offline form replayed later. It
   comes back as `case.filedOn`.
@@ -218,8 +298,8 @@ POST /support
   "message": {
     "support": {
       "channels": [{
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMFBYGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "provider": {
           "id": "pmfby",
@@ -227,7 +307,7 @@ POST /support
         },
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "enrolmentId": "KA2026KH00123456",
-        "applicantPhone": "9876543210",
+        "applicantMobile": "9876543210",
         "cropYear": "2026",
         "season": "Kharif",
         "grievance": {
@@ -249,7 +329,11 @@ POST /support
 - **`case.ticketNo`** — the ticket the portal just issued.
 - **`informationMode`** — flips to `Direct`.
 - **`grievance`** — the caller's own text, echoed back.
-- **`applicantPhone`** — not returned. Keep what you sent.
+- **`applicantMobile`** — not returned. Keep what you sent. The pack refuses it on a
+  `Direct` payload, along with `complaintDate` and `receiptSourceId`: the mobile is
+  personal data, the date is the farmer's own rather than the portal's, and the receipt
+  source names our channel. `cropYear` and `season` are not refused — the portal reports
+  those back.
 
 ```json
 {
@@ -257,8 +341,8 @@ POST /support
   "message": {
     "support": {
       "channels": [{
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMFBYGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "Direct",
         "provider": {
           "id": "pmfby",
@@ -300,7 +384,7 @@ and resource ids below come from the catalog, as on every call.
 - **New `transactionId` and new `contract.id`** — a separate session. Nothing carries over
   from the filing call.
 - **No `grievance` band.** This call names a ticket; it does not repeat the complaint.
-- **`case.ticketNo` and `applicantPhone`** — those two identify the case. Nothing else does.
+- **`case.ticketNo` and `applicantMobile`** — those two identify the case. Nothing else does.
 - **No `challenge`.** There is no OTP anywhere in PMFBY.
 - **`status.descriptor.code`** — the *contract's* lifecycle, not the grievance's. Open at
   `ACTIVE`. `DRAFT` means a challenge is waiting, and PMFBY never uses it. See Appendix B.
@@ -329,11 +413,11 @@ POST /status
       },
       "resources": [{ "id": "res:pmfby:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMFBYGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-        "applicantPhone": "9876543210",
+        "applicantMobile": "9876543210",
         "case": { "ticketNo": "100626000099001" }
       }
     }]
@@ -349,13 +433,17 @@ POST /status
   `support` used. The request did not send it; the portal returns it.
 - **`case.status`** — a `CaseStatusCode` and nothing else. The portal's own phrase is
   not forwarded. See Appendix B.
-- **No remark.** PMFBY sends no reply text, so `case.remark` and `case.remarkedOn` never
-  appear.
+- **`case.reply`** — the portal's answer, from its `latestRemark` field. Absent while the
+  ticket is unanswered: PMFBY sends an empty string there, and an empty reply is dropped
+  rather than forwarded as blank. **No reply date** comes with it, so `case.repliedOn`
+  never appears and the branch refuses it.
+- **`cropYear` and `season`** — returned as well as sent. The portal reports both.
 - **`case.cropName`** — the insured crop, as the portal names it. PMFBY alone returns it,
   and it is never sent.
-- **The category comes back as a name with no code**, shown as `…` below. You cannot match it
-  back to the catalog entry, so show what the portal sent.
-- **Dropped:** the farmer's name, state, district, the insurer and an internal ticket key.
+- **The category comes back with both a code and a name**, so it matches the catalog
+  entry the farmer picked from.
+- **Dropped:** thirty-four of the forty-five fields the portal sends — the farmer's name,
+  mobile and address, the insurer and policy number, and every internal row id.
 
 ```json
 {
@@ -371,8 +459,8 @@ POST /status
       },
       "resources": [{ "id": "res:pmfby:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMFBYGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "Direct",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "enrolmentId": "KA2026KH00123456",
@@ -420,7 +508,7 @@ already holds one against that registration, and that is where the OTP goes.
 Because PM-KISAN publishes an `SMS_OTP` entry, filing takes two calls. The first asks for the
 OTP. The second carries it, together with the complaint.
 
-    init(enrolmentId) → on_init(challengeIssued) → support(+ challenge) → on_support
+    init(enrolmentId) → on_init(challenge.issued) → support(+ challenge) → on_support
 
 #### The call — `init`
 
@@ -449,8 +537,8 @@ POST /init
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "enrolmentId": "UP12345678A"
@@ -463,9 +551,9 @@ POST /init
 #### What comes back — `on_init`
 
 - **Stays `DRAFT`.** The OTP is never returned.
-- **`challengeIssued`** — `method`, `length`, `valueType`, `expiresAt`. **There is no
+- **`challenge.issued`** — `method`, `length`, `valueType`, `expiresAt`. **There is no
   `sentTo`.** PM-KISAN does not say which number it texted, and no capability on this
-  page returns one.
+  page returns one; the packs carry no such field at all.
 - **Draw the OTP input from `method`, `length` and `valueType`** — the mechanism, how many
   characters to collect, and what they are made of. `SMS_OTP` says both how the code is sent
   and what kind of code it is, so it is also what you read to tell the farmer to check
@@ -477,13 +565,15 @@ POST /init
 
 ```json
 "commitmentAttributes": {
-  "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-  "@type": "openagrinet:PMKISANGrievance",
+  "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+  "@type": "openagrinet:Grievance",
   "informationMode": "OnDemand",
   "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-  "challengeIssued": {
-    "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC",
-    "expiresAt": "2026-09-28T11:08:00Z"
+  "challenge": {
+    "issued": {
+      "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC",
+      "expiresAt": "2026-09-28T11:08:00Z"
+    }
   }
 }
 ```
@@ -494,8 +584,10 @@ POST /init
   channel with everything else.
 - **`grievance.category.code`** — one of the pack's ten codes. Send the code alone; any
   `name` beside it is dropped, as on PMFBY.
-- **`challenge.value`** — the OTP from `on_init`, of the `length` it announced. Never
-  echoed back.
+- **`challenge.response`** — `method` and the `value` from `on_init`, of the `length` it
+  announced. The three members of `challenge` are mutually exclusive: `methods` on a
+  catalog entry, `issued` on an acknowledgement, `response` on a call that spends the
+  code. Never echoed back.
 - **`channels[0]`** — the `provider`, the scheme, the `enrolmentId`, the `grievance` band
   and the `challenge`. No phone number and no contract: `support` carries neither.
 
@@ -510,8 +602,8 @@ POST /support
   "message": {
     "support": {
       "channels": [{
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "provider": {
           "id": "pmkisan",
@@ -523,7 +615,9 @@ POST /support
           "category": { "code": "G003" },
           "description": "Third instalment for 2026 has not been credited."
         },
-        "challenge": { "method": "SMS_OTP", "value": "4821" }
+        "challenge": {
+          "response": { "method": "SMS_OTP", "value": "4821" }
+        }
       }]
     }
   }
@@ -554,8 +648,8 @@ G005 Problem in Aadhaar correction            G010 Problem in facial-based eKYC
   "message": {
     "support": {
       "channels": [{
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "Direct",
         "provider": {
           "id": "pmkisan",
@@ -590,7 +684,7 @@ else is asked for again: a fresh `init`, a fresh OTP, a fresh `contract.id`.
 A read is challenged just as the filing was. A registration number on its own would return
 every grievance ever lodged against it, so PM-KISAN asks for an OTP here too.
 
-    init(enrolmentId) → on_init(challengeIssued) → status(+ challenge) → on_status
+    init(enrolmentId) → on_init(challenge.issued) → status(+ challenge) → on_status
 
 #### The first call — `init`, again
 
@@ -619,8 +713,8 @@ POST /init
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "enrolmentId": "UP12345678A"
@@ -669,13 +763,15 @@ POST /status
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "enrolmentId": "UP12345678A",
         "case": { "filedOn": "2026-09-28" },
-        "challenge": { "method": "SMS_OTP", "value": "7390" }
+        "challenge": {
+          "response": { "method": "SMS_OTP", "value": "7390" }
+        }
       }
     }]
   }}
@@ -711,8 +807,8 @@ POST /status
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANGrievance",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@type": "openagrinet:Grievance",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "grievance": {
@@ -721,8 +817,8 @@ POST /status
         "case": {
           "status": { "code": "Replied" },
           "filedOn": "2026-09-28",
-          "remark": "Bank account seeded with Aadhaar; payment in next cycle.",
-          "remarkedOn": "2026-10-01"
+          "reply": "Bank account seeded with Aadhaar; payment in next cycle.",
+          "repliedOn": "2026-10-01"
         }
       }
     }]
@@ -738,10 +834,17 @@ and every read needs an OTP of its own.
 ## 5. PM-KISAN application status
 
 The same portal and the same OTP service as the grievance capability, asked a different
-question. Nothing is filed here: no `support` call, no ticket, no lifecycle. The pack
-refuses the `grievance` and `case` bands. A payload carrying either is rejected,
-not quietly ignored. [Appendix A](#appendix-a--where-every-field-sits) has the two bands it
-uses instead.
+question. Nothing is filed here: no `support` call, no ticket, no lifecycle. This is a
+pack of its own, `SchemeApplication`, sharing the scheme-service layer — `scheme`,
+`enrolmentId` and the whole `challenge` object — with `Grievance` and nothing else. It
+refuses `grievance`, `case` and `grievanceOptions` by name. A payload carrying any of
+them is rejected, not quietly ignored. [Appendix A](#appendix-a--where-every-field-sits)
+has the two bands it uses instead.
+
+It also refuses `provider` in the attributes. Both of its actions carry a `Contract`, so
+the participant is already named at `commitments[].offer.provider`, and a second copy
+inside the attributes is just somewhere for the two to disagree. The grievance pack keeps
+`provider` because the `support` call carries no contract to read it from.
 
 - **The OTP is shared with the grievance capability**, and every read opens a fresh `init`.
   See [§4.2](#42-scenario--checking-it-four-days-later).
@@ -760,7 +863,7 @@ capability accepts a registration number, a mobile number or an Aadhaar number, 
 caller says which of the three it is sending by the slot it puts it in. The registration
 number comes back in the answer either way.
 
-    init(applicant) → on_init(challengeIssued) → status(+ challenge) → on_status
+    init(applicant) → on_init(challenge.issued) → status(+ challenge) → on_status
 
 #### The call — `init`
 
@@ -792,11 +895,11 @@ POST /init
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANApplicationStatus",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+        "@type": "openagrinet:SchemeApplication",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicant": { "mobile": "9999999999" }
+        "applicant": { "mobile": "9876543210" }
       }
     }]
   }}
@@ -806,7 +909,7 @@ POST /init
 #### What comes back — `on_init`
 
 - **Stays `DRAFT`.** The OTP is never returned.
-- **`challengeIssued`** — `method`, `length`, `valueType` and `expiresAt`. No `sentTo`,
+- **`challenge.issued`** — `method`, `length`, `valueType` and `expiresAt`. No `sentTo`,
   and `expiresAt` is the adapter's window rather than a portal deadline. All as in §4.1.
 - **`applicant` is not echoed.** The caller knows what they sent, and on a `Mobile` lookup
   echoing it would put the number back on the wire for no gain.
@@ -814,13 +917,15 @@ POST /init
 
 ```json
 "commitmentAttributes": {
-  "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
-  "@type": "openagrinet:PMKISANApplicationStatus",
+  "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+  "@type": "openagrinet:SchemeApplication",
   "informationMode": "OnDemand",
   "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-  "challengeIssued": {
-    "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC",
-    "expiresAt": "2026-10-07T11:08:00Z"
+  "challenge": {
+    "issued": {
+      "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC",
+      "expiresAt": "2026-10-07T11:08:00Z"
+    }
   }
 }
 ```
@@ -829,7 +934,7 @@ POST /init
 
 - **The same identifier sent on `init`** — `enrolmentId` or `applicant`, unchanged.
 - **`contract.id`** — the one created on `init`. The commitment moves to `ACTIVE`.
-- **`challenge.value`** — the OTP from `on_init`. Never echoed back, logged or traced.
+- **`challenge.response.value`** — the OTP from `on_init`. Never echoed back, logged or traced.
 
 ```json
 POST /status
@@ -850,12 +955,14 @@ POST /status
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANApplicationStatus",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+        "@type": "openagrinet:SchemeApplication",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-        "applicant": { "mobile": "9999999999" },
-        "challenge": { "method": "SMS_OTP", "value": "4827" }
+        "applicant": { "mobile": "9876543210" },
+        "challenge": {
+          "response": { "method": "SMS_OTP", "value": "4827" }
+        }
       }
     }]
   }}
@@ -867,7 +974,10 @@ POST /status
 - **`informationMode`** — flips to `Direct`. This one carries a real record.
 - **`enrolmentId`** — the registration number the portal **looked up**. The
   caller asked by mobile and gets the registration back. It is the only identifier returned.
-- **`applicant`** — never echoed, whichever way the ask was made.
+- **`applicant`** — never echoed, whichever way the ask was made, and that is structural:
+  the band is refused on a `Direct` payload, so an answer carrying a mobile or an Aadhaar
+  number does not validate. The mirror rule holds on the way in — `application` is
+  refused on an `OnDemand` payload, because every field in it is the portal's.
 - **`blockers`** — a set. Two blockers are two separate things for the farmer to fix.
 - **`CLOSED`.** The question is answered and nothing remains open.
 
@@ -885,14 +995,14 @@ POST /status
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
-        "@type": "openagrinet:PMKISANApplicationStatus",
+        "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+        "@type": "openagrinet:SchemeApplication",
         "informationMode": "Direct",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "enrolmentId": "UP45678901C",
         "application": {
           "registeredOn": "2021-06-14T00:00:00+05:30",
-          "latestInstallmentPaid": 15,
+          "latestInstalmentPaid": 15,
           "ekyc": { "code": "Pending" },
           "blockers": [
             { "code": "LandSeedingPending", "name": "Land Seeding, KYS" },
@@ -912,14 +1022,14 @@ values differ too:
 
 ```json
 "commitmentAttributes": {
-  "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
-  "@type": "openagrinet:PMKISANApplicationStatus",
+  "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+  "@type": "openagrinet:SchemeApplication",
   "informationMode": "Direct",
   "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
   "enrolmentId": "UP77554433D",
   "application": {
     "registeredOn": "2021-02-08T00:00:00+05:30",
-    "latestInstallmentPaid": 22,
+    "latestInstalmentPaid": 22,
     "ekyc": { "code": "Done" },
     "blockers": []
   }
@@ -947,7 +1057,7 @@ portal's own wording intact, so an `Other` blocker still makes sense to the farm
 `application.ekyc.code` is `Done` or `Pending`. Anything the adapter cannot read becomes
 `Pending`, never a guess at `Done`.
 
-`latestInstallmentPaid` is a count of instalments paid, not an instalment number. `0` is an
+`latestInstalmentPaid` is a count of instalments paid, not an instalment number. `0` is an
 answer, not a missing value.
 
 `registeredOn` is a date-time, but only the date is meaningful: the time is always
@@ -967,54 +1077,86 @@ a fresh OTP: `CLOSED` closes that one question, not the capability.
 
 ## Appendix A — Where every field sits
 
-**The band a field sits in says who wrote it.**
+**The band a field sits in says who wrote it**, and in most cases which direction it
+travels. Everything the grievance is about rides in the attributes, on every call. Learn
+these bands once and every grievance example reads the same way. Application status swaps
+two of them, at the end of this appendix.
 
-Everything the grievance is about travels in the attributes, on every call. Learn these
-five bands once and every grievance example reads the same way. Application status swaps
-two of them. That is at the end of this appendix.
+| band | holds | written by | travels |
+|---|---|---|---|
+| top level | who is asking and about what: `informationMode`, `provider`, `scheme`, `enrolmentId` | the caller | both ways |
+| top level, PMFBY only | the caller's own inputs: `applicantMobile`, `complaintDate`, `receiptSourceId` | the caller | inbound only |
+| top level, PMFBY only | the enrolment's crop cycle: `cropYear`, `season` | the caller | both ways |
+| `grievance` | what the farmer submitted: `category`, `subCategory`, `description` | the farmer | both ways |
+| `case` | the record the portal holds: `ticketNo`, `status`, `filedOn`, `cropName`, `reply`, `repliedOn` | the portal, except the read selector | outbound, except the selector |
+| `challenge.methods` | what this desk challenges with, published in the catalog | the portal | the catalog entry only |
+| `challenge.issued` | the acknowledgement and the shape of the code it sent: `method`, `length`, `valueType`, `expiresAt` | the portal | outbound only |
+| `challenge.response` | the code itself: `method`, `value` | the caller | inbound only |
 
-| band | holds | written by |
-|---|---|---|
-| top level | who is asking and about what: `informationMode`, `provider`, `scheme`, `enrolmentId`, and the PMFBY-only `applicantPhone`, `cropYear`, `season` | the caller |
-| `grievance` | what the farmer submitted: `category`, `subCategory`, `description` | the farmer |
-| `case` | the record the portal holds: `ticketNo`, `status`, `filedOn`, and, by scheme, `cropName` or `remark` + `remarkedOn` | the portal |
-| `challenge` | proof of identity, on the way in only — PM-KISAN only | the caller |
-| `challengeIssued` | the acknowledgement of that proof and the shape of the code it sent: `method`, `length`, `valueType`, `expiresAt` — PM-KISAN only | the portal |
+**One `challenge` object, three members, exactly one of them present.** The pack closes
+the container with a `oneOf`, so a catalog entry cannot carry a live code beside the
+declaration it publishes, and an acknowledgement cannot ride with an answer. PMFBY
+carries no `challenge` at all.
 
-The `case` band differs by scheme. PMFBY returns `cropName` and never a remark; its pack
-refuses `remark` and `remarkedOn`. PM-KISAN returns `remark` and `remarkedOn` and has no
-crop. Both return `status` and `filedOn`. `ticketNo` comes back on every PMFBY call and on
-PM-KISAN's lodge, but not on a PM-KISAN read: that call answers per identity, not per
-ticket.
+**The inbound-only rows are enforced, not merely described.** The five PMFBY-only
+top-level fields and `challenge.response` are all refused on a `Direct` payload, so none
+of them can be echoed back. The one place the `case` band is written by the caller is the
+read selector — PMFBY's `case.ticketNo`, PM-KISAN's `case.filedOn` — and nothing else in
+the band may be sent.
 
-The two challenge bands belong to PM-KISAN alone; PMFBY carries neither. PM-KISAN's OTP
-is four digits, and `challengeIssued` says so on every `init`. Read `length` and
-`valueType` rather than fixing it. It carries no `sentTo`: the portal does not say where
-it sent the OTP.
+The `case` band is shared and each scheme fills part of it. Both return `reply`, but
+only PM-KISAN dates it — PMFBY sends no reply date, so its branch refuses `repliedOn`.
+PMFBY returns `cropName`; PM-KISAN refuses it. Both return `status` and `filedOn`. `ticketNo` comes
+back on every PMFBY call and on PM-KISAN's lodge, but not on a PM-KISAN read: that call
+answers per identity, not per ticket.
 
-**PM-KISAN application status swaps two bands for two others.** It refuses `grievance` and
-`case`: nothing is filed there and nothing has a lifecycle. In their place:
+PM-KISAN's OTP is four digits, and `challenge.issued` says so on every `init`. Read
+`length` and `valueType` rather than fixing it. There is no `sentTo` anywhere in either
+pack: no desk here reports where it sent a code.
 
-| band | holds | written by |
-|---|---|---|
-| `applicant` | who to look up, and by what kind of identifier | the caller |
-| `application` | what the portal holds against that identity | the portal |
+**`SchemeApplication` swaps two bands for two others, and drops a third.** It refuses
+`grievance`, `case` and `grievanceOptions` — nothing is filed there and nothing has a
+lifecycle — and refuses `provider`, which belongs to a `support` call this capability does
+not have. In their place:
 
-The top level, `challenge` and `challengeIssued` are unchanged. One top-level field changes
-hands: `enrolmentId` is written by the *portal* there, not the caller. See
-[§5](#5-pm-kisan-application-status).
+| band | holds | written by | travels |
+|---|---|---|---|
+| `applicant` | who to look up, and by what kind of identifier | the caller | inbound only |
+| `application` | what the portal holds against that identity | the portal | outbound only |
+
+Both of those are enforced each way, as the PMFBY rows are: `applicant` is refused on a
+`Direct` payload and `application` on an `OnDemand` one. The `challenge` object is
+unchanged. One top-level field changes hands: `enrolmentId` is written by the *portal*
+there as often as by the caller. See [§5](#5-pm-kisan-application-status).
+
+**Below the top level, every band is closed.** `grievance`, `case`, `applicant` and
+`application` all reject an unknown key outright. The attribute object's own root cannot
+be closed the same way — it is composed from several schemas, and closing it would reject
+every valid payload — so a stray *top-level* key is accepted where a stray key inside a
+band is not. That one-level gap is why fields that must not appear are refused by name
+rather than merely left undeclared.
 
 Nothing rides in a Beckn `descriptor`. The category, the sub-category and the farmer's
-words are all attribute fields.
+words are all attribute fields. Where a `Descriptor` *is* composed — `scheme`, the two
+category slots, `case.status`, `provider.descriptor` — it carries `code` and `name` and
+nothing else: `longDesc`, `shortDesc`, `thumbnailImage`, `docs` and `mediaFile` are
+refused by name in every one of those slots, so a portal's free text has no side door
+into a payload. The single exception is `application.blockers[].name` in
+[§5](#5-pm-kisan-application-status), and it is deliberate.
 
-| | on `support` | on `init` / `status` |
-|---|---|---|
-| the bands above | `support.channels[0]`, selected by `@type` | `commitmentAttributes` |
-| `provider` | in the attributes | `commitments[].offer.provider`; the attributes do **not** repeat it |
+| | on `discover` | on `support` | on `init` / `status` |
+|---|---|---|---|
+| the bands above | not there — no case exists yet | `support.channels[0]`, selected by `@type` | `commitmentAttributes` |
+| the declaration | `catalogs[].resources[].resourceAttributes` | — | — |
+| `provider` | `catalogs[].provider` | in the attributes | `commitments[].offer.provider`; the attributes do **not** repeat it |
 
-**No field moves between slots.** The container changes (`support.channels[0]` on one
-call, `commitmentAttributes` on the others), and every field keeps its name and its
-position inside it. A reader writes `.enrolmentId` once and it works on every action.
+The declaration row is the one place this capability behaves like the OAN domain packs:
+what a desk accepts is catalogable, so it is published on `resourceAttributes`. A case is
+not, which is why it rides anywhere but there.
+
+**No field moves between slots.** The container changes (`resourceAttributes` in a
+catalog, `support.channels[0]` on one call, `commitmentAttributes` on the others), and
+every field keeps its name and its position inside it. A reader writes `.enrolmentId` once and it works on every action.
 
 `Support.orderId` is not used: nothing here is an order, and `enrolmentId` is an
 attribute like every other.
@@ -1042,9 +1184,11 @@ the case.
 Several fields carry a `code`, and some of them carry a `name` beside it. The pair does
 not mean the same thing everywhere.
 
-**Both members ours.** `scheme`, and a `category` on a catalog entry. `code` is the short form,
-`name` is the long form of the same thing: `PMFBY` and `Pradhan Mantri Fasal Bima
-Yojana`. They cannot disagree, and both are always there.
+**Both members ours.** `scheme`, and a `category` or `subCategory` on a catalog entry.
+`code` is the short form, `name` is the long form of the same thing: `PMFBY` and
+`Pradhan Mantri Fasal Bima Yojana`. They cannot disagree, and both are always there.
+On a catalog entry a third member rides beside them, `descriptor`: plain-language help
+text for the farmer's screen, written by us and sent nowhere.
 
 **Our code beside the portal's phrase.** Only `application.blockers` works this way now.
 `code` is our grouping, `name` is the text the portal actually sent, word for word.
@@ -1112,10 +1256,10 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 | field | `support` | `status` |
 |---|---|---|
 | `contract.id` | — no contract | required — caller-created |
-| `enrolmentId` | required — the application number | — the portal returns it on `on_status` |
-| `applicantPhone` | required | required |
-| `cropYear` | required — four digits | — |
-| `season` | required — `Kharif`, `Rabi` or `Zaid` | — |
+| `enrolmentId` | required — the application number, 10 to 30 characters | — the portal returns it on `on_status` |
+| `applicantMobile` | required | required |
+| `cropYear` | required — four digits | — returned on `on_status` |
+| `season` | required — `Kharif`, `Rabi` or `Zaid` | — returned on `on_status` |
 | `complaintDate` | optional — `YYYY-MM-DD`; defaults to today in IST | — |
 | `receiptSourceId` | optional — your PMFBY channel id; defaults to the adapter's | — |
 | `grievance.category.code` | optional — defaults to the published pair | — |
@@ -1128,11 +1272,12 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 | field | `init` | `support` | `status` |
 |---|---|---|---|
 | `contract.id` | required — caller-created | — no contract | required — the same value as the `init` before it |
-| `enrolmentId` | required — the registration number | required — the same value | required — the same value |
+| `enrolmentId` | required — the registration number, 6 to 20 characters | required — the same value | required — the same value |
 | `grievance.category.code` | — | required — one of `G001`–`G010` | — |
 | `grievance.description` | — | required — 10 to 2000 characters | — |
-| `challenge.method` | — | required — `SMS_OTP` | required — `SMS_OTP` |
-| `challenge.value` | — | required — the OTP the farmer received | required — a fresh OTP |
+| `challenge.response.method` | — | required — `SMS_OTP` | required — `SMS_OTP` |
+| `challenge.response.value` | — | required — the OTP the farmer received | required — a fresh OTP |
+| `case.cropName` | — | — | — refused on this branch |
 | `case.filedOn` | — | — | required — from `on_support` |
 
 `challenge` is the real difference from PMFBY, which has none on either call. PM-KISAN
@@ -1140,8 +1285,11 @@ challenges the read as well as the lodge because its read is matched on a regist
 number, which returns everything filed against it. PMFBY's is matched on a ticket number
 only the filer holds.
 
-PM-KISAN uses no `applicantPhone`, `cropYear` or `season`, and its pack refuses
-`grievance.subCategory`.
+The PM-KISAN branch refuses `applicantMobile`, `cropYear`, `season`, `complaintDate`,
+`receiptSourceId`, `grievance.subCategory`, `grievanceOptions.subCategories` and
+`case.cropName` — PMFBY's fields, every one. They are refused by name rather than left
+undeclared, because the attribute root is open and an undeclared field would otherwise be
+accepted. See [Appendix A](#appendix-a--where-every-field-sits).
 
 ### C.3 PM-KISAN application status
 
@@ -1150,8 +1298,8 @@ PM-KISAN uses no `applicantPhone`, `cropYear` or `season`, and its pack refuses
 | `contract.id` | required — caller-created | required — the same value as the `init` before it |
 | `enrolmentId` | one of these two — the registration number | the same value |
 | `applicant` | one of these two — exactly one of `mobile`, `aadhaar` | the same member, the same value |
-| `challenge.method` | — | required — `SMS_OTP` |
-| `challenge.value` | — | required — the OTP from `on_init` |
+| `challenge.response.method` | — | required — `SMS_OTP` |
+| `challenge.response.value` | — | required — the OTP from `on_init` |
 
 **Exactly one of `enrolmentId` and `applicant`, never both and never neither.** Sending
 both names the same farmer twice with no rule for which wins; sending neither names no one.
@@ -1172,7 +1320,7 @@ slot is held to its own shape:
 
 | slot | the shape required | sent upstream as |
 |---|---|---|
-| `enrolmentId` | ASCII alphanumeric, up to 20 — no digit rule, which is the whole point; twelve bare digits is refused, so an Aadhaar number cannot be smuggled in here | `Ben_id` |
+| `enrolmentId` | ASCII alphanumeric, 6 to 20 — no digit rule, which is the whole point; twelve bare digits is refused, so an Aadhaar number cannot be smuggled in here | `Ben_id` |
 | `applicant.mobile` | `^[6-9][0-9]{9}$` | `Mobile` |
 | `applicant.aadhaar` | `^[0-9]{12}$` | `Aadhar` — the upstream's spelling, not ours |
 
@@ -1190,11 +1338,14 @@ Everything else is optional. The `name` beside any `code`, `provider.descriptor.
   carries no record.
 - **Secrets go one way; identifiers do not.** PM-KISAN is the only scheme here with a
   challenge.
-  - `challenge` is sent, never returned, never logged. `challenge.value` never reaches the
-    lodge call. Both PM-KISAN packs enforce the return half structurally: a payload
-    carrying `challenge` must be a request, so neither a `Direct` record nor the `init`
-    acknowledgement can carry it and still validate.
-  - `challengeIssued` is the other half: returned, never sent, never secret.
+  - `challenge.response` is sent, never returned, never logged, and its `value` never
+    reaches the lodge call. Both packs enforce the return half structurally: a payload
+    carrying it must be a request, so a `Direct` record cannot carry it and validate, and
+    the `oneOf` on the container stops the `init` acknowledgement carrying it too.
+  - `challenge.issued` is the other half: returned, never sent, never secret.
+  - `challenge.methods` is neither: published on the catalog entry and never sent on a
+    transaction. A payload carrying it must be a catalog entry — `OnDemand`, naming no
+    farmer — so a declaration cannot ride alongside a real lookup.
   - `enrolmentId` is an identifier, not a secret, so it does come back: echoed on
     `on_support`, and returned again on PMFBY's `on_status`. It sits in the attributes
     object every time, and stays `no-log` and `no-trace` either way. PM-KISAN's grievance
@@ -1215,9 +1366,16 @@ Everything else is optional. The `name` beside any `code`, `provider.descriptor.
 - **The response is an allow-list, not a passthrough.** Both portals return far more about
   the farmer than any of these capabilities return: name, parentage, gender, phone, full
   address. The adapter maps the fields the pack names and drops the rest. A field that is
-  absent here is left out on purpose, not overlooked.
+  absent here is left out on purpose, not overlooked. The bands help: `grievance`, `case`,
+  `applicant` and `application` are closed, so a stray portal field copied into one of
+  them is rejected rather than carried. The attribute root cannot be closed, so a stray
+  key at the *top* level is still the adapter's to prevent.
 - **The portal's own message is never returned.** It may carry a stack trace, an internal
-  hostname or a quoted-back credential. Log it redacted and return our own message.
+  hostname or a quoted-back credential. Log it redacted and return our own message. There
+  is exactly one deliberate exception on this page: `application.blockers[].name` in
+  [§5](#5-pm-kisan-application-status), where the phrase *is* the answer and an `Other`
+  blocker would otherwise tell the farmer nothing. It is marked no-log and no-trace, so
+  it reaches the caller and nowhere else.
 - **How many wrong OTPs are allowed is unknown.** Neither portal nor the v1 adapter counts
   attempts or records a lockout, so nobody knows what happens after repeated failures.
   If PM-KISAN locks a registration after a number of failures, callers need that number
@@ -1240,8 +1398,13 @@ to**.
 | PMFBY | a mobile number the caller supplies; the application number is never passed | the caller controls *some* phone. Nothing ties it to the policy |
 
 PM-KISAN's challenge binds the caller to the record. PMFBY's would bind them to nothing,
-which is why this network does not borrow it and publishes `[]` instead. The one PMFBY
-operates belongs to its policy flow, on a different service with different credentials.
+which is why this network does not borrow it, and why the pack refuses the whole
+`challenge` object on the PMFBY branch rather than publishing an empty list. The one
+PMFBY operates belongs to its policy flow, on a different service with different
+credentials.
+
+If PMFBY ever adds a challenge to its grievance service, drop the refusal and publish
+`challenge.methods` on that branch. Nothing else on this page moves.
 
 > **An unchallenged desk is an unauthenticated one.** Nothing proves a PMFBY caller is the
 > farmer. Anyone with an application number can lodge a grievance against it, and PMFBY
@@ -1296,7 +1459,7 @@ further coming.
     "messageId": "2f8c…",
     "error": {
       "code": "BIZ_NO_RESULTS_FOUND",
-      "message": "No grievance matches this ticket and phone number."
+      "message": "No grievance matches this ticket and mobile number."
     }
   }
 }
@@ -1304,12 +1467,13 @@ further coming.
 
 Three rules, for every error on this page:
 
-- **`details.path` follows the field, not the action.** A missing phone is
-  `$.message.support.channels[0].applicantPhone` on `support` and
-  `$.message.contract.commitments[0].commitmentAttributes.applicantPhone` on `status`. The
-  pack's `x-beckn-container-by-action` names each of those two roots. That is the only
-  thing that varies: no field moves out of the attributes object, so the tail of the path
-  is the same on every action.
+- **`details.path` follows the field, not the action.** A missing mobile is
+  `$.message.support.channels[0].applicantMobile` on `support` and
+  `$.message.contract.commitments[0].commitmentAttributes.applicantMobile` on `status`. The
+  pack's `x-beckn-container-by-action` names each of those two roots — `channels` on
+  `support`, `commitmentAttributes` on `init` and `status`. That is the only thing that
+  varies: no field moves out of the attributes object, so the tail of the path is the
+  same on every action.
 - **The portal's own message is never passed through** — Appendix D.
 - **A wrong OTP is not a `401`.** `401` means the Beckn signature failed to verify. It
   cannot arise on PMFBY, which has no challenge.
@@ -1355,7 +1519,8 @@ Recovery is to start the challenge again:
 ## Appendix F — What the adapter publishes
 
 The adapter publishes one catalog per capability, once: three in all, two of them under
-the PM-KISAN provider. A caller never sends a `catalog/publish`. It reads the ids out of an
+the PM-KISAN provider. Three catalogs over two packs — the two grievance desks publish
+the same `@type` and differ by `scheme.code` and by provider. A caller never sends a `catalog/publish`. It reads the ids out of an
 `on_discover` reply. See [§2](#2-before-any-scenario--discover).
 
 ### F.1 PMFBY grievance
@@ -1374,7 +1539,7 @@ POST /catalog/publish
     "messageId": "d4f81b03-9e27-4a5c-8b16-3c7a0f5e9d82",
     "timestamp": "2026-09-20T06:30:00Z",
     "schemaContext": [
-      "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld#openagrinet:PMFBYGrievance"
+      "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld#openagrinet:Grievance"
     ]
   },
   "message": {
@@ -1395,18 +1560,17 @@ POST /catalog/publish
         "id": "res:pmfby:grievance",
         "descriptor": { "code": "PMFBY-GRV", "name": "PMFBY grievance filing and status" },
         "resourceAttributes": {
-          "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld",
-          "@type": "openagrinet:PMFBYGrievance",
+          "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+          "@type": "openagrinet:Grievance",
           "informationMode": "OnDemand",
           "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-          "challengeMethods": [],
           "grievanceOptions": {
             "categories": [
-              { "code": "3",
+              { "code": "3", "name": "Enrollment / Portal Issues",
                 "descriptor": "The only category this desk sends. PMFBY publishes no category list, so every grievance is filed under this one." }
             ],
             "subCategories": [
-              { "code": "10",
+              { "code": "10", "name": "Login",
                 "descriptor": "The only sub-category this desk sends, paired with category 3." }
             ]
           }
@@ -1424,23 +1588,29 @@ POST /catalog/publish
 }
 ```
 
-- **`@type`, `@context`** — the same ones every PMFBY payload in §3 carries. A capability
-  declaration is the pack in `OnDemand` mode.
-- **`challengeMethods: []`** — tells a caller to open with `support`. It is published empty
-  rather than omitted, because an empty list is an answer and a missing one is not. There
-  is no entry, so there is no OTP shape to read.
-- **`grievanceOptions`** — one category, one sub-category, no `name` on either. PMFBY
-  publishes no list of the codes it accepts; it only names them back on a read. So this
-  is what is known to work, not everything that would be accepted. The pack leaves the
-  digit pattern open rather than fixing it at `3`. **Open with Amnex:** the
-  real category table, and whether any pair other than 3/10 is valid.
+- **`@type`, `@context`** — the same ones every PMFBY payload in §3 carries, and the same
+  ones the PM-KISAN desk in F.2 publishes: one pack, one `@type`. A capability
+  declaration is the pack in `OnDemand` mode, and `scheme.code` is what says which desk
+  this entry is.
+- **No `challenge` at all** — which is how a caller knows to open with `support`. The
+  pack refuses the whole object on this branch, so there is nothing to publish and
+  nothing ambiguous about the omission: `scheme.code: PMFBY` selects a branch on which an
+  OTP cannot appear. See [§2](#2-before-any-scenario--discover).
+- **`grievanceOptions`** — one category and one sub-category, each with the portal's own
+  `name` and our `descriptor`. PMFBY publishes no list of the codes it accepts; it only
+  names them back on a read. So this is what is known to work, not everything that would
+  be accepted. The pack leaves the digit pattern open rather than fixing it at `3`.
+  **Open with Amnex:** the real category table, and whether any pair other than 3/10 is
+  valid.
 - **`provider`** — carries no `availableAt`. A grievance desk has no address.
 - **`visibleTo`** — omitted, so every caller can find it.
 
 #### Finding it — `discover`
 
-The [§2](#2-before-any-scenario--discover) filter with `PMFBY` returns this catalog alone.
-Take `provider.id`, `offers[].id` and `resources[].id` from it.
+The [§2](#2-before-any-scenario--discover) filter with `PMFBY` returns this catalog alone
+— the filter matches on `scheme.code`, which is the field that separates the two
+grievance desks now that they share a `@type`. Take `provider.id`, `offers[].id` and
+`resources[].id` from it.
 [§3.1](#31-scenario--a-claim-that-never-arrived) and
 [§3.2](#32-scenario--the-same-farmer-checks-his-complaint-four-days-later) quote them
 exactly.
@@ -1461,7 +1631,7 @@ POST /catalog/publish
     "messageId": "4e8c17a6-9b30-42fd-a157-6d02b8e3c975",
     "timestamp": "2026-09-20T06:31:00Z",
     "schemaContext": [
-      "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld#openagrinet:PMKISANGrievance"
+      "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld#openagrinet:Grievance"
     ]
   },
   "message": {
@@ -1482,13 +1652,15 @@ POST /catalog/publish
         "id": "res:pmkisan:grievance",
         "descriptor": { "code": "PMKISAN-GRV", "name": "PM-KISAN grievance filing and status" },
         "resourceAttributes": {
-          "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANGrievance/v0.1/context.jsonld",
-          "@type": "openagrinet:PMKISANGrievance",
+          "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+          "@type": "openagrinet:Grievance",
           "informationMode": "OnDemand",
           "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-          "challengeMethods": [
-            { "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC" }
-          ],
+          "challenge": {
+            "methods": [
+              { "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC" }
+            ]
+          },
           "grievanceOptions": {
             "categories": [
               { "code": "G001", "name": "Account number not correct",
@@ -1527,12 +1699,14 @@ POST /catalog/publish
 }
 ```
 
-- **Identical in shape to PMFBY's.** What differs is the ids, the pack it points at, and
-  `challengeMethods`.
-- **`challengeMethods`** — one entry, so a caller opens with `init`, and `length` and
+- **Identical in shape to PMFBY's, and it points at the same pack.** What differs is the
+  ids, `scheme.code`, and the presence of `challenge`.
+- **`challenge.methods`** — one entry, so a caller opens with `init`, and `length` and
   `valueType` tell it the OTP box takes four digits before it sends anything. It does not
   say that PM-KISAN challenges the read as well as the lodge;
-  [Appendix C.2](#c2-pm-kisan-grievance) does.
+  [Appendix C.2](#c2-pm-kisan-grievance) does. It sits under `challenge` beside the
+  `issued` and `response` members a transaction uses; exactly one of the three is ever
+  present, so a published entry cannot carry a live code.
 - **`grievanceOptions`** — all ten types, and no `subCategories`: this portal groups at
   one level and the pack refuses a second. The codes are held to the same enum
   `grievance.category.code` is, so a catalog offering an eleventh type is refused at
@@ -1544,7 +1718,9 @@ POST /catalog/publish
 The [§2](#2-before-any-scenario--discover) filter with `PM-KISAN` returns **both**
 PM-KISAN catalogs: this one and the application-status desk in
 [F.3](#f3-pm-kisan-application-status). Take `provider.id`, `offers[].id` and
-`resources[].id` from the entry whose `@type` is `openagrinet:PMKISANGrievance`.
+`resources[].id` from the entry whose `@type` is `openagrinet:Grievance`. The two are
+told apart by `@type` here; it is the PMFBY grievance desk in F.1 that shares this one's
+`@type` and differs by `scheme.code`.
 [§4.1](#41-scenario--filing-a-complaint-with-the-registration-proved-first) and
 [§4.2](#42-scenario--checking-it-four-days-later) quote them exactly.
 
@@ -1564,7 +1740,7 @@ POST /catalog/publish
     "messageId": "5f19b283-4c70-41ae-b936-2d847e1a0c93",
     "timestamp": "2026-09-20T06:32:00Z",
     "schemaContext": [
-      "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld#openagrinet:PMKISANApplicationStatus"
+      "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld#openagrinet:SchemeApplication"
     ]
   },
   "message": {
@@ -1585,13 +1761,15 @@ POST /catalog/publish
         "id": "res:pmkisan:application-status",
         "descriptor": { "code": "PMKISAN-APP", "name": "PM-KISAN application status" },
         "resourceAttributes": {
-          "@context": "https://openagrinet.github.io/network-specs/api-schemas/PMKISANApplicationStatus/v0.1/context.jsonld",
-          "@type": "openagrinet:PMKISANApplicationStatus",
+          "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+          "@type": "openagrinet:SchemeApplication",
           "informationMode": "OnDemand",
           "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
-          "challengeMethods": [
-            { "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC" }
-          ]
+          "challenge": {
+            "methods": [
+              { "method": "SMS_OTP", "length": 4, "valueType": "NUMERIC" }
+            ]
+          }
         }
       }],
       "offers": [{
@@ -1607,23 +1785,28 @@ POST /catalog/publish
 ```
 
 - **Same `provider.id` as the grievance desk** — one participant, two capabilities.
-  `@type` tells them apart, and the registry binds on it. `provider.descriptor` describes
+  `@type` tells these two apart, and the registry binds on the pair of provider and
+  `@type` rather than on either alone. See [Appendix G](#appendix-g--registry). `provider.descriptor` describes
   the participant and not the capability, so it reads `PM-KISAN Portal` in both catalogs:
   nothing here is a grievance, and [G.3](#g3-pm-kisan-application-status) shows this one is
   served by a different host.
 - **Catalog `descriptor` is where the capability is named** — `PM-KISAN Application Status`
   here, `PM-KISAN Grievance Desk` in F.2. That is the field a caller shows a farmer.
-- **`challengeMethods`** — the same single entry as F.2: open with `init`, and the OTP
-  box takes four digits.
+- **`challenge.methods`** — the same single entry as F.2: open with `init`, and the OTP
+  box takes four digits. The `challenge` object is shared between the two packs, so it is
+  the same shape here as on the grievance desk.
 - **No `grievanceOptions`** — this desk reads a record; it files nothing, so it has no
-  categories to offer. The pack refuses the field.
+  categories to offer. The pack refuses the field, along with `grievance` and `case`.
+- **No `provider` in the attributes** — refused here, unlike F.1 and F.2. The participant
+  is named once, at `catalogs[].provider`, and on a transaction at
+  `commitments[].offer.provider`.
 
 #### Finding it — `discover`
 
 The [§2](#2-before-any-scenario--discover) filter with `PM-KISAN` returns **both**
 PM-KISAN catalogs: the grievance desk in [F.2](#f2-pm-kisan-grievance) and this one.
 Take `provider.id`, `offers[].id` and `resources[].id` from the entry whose `@type` is
-`openagrinet:PMKISANApplicationStatus`.
+`openagrinet:SchemeApplication`.
 [§5.1](#51-scenario--the-instalment-has-not-arrived) quotes them exactly.
 
 ---
@@ -1632,8 +1815,40 @@ Take `provider.id`, `offers[].id` and `resources[].id` from the entry whose `@ty
 
 Nothing above works until the providers are registered. Three kinds of record: what the
 data is (`SchemaRegistry`), who we call (`Participant`), and how (`ProviderSchema`).
-Three participants, three capabilities. A `Participant` carries one `baseUrl` shared by
-every one of its actions, so PM-KISAN's two hosts are two participants.
+
+**Two schema records, three participants, three bindings.** `SchemaRegistry` is keyed on
+`capabilityCode`, which is the `@type`, and there are only two of those now, so the two
+grievance desks share one record. A `Participant` carries one `baseUrl` shared by every
+one of its actions, so PM-KISAN's two hosts are two participants.
+
+```jsonc
+{ "SchemaRegistry": {
+  "capabilityCode": "openagrinet:Grievance",
+  "name": "Grievance",
+  "version": "v0.1",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/Grievance/v0.1/attributes.yaml",
+  "status": "active"
+} }
+
+{ "SchemaRegistry": {
+  "capabilityCode": "openagrinet:SchemeApplication",
+  "name": "Scheme Application",
+  "version": "v0.1",
+  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/SchemeApplication/v0.1/attributes.yaml",
+  "status": "active"
+} }
+```
+
+**The binding key is what separates the two grievance desks.** It is
+`participantId|capabilityCode`, and both desks now answer to
+`openagrinet:Grievance`, so `pmfby|openagrinet:Grievance` and
+`pmkisan|openagrinet:Grievance` differ only in the participant. That is enough — a
+request is routed by `offer.provider.id` on the `init` and `status` calls and by
+`channels[].provider.id` on `support`, both of which name the participant — but it does
+mean **the capability code alone no longer identifies a desk**. Anything keyed on
+`@type` without the provider beside it will collide. `scheme.code` is the field that
+distinguishes them inside a payload; the binding key uses the provider instead, because
+the adapter resolves the binding before it reads the attributes.
 
 These records are written against the schemas the registry actually enforces:
 `helmcharts/quick-start/config/registry/schemas/`. The copy under
@@ -1644,7 +1859,7 @@ Treat the deployed copy as the real one and update the design copy to match.
 
 Two things left to settle. `schemaUrl` points at `raw.githubusercontent.com` on the pack
 branch rather than the Pages site, which is not published until the PR merges. And
-`SchemaRegistry.schemaUrl` rejects all three records for two separate reasons: it allows
+`SchemaRegistry.schemaUrl` rejects both records for two separate reasons: it allows
 only `/schema/` in the path, where the packs sit under `/api-schemas/`, and its ref
 segment is `[A-Za-z0-9_-]+`, which has no dot, so the branch `api-schema-packs-v0.1`
 fails even once the path is allowed. Both have to widen. The `mappings` files also do
@@ -1652,15 +1867,9 @@ not exist on the branch named below; fix the ref when you register.
 
 ### G.1 PMFBY grievance
 
-```jsonc
-{ "SchemaRegistry": {
-  "capabilityCode": "openagrinet:PMFBYGrievance",
-  "name": "PMFBY Grievance",
-  "version": "v0.1",
-  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/PMFBYGrievance/v0.1/attributes.yaml",
-  "status": "active"
-} }
+The `SchemaRegistry` record is the shared `openagrinet:Grievance` one above.
 
+```jsonc
 { "Participant": {
   "participantId": "pmfby",                  // also the Beckn offer.provider.id
   "name": "PMFBY Grievance Portal",
@@ -1671,7 +1880,7 @@ not exist on the branch named below; fix the ref when you register.
 
 // One service, one login. Every grievance call lives under /krphapi/FGMS and
 // logs in at POST /krphapi/FGMS/NICUsersLogin, which answers with a token sent
-// back as a bare Authorization header -- no "Bearer".
+// back as a bare Authorization header — no "Bearer".
 //
 // The host also serves a PMFBY core service under /api/v*, with its own login at
 // POST /api/v2/external/service/login and its own OTP pair at
@@ -1681,9 +1890,9 @@ not exist on the branch named below; fix the ref when you register.
 // host so the boundary stays visible.
 
 { "ProviderSchema": {
-  "bindingKey":     "pmfby|openagrinet:PMFBYGrievance",
+  "bindingKey":     "pmfby|openagrinet:Grievance",   // provider half is the discriminator
   "participantId":  "pmfby",
-  "capabilityCode": "openagrinet:PMFBYGrievance",
+  "capabilityCode": "openagrinet:Grievance",
   "status": "active",
   "actions": [
     // No init action. PMFBY's grievance service issues no challenge, so the
@@ -1723,23 +1932,17 @@ nowhere to land.
 ### G.2 PM-KISAN grievance
 
 Same shape as PMFBY, with an `init` PMFBY does not have: three actions rather than two.
-This participant is the grievance host only; the chatbot host is §G.3's.
+This participant is the grievance host only; the chatbot host is §G.3's. It binds to the
+same `SchemaRegistry` record as §G.1 — one pack, one schema, two desks — and differs from
+it only in the participant half of the binding key.
 
 ```jsonc
-{ "SchemaRegistry": {
-  "capabilityCode": "openagrinet:PMKISANGrievance",
-  "name": "PM-KISAN Grievance",
-  "version": "v0.1",
-  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/PMKISANGrievance/v0.1/attributes.yaml",
-  "status": "active"
-} }
-
 { "Participant": {
   "participantId": "pmkisan",
   "name": "PM-KISAN Grievance Portal",
   "type": "upstream",
   "status": "active",
-  // staging host; the production one is not recorded anywhere -- confirm it
+  // staging host; the production one is not recorded anywhere — confirm it
   // with PM-KISAN rather than deriving it from the "Test" in this name
   "baseUrl": "https://pmkisanstaging.amnex.co.in"
 } }
@@ -1756,13 +1959,13 @@ This participant is the grievance host only; the chatbot host is §G.3's.
 // init's call goes to the chatbot host, which §G.3 registers as its own
 // participant, so the init binding as written is not registrable: it would be
 // sent to the grievance host. Resolve it before registering. Do NOT add a
-// per-action baseUrl -- the adapter reads the host from the participant and
+// per-action baseUrl — the adapter reads the host from the participant and
 // nowhere else (pkg/model/model.go, ProviderRecord.BaseURL).
 
 { "ProviderSchema": {
-  "bindingKey":     "pmkisan|openagrinet:PMKISANGrievance",
+  "bindingKey":     "pmkisan|openagrinet:Grievance", // same capability, other desk
   "participantId":  "pmkisan",
-  "capabilityCode": "openagrinet:PMKISANGrievance",
+  "capabilityCode": "openagrinet:Grievance",
   "status": "active",
   "actions": [
     { "action": "init",    "method": "POST", "path": "/services/chatbotservice.asmx/ChatbotOTP",
@@ -1787,15 +1990,10 @@ A second PM-KISAN capability, on its **own** `Participant`. Both of its actions 
 the chatbot host while the `pmkisan` record in §G.2 points at the grievance host, so this
 one gets `pmkisan-chatbot`. A participant is a host, not an organisation.
 
-```jsonc
-{ "SchemaRegistry": {
-  "capabilityCode": "openagrinet:PMKISANApplicationStatus",
-  "name": "PM-KISAN Application Status",
-  "version": "v0.1",
-  "schemaUrl": "https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/PMKISANApplicationStatus/v0.1/attributes.yaml",
-  "status": "active"
-} }
+Its `SchemaRegistry` record is the `openagrinet:SchemeApplication` one above, which this
+capability has to itself.
 
+```jsonc
 { "Participant": {
   "participantId": "pmkisan-chatbot",        // the chatbot host, not the grievance one
   "name": "PM-KISAN Chatbot Service",
@@ -1806,7 +2004,7 @@ one gets `pmkisan-chatbot`. A participant is a host, not an organisation.
 
 // Both actions live on the chatbot service, not the grievance service, so this
 // capability binds to its own participant rather than reusing pmkisan. One
-// participant, one host -- that is the whole reason there are two of them.
+// participant, one host — that is the whole reason there are two of them.
 //
 // Four upstream paths, all AES-128-CBC with the key in band:
 //   /ChatbotOTP, /ChatbotOTPVerified     the OTP pair
@@ -1820,9 +2018,9 @@ one gets `pmkisan-chatbot`. A participant is a host, not an organisation.
 // participant, not a second URL on this one.
 
 { "ProviderSchema": {
-  "bindingKey":     "pmkisan-chatbot|openagrinet:PMKISANApplicationStatus",
+  "bindingKey":     "pmkisan-chatbot|openagrinet:SchemeApplication",
   "participantId":  "pmkisan-chatbot",
-  "capabilityCode": "openagrinet:PMKISANApplicationStatus",
+  "capabilityCode": "openagrinet:SchemeApplication",
   "status": "active",
   "actions": [
     { "action": "init",   "method": "POST", "path": "/services/chatbotservice.asmx/ChatbotOTP",
@@ -1834,13 +2032,13 @@ one gets `pmkisan-chatbot`. A participant is a host, not an organisation.
       //                             action of its own, as in the grievance
       //                             capability
       //   /ChatbotUserDetails       enrolmentId, registeredOn,
-      //                             latestInstallmentPaid, ekyc
+      //                             latestInstalmentPaid, ekyc
       //   /ChatbotBeneficiaryStatus blockers
       // The second is the path above. The third the adapter makes itself: the
       // registry binds one endpoint per action, and a chained call is plugin
       // orchestration, exactly like /ChatbotOTPVerified.
       // Only the second is mandatory: if the third fails, return the record
-      // with blockers ABSENT rather than empty -- absent means not asked, and
+      // with blockers ABSENT rather than empty — absent means not asked, and
       // an empty array would read as "payment is clear".
       "mappings": "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/release-0.0.1/quick-start/config/mappings/pmkisan/application-status.status.yaml",
       "timeoutMs": 30000, "retryMax": 2, "status": "active" }
