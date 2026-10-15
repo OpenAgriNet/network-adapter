@@ -92,7 +92,7 @@ func activeRecord() participant {
 	return participant{
 		ParticipantID: testParticipantID,
 		Type:          "node",
-		Role:          "BPP",
+		Role:          roleList{"provider"},
 		Status:        "active",
 		BaseURL:       "https://providera.example.com/onix",
 		Keys:          []key{signingKey()},
@@ -456,7 +456,7 @@ func TestToSubscriptionMapsOptionalFields(t *testing.T) {
 		if got.EncrPublicKey != "encryption-key" {
 			t.Errorf("expected encryption key to be mapped, got %q", got.EncrPublicKey)
 		}
-		if got.Type != "BPP" {
+		if got.Type != "provider" {
 			t.Errorf("expected type to be mapped, got %q", got.Type)
 		}
 		if got.SigningPublicKey != testPublicKey {
@@ -1027,7 +1027,7 @@ func TestLookupRejectsCacheEntryWithoutStatus(t *testing.T) {
 	}
 }
 
-// TestLookupDoesNotHangOnAStalledRegistry is the dead-peer case: the registry
+// TestLookupDoesNotHangOnAStalledRegistry is the dead-network case: the registry
 // accepts the connection and then never answers. Without a bounded client
 // timeout this would hang the calling request, and with it the adapter.
 func TestLookupDoesNotHangOnAStalledRegistry(t *testing.T) {
@@ -1383,7 +1383,7 @@ func TestLookupAgainstCapturedRegistryResponse(t *testing.T) {
     "data": [
         {
             "osUpdatedAt": "2026-08-31T07:36:33.407Z",
-            "role": "BPP",
+            "role": ["provider"],
             "osUpdatedBy": "89bf9fcb-c6f7-4f08-80f9-18f47ce7667d",
             "osid": "1-19087a97-f886-4fe4-bf14-3875437dc6f8",
             "type": "node",
@@ -1453,8 +1453,8 @@ func TestLookupAgainstCapturedRegistryResponse(t *testing.T) {
 	if got.URL != capturedURL {
 		t.Errorf("endpoint url = %q, want the captured baseUrl %q", got.URL, capturedURL)
 	}
-	if got.Type != "BPP" {
-		t.Errorf("type = %q, want %q", got.Type, "BPP")
+	if got.Type != "provider" {
+		t.Errorf("type = %q, want the first layer the record serves", got.Type)
 	}
 	if got.EncrPublicKey != "" {
 		t.Errorf("this record publishes no encryption key, got %q", got.EncrPublicKey)
@@ -1513,7 +1513,7 @@ func TestLookupAgainstCurrentRegistryResponse(t *testing.T) {
     "data": [
         {
             "osUpdatedAt": "2026-09-02T07:25:29.977Z",
-            "role": "provider",
+            "role": ["provider"],
             "osUpdatedBy": "1e52cfea-50a1-4a64-814e-0d44aaa38c29",
             "osid": "1-686a5071-b300-4899-94e2-7f95155ca41d",
             "type": "node",

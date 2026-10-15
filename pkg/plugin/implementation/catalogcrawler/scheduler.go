@@ -124,6 +124,13 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.ctx = ctx
 	s.cancel = cancel
 	s.mu.Unlock()
+	// With no store there is nothing to poll, sync or unpark. The jobs that
+	// ride the sync tick keep their cadence and get the ticker to themselves.
+	if s.params.Store == nil {
+		s.loop(ctx, s.cfg.catalogInterval(), s.startAfterSync)
+		return
+	}
+
 	s.loop(ctx, s.cfg.indexInterval(), s.pollTick)
 	s.loop(ctx, s.cfg.catalogInterval(), func(ctx context.Context) {
 		s.syncTick(ctx)
