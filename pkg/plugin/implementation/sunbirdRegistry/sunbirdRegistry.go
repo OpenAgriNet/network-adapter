@@ -101,6 +101,7 @@ const (
 	outcomeInactive       = "inactive"
 	outcomeKeyInactive    = "key_inactive"
 	outcomeNoKey          = "no_key"
+	outcomeRefused        = "not_a_requester"
 	outcomeTimeout        = "timeout"
 	outcomeRegistryError  = "registry_error"
 	outcomeDecodeError    = "decode_error"
@@ -156,6 +157,10 @@ type Config struct {
 	// truncated, because half a JSON document fails to decode with an error
 	// that says nothing about the cause.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+
+	// CrossNetworkCheck refuses a key to a network we did not agree to give to.
+	// Off by default, so a deployment that federates with nobody is unchanged.
+	CrossNetworkCheck bool `yaml:"crossNetworkCheck" json:"crossNetworkCheck"`
 }
 
 // Client resolves participants from the registry. It is safe for concurrent
@@ -167,6 +172,7 @@ type Client struct {
 	cache             definition.Cache
 	cacheTTL          time.Duration
 	maxResponseBytes  int64
+	crossNetworkCheck bool
 }
 
 // participant is the subset of a registry record this plugin reads. The
@@ -383,6 +389,7 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 		cache:             cache,
 		cacheTTL:          cfg.CacheTTL,
 		maxResponseBytes:  maxResponseBytes,
+		crossNetworkCheck: cfg.CrossNetworkCheck,
 	}
 
 	closer := func() error {
@@ -424,6 +431,11 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 	cacheKey := fmt.Sprintf("registry_lookup_%s_%s", req.SubscriberID, req.KeyID)
 	if cached, ok := c.cached(ctx, tracer, cacheKey); ok {
 		log.Debugf(ctx, "OAN registry lookup cache hit for key: %s", cacheKey)
+		if err := c.agreedToGiveTo(ctx, cached); err != nil {
+			span.SetAttributes(telemetry.AttrErrorType.String(outcomeRefused))
+			c.emitMetrics(ctx, start, operationLookup, outcomeRefused)
+			return nil, err
+		}
 		span.SetAttributes(telemetry.AttrErrorType.String(outcomeCacheHit))
 		c.emitMetrics(ctx, start, operationLookup, outcomeCacheHit)
 		return cached, nil
@@ -452,6 +464,12 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 
 	status, outcome := resolveStatus(found, matched)
 	results := []model.Subscription{toSubscription(found, matched, status)}
+
+	if err := c.agreedToGiveTo(ctx, results); err != nil {
+		span.SetAttributes(telemetry.AttrErrorType.String(outcomeRefused))
+		c.emitMetrics(ctx, start, operationLookup, outcomeRefused)
+		return nil, err
+	}
 
 	// The header's algorithm was already validated upstream, so a disagreement
 	// here cannot let a bad signature through -- but it means the record and the
@@ -615,6 +633,7 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		ValidFrom:        validFrom,
 		ValidUntil:       validUntil,
 		Status:           status,
+		FederationRole:   strings.TrimSpace(p.FederationRole),
 	}
 }
 
@@ -728,4 +747,53 @@ func (c *Client) emitMetrics(ctx context.Context, start time.Time, operation, ou
 	if !successOutcomes[outcome] {
 		m.PluginErrorsTotal.Add(ctx, 1, attrs)
 	}
+}
+
+// agreedToGiveTo refuses a key to a network we never agreed to give to, which
+// stops the request at validateSign. Only the caller is judged.
+func (c *Client) agreedToGiveTo(ctx context.Context, results []model.Subscription) error {
+	if !c.crossNetworkCheck || len(results) == 0 {
+		return nil
+	}
+
+	caller := callerOf(ctx)
+	if caller == "" {
+		return nil
+	}
+
+	for _, sub := range results {
+		if !strings.EqualFold(sub.SubscriberID, caller) {
+			continue
+		}
+		// Our own participants carry no direction, so there is nothing to honour.
+		if sub.FederationRole == "" {
+			return nil
+		}
+		agreed := model.AdmittedNetwork{FederationRole: sub.FederationRole}
+		if agreed.IsRequester() {
+			log.Infof(ctx, "OAN registry %s is admitted as %q and may call us", caller, sub.FederationRole)
+			return nil
+		}
+		log.Infof(ctx, "OAN registry refusing %s: admitted as %q, which is not a network we agreed to give to",
+			caller, sub.FederationRole)
+		return fmt.Errorf("%s is admitted as %q, so we did not agree to give to them", caller, sub.FederationRole)
+	}
+	return nil
+}
+
+// callerOf returns who signed the request being served. The StepContext
+// fallback is for key manager paths that carry it through their own span.
+func callerOf(ctx context.Context) string {
+	if v, _ := ctx.Value(model.ContextKeyRemoteID).(string); v != "" {
+		return v
+	}
+	if sc, ok := ctx.(*model.StepContext); ok && len(sc.Body) > 0 {
+		var payload struct {
+			Context map[string]any `json:"context"`
+		}
+		if err := json.Unmarshal(sc.Body, &payload); err == nil && payload.Context != nil {
+			return model.ResolveCallerID(payload.Context, model.RoleBPP)
+		}
+	}
+	return ""
 }

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
 	"slices"
 	"strings"
 
@@ -22,6 +24,18 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
+	// An earlier step already routed this. The binding would still match, so
+	// without this we would call the upstream for an answer about to be discarded.
+	if ctx.Route != nil {
+		return nil
+	}
+
+	// Is this ours to answer at all? Asked BEFORE the binding -- see routeElsewhere.
+	routed, err := s.routeElsewhere(ctx)
+	if err != nil || routed {
+		return err
+	}
+
 	binding, err := BindingFrom(s.paths, ctx.Body)
 	if errors.Is(err, errNoBinding) {
 		return nil
@@ -198,4 +212,136 @@ func decodeBody(body []byte) (any, error) {
 		return nil, fmt.Errorf("could not read JSON: %w", err)
 	}
 	return decoded, nil
+}
+
+// routeElsewhere sends a request addressed to another network to that network.
+// Before the binding check: a binding key names the upstream, not the network.
+func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
+	becknContext, err := contextOf(ctx.Body)
+	if err != nil {
+		return false, err
+	}
+
+	// Refused rather than assumed. Guessing "ours" is what answers another
+	// network's request with our data.
+	receiver := contextValue(becknContext, "bpp_id", "bppId", "receiverId")
+	if receiver == "" {
+		return false, model.NewBadReqErr("", fmt.Errorf(
+			"the request names no receiver, so there is nothing to decide by: "+
+				"set context.receiverId to the participant that should answer"))
+	}
+
+	if ctx.OwnSubscriberID == "" {
+		return false, fmt.Errorf(
+			"the request is addressed to %s, but this module has no subscriberId to compare it against",
+			receiver)
+	}
+	if strings.EqualFold(receiver, ctx.OwnSubscriberID) {
+		return false, nil // ours: carry on into the binding check
+	}
+
+	if err := s.agreedToReadFrom(ctx, receiver); err != nil {
+		return false, err
+	}
+
+	target, err := destinationOf(becknContext, receiver, ctx.OwnSubscriberID)
+	if err != nil {
+		return false, err
+	}
+
+	// The network signs, not the participant the request names. Without this
+	// sign would look up the other network's keyset and fail.
+	ctx.SubID = ctx.OwnSubscriberID
+	ctx.Route = &model.Route{TargetType: "url", URL: target}
+
+	log.Infof(ctx, "%s is not %s; sending it to %s", receiver, ctx.OwnSubscriberID, target)
+	return true, nil
+}
+
+// agreedToReadFrom refuses a receiver we did not admit as a source. Without it
+// a field in the request decides where a signed call of ours goes.
+func (s *Step) agreedToReadFrom(ctx *model.StepContext, receiver string) error {
+	if s.networks == nil {
+		return fmt.Errorf(
+			"the request is for %s, but this registry cannot list the networks we admitted",
+			receiver)
+	}
+
+	admitted, err := s.networks.AdmittedNetworks(ctx)
+	if err != nil {
+		return fmt.Errorf("could not check whether %s is a network we admitted: %w", receiver, err)
+	}
+
+	for _, network := range admitted {
+		if !strings.EqualFold(network.ID, receiver) {
+			continue
+		}
+		if !network.IsSource() {
+			return model.NewBadReqErr("", fmt.Errorf(
+				"%s is admitted as %q, so we never agreed to read from them",
+				receiver, network.FederationRole))
+		}
+		log.Infof(ctx, "%s is admitted as %q; forwarding", receiver, network.FederationRole)
+		return nil
+	}
+
+	return model.NewNotFoundErr("", fmt.Errorf(
+		"%s is not a network we admitted, so this is not ours to send on", receiver))
+}
+
+// destinationOf builds the URL a request for another participant is sent to.
+// The address is context.bppUri, so the caller names where we send it.
+func destinationOf(becknContext map[string]any, receiver, us string) (*url.URL, error) {
+	raw := contextValue(becknContext, "bpp_uri", "bppUri", "receiverUri")
+	if raw == "" {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"the request is for %s rather than %s, but names no context.bppUri, "+
+				"so there is no address to send it to", receiver, us))
+	}
+
+	target, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || target.Host == "" {
+		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf(
+			"context.bppUri %q is not a URL this request can be sent to", raw))
+	}
+
+	// The proxy replaces the request URL outright, so a bare bppUri would
+	// arrive at the other network's mount with no action left on it.
+	action := contextValue(becknContext, "action")
+	if action == "" {
+		return nil, model.NewBadReqErr("", fmt.Errorf(
+			"the request is for %s rather than %s, but names no context.action, "+
+				"so there is no endpoint to send it to", receiver, us))
+	}
+	if target.Path == "" {
+		target.Path = "/"
+	}
+	target.Path = path.Join(target.Path, action)
+	return target, nil
+}
+
+// contextOf reads the request's Beckn context. An unreadable body is reported
+// as that, not as "names no receiver" -- this is the first step to see it.
+func contextOf(body []byte) (map[string]any, error) {
+	var payload struct {
+		Context map[string]any `json:"context"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT",
+			fmt.Errorf("payload could not be read: %w", err))
+	}
+	return payload.Context, nil
+}
+
+// contextValue reads the first of the named context fields carrying a value,
+// snake_case then camelCase then Beckn v2, the order the adapter uses.
+func contextValue(becknContext map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := becknContext[key].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }

@@ -21,8 +21,12 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
+// testSubscriberID is who this deployment is; a request names it as receiver.
+const testSubscriberID = "oan.test"
+
 const selectBody = `{
-  "context": { "version": "2.0.0", "action": "select", "transactionId": "txn-1" },
+  "context": { "version": "2.0.0", "action": "select", "transactionId": "txn-1",
+               "receiverId": "oan.test" },
   "message": { "contract": { "commitments": [{
     "resources": [{ "resourceAttributes": {
       "@type": "openagrinet:WeatherObservation",
@@ -161,7 +165,7 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 
 func runStep(t *testing.T, step *Step, body string) (*model.StepContext, error) {
 	t.Helper()
-	ctx := &model.StepContext{Context: t.Context(), Body: []byte(body)}
+	ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(body)}
 	return ctx, step.Run(ctx)
 }
 
@@ -231,7 +235,7 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 func TestRunReportsAnUnservablePayloadAsABadRequest(t *testing.T) {
 	t.Parallel()
 
-	twoCommitments := `{"context":{"action":"select"},"message":{"contract":{"commitments":[
+	twoCommitments := `{"context":{"action":"select","receiverId":"oan.test"},"message":{"contract":{"commitments":[
 		{"offer":{"provider":{"id":"mausamgram"}},
 		 "resources":[{"resourceAttributes":{"@type":"openagrinet:WeatherObservation"}}]},
 		{"offer":{"provider":{"id":"mausamgram"}},
@@ -449,7 +453,7 @@ func TestRunReportsACancelDuringBackoffAsTheContextsError(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper)
 
-	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	err := step.Run(&model.StepContext{Context: ctx, OwnSubscriberID: "oan.test", Body: []byte(selectBody)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error %v does not carry context.Canceled", err)
 	}
@@ -483,7 +487,7 @@ func TestRunKeepsTheProvidersAnswerWhenTheCallerLeavesDuringBackoff(t *testing.T
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper)
 
-	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	err := step.Run(&model.StepContext{Context: ctx, OwnSubscriberID: "oan.test", Body: []byte(selectBody)})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error %v does not carry context.Canceled", err)
 	}
@@ -516,7 +520,7 @@ func TestRunReportsAPermanentAnswerThatArrivesAsTheCallerLeaves(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper)
 
-	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	err := step.Run(&model.StepContext{Context: ctx, OwnSubscriberID: "oan.test", Body: []byte(selectBody)})
 	var coded *model.CodedErr
 	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadGateway {
 		t.Errorf("status for a 400 answer = %v, want 502", err)
@@ -559,7 +563,7 @@ func TestRunDoesNotCountAnAttemptThatNeverRan(t *testing.T) {
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
 	step := newStep(t, &stubRegistry{plan: plan}, mapper)
 
-	err := step.Run(&model.StepContext{Context: ctx, Body: []byte(selectBody)})
+	err := step.Run(&model.StepContext{Context: ctx, OwnSubscriberID: "oan.test", Body: []byte(selectBody)})
 	if err == nil {
 		t.Fatal("expected the ended request to be reported")
 	}
@@ -588,7 +592,7 @@ func TestRunStopsWhenTheCallerHasGone(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	stepCtx := &model.StepContext{Context: cancelled, Body: []byte(selectBody)}
+	stepCtx := &model.StepContext{Context: cancelled, OwnSubscriberID: "oan.test", Body: []byte(selectBody)}
 	if err := step.Run(stepCtx); err == nil {
 		t.Fatal("expected a cancelled request to be reported")
 	}
@@ -944,7 +948,7 @@ func TestRunPassesThroughWhatIsNotItsCapability(t *testing.T) {
 	testCases := []struct{ name, body string }{
 		{"another provider", strings.Replace(selectBody, `"id": "mausamgram"`, `"id": "agmarknet"`, 1)},
 		{"another capability", strings.Replace(selectBody, "openagrinet:WeatherObservation", "openagrinet:MarketPrice", 1)},
-		{"a payload with no binding at all", `{"context":{"action":"select"},"message":{}}`},
+		{"a payload with no binding at all", `{"context":{"action":"select","receiverId":"oan.test"},"message":{}}`},
 	}
 
 	for _, tc := range testCases {
@@ -1312,7 +1316,7 @@ func TestRunReadsTheBindingKeyFromOverriddenPaths(t *testing.T) {
 		c.CapabilityCodeAt = "what[].type"
 	})
 
-	ctx, err := runStep(t, step, `{"context":{"action":"select"},"who":{"provider":"agmarknet"},"what":[{"type":"openagrinet:MandiPrice"}]}`)
+	ctx, err := runStep(t, step, `{"context":{"action":"select","receiverId":"oan.test"},"who":{"provider":"agmarknet"},"what":[{"type":"openagrinet:MandiPrice"}]}`)
 	if err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}
@@ -1457,7 +1461,8 @@ func selectWithLocation(t *testing.T, geometry string) string {
 		location = `"location": ` + geometry + `,`
 	}
 	return `{
-  "context": { "version": "2.0.0", "action": "select", "transactionId": "txn-1" },
+  "context": { "version": "2.0.0", "action": "select", "transactionId": "txn-1",
+               "receiverId": "oan.test" },
   "message": { "contract": { "commitments": [ {
     "resources": [ { "id": "res:x", "resourceAttributes": {
       ` + location + `
