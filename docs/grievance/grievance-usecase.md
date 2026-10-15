@@ -464,9 +464,11 @@ POST /status
         "informationMode": "Direct",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "enrolmentId": "KA2026KH00123456",
+        "cropYear": "2026",
+        "season": "Kharif",
         "grievance": {
-          "category": { "name": "…" },
-          "subCategory": { "name": "…" },
+          "category": { "code": "3", "name": "Enrollment / Portal Issues" },
+          "subCategory": { "code": "10", "name": "Login" },
           "description": "Claim for my Kharif 2026 enrolment has not been credited to my account."
         },
         "case": {
