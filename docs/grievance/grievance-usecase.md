@@ -967,13 +967,15 @@ Two things are required on every call and are not repeated in the tables:
 - **The attribute object** — `commitmentAttributes` on `init` and `status`,
   `support.channels[0]` on `support`. Always carries `@context`, `@type`,
   `informationMode` and `scheme`.
-- **The provider id** — `commitments[0].offer.provider.id`, or `channels[0].provider.id`
-  on `support`. It routes the request; a payload without it is rejected, because it cannot be routed.
+- **The provider** — `commitments[0].offer.provider` on `init` and `status`,
+  `channels[0].provider` on `support`. Its `id` is required on all three: it is what
+  resolves the Portal and its base URL in the registry, so a call without it cannot be
+  routed and is rejected. The `descriptor.name` beside it is display text and optional.
 
-On `init` and `status` the `Contract` skeleton is also required: `contract.id`,
-`commitments[0].status.descriptor.code`, `offer.id`, `offer.resourceIds`,
-`resources[0].id` and `resources[0].quantity`. The offer and resource ids come from the
-catalog and never change.
+On `init` and `status` the rest of the `Contract` skeleton is also required:
+`contract.id`, `commitments[0].status.descriptor.code`, `offer.id`, `offer.resourceIds`,
+`resources[0].id` and `resources[0].quantity`. The offer, provider and resource ids come
+from the catalog and never change.
 
 `contract.id` is this network's own requirement; Beckn asks only for `commitments`. It is
 there for the caller to match a reply to its request: no adapter forwards it and no portal
@@ -985,6 +987,7 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 
 | field | `support` | `status` |
 |---|---|---|
+| `provider.id` | required — in `channels[0]` | required — in `commitments[0].offer` |
 | `contract.id` | — no contract | required — caller-created |
 | `enrolmentId` | required — the application number, 10 to 30 characters | — the portal returns it on `on_status` |
 | `applicantMobile` | required | required |
@@ -1001,6 +1004,7 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 
 | field | `init` | `support` | `status` |
 |---|---|---|---|
+| `provider.id` | required — in `commitments[0].offer` | required — in `channels[0]` | required — in `commitments[0].offer` |
 | `contract.id` | required — caller-created | — no contract | required — the same value as the `init` before it |
 | `enrolmentId` | required — the registration number, 6 to 20 characters | required — the same value | required — the same value |
 | `grievance.category.code` | — | required — one of `G001`–`G010` | — |
@@ -1025,6 +1029,7 @@ accepted.
 
 | field | `init` | `status` |
 |---|---|---|
+| `provider.id` | required — in `commitments[0].offer` | required — in `commitments[0].offer` |
 | `contract.id` | required — caller-created | required — the same value as the `init` before it |
 | `enrolmentId` | one of these two — the registration number | the same value |
 | `applicant` | one of these two — carries `mobile` | the same value |
