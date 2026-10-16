@@ -37,13 +37,22 @@ request: |
   )
 
 # Echoes the request and adds the ticket; filedOn is the filing time in UTC.
-# A refusal is a 400 with PMFBY's own message; a reply with no reason is a 502.
+# A refusal PMFBY is known to give is a 400 in our words; any other failure is
+# a 502. PMFBY's own message is logged as the cause, never returned.
 response: |
   (
     $ch := beckn.message.support.channels[0];
     $g := $ch.grievance;
     $ticketNo := response.responseDynamic.GrievenceSupportTicketNo;
     $said := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
+    /* PMFBY answers every failure with responseCode "0", so its wording is the
+       only way to tell the caller's mistake from PMFBY's own fault. Keyed in
+       lower case. Drop this once PMFBY sends a code per refusal. */
+    $refusals := {
+      "mobile number not matched": "The phone number does not match the one registered for this application number.",
+      "application details not exists": "No PMFBY application was found for this application number."
+    };
+    $refusal := $said ? $lookup($refusals, $lowercase($said));
     $filed := $exists($ch.complaintDate) ? $toMillis($ch.complaintDate) : $millis();
     /* responseCode "1" (string or number) with a ticket, "Ticket Already Raised" included. */
     $string(response.responseCode) = "1" and ($type($ticketNo) = "string" or $type($ticketNo) = "number")
@@ -74,8 +83,9 @@ response: |
         }
       }
     }
-    : $type($said) = "string" and $said != ""
-    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $said } }
+    : $exists($refusal)
+    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $refusal, "cause": $said } }
     : { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
-                    "message": "PMFBY replied with neither a ticket nor a reason" } }
+                    "message": "PMFBY could not register the grievance right now. Please try again later.",
+                    "cause": $said } }
   )

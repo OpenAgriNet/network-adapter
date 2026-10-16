@@ -177,8 +177,8 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 	// The provider body is not logged: it can carry the farmer's details.
-	if err := refusalIn(becknResponse); err != nil {
-		log.Warnf(ctx, "%s refused the request: %v", plan.BindingKey, err)
+	if cause, err := refusalIn(becknResponse); err != nil {
+		log.Warnf(ctx, "%s refused the request: %v (provider said: %q)", plan.BindingKey, err, s.redactString(cause))
 		return err
 	}
 	if len(becknResponse) == 0 {
@@ -208,7 +208,7 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 	if err != nil {
 		return nil, err
 	}
-	if err := refusalIn(mapped); err != nil {
+	if _, err := refusalIn(mapped); err != nil {
 		return nil, err
 	}
 	if len(mapped) == 0 {
@@ -218,32 +218,34 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 }
 
 // refusalIn returns the error a mapping asks for under the reserved _error
-// field {status, code, message, path}, or nil if there is none. Status 0 or
-// 400 is a 400 with details.path.
-func refusalIn(mapped []byte) error {
+// field {status, code, message, path, cause}, or nil if there is none. Status
+// 0 or 400 is a 400 with details.path. cause is the provider's own wording,
+// returned for the log and never sent to the caller.
+func refusalIn(mapped []byte) (string, error) {
 	// Cheap text check first: almost no answer carries the field.
 	if !bytes.Contains(mapped, []byte(`"_error"`)) {
-		return nil
+		return "", nil
 	}
 	var document map[string]json.RawMessage
 	if json.Unmarshal(mapped, &document) != nil || document["_error"] == nil || string(document["_error"]) == "null" {
-		return nil
+		return "", nil
 	}
 	var r struct {
 		Status  int    `json:"status"`
 		Code    string `json:"code"`
 		Message string `json:"message"`
 		Path    string `json:"path"`
+		Cause   string `json:"cause"`
 	}
 	if json.Unmarshal(document["_error"], &r) != nil || r.Message == "" {
-		return errors.New("a mapping refused the call with an unreadable _error; it needs status, code and message")
+		return "", errors.New("a mapping refused the call with an unreadable _error; it needs status, code and message")
 	}
 	switch r.Status {
 	case 0, http.StatusBadRequest:
 		// CodedErr drops details, so the path needs SchemaValidationErr.
-		return &model.SchemaValidationErr{Errors: []model.Error{*model.NewCodedErrorWithCause(r.Code, r.Message, r.Path, nil)}}
+		return r.Cause, &model.SchemaValidationErr{Errors: []model.Error{*model.NewCodedErrorWithCause(r.Code, r.Message, r.Path, nil)}}
 	default:
-		return model.NewCodedErr(r.Status, r.Code, errors.New(r.Message))
+		return r.Cause, model.NewCodedErr(r.Status, r.Code, errors.New(r.Message))
 	}
 }
 

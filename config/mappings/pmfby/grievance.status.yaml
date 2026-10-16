@@ -21,8 +21,8 @@ request: |
   )
 
 # The record is mapped; fields PMFBY leaves empty are dropped. No record, or
-# one for another ticket, is a 400 "No record found"; a refusal is a 400 with
-# PMFBY's own message; a reply with no reason is a 502.
+# one for another ticket, is a 400 in our words; any other failure is a 502.
+# PMFBY's own message is logged as the cause, never returned.
 response: |
   (
     /* [0] reads a bare record or a list of one alike. */
@@ -32,6 +32,12 @@ response: |
     /* PMFBY sends null or "" for missing values. */
     $isText := function($v) { $type($v) = "string" and $v != "" };
     $ok := $string(response.responseCode) = "1";
+    $notFound := "No grievance was found for this ticket number and phone number.";
+    /* PMFBY answers every failure with responseCode "0", so its wording is the
+       only way to tell the caller's mistake from PMFBY's own fault. Keyed in
+       lower case. Drop this once PMFBY sends a code per refusal. */
+    $refusals := { "no record found": $notFound };
+    $refusal := $isText($said) ? $lookup($refusals, $lowercase($said));
     /* PMFBY reads by phone alone, so a record for another ticket is no record. */
     $found := $ok
       and ($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
@@ -78,9 +84,10 @@ response: |
       }
     )
     : $ok
-    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": "No record found" } }
-    : $isText($said)
-    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $said } }
+    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $notFound } }
+    : $exists($refusal)
+    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $refusal, "cause": $said } }
     : { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
-                    "message": "PMFBY replied with neither a record nor a reason" } }
+                    "message": "PMFBY could not return the grievance status right now. Please try again later.",
+                    "cause": $said } }
   )

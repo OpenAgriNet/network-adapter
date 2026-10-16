@@ -345,6 +345,15 @@ func assertRefused(t *testing.T, err error, message string) {
 	}
 }
 
+// assertFailedUpstream fails unless err is a 502 NET_DOWNSTREAM_UNAVAILABLE carrying message.
+func assertFailedUpstream(t *testing.T, err error, message string) {
+	t.Helper()
+	if status, refused := refusal(t, err); status != http.StatusBadGateway ||
+		refused.Code != util.CodeUpstreamUnavailable || refused.Message != message {
+		t.Errorf("error = %d %+v, want 502 %s %q", status, refused, util.CodeUpstreamUnavailable, message)
+	}
+}
+
 // assertJustNowUTC fails unless value is an RFC 3339 UTC instant within a minute of now.
 func assertJustNowUTC(t *testing.T, value any) {
 	t.Helper()
@@ -520,7 +529,6 @@ func TestSupport_NoGrievance_Returns400(t *testing.T) {
 	assertCoded(t, err, http.StatusBadRequest, "SCH_REQUIRED_FIELD_MISSING")
 }
 
-// complaintDate goes to PMFBY as its IST date and comes back as filedOn in UTC.
 func TestSupport_CallerDateAndSource_SentInsteadOfDefaults(t *testing.T) {
 	for given, want := range map[string][2]string{
 		"2026-09-20T04:30:00Z":      {"2026-09-20", "2026-09-20T04:30:00Z"},
@@ -553,14 +561,15 @@ func TestSupport_TicketAlreadyRaised_ReturnsTheExistingTicket(t *testing.T) {
 	assertJustNowUTC(t, filed["filedOn"])
 }
 
-// A refusal with a reason is a 400 carrying PMFBY's own message.
-func TestSupport_PortalRefuses_Returns400WithItsMessage(t *testing.T) {
+// A refusal PMFBY is known to give is a 400 in our words, never PMFBY's.
+func TestSupport_KnownRefusal_Returns400InOurWords(t *testing.T) {
 	for name, tc := range map[string]struct{ reply, message string }{
 		"phone not matched": {`{"responseObject":null,"responseDynamic":null,"responseCode":"0","responseMessage":"Mobile Number Not Matched","jsonString":null,"recordCount":0}`,
-			"Mobile Number Not Matched"},
-		"no application":  {`{"responseCode":"0","responseMessage":"Application Details not Exists","responseDynamic":null}`, "Application Details not Exists"},
-		"field required":  {`{"responseCode":"0","responseMessage":"requestYear is required","responseDynamic":null}`, "requestYear is required"},
-		"refused, ticket": {`{"responseCode":"0","responseMessage":"Invalid","responseDynamic":{"GrievenceSupportTicketNo":"100626000099001"}}`, "Invalid"},
+			"The phone number does not match the one registered for this application number."},
+		"no application": {`{"responseCode":"0","responseMessage":"Application Details not Exists","responseDynamic":null}`,
+			"No PMFBY application was found for this application number."},
+		"case and spaces": {`{"responseCode":"0","responseMessage":" mobile number NOT matched ","responseDynamic":null}`,
+			"The phone number does not match the one registered for this application number."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{insertPath: tc.reply}}, 0).send(t, support(supportFields()))
@@ -569,15 +578,18 @@ func TestSupport_PortalRefuses_Returns400WithItsMessage(t *testing.T) {
 	}
 }
 
-// A reply with neither a ticket nor a reason is PMFBY's failure, not the caller's.
-func TestSupport_PortalGivesNoReason_Returns502(t *testing.T) {
+// Any other failure is PMFBY's own: a 502 in our words, PMFBY's text withheld.
+func TestSupport_PortalFails_Returns502WithoutItsText(t *testing.T) {
 	for name, reply := range map[string]string{
 		"success, no ticket": `{"responseCode":"1","responseDynamic":{}}`,
 		"no message":         `{"responseCode":"0","responseMessage":null}`,
+		"internal error":     `{"responseCode":"0","responseMessage":"AxiosError: Request failed with status code 403","responseDynamic":null}`,
+		"token rejected":     `{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`,
+		"unknown wording":    `{"responseCode":"0","responseMessage":"Invalid","responseDynamic":{"GrievenceSupportTicketNo":"100626000099001"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{insertPath: reply}}, 0).send(t, support(supportFields()))
-			assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
+			assertFailedUpstream(t, err, "PMFBY could not register the grievance right now. Please try again later.")
 		})
 	}
 }
@@ -805,37 +817,38 @@ func TestStatus_TicketStatus_MapsToCaseStatusCode(t *testing.T) {
 	}
 }
 
-// A refusal is a 400 carrying PMFBY's own message; an empty record, or one
-// for another ticket (PMFBY reads by phone alone), is "No record found".
+// No record, or one for another ticket (PMFBY reads by phone alone), is a 400
+// in our words.
 func TestStatus_NoMatchingRecord_Returns400(t *testing.T) {
 	another := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{"GrievenceSupportTicketNo":"100626000099002",`, 1)
-	for name, tc := range map[string]struct{ reply, message string }{
-		"no record":       {`{"responseCode":"0","responseMessage":"No record found","responseDynamic":[]}`, "No record found"},
-		"token required":  {`{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`, "Token required!"},
-		"null":            {`{"responseCode":"1","responseDynamic":null}`, "No record found"},
-		"empty object":    {`{"responseCode":"1","responseDynamic":{}}`, "No record found"},
-		"empty in list":   {`{"responseCode":"1","responseDynamic":[{}]}`, "No record found"},
-		"all fields null": {`{"responseCode":"1","responseDynamic":{"ApplicationNo":null,"TicketStatus":null}}`, "No record found"},
-		"another ticket":  {another, "No record found"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: tc.reply}}, 0).
-				send(t, request("status", statusAttributes()))
-			assertRefused(t, err, tc.message)
-		})
-	}
-}
-
-// A reply with neither a record nor a reason is PMFBY's failure, not the caller's.
-func TestStatus_PortalGivesNoReason_Returns502(t *testing.T) {
 	for name, reply := range map[string]string{
-		"no envelope": `{"message":"An error has occurred."}`,
-		"no message":  `{"responseCode":"0","responseMessage":"","responseDynamic":null}`,
+		"no record":       `{"responseCode":"0","responseMessage":"No record found","responseDynamic":[]}`,
+		"null":            `{"responseCode":"1","responseDynamic":null}`,
+		"empty object":    `{"responseCode":"1","responseDynamic":{}}`,
+		"empty in list":   `{"responseCode":"1","responseDynamic":[{}]}`,
+		"all fields null": `{"responseCode":"1","responseDynamic":{"ApplicationNo":null,"TicketStatus":null}}`,
+		"another ticket":  another,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: reply}}, 0).
 				send(t, request("status", statusAttributes()))
-			assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
+			assertRefused(t, err, "No grievance was found for this ticket number and phone number.")
+		})
+	}
+}
+
+// Any other failure is PMFBY's own: a 502 in our words, PMFBY's text withheld.
+func TestStatus_PortalFails_Returns502WithoutItsText(t *testing.T) {
+	for name, reply := range map[string]string{
+		"no envelope":    `{"message":"An error has occurred."}`,
+		"no message":     `{"responseCode":"0","responseMessage":"","responseDynamic":null}`,
+		"internal error": `{"responseCode":"0","responseMessage":"AxiosError: Request failed with status code 403","responseDynamic":null}`,
+		"token rejected": `{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: reply}}, 0).
+				send(t, request("status", statusAttributes()))
+			assertFailedUpstream(t, err, "PMFBY could not return the grievance status right now. Please try again later.")
 		})
 	}
 }
