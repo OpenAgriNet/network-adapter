@@ -529,10 +529,14 @@ func TestSupport_NoGrievance_Returns400(t *testing.T) {
 	assertCoded(t, err, http.StatusBadRequest, "SCH_REQUIRED_FIELD_MISSING")
 }
 
+// complaintDate goes to PMFBY as its IST date and comes back as filedOn in UTC.
+// complaintDate goes to PMFBY as its IST date; filedOn stays the lodge time,
+// so a later status read reports the same moment.
 func TestSupport_CallerDateAndSource_SentInsteadOfDefaults(t *testing.T) {
-	for given, want := range map[string][2]string{
-		"2026-09-20T04:30:00Z":      {"2026-09-20", "2026-09-20T04:30:00Z"},
-		"2026-09-21T01:00:00+05:30": {"2026-09-21", "2026-09-20T19:30:00Z"}, // 1am IST is the previous day in UTC
+	for given, want := range map[string]string{
+		"2026-09-20":                "2026-09-20",
+		"2026-09-20T04:30:00Z":      "2026-09-20",
+		"2026-09-21T01:00:00+05:30": "2026-09-21",
 	} {
 		t.Run(given, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
@@ -540,12 +544,10 @@ func TestSupport_CallerDateAndSource_SentInsteadOfDefaults(t *testing.T) {
 			fields["complaintDate"], fields["receiptSourceId"] = given, "200001"
 			got := h.mustSend(t, support(fields))
 			sent := h.pmfby.bodies[insertPath]
-			if sent["complaintDate"] != want[0] || sent["receiptSourceID"] != "200001" {
-				t.Errorf("PMFBY was sent %v / %v, want %s and the caller's source", sent["complaintDate"], sent["receiptSourceID"], want[0])
+			if sent["complaintDate"] != want || sent["receiptSourceID"] != "200001" {
+				t.Errorf("PMFBY was sent %v / %v, want %s and the caller's source", sent["complaintDate"], sent["receiptSourceID"], want)
 			}
-			if filed := band(got.channel(), "case")["filedOn"]; filed != want[1] {
-				t.Errorf("filedOn = %v, want %s", filed, want[1])
-			}
+			assertJustNowUTC(t, band(got.channel(), "case")["filedOn"])
 		})
 	}
 }
@@ -848,7 +850,7 @@ func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
 // PMFBY's TicketStatus maps to a CaseStatusCode; an unlisted phrase is UnderReview.
 func TestStatus_TicketStatus_MapsToCaseStatusCode(t *testing.T) {
 	for phrase, want := range map[string]string{"Resolved": "Resolved", " resolved ": "Resolved",
-		"Open": "UnderReview", "Under Review": "UnderReview", "Escalated": "UnderReview"} {
+		"Open": "Registered", "Under Review": "UnderReview", "Escalated": "UnderReview"} {
 		t.Run(phrase, func(t *testing.T) {
 			record := strings.Replace(knownTicketRecord, `"TicketStatus":"Under Review"`, `"TicketStatus":"`+phrase+`"`, 1)
 			got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
