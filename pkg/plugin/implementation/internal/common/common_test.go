@@ -2646,6 +2646,19 @@ func TestRefusal_UnreadableError_FailsRatherThanAnswering(t *testing.T) {
 	}
 }
 
+// cause is the provider's own wording, kept for the log: the caller never sees it.
+func TestRefusal_Cause_NotSentToCaller(t *testing.T) {
+	var calls int
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(
+		`{"_error":{"status":502,"code":"NET_DOWNSTREAM_UNAVAILABLE","message":"try again later","cause":"AxiosError: 403"}}`)}
+	_, err := runStep(t, refusalStep(t, mapper, &calls), selectBody)
+
+	_, refused := refusedAs(t, err)
+	if refused.Message != "try again later" || strings.Contains(err.Error(), "AxiosError") {
+		t.Errorf("answer = %+v (%v), want the mapping's message without the cause", refused, err)
+	}
+}
+
 // A mapping that writes "_error": null means no error, not an unreadable one.
 func TestRefusal_NullErrorField_AnswersAsBefore(t *testing.T) {
 	var calls int
