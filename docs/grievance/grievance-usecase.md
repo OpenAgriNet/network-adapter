@@ -129,8 +129,8 @@ same HTTP response. Shortened here to the parts the scenarios use:
         "informationMode": "OnDemand",
         "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
         "grievanceOptions": {
-          "categories":    [ { "code": "3",  "name": "Enrollment / Portal Issues", "descriptor": "…" } ],
-          "subCategories": [ { "code": "10", "name": "Login",                      "descriptor": "…" } ]
+          "categories":    [ { "code": "3",  "name": "Enrollment / Portal Issues", "help": "…" } ],
+          "subCategories": [ { "code": "10", "name": "Login",                      "help": "…" } ]
         }
       }
     }],
@@ -970,7 +970,8 @@ Two things are required on every call and are not repeated in the tables:
 - **The provider** — `commitments[0].offer.provider` on `init` and `status`,
   `channels[0].provider` on `support`. Its `id` is required on all three: it is what
   resolves the Portal and its base URL in the registry, so a call without it cannot be
-  routed and is rejected. The `descriptor.name` beside it is display text and optional.
+  routed and is rejected. The `descriptor.name` beside it must travel with it: a provider
+  carrying only an `id` is refused.
 
 On `init` and `status` the rest of the `Contract` skeleton is also required:
 `contract.id`, `commitments[0].status.descriptor.code`, `offer.id`, `offer.resourceIds`,
@@ -988,6 +989,7 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 | field | `support` | `status` |
 |---|---|---|
 | `provider.id` | required — in `channels[0]` | required — in `commitments[0].offer` |
+| `provider.descriptor.name` | required — beside the `id` | required — beside the `id` |
 | `contract.id` | — no contract | required — caller-created |
 | `enrolmentId` | required — the application number, 10 to 30 characters | — the portal returns it on `on_status` |
 | `applicantMobile` | required | required |
@@ -1005,6 +1007,7 @@ There is no `init` column: PMFBY publishes no challenge, so the flow opens at `s
 | field | `init` | `support` | `status` |
 |---|---|---|---|
 | `provider.id` | required — in `commitments[0].offer` | required — in `channels[0]` | required — in `commitments[0].offer` |
+| `provider.descriptor.name` | required — beside the `id` | required — beside the `id` | required — beside the `id` |
 | `contract.id` | required — caller-created | — no contract | required — the same value as the `init` before it |
 | `enrolmentId` | required — the registration number, 6 to 20 characters | required — the same value | required — the same value |
 | `grievance.category.code` | — | required — one of `G001`–`G010` | — |
@@ -1030,6 +1033,7 @@ accepted.
 | field | `init` | `status` |
 |---|---|---|
 | `provider.id` | required — in `commitments[0].offer` | required — in `commitments[0].offer` |
+| `provider.descriptor.name` | required — beside the `id` | required — beside the `id` |
 | `contract.id` | required — caller-created | required — the same value as the `init` before it |
 | `enrolmentId` | one of these two — the registration number | the same value |
 | `applicant` | one of these two — carries `mobile` | the same value |
@@ -1217,11 +1221,11 @@ POST /catalog/publish
           "grievanceOptions": {
             "categories": [
               { "code": "3", "name": "Enrollment / Portal Issues",
-                "descriptor": "The only category this desk sends. PMFBY publishes no category list, so every grievance is filed under this one." }
+                "help": "The only category this desk sends. PMFBY publishes no category list, so every grievance is filed under this one." }
             ],
             "subCategories": [
               { "code": "10", "name": "Login",
-                "descriptor": "The only sub-category this desk sends, paired with category 3." }
+                "help": "The only sub-category this desk sends, paired with category 3." }
             ]
           }
         }
@@ -1314,25 +1318,25 @@ POST /catalog/publish
           "grievanceOptions": {
             "categories": [
               { "code": "G001", "name": "Account number not correct",
-                "descriptor": "The bank account held against your registration is wrong, so money cannot reach you." },
+                "help": "The bank account held against your registration is wrong, so money cannot reach you." },
               { "code": "G002", "name": "Online application pending for approval",
-                "descriptor": "You applied online and the application has not yet been approved." },
+                "help": "You applied online and the application has not yet been approved." },
               { "code": "G003", "name": "Installment not received",
-                "descriptor": "Your registration is approved but an instalment has not reached your account." },
+                "help": "Your registration is approved but an instalment has not reached your account." },
               { "code": "G004", "name": "Transaction failed",
-                "descriptor": "A payment was attempted and the transfer did not go through." },
+                "help": "A payment was attempted and the transfer did not go through." },
               { "code": "G005", "name": "Problem in Aadhaar correction",
-                "descriptor": "A correction to your Aadhaar details has not gone through." },
+                "help": "A correction to your Aadhaar details has not gone through." },
               { "code": "G006", "name": "Gender not correct",
-                "descriptor": "The gender recorded against your registration is wrong." },
+                "help": "The gender recorded against your registration is wrong." },
               { "code": "G007", "name": "Payment related",
-                "descriptor": "Any other problem with a payment that the options above do not cover." },
+                "help": "Any other problem with a payment that the options above do not cover." },
               { "code": "G008", "name": "Problem in OTP-based eKYC",
-                "descriptor": "eKYC by OTP is failing." },
+                "help": "eKYC by OTP is failing." },
               { "code": "G009", "name": "Problem in biometric-based eKYC",
-                "descriptor": "eKYC by fingerprint or iris is failing." },
+                "help": "eKYC by fingerprint or iris is failing." },
               { "code": "G010", "name": "Problem in facial-based eKYC",
-                "descriptor": "eKYC by face scan is failing." }
+                "help": "eKYC by face scan is failing." }
             ]
           }
         }
