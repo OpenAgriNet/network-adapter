@@ -28,7 +28,7 @@ func (stubMapper) Transform(context.Context, string, definition.Direction, any) 
 }
 
 const (
-	pmfbyBindingKey  = "pmfby|openagrinet:PMFBYGrievance"
+	pmfbyBindingKey  = "pmfby|openagrinet:Grievance"
 	providerIDAt     = "message.contract.commitments[].offer.provider.id, message.support.channels[].provider.id"
 	capabilityCodeAt = "message.contract.commitments[].commitmentAttributes.@type, message.support.channels[].@type"
 )
