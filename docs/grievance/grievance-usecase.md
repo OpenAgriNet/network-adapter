@@ -962,6 +962,14 @@ What a call must carry is declared in the pack as `x-oan-fields-by-action`; the 
 below render its `mustSend` lists. A missing field is a `400` NACK with
 `SCH_REQUIRED_FIELD_MISSING`, returned before the portal is called.
 
+Everything in the tables below that sits inside the attribute object is enforced by the
+schema itself, by a gate per call that names that call's whole `mustSend` list. The gate
+reads which call it is off the payload's shape — a `grievance` band is a support ask, a
+`case` band is a status ask — because one `@type` serves every call and every ask carries
+`informationMode: OnDemand`. The rows outside that object — the provider on `init` and
+`status`, and the `Contract` skeleton — are the adapter's to check, since no guard on the
+attributes can see them.
+
 Two things are required on every call and are not repeated in the tables:
 
 - **The attribute object** — `commitmentAttributes` on `init` and `status`,
