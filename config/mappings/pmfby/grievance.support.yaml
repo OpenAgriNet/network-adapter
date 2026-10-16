@@ -36,7 +36,7 @@ request: |
     }
   )
 
-# Echoes the request and adds the ticket; filedOn is the filing time in UTC.
+# Echoes the request and adds the ticket; filedOn is when it was lodged, in UTC.
 # A refusal PMFBY is known to give is a 400 in our words; any other failure is
 # a 502. PMFBY's own message is logged as the cause, never returned.
 response: |
@@ -53,7 +53,6 @@ response: |
       "application details not exists": "No PMFBY application was found for this application number."
     };
     $refusal := $said ? $lookup($refusals, $lowercase($said));
-    $filed := $exists($ch.complaintDate) ? $toMillis($ch.complaintDate) : $millis();
     /* responseCode "1" (string or number) with a ticket, "Ticket Already Raised" included. */
     $string(response.responseCode) = "1" and ($type($ticketNo) = "string" or $type($ticketNo) = "number")
     ? {
@@ -77,7 +76,9 @@ response: |
             "case": {
               "ticketNo": $string($ticketNo),
               "status": { "code": "Registered" },
-              "filedOn": $fromMillis($filed, "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z")
+              /* Lodge time, not complaintDate: a status read reports when PMFBY
+                 recorded the ticket, and the two must agree. */
+              "filedOn": $fromMillis($millis(), "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z")
             }
           }]
         }

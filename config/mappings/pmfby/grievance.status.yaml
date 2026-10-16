@@ -43,7 +43,7 @@ response: |
       and ($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
       and $not($exists($ticket.GrievenceSupportTicketNo) and $string($ticket.GrievenceSupportTicketNo) != $asked);
     /* PMFBY's TicketStatus as a CaseStatusCode; a phrase not listed is UnderReview. */
-    $statusOf := { "resolved": "Resolved" };
+    $statusOf := { "open": "Registered", "resolved": "Resolved" };
     $status := $isText($ticket.TicketStatus) ? $lookup($statusOf, $lowercase($trim($ticket.TicketStatus)));
     /* InsertDateTime is an RFC 3339 time, e.g. "2026-10-12T11:02:49.000Z". */
     $inserted := $ticket.InsertDateTime;
