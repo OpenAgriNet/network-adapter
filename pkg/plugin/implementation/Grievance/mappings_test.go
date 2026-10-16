@@ -26,7 +26,7 @@ import (
 
 const (
 	mappingsDir       = "../../../../config/mappings/pmfby"
-	shippedBindingKey = "pmfby|openagrinet:PMFBYGrievance"
+	shippedBindingKey = "pmfby|openagrinet:Grievance"
 	stubToken         = "stub-login-token"
 	knownTicket       = "100626000099001"
 	phone             = "9876543210"
@@ -139,7 +139,7 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 			Mappings: mappings.URL + "/" + file, RetryMax: retries}
 	}
 	registry := &stubRegistry{plan: &model.ProviderRecord{
-		BindingKey: shippedBindingKey, ParticipantID: "pmfby", CapabilityCode: "openagrinet:PMFBYGrievance",
+		BindingKey: shippedBindingKey, ParticipantID: "pmfby", CapabilityCode: "openagrinet:Grievance",
 		BaseURL: upstream.URL,
 		Actions: map[string]model.ActionPlan{
 			"support": action(insertPath, "grievance.support.yaml", 0),
@@ -240,7 +240,7 @@ func (h *harness) mustSend(t *testing.T, body []byte) *answer {
 	return got
 }
 
-const packContext = "https://openagrinet.github.io/network-specs/api-schemas/PMFBYGrievance/v0.1/context.jsonld"
+const packContext = "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld"
 
 // scheme is what every PMFBY payload names.
 var scheme = map[string]any{"code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana"}
@@ -255,7 +255,7 @@ func becknContext(action string) map[string]any {
 // request builds a status payload whose one commitment carries attributes.
 func request(action string, attributes map[string]any) []byte {
 	attributes["@context"] = packContext
-	attributes["@type"] = "openagrinet:PMFBYGrievance"
+	attributes["@type"] = "openagrinet:Grievance"
 	attributes["informationMode"] = "OnDemand"
 	if _, named := attributes["scheme"]; !named {
 		attributes["scheme"] = scheme
@@ -278,7 +278,7 @@ func request(action string, attributes map[string]any) []byte {
 // support builds a support request from flat fields: categoryCode,
 // subCategoryCode and description under grievance, the rest on channels[0].
 func support(fields map[string]any) []byte {
-	channel := map[string]any{"@context": packContext, "@type": "openagrinet:PMFBYGrievance",
+	channel := map[string]any{"@context": packContext, "@type": "openagrinet:Grievance",
 		"informationMode": "OnDemand", "scheme": scheme, "provider": provider}
 	body := map[string]any{"channels": []any{channel}}
 	grievance := map[string]any{}
@@ -304,13 +304,13 @@ func support(fields map[string]any) []byte {
 func supportFields() map[string]any {
 	return map[string]any{
 		"enrolmentId": "040108251010160770605", "categoryCode": "3", "subCategoryCode": "10",
-		"description": "  Claim not received  ", "applicantPhone": phone,
+		"description": "  Claim not received  ", "applicantMobile": phone,
 		"cropYear": "2025", "season": "Kharif",
 	}
 }
 
 func statusAttributes() map[string]any {
-	return map[string]any{"applicantPhone": phone, "case": map[string]any{"ticketNo": knownTicket}}
+	return map[string]any{"applicantMobile": phone, "case": map[string]any{"ticketNo": knownTicket}}
 }
 
 // refusal is the HTTP status and Beckn error a failed request is answered with.
@@ -410,7 +410,7 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 		channel["informationMode"] != "Direct" || channel["scheme"] == nil {
 		t.Errorf("channel = %v", channel)
 	}
-	for _, private := range []string{"applicantPhone", "ticketId"} {
+	for _, private := range []string{"applicantMobile", "ticketId"} {
 		if _, echoed := channel[private]; echoed {
 			t.Errorf("%s must not be echoed", private)
 		}
@@ -500,7 +500,7 @@ func TestSupport_BareProviderAndScheme_ReturnsPortalNameAndSchemeName(t *testing
 func TestSupport_MissingField_Returns400NamingItsPath(t *testing.T) {
 	channel := "$.message.support.channels[0]."
 	for field, path := range map[string]string{
-		"enrolmentId": channel + "enrolmentId", "applicantPhone": channel + "applicantPhone",
+		"enrolmentId": channel + "enrolmentId", "applicantMobile": channel + "applicantMobile",
 		"cropYear": channel + "cropYear", "season": channel + "season",
 		"description": channel + "grievance.description",
 	} {
@@ -715,6 +715,49 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 	}
 }
 
+// The live record carries ids, crop year and season as numbers, and the
+// officer's reply in latestRemark.
+func TestStatus_FullRecord_ReturnsCodesCropYearSeasonAndReply(t *testing.T) {
+	record := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{
+		"TicketCategoryID":3,"TicketSubCategoryID":10,"RequestYear":2025,"RequestSeason":2,
+		"latestRemark":" Claim credited on 12 Oct ",`, 1)
+	attributes := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+		mustSend(t, request("status", statusAttributes())).attributes()
+
+	grievance := band(attributes, "grievance")
+	if category, subCategory := band(grievance, "category"), band(grievance, "subCategory"); category["code"] != "3" ||
+		category["name"] != "Claim" || subCategory["code"] != "10" || subCategory["name"] != "Claim not received" {
+		t.Errorf("grievance = %v, want code and name on both levels", grievance)
+	}
+	if attributes["cropYear"] != "2025" || attributes["season"] != "Rabi" {
+		t.Errorf("cropYear, season = %v, %v; want 2025, Rabi", attributes["cropYear"], attributes["season"])
+	}
+	if reply := band(attributes, "case")["reply"]; reply != "Claim credited on 12 Oct" {
+		t.Errorf("case.reply = %q, want the trimmed remark", reply)
+	}
+}
+
+// Values PMFBY uses for "none", or that fit no pack field, are dropped.
+func TestStatus_UnusableCodes_Dropped(t *testing.T) {
+	for name, fields := range map[string]string{
+		"zeros":        `"TicketCategoryID":0,"TicketSubCategoryID":"0","RequestYear":0,"RequestSeason":0,"latestRemark":"",`,
+		"out of range": `"RequestYear":25,"RequestSeason":4,"latestRemark":"   ",`,
+		"not a number": `"TicketCategoryID":"x","RequestYear":"20x5","RequestSeason":"Kharif",`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			record := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{`+fields, 1)
+			attributes := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+				mustSend(t, request("status", statusAttributes())).attributes()
+			_, year := attributes["cropYear"]
+			_, season := attributes["season"]
+			_, reply := band(attributes, "case")["reply"]
+			if category := band(band(attributes, "grievance"), "category"); year || season || reply || category["code"] != nil {
+				t.Errorf("attributes = %v, want no cropYear, season, reply or category code", attributes)
+			}
+		})
+	}
+}
+
 func TestStatus_KnownTicket_DropsPersonalAndInternalFields(t *testing.T) {
 	got := newHarness(t, &pmfbyStub{}, 0).mustSend(t, request("status", statusAttributes()))
 	allowed := map[string]map[string]bool{
@@ -872,7 +915,7 @@ func TestStatus_RecordInAList_ReadAsTheRecord(t *testing.T) {
 }
 
 func TestStatus_MissingField_Returns400WithoutCallingPMFBY(t *testing.T) {
-	for _, field := range []string{"applicantPhone", "case"} {
+	for _, field := range []string{"applicantMobile", "case"} {
 		t.Run(field, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
 			attributes := statusAttributes()
@@ -900,7 +943,7 @@ func TestStatus_PortalDown_RetriedAsTheRegistrySays(t *testing.T) {
 func TestFlow_SupportThenStatus_LogsInOnce(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
 	ticket := band(h.mustSend(t, support(supportFields())).channel(), "case")["ticketNo"]
-	got := h.mustSend(t, request("status", map[string]any{"applicantPhone": phone, "case": map[string]any{"ticketNo": ticket}}))
+	got := h.mustSend(t, request("status", map[string]any{"applicantMobile": phone, "case": map[string]any{"ticketNo": ticket}}))
 
 	if status := band(band(got.attributes(), "case"), "status"); status["code"] != "UnderReview" {
 		t.Errorf("status of the filed ticket = %v", got.attributes())
@@ -932,10 +975,23 @@ func TestFlow_UnservedAction_Returns400WithoutCallingPMFBY(t *testing.T) {
 	}
 }
 
+// PM-KISAN shares the Grievance type; only the provider tells the desks apart.
+func TestFlow_OtherSchemeSameType_PassesThroughUntouched(t *testing.T) {
+	h := newHarness(t, &pmfbyStub{}, 0)
+	body := strings.Replace(string(request("status", statusAttributes())), `"id":"pmfby"`, `"id":"pmkisan"`, 1)
+	if !strings.Contains(body, `"id":"pmkisan"`) {
+		t.Fatal("the request names no pmfby provider to replace")
+	}
+	got, err := h.send(t, []byte(body))
+	if err != nil || got != nil || len(h.pmfby.calls) != 0 {
+		t.Errorf("Run() = %v, %v, PMFBY calls %v; want PM-KISAN's request passed on untouched", got, err, h.pmfby.calls)
+	}
+}
+
 func TestFlow_OtherCapability_PassesThroughUntouched(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{}, 0)
 	body := strings.Replace(string(request("status", statusAttributes())),
-		"openagrinet:PMFBYGrievance", "openagrinet:PMKISANGrievance", 1)
+		"openagrinet:Grievance", "openagrinet:SchemeApplication", 1)
 	got, err := h.send(t, []byte(body))
 	if err != nil || got != nil {
 		t.Errorf("Run() = %v, %v; want another capability passed on untouched", got, err)

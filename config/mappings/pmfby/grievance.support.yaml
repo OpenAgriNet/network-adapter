@@ -10,7 +10,7 @@ request: |
     /* First missing required field, with its path. */
     $missing := [
       { "field": "enrolmentId", "path": $at & "enrolmentId", "present": $exists($ch.enrolmentId) },
-      { "field": "applicantPhone", "path": $at & "applicantPhone", "present": $exists($ch.applicantPhone) },
+      { "field": "applicantMobile", "path": $at & "applicantMobile", "present": $exists($ch.applicantMobile) },
       { "field": "cropYear", "path": $at & "cropYear", "present": $exists($ch.cropYear) },
       { "field": "season", "path": $at & "season", "present": $exists($ch.season) },
       { "field": "grievance.description", "path": $at & "grievance.description", "present": $exists($g.description) }
@@ -22,7 +22,7 @@ request: |
     ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
                     "message": $missing.field & " is required", "path": $missing.path } }
     : {
-      "requestorMobileNo": $ch.applicantPhone,
+      "requestorMobileNo": $ch.applicantMobile,
       "applicationNo": $ch.enrolmentId,
       "requestYear": $string($ch.cropYear),
       "requestSeason": $lookup($seasons, $ch.season),

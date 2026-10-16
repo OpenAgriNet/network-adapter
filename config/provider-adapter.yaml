@@ -510,7 +510,7 @@ modules:
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:PMFBYGrievance"
+              bindingKeys: "pmfby|openagrinet:Grievance"
 
               # Paired by position, tried in order: status names the binding on
               # its contract, support on its channel.
