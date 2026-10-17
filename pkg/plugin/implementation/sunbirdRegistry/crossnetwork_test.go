@@ -13,11 +13,38 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 )
 
-// admittedRecord is a network we admitted, in the given direction.
-func admittedRecord(role string) participant {
+const testAgreedPack = "https://x/MandiPrice/v0.1/attributes.yaml"
+const testAgreedContext = "https://x/MandiPrice/v0.1/context.jsonld"
+
+// admittedRecord is a network we admitted, in the given directions. A pack list
+// is required on a real record, so each direction carries one.
+func admittedRecord(agreed federationRole) participant {
 	record := activeRecord()
-	record.FederationRole = role
+	record.FederationRole = agreed
 	return record
+}
+
+func agreedPacks() *federationDirection {
+	return &federationDirection{SchemaPacks: []string{testAgreedPack}}
+}
+
+// askedFor is the context a served discover carries: who signed it, and the
+// capabilities their body named.
+func askedFor(caller string, contexts ...string) context.Context {
+	return actionAskedFor(caller, discoverAction, contexts...)
+}
+
+func actionAskedFor(caller, action string, contexts ...string) context.Context {
+	body := []byte(`{"context":{"action":"` + action + `","senderId":"` + caller + `"}}`)
+	if contexts != nil {
+		quoted := make([]string, 0, len(contexts))
+		for _, c := range contexts {
+			quoted = append(quoted, `"`+c+`"`)
+		}
+		body = []byte(`{"context":{"action":"` + action + `","senderId":"` + caller +
+			`","schemaContext":[` + strings.Join(quoted, ",") + `]}}`)
+	}
+	return &model.StepContext{Context: calledBy(caller), Body: body}
 }
 
 // calledBy is the context the adapter serves a request in: reqpreprocessor has
@@ -34,7 +61,7 @@ func lookupAs(t *testing.T, c *Client, ctx context.Context) ([]model.Subscriptio
 	})
 }
 
-func crossNetworkClient(t *testing.T, role string, on bool) *Client {
+func crossNetworkClient(t *testing.T, role federationRole, on bool) *Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, recordJSON(t, admittedRecord(role)))
@@ -48,7 +75,7 @@ func crossNetworkClient(t *testing.T, role string, on bool) *Client {
 func TestADirectionIsOnlyHonouredWhenTheCheckIsOn(t *testing.T) {
 	t.Parallel()
 
-	results, err := lookupAs(t, crossNetworkClient(t, model.FederationRoleSource, false),
+	results, err := lookupAs(t, crossNetworkClient(t, federationRole{Source: agreedPacks()}, false),
 		calledBy(testParticipantID))
 	if err != nil {
 		t.Fatalf("with the check off a lookup must behave as before: %v", err)
@@ -61,11 +88,15 @@ func TestADirectionIsOnlyHonouredWhenTheCheckIsOn(t *testing.T) {
 func TestACallerWeAgreedToGiveToResolves(t *testing.T) {
 	t.Parallel()
 
-	for _, role := range []string{model.FederationRoleRequester, model.FederationRoleBoth} {
-		t.Run(role, func(t *testing.T) {
-			results, err := lookupAs(t, crossNetworkClient(t, role, true), calledBy(testParticipantID))
+	for name, role := range map[string]federationRole{
+		"requester": {Requester: agreedPacks()},
+		"both":      {Source: agreedPacks(), Requester: agreedPacks()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			results, err := lookupAs(t, crossNetworkClient(t, role, true),
+				askedFor(testParticipantID, testAgreedContext))
 			if err != nil {
-				t.Fatalf("a %s caller was refused: %v", role, err)
+				t.Fatalf("a %s caller asking within the agreement was refused: %v", name, err)
 			}
 			if len(results) != 1 {
 				t.Fatalf("expected the key to be returned, got %d results", len(results))
@@ -77,7 +108,7 @@ func TestACallerWeAgreedToGiveToResolves(t *testing.T) {
 func TestACallerWeOnlyAgreedToReadFromIsRefused(t *testing.T) {
 	t.Parallel()
 
-	results, err := lookupAs(t, crossNetworkClient(t, model.FederationRoleSource, true),
+	results, err := lookupAs(t, crossNetworkClient(t, federationRole{Source: agreedPacks()}, true),
 		calledBy(testParticipantID))
 	if err == nil {
 		t.Fatal("a network we only agreed to read from was given a key to call us with")
@@ -93,7 +124,7 @@ func TestACallerWeOnlyAgreedToReadFromIsRefused(t *testing.T) {
 func TestARecordWithNoDirectionIsLeftAlone(t *testing.T) {
 	t.Parallel()
 
-	results, err := lookupAs(t, crossNetworkClient(t, "", true), calledBy(testParticipantID))
+	results, err := lookupAs(t, crossNetworkClient(t, federationRole{}, true), calledBy(testParticipantID))
 	if err != nil {
 		t.Fatalf("a record with no federationRole was refused: %v", err)
 	}
@@ -105,7 +136,7 @@ func TestARecordWithNoDirectionIsLeftAlone(t *testing.T) {
 func TestAKeyResolvedOutsideARequestIsNotJudged(t *testing.T) {
 	t.Parallel()
 
-	results, err := lookupAs(t, crossNetworkClient(t, model.FederationRoleSource, true),
+	results, err := lookupAs(t, crossNetworkClient(t, federationRole{Source: agreedPacks()}, true),
 		context.Background())
 	if err != nil {
 		t.Fatalf("resolving a key outside a request was refused: %v", err)
@@ -118,7 +149,7 @@ func TestAKeyResolvedOutsideARequestIsNotJudged(t *testing.T) {
 func TestOnlyTheCallerIsJudged(t *testing.T) {
 	t.Parallel()
 
-	results, err := lookupAs(t, crossNetworkClient(t, model.FederationRoleSource, true),
+	results, err := lookupAs(t, crossNetworkClient(t, federationRole{Source: agreedPacks()}, true),
 		calledBy("somebody-else.oan.local"))
 	if err != nil {
 		t.Fatalf("a lookup for a party other than the caller was refused: %v", err)
@@ -167,7 +198,7 @@ func TestACachedAnswerIsJudgedToo(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, recordJSON(t, admittedRecord(model.FederationRoleSource)))
+		fmt.Fprint(w, recordJSON(t, admittedRecord(federationRole{Source: agreedPacks()})))
 	}))
 	defer srv.Close()
 
@@ -181,5 +212,68 @@ func TestACachedAnswerIsJudgedToo(t *testing.T) {
 	}
 	if _, err := lookupAs(t, client, calledBy(testParticipantID)); err == nil {
 		t.Fatal("a cached record skipped the direction check")
+	}
+}
+
+func TestADiscoverNamingNoCapabilityIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for name, ctx := range map[string]context.Context{
+		"no schemaContext": askedFor(testParticipantID),
+		"empty list":       askedFor(testParticipantID, []string{}...),
+		"blank entry":      askedFor(testParticipantID, "  "),
+	} {
+		t.Run(name, func(t *testing.T) {
+			results, err := lookupAs(t, crossNetworkClient(t, federationRole{Requester: agreedPacks()}, true), ctx)
+			if err == nil {
+				t.Fatal("a discover naming no capability asks for everything and must be refused")
+			}
+			if len(results) != 0 {
+				t.Errorf("expected no key, got %d results", len(results))
+			}
+		})
+	}
+}
+
+func TestADiscoverAskingOutsideTheAgreementIsRefused(t *testing.T) {
+	t.Parallel()
+
+	results, err := lookupAs(t, crossNetworkClient(t, federationRole{Requester: agreedPacks()}, true),
+		askedFor(testParticipantID, testAgreedContext, "https://x/Weather/v0.1/context.jsonld"))
+	if err == nil {
+		t.Fatal("a capability outside the agreement was given a key")
+	}
+	if len(results) != 0 {
+		t.Errorf("expected no key, got %d results", len(results))
+	}
+	if strings.Contains(err.Error(), "Weather") {
+		t.Errorf("error = %v, want it not to name what we hold", err)
+	}
+}
+
+func TestOnlyADiscoverIsCheckedAgainstTheAgreedSubset(t *testing.T) {
+	t.Parallel()
+
+	for _, action := range []string{"select", "init", "confirm", "status"} {
+		t.Run(action, func(t *testing.T) {
+			results, err := lookupAs(t, crossNetworkClient(t, federationRole{Requester: agreedPacks()}, true),
+				actionAskedFor(testParticipantID, action))
+			if err != nil {
+				t.Fatalf("a %s from a network we agreed to give to was refused: %v", action, err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("expected the key to be returned, got %d results", len(results))
+			}
+		})
+	}
+}
+
+func TestASelectFromANetworkWeOnlyReadFromIsStillRefused(t *testing.T) {
+	t.Parallel()
+
+	_, err := lookupAs(t, crossNetworkClient(t, federationRole{Source: agreedPacks()}, true),
+		actionAskedFor(testParticipantID, "select"))
+	if err == nil {
+		t.Fatal("the direction still governs an action that names no capability")
 	}
 }

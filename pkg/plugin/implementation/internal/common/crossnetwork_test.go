@@ -56,12 +56,18 @@ func (s *networkStub) AdmittedNetworks(context.Context) ([]model.AdmittedNetwork
 	return s.networks, s.err
 }
 
+// agreedPacks is what a direction covers. Any pack will do here; these tests
+// are about the direction, not the subset.
+func agreedPacks() *model.FederationDirection {
+	return &model.FederationDirection{SchemaPacks: []string{"https://x/MandiPrice/v0.1/attributes.yaml"}}
+}
+
 // admittedAs is the step with one network on the books in the given direction.
-func admittedAs(t *testing.T, role string) definition.Step {
+func admittedAs(t *testing.T, agreed model.Agreement) definition.Step {
 	t.Helper()
 	return crossStepWith(t, "http://unused.invalid", &networkStub{
 		plan:     &model.ProviderRecord{BindingKey: sharedBinding},
-		networks: []model.AdmittedNetwork{{ID: them, FederationRole: role}},
+		networks: []model.AdmittedNetwork{{ID: them, Agreement: agreed}},
 	})
 }
 
@@ -77,7 +83,7 @@ func crossStep(t *testing.T, upstreamURL string) definition.Step {
 	return crossStepWith(t, upstreamURL, &networkStub{
 		plan: plan,
 		networks: []model.AdmittedNetwork{
-			{ID: them, FederationRole: "both"},
+			{ID: them, Agreement: model.Agreement{Source: agreedPacks(), Requester: agreedPacks()}},
 		},
 	})
 }
@@ -216,16 +222,17 @@ func TestASecondStepLeavesAnAlreadyRoutedRequestAlone(t *testing.T) {
 func TestForwardingNeedsTheReceiverAdmittedAsASource(t *testing.T) {
 	for _, tc := range []struct {
 		role      string
+		agreed    model.Agreement
 		forwarded bool
 	}{
-		{"source", true},
-		{"both", true},
-		{"requester", false},
+		{"source", model.Agreement{Source: agreedPacks()}, true},
+		{"both", model.Agreement{Source: agreedPacks(), Requester: agreedPacks()}, true},
+		{"requester", model.Agreement{Requester: agreedPacks()}, false},
 	} {
 		t.Run(tc.role, func(t *testing.T) {
 			ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: us,
 				Body: crossRequest(them, "https://"+them+"/provider", "select")}
-			err := admittedAs(t, tc.role).Run(ctx)
+			err := admittedAs(t, tc.agreed).Run(ctx)
 			if tc.forwarded {
 				if err != nil {
 					t.Fatalf("a %s network was not forwarded to: %v", tc.role, err)

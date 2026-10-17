@@ -278,10 +278,10 @@ func (s *Step) agreedToReadFrom(ctx *model.StepContext, receiver string) error {
 		}
 		if !network.IsSource() {
 			return model.NewBadReqErr("", fmt.Errorf(
-				"%s is admitted as %q, so we never agreed to read from them",
-				receiver, network.FederationRole))
+				"we agreed %v with %s, which does not include reading from them",
+				network.Directions(), receiver))
 		}
-		log.Infof(ctx, "%s is admitted as %q; forwarding", receiver, network.FederationRole)
+		log.Infof(ctx, "%s is admitted, agreed %v; forwarding", receiver, network.Directions())
 		return nil
 	}
 

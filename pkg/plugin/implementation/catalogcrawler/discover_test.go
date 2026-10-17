@@ -24,7 +24,7 @@ func targetNetwork() model.AdmittedNetwork {
 	return model.AdmittedNetwork{
 		ID:           "mahavistara.oan.local",
 		DiscoveryURL: "https://mahavistara.oan.local/network",
-		Source:       &model.FederationDirection{SchemaPacks: []string{weatherPack}},
+		Agreement:    model.Agreement{Source: &model.FederationDirection{SchemaPacks: []string{weatherPack}}},
 	}
 }
 
