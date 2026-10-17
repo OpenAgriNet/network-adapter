@@ -43,7 +43,7 @@ const shippedBindingKey = "knowledge-provider|" + shippedCapability
 // topics to search for and the languages it can read, and no advisory of its
 // own -- the pack's OnDemand branch requires exactly those two.
 const selectRequest = `{
-  "context": { "version": "2.0.0", "action": "select",
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "oan.test",
     "networkId": "oan-dev",
     "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
     "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
@@ -226,7 +226,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 	}
 	defer closeStep()
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(request)}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(request)}
 	if err := step.Run(stepCtx); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}
