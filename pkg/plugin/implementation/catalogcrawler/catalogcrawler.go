@@ -91,9 +91,15 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	if len(splitNonEmpty(config[cfgNetworks])) > 0 && metadataLookup == nil {
 		return nil, nil, fmt.Errorf("catalogcrawler: config %q requires a registry plugin that supports RegistryMetadataLookup (network-scoped discovery)", cfgNetworks)
 	}
+	// Only work that keeps a record between passes needs a database. Crawling
+	// other networks keeps none, so a deployment doing only that runs stateless.
 	dsn := strings.TrimSpace(config[cfgDBDSN])
 	if dsn == "" {
-		return nil, nil, fmt.Errorf("catalogcrawler: config %q is required", cfgDBDSN)
+		for _, needs := range []string{cfgStaticIndexURLs, cfgNetworks, cfgPublishPipelines} {
+			if strings.TrimSpace(config[needs]) != "" {
+				return nil, nil, fmt.Errorf("catalogcrawler: config %q requires %q", needs, cfgDBDSN)
+			}
+		}
 	}
 	discoveryURL := strings.TrimSpace(config[cfgDiscoveryURL])
 	if discoveryURL == "" {
@@ -114,15 +120,21 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 			"discoveryPushUrl", discoveryURL)
 	}
 
-	db, err := store.Open(dsn)
-	if err != nil {
-		return nil, nil, fmt.Errorf("catalogcrawler: opening database: %w", err)
+	var (
+		st    *store.Store
+		close = func() error { return nil }
+	)
+	if dsn != "" {
+		db, err := store.Open(dsn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("catalogcrawler: opening database: %w", err)
+		}
+		if err := store.Migrate(ctx, db); err != nil {
+			db.Close()
+			return nil, nil, fmt.Errorf("catalogcrawler: migrating database: %w", err)
+		}
+		st, close = store.New(db), db.Close
 	}
-	if err := store.Migrate(ctx, db); err != nil {
-		db.Close()
-		return nil, nil, fmt.Errorf("catalogcrawler: migrating database: %w", err)
-	}
-	st := store.New(db)
 
 	fetchTimeout := durationSecondsOr(config[cfgFetchTimeoutSec], defaultFetchTimeout)
 	maxFetchBytes := int64Or(config[cfgMaxFetchBytes], defaultMaxFetchBytes)
@@ -171,9 +183,12 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		}
 	}
 	params := crawlmanager.Params{
-		Fetcher: fetcher, Source: src, Sink: snk, Store: st, Log: log,
+		Fetcher: fetcher, Source: src, Sink: snk, Log: log,
 		Networks: networks, MaxAttempts: int(int64Or(config[cfgMaxAttempts], 0)),
 		MaxParkCount: maxParkCount,
+	}
+	if st != nil {
+		params.Store = st
 	}
 
 	sched := NewScheduler(params, schedCfg, log)
@@ -185,22 +200,43 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 	// AfterCatalogSync requires.
 	publishCfg, err := publishConfigFrom(config)
 	if err != nil {
-		db.Close()
+		close()
 		return nil, nil, err
 	}
 	if publishCfg.enabled {
 		publishSrc, err := buildPublishSource(registry, log)
 		if err != nil {
-			db.Close()
+			close()
 			return nil, nil, err
 		}
 		sweep := newPublishSweep(publishCfg, publishSrc, st, log)
 		if err := sched.AfterCatalogSync(sweep.tick); err != nil {
-			db.Close()
+			close()
 			return nil, nil, err
 		}
 		log.Info("catalogcrawler: publish sweep enabled",
 			"tickInterval", schedCfg.catalogInterval(), "publish", publishCfg.publish)
+	}
+
+	// Crawling admitted networks. Rides the catalog-sync ticker and decides for
+	// itself when it is due, so there is no fourth loop.
+	federationCfg, err := federationConfigFrom(config)
+	if err != nil {
+		close()
+		return nil, nil, err
+	}
+	if federationCfg.enabled {
+		crawl, err := newNetworkCrawlFrom(ctx, federationCfg, registry, snk, log)
+		if err != nil {
+			close()
+			return nil, nil, err
+		}
+		if err := sched.AfterCatalogSync(crawl.tick); err != nil {
+			close()
+			return nil, nil, err
+		}
+		log.Info("catalogcrawler: network crawling enabled",
+			"networkId", federationCfg.networkID, "refresh", federationCfg.refresh)
 	}
 
 	c := &crawlerImpl{
@@ -210,7 +246,7 @@ func (Provider) New(ctx context.Context, registry definition.RegistryLookup, met
 		log:            log,
 		st:             st,
 	}
-	return c, db.Close, nil
+	return c, close, nil
 }
 
 // buildSource unions a static config list (if any) with a registry-backed
@@ -508,6 +544,9 @@ func (c *crawlerImpl) CrawlRegistry(ctx context.Context, networkIDs []string) (s
 // plain read against persisted state -- it works whether or not the
 // scheduler has been Start()-ed, since it never touches c.sched.
 func (c *crawlerImpl) Status(ctx context.Context, subscriberID, catalogID string) ([]definition.CrawlStatus, error) {
+	if c.st == nil {
+		return nil, fmt.Errorf("catalogcrawler: no database configured, so no crawl state is kept to report")
+	}
 	rows, err := c.st.Status(ctx, subscriberID, catalogID)
 	if err != nil {
 		return nil, fmt.Errorf("catalogcrawler: Status: %w", err)
@@ -551,6 +590,14 @@ func durationSecondsOr(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return time.Duration(n) * time.Second
+}
+
+func intOr(s string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 func int64Or(s string, def int64) int64 {
