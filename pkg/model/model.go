@@ -34,9 +34,9 @@ type Subscription struct {
 	Nonce              string    `json:"nonce,omitzero"`
 	NetworkMemberships []string  `json:"network_memberships,omitempty"`
 
-	// FederationRole is set only on a network we admitted, and says which way
-	// round we agreed. Empty on every other participant.
-	FederationRole string `json:"federation_role,omitempty"`
+	// Agreement is set only on a network we admitted. It says which way round we
+	// agreed and what the agreement covers; every other participant has none.
+	Agreement Agreement `json:"agreement,omitzero"`
 }
 
 // nonUsableKeySubscriptionStatuses are the Subscription.Status values that mean a

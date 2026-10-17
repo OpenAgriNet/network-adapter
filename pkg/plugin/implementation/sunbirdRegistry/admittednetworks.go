@@ -107,8 +107,7 @@ func admittedFrom(record participant) (model.AdmittedNetwork, bool) {
 		ID:            record.ParticipantID,
 		DiscoveryURL:  strings.TrimSpace(record.BaseURL),
 		ProjectionTTL: time.Duration(record.ProjectionTTL) * time.Second,
-		Source:        record.FederationRole.Source.agreed(),
-		Requester:     record.FederationRole.Requester.agreed(),
+		Agreement:     record.FederationRole.agreed(),
 	}
 	usable := strings.EqualFold(record.Status, statusActive) &&
 		record.Role.has(roleNetwork) &&
