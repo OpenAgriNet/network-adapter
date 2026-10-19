@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -72,14 +71,14 @@ func parseIntent(intent string) (map[string]any, error) {
 	return asked, nil
 }
 
-// discoverURL appends the action to the network's base. A network publishes the base
-// its network module is mounted at; the adapter takes the action from the URL.
+// discoverURL is the address a network published, called as it stands.
+// services.discovery names the discover endpoint itself, not a mount to append
+// to, so a network is free to serve it from any path.
 func discoverURL(base string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(base))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("catalogcrawler: %q is not an address a discover can be sent to", base)
 	}
-	parsed.Path = path.Join(parsed.Path, discoverAction)
 	return parsed.String(), nil
 }
 
