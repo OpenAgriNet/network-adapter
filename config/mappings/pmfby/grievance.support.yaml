@@ -1,27 +1,15 @@
 # PMFBY support -> POST /krphapi/FGMS/AddKRPHNCIPGrievenceSupportTicket.
 # Files a grievance; no OTP. channels[0] holds the provider, the enrolment and
-# the complaint. "Grievence" is PMFBY's spelling. Field formats are the pack's.
+# the complaint. "Grievence" is PMFBY's spelling. Required fields and formats are the pack's.
 
 request: |
   (
     $ch := beckn.message.support.channels[0];
     $g := $ch.grievance;
-    $at := "$.message.support.channels[0].";
-    /* First missing required field, with its path. */
-    $missing := [
-      { "field": "enrolmentId", "path": $at & "enrolmentId", "present": $exists($ch.enrolmentId) },
-      { "field": "applicantMobile", "path": $at & "applicantMobile", "present": $exists($ch.applicantMobile) },
-      { "field": "cropYear", "path": $at & "cropYear", "present": $exists($ch.cropYear) },
-      { "field": "season", "path": $at & "season", "present": $exists($ch.season) },
-      { "field": "grievance.description", "path": $at & "grievance.description", "present": $exists($g.description) }
-    ][$not(present)][0];
     $seasons := { "Kharif": "1", "Rabi": "2", "Zaid": "3" };
     /* PMFBY takes the filing day as a date in IST. */
     $filed := $exists($ch.complaintDate) ? $toMillis($ch.complaintDate) : $millis();
-    $missing
-    ? { "_error": { "status": 400, "code": "SCH_REQUIRED_FIELD_MISSING",
-                    "message": $missing.field & " is required", "path": $missing.path } }
-    : {
+    {
       "requestorMobileNo": $ch.applicantMobile,
       "applicationNo": $ch.enrolmentId,
       "requestYear": $string($ch.cropYear),
