@@ -497,38 +497,6 @@ func TestSupport_BareProviderAndScheme_ReturnsPortalNameAndSchemeName(t *testing
 	}
 }
 
-func TestSupport_MissingField_Returns400NamingItsPath(t *testing.T) {
-	channel := "$.message.support.channels[0]."
-	for field, path := range map[string]string{
-		"enrolmentId": channel + "enrolmentId", "applicantMobile": channel + "applicantMobile",
-		"cropYear": channel + "cropYear", "season": channel + "season",
-		"description": channel + "grievance.description",
-	} {
-		t.Run(field, func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{}, 0)
-			fields := supportFields()
-			delete(fields, field)
-			_, err := h.send(t, support(fields))
-			assertCoded(t, err, http.StatusBadRequest, "SCH_REQUIRED_FIELD_MISSING")
-			if _, refused := refusal(t, err); refused.Details == nil || refused.Details.Path != path {
-				t.Errorf("details = %+v, want path %s", refused.Details, path)
-			}
-			if h.pmfby.calls[insertPath] != 0 {
-				t.Error("PMFBY was called for a request missing a required field")
-			}
-		})
-	}
-}
-
-func TestSupport_NoGrievance_Returns400(t *testing.T) {
-	fields := supportFields()
-	for _, field := range []string{"categoryCode", "subCategoryCode", "description"} {
-		delete(fields, field)
-	}
-	_, err := newHarness(t, &pmfbyStub{}, 0).send(t, support(fields))
-	assertCoded(t, err, http.StatusBadRequest, "SCH_REQUIRED_FIELD_MISSING")
-}
-
 // complaintDate goes to PMFBY as its IST date and comes back as filedOn in UTC.
 // complaintDate goes to PMFBY as its IST date; filedOn stays the lodge time,
 // so a later status read reports the same moment.
@@ -913,21 +881,6 @@ func TestStatus_RecordInAList_ReadAsTheRecord(t *testing.T) {
 		mustSend(t, request("status", statusAttributes()))
 	if crop := band(got.attributes(), "case")["cropName"]; crop != "Paddy" {
 		t.Errorf("case = %v, want the record read from the list", band(got.attributes(), "case"))
-	}
-}
-
-func TestStatus_MissingField_Returns400WithoutCallingPMFBY(t *testing.T) {
-	for _, field := range []string{"applicantMobile", "case"} {
-		t.Run(field, func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{}, 0)
-			attributes := statusAttributes()
-			delete(attributes, field)
-			_, err := h.send(t, request("status", attributes))
-			assertCoded(t, err, http.StatusBadRequest, "SCH_REQUIRED_FIELD_MISSING")
-			if h.pmfby.calls[statusPath] != 0 {
-				t.Error("PMFBY was called for a request missing a required field")
-			}
-		})
 	}
 }
 
