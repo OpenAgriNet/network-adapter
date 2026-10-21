@@ -74,10 +74,24 @@ func contextsOf(packs []string) []string {
 	contexts := make([]string, 0, len(packs))
 	for _, pack := range packs {
 		if trimmed := strings.TrimSpace(pack); trimmed != "" {
-			contexts = append(contexts, strings.TrimSuffix(trimmed, packFile)+contextFile)
+			contexts = append(contexts, contextOf(trimmed))
 		}
 	}
 	return contexts
+}
+
+// contextOf is the context document beside a pack. A pack URL names the
+// attributes document, but an agreement recorded with the context document
+// already is taken as it stands rather than having a second one appended.
+func contextOf(pack string) string {
+	if strings.HasSuffix(pack, contextFile) {
+		return pack
+	}
+	base := strings.TrimSuffix(pack, packFile)
+	if !strings.HasSuffix(base, "/") {
+		base += "/"
+	}
+	return base + contextFile
 }
 
 func (d *FederationDirection) packs() []string {

@@ -106,3 +106,34 @@ func TestOnlyAnAdmittedNetworkHasAnAgreement(t *testing.T) {
 		})
 	}
 }
+
+func TestAPackAlreadyNamingItsContextIsLeftAlone(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct{ pack, want string }{
+		"attributes": {
+			"https://x/MandiPrice/v0.1/attributes.yaml",
+			"https://x/MandiPrice/v0.1/context.jsonld",
+		},
+		"already the context": {
+			"https://x/MandiPrice/v0.1/context.jsonld",
+			"https://x/MandiPrice/v0.1/context.jsonld",
+		},
+		"trailing slash": {
+			"https://x/MandiPrice/v0.1/",
+			"https://x/MandiPrice/v0.1/context.jsonld",
+		},
+		"no filename": {
+			"https://x/MandiPrice/v0.1",
+			"https://x/MandiPrice/v0.1/context.jsonld",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := Agreement{Source: &FederationDirection{SchemaPacks: []string{tc.pack}}}
+			got := a.SourceContexts()
+			if len(got) != 1 || got[0] != tc.want {
+				t.Errorf("SourceContexts(%q) = %v, want [%s]", tc.pack, got, tc.want)
+			}
+		})
+	}
+}
