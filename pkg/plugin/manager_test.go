@@ -1705,6 +1705,11 @@ func TestUnzipSuccess(t *testing.T) {
 					}
 				}
 
+				// An explicit directory entry, as zip tools emit for folders.
+				if _, err := zipWriter.Create("emptydir/"); err != nil {
+					t.Fatalf("Failed to create dir in zip: %v", err)
+				}
+
 				zipWriter.Close()
 				zipFile.Close()
 
@@ -1730,6 +1735,10 @@ func TestUnzipSuccess(t *testing.T) {
 					if string(content) != expectedContent {
 						t.Fatalf("Extracted file %s content = %v, want %v", path, string(content), expectedContent)
 					}
+				}
+
+				if info, err := os.Stat(filepath.Join(dest, "emptydir")); err != nil || !info.IsDir() {
+					t.Fatalf("Extracted emptydir is not a directory: %v", err)
 				}
 			},
 		},
@@ -1913,6 +1922,40 @@ func TestUnzipFailure(t *testing.T) {
 				}
 			},
 			expectedError: "illegal file path in zip",
+		},
+		{
+			name: "symlink entry rejected",
+			setupFunc: func() (string, string, func()) {
+				tempDir, err := os.MkdirTemp("", "unzip-test-*")
+				if err != nil {
+					t.Fatalf("Failed to create temp dir: %v", err)
+				}
+
+				zipPath := filepath.Join(tempDir, "link.zip")
+				zipFile, err := os.Create(zipPath)
+				if err != nil {
+					t.Fatalf("Failed to create zip file: %v", err)
+				}
+
+				zipWriter := zip.NewWriter(zipFile)
+				hdr := &zip.FileHeader{Name: "link"}
+				hdr.SetMode(os.ModeSymlink | 0777)
+				linkFile, err := zipWriter.CreateHeader(hdr)
+				if err != nil {
+					t.Fatalf("Failed to create symlink in zip: %v", err)
+				}
+				if _, err := linkFile.Write([]byte("/etc")); err != nil {
+					t.Fatalf("Failed to write symlink target: %v", err)
+				}
+
+				zipWriter.Close()
+				zipFile.Close()
+
+				return zipPath, filepath.Join(tempDir, "extracted"), func() {
+					os.RemoveAll(tempDir)
+				}
+			},
+			expectedError: "unsupported file type in zip",
 		},
 	}
 
