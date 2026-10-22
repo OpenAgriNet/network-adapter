@@ -75,9 +75,9 @@ response: |
     $ticketNo := response.responseDynamic.GrievenceSupportTicketNo;
     $pmfbyMessage := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
     $refusalMessage := $pmfbyMessage ? $lookup($KNOWN_REFUSALS, $lowercase($pmfbyMessage));
+    $hasTicket := $type($ticketNo) = "number" or ($type($ticketNo) = "string" and $ticketNo != "");
     /* "Ticket Already Raised" also comes back as success with a ticket. */
-    $isLodged := $string(response.responseCode) = $PMFBY_SUCCESS_CODE
-      and ($type($ticketNo) = "string" or $type($ticketNo) = "number");
+    $isLodged := $string(response.responseCode) = $PMFBY_SUCCESS_CODE and $hasTicket;
 
     /* Output */
     $isLodged
@@ -95,7 +95,7 @@ response: |
             "grievance": {
               "category": { "code": $orDefault($grievance.category.code, $DEFAULT_CATEGORY_CODE) },
               "subCategory": { "code": $orDefault($grievance.subCategory.code, $DEFAULT_SUB_CATEGORY_CODE) },
-              "description": $grievance.description
+              "description": $trim($grievance.description)
             },
             "case": {
               "ticketNo": $string($ticketNo),

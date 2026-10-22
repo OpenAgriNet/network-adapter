@@ -399,8 +399,8 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	grievance := band(channel, "grievance")
 	if channel["enrolmentId"] != "040108251010160770605" || len(band(grievance, "category")) != 1 ||
 		band(grievance, "category")["code"] != "3" || band(grievance, "subCategory")["code"] != "10" ||
-		grievance["description"] != "  Claim not received  " {
-		t.Errorf("channel = %v, want enrolmentId and grievance echoed", channel)
+		grievance["description"] != "Claim not received" {
+		t.Errorf("channel = %v, want enrolmentId and grievance echoed, the description trimmed", channel)
 	}
 	filed := band(channel, "case")
 	status := band(filed, "status")
@@ -551,11 +551,12 @@ func TestSupport_KnownRefusal_Returns400InOurWords(t *testing.T) {
 // Any other failure is PMFBY's own: a 502 in our words, PMFBY's text withheld.
 func TestSupport_PortalFails_Returns502WithoutItsText(t *testing.T) {
 	for name, reply := range map[string]string{
-		"success, no ticket": `{"responseCode":"1","responseDynamic":{}}`,
-		"no message":         `{"responseCode":"0","responseMessage":null}`,
-		"internal error":     `{"responseCode":"0","responseMessage":"AxiosError: Request failed with status code 403","responseDynamic":null}`,
-		"token rejected":     `{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`,
-		"unknown wording":    `{"responseCode":"0","responseMessage":"Invalid","responseDynamic":{"GrievenceSupportTicketNo":"100626000099001"}}`,
+		"success, no ticket":    `{"responseCode":"1","responseDynamic":{}}`,
+		"success, blank ticket": `{"responseCode":"1","responseDynamic":{"GrievenceSupportTicketNo":""}}`,
+		"no message":            `{"responseCode":"0","responseMessage":null}`,
+		"internal error":        `{"responseCode":"0","responseMessage":"AxiosError: Request failed with status code 403","responseDynamic":null}`,
+		"token rejected":        `{"responseCode":"0","responseMessage":"Token required!","responseDynamic":null}`,
+		"unknown wording":       `{"responseCode":"0","responseMessage":"Invalid","responseDynamic":{"GrievenceSupportTicketNo":"100626000099001"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{insertPath: reply}}, 0).send(t, support(supportFields()))
