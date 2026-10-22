@@ -787,7 +787,8 @@ func unzip(src, dest string) error {
 }
 
 // maxUnzipFileSize caps one extracted entry so a zip bomb cannot fill the disk.
-const maxUnzipFileSize = 100 << 20
+// A var so tests can lower it.
+var maxUnzipFileSize int64 = 100 << 20
 
 // extractZipFile writes one zip entry to fpath, closing both files before it
 // returns so descriptors are not held until the whole archive is extracted.
