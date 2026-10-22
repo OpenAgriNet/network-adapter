@@ -3,7 +3,7 @@ module github.com/beckn-one/beckn-onix
 go 1.26.9
 
 require (
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	golang.org/x/crypto v0.57.0
 )
 
@@ -93,7 +93,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/beckn/catalog-core v0.2.0
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
-	github.com/getkin/kin-openapi v0.144.0
+	github.com/getkin/kin-openapi v0.149.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-retryablehttp v0.7.8
 	github.com/hashicorp/vault/api v1.23.0
