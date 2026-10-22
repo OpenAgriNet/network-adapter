@@ -1,105 +1,117 @@
 # PMFBY status -> POST /krphapi/FGMS/GetGrievenceTicketsStatus.
-# Reads a grievance back by ticket number and the phone it was filed from.
-# The response maps an allow-list; the farmer's name, location and insurer
-# are dropped. Required fields and formats are the pack's.
+# Reads a grievance back by ticket number and phone. Only listed fields are
+# returned; the farmer's personal details are dropped.
+# Required fields and formats are checked by the Grievance pack.
 
 request: |
   (
-    $ca := beckn.message.contract.commitments[0].commitmentAttributes;
+    $attributes := beckn.message.contract.commitments[0].commitmentAttributes;
     {
-      "requestorMobileNo": $ca.applicantMobile,
-      "GrievenceSupportTicketNo": $ca.case.ticketNo
+      "requestorMobileNo": $attributes.applicantMobile,
+      "GrievenceSupportTicketNo": $attributes.case.ticketNo
     }
   )
 
-# The record is mapped; fields PMFBY leaves empty are dropped. No record, or
-# one for another ticket, is a 400 in our words; any other failure is a 502.
-# PMFBY's own message is logged as the cause, never returned.
+# Empty PMFBY fields are dropped. No record, or one for another ticket, is a
+# 400 in our words; any other failure is a 502. PMFBY's message is logged,
+# never returned.
 response: |
   (
-    /* [0] reads a bare record or a list of one alike. */
-    $ticket := response.responseDynamic[0];
-    $asked := $string(beckn.message.contract.commitments[0].commitmentAttributes.case.ticketNo);
-    $said := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
+    /* Constants */
+    $PMFBY_SUCCESS_CODE := "1";
+    $SCHEME := { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" };
+    $INFORMATION_MODE := "Direct";
+    $COMMITMENT_STATUS_ACTIVE := "ACTIVE";
+    $DEFAULT_CASE_STATUS := "UnderReview";
+    $CASE_STATUS_CODES := { "open": "Registered", "resolved": "Resolved" };
+    $SEASON_NAMES := { "1": "Kharif", "2": "Rabi", "3": "Zaid" };
+    $TIMESTAMP_FORMAT := "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z";
+
+    /* e.g. "2026-10-12T11:02:49.000Z" */
+    $RFC3339_PATTERN := /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/;
+    $DIGITS_PATTERN := /^[0-9]+$/;
+    $YEAR_PATTERN := /^[0-9]{4}$/;
+
+    $MSG_NOT_FOUND := "No grievance was found for this ticket number and phone number.";
+    $MSG_UNAVAILABLE := "PMFBY could not return the grievance status right now. Please try again later.";
+
+    $ERROR_REFUSED := { "status": 400, "code": "BIZ_GENERIC_ERROR" };
+    $ERROR_UNAVAILABLE := { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE" };
+    /* PMFBY fails everything with responseCode "0", so its wording (lower case)
+       is the only way to tell a caller mistake from a PMFBY fault. */
+    $KNOWN_REFUSALS := { "no record found": $MSG_NOT_FOUND };
+
+    /* Helpers */
     /* PMFBY sends null or "" for missing values. */
-    $isText := function($v) { $type($v) = "string" and $v != "" };
-    $ok := $string(response.responseCode) = "1";
-    $notFound := "No grievance was found for this ticket number and phone number.";
-    /* PMFBY answers every failure with responseCode "0", so its wording is the
-       only way to tell the caller's mistake from PMFBY's own fault. Keyed in
-       lower case. Drop this once PMFBY sends a code per refusal. */
-    $refusals := { "no record found": $notFound };
-    $refusal := $isText($said) ? $lookup($refusals, $lowercase($said));
-    /* PMFBY reads by phone alone, so a record for another ticket is no record. */
-    $found := $ok
-      and ($isText($ticket.ApplicationNo) or $isText($ticket.TicketStatus))
-      and $not($exists($ticket.GrievenceSupportTicketNo) and $string($ticket.GrievenceSupportTicketNo) != $asked);
-    /* PMFBY's TicketStatus as a CaseStatusCode; a phrase not listed is UnderReview. */
-    $statusOf := { "open": "Registered", "resolved": "Resolved" };
-    $status := $isText($ticket.TicketStatus) ? $lookup($statusOf, $lowercase($trim($ticket.TicketStatus)));
-    /* InsertDateTime is an RFC 3339 time, e.g. "2026-10-12T11:02:49.000Z". */
-    $inserted := $ticket.InsertDateTime;
-    $filedOn := $isText($inserted) and $contains($inserted, /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$/)
-      ? $fromMillis($toMillis($inserted), "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z");
-    /* PMFBY sends ids as numbers or digit strings, and 0 for none. */
-    $id := function($v) {
-      ($type($v) = "number" or $type($v) = "string") and $contains($string($v), /^[0-9]+$/) and $number($string($v)) != 0
-        ? $string($v)
+    $isText := function($value) { $type($value) = "string" and $value != "" };
+    $asText := function($value) { $isText($value) ? $value };
+    /* Ids come as numbers or digit strings, and 0 means none. */
+    $asId := function($value) {
+      ($type($value) = "number" or $type($value) = "string")
+        and $contains($string($value), $DIGITS_PATTERN) and $number($string($value)) != 0
+        ? $string($value)
     };
-    /* A band with nothing in it is dropped, not sent as {}. */
-    $band := function($o) { $exists($keys($o)[0]) ? $o };
-    $seasons := { "1": "Kharif", "2": "Rabi", "3": "Zaid" };
-    $year := $id($ticket.RequestYear);
-    $reply := $isText($ticket.latestRemark) ? $trim($ticket.latestRemark);
-    $found
-    ? (
-      $commitment := beckn.message.contract.commitments[0];
-      $ca := $commitment.commitmentAttributes;
-      {
-        "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
-        "message": {
-          "contract": $merge([beckn.message.contract, {
-            "commitments": [$merge([$commitment, {
-              "status": { "descriptor": { "code": "ACTIVE" } },
-              "commitmentAttributes": {
-                "@context": $ca.`@context`,
-                "@type": $ca.`@type`,
-                "informationMode": "Direct",
-                /* Stated, not echoed: the caller may send only the code. */
-                "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-                "enrolmentId": $isText($ticket.ApplicationNo) ? $ticket.ApplicationNo,
-                "cropYear": $year and $contains($year, /^[0-9]{4}$/) ? $year,
-                "season": $lookup($seasons, $id($ticket.RequestSeason)),
-                "grievance": {
-                  "category": $band({
-                    "code": $id($ticket.TicketCategoryID),
-                    "name": $isText($ticket.TicketCategoryName) ? $ticket.TicketCategoryName
-                  }),
-                  "subCategory": $band({
-                    "code": $id($ticket.TicketSubCategoryID),
-                    "name": $isText($ticket.TicketSubCategoryName) ? $ticket.TicketSubCategoryName
-                  }),
-                  "description": $isText($ticket.GrievenceDescription) ? $ticket.GrievenceDescription
-                },
-                "case": {
-                  "ticketNo": $ca.case.ticketNo,
-                  "status": { "code": $exists($status) ? $status : "UnderReview" },
-                  "filedOn": $filedOn,
-                  /* The officer's answer; PMFBY sends "" until there is one. */
-                  "reply": $isText($reply) ? $reply,
-                  "cropName": $isText($ticket.CropName) ? $ticket.CropName
-                }
+    /* Drops an object with no fields instead of sending {}. */
+    $nonEmpty := function($object) { $exists($keys($object)[0]) ? $object };
+    $error := function($kind, $message, $cause) {
+      { "_error": $merge([$kind, { "message": $message, "cause": $cause }]) }
+    };
+
+    /* Inputs */
+    $commitment := beckn.message.contract.commitments[0];
+    $attributes := $commitment.commitmentAttributes;
+    /* [0] reads a bare record or a list of one alike. */
+    $record := response.responseDynamic[0];
+    $pmfbyMessage := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
+    $refusalMessage := $isText($pmfbyMessage) ? $lookup($KNOWN_REFUSALS, $lowercase($pmfbyMessage));
+    $isAccepted := $string(response.responseCode) = $PMFBY_SUCCESS_CODE;
+    /* PMFBY reads by phone alone, so a record for another ticket is no record. */
+    $isOtherTicket := $exists($record.GrievenceSupportTicketNo)
+      and $string($record.GrievenceSupportTicketNo) != $string($attributes.case.ticketNo);
+    $isFound := $isAccepted and ($isText($record.ApplicationNo) or $isText($record.TicketStatus)) and $not($isOtherTicket);
+    $mappedStatus := $isText($record.TicketStatus) ? $lookup($CASE_STATUS_CODES, $lowercase($trim($record.TicketStatus)));
+    $caseStatus := $exists($mappedStatus) ? $mappedStatus : $DEFAULT_CASE_STATUS;
+    $requestYear := $asId($record.RequestYear);
+    $cropYear := $requestYear and $contains($requestYear, $YEAR_PATTERN) ? $requestYear;
+    $filedOn := $isText($record.InsertDateTime) and $contains($record.InsertDateTime, $RFC3339_PATTERN)
+      ? $fromMillis($toMillis($record.InsertDateTime), $TIMESTAMP_FORMAT);
+    /* The officer's answer; "" until there is one. */
+    $reply := $asText($isText($record.latestRemark) ? $trim($record.latestRemark));
+
+    /* Output */
+    $isFound
+    ? {
+      "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
+      "message": {
+        "contract": $merge([beckn.message.contract, {
+          "commitments": [$merge([$commitment, {
+            "status": { "descriptor": { "code": $COMMITMENT_STATUS_ACTIVE } },
+            "commitmentAttributes": {
+              "@context": $attributes.`@context`,
+              "@type": $attributes.`@type`,
+              "informationMode": $INFORMATION_MODE,
+              "scheme": $SCHEME,
+              "enrolmentId": $asText($record.ApplicationNo),
+              "cropYear": $cropYear,
+              "season": $lookup($SEASON_NAMES, $asId($record.RequestSeason)),
+              "grievance": {
+                "category": $nonEmpty({ "code": $asId($record.TicketCategoryID), "name": $asText($record.TicketCategoryName) }),
+                "subCategory": $nonEmpty({ "code": $asId($record.TicketSubCategoryID), "name": $asText($record.TicketSubCategoryName) }),
+                "description": $asText($record.GrievenceDescription)
+              },
+              "case": {
+                "ticketNo": $attributes.case.ticketNo,
+                "status": { "code": $caseStatus },
+                "filedOn": $filedOn,
+                "reply": $reply,
+                "cropName": $asText($record.CropName)
               }
-            }])]
-          }])
-        }
+            }
+          }])]
+        }])
       }
-    )
-    : $ok
-    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $notFound } }
-    : $exists($refusal)
-    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $refusal, "cause": $said } }
-    : { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
-                    "message": "PMFBY could not return the grievance status right now. Please try again later.",
-                    "cause": $said } }
+    }
+    : $isAccepted ? $error($ERROR_REFUSED, $MSG_NOT_FOUND)
+    : $exists($refusalMessage) ? $error($ERROR_REFUSED, $refusalMessage, $pmfbyMessage)
+    : $error($ERROR_UNAVAILABLE, $MSG_UNAVAILABLE, $pmfbyMessage)
   )
