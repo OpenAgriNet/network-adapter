@@ -6,3 +6,12 @@
 # place so the fixed build is picked up the moment Chainguard publishes it --
 # remove this line at that point, not before.
 CVE-2026-85091
+
+# GO-2026-5932 (golang.org/x/crypto/openpgp): a deprecation notice, not a bug
+# -- the openpgp package is unmaintained and will never get a fix version, so
+# every x/crypto release is flagged. We do not import openpgp (`go list -deps
+# ./...` shows only x/crypto/blake2b and pbkdf2). x/crypto itself stays: blake2b
+# is the Beckn signing hash (signer.go, signvalidator.go), and grpc, x/net,
+# opa, jwx and vault require the module anyway. Remove this line if anything
+# here starts importing x/crypto/openpgp.
+GO-2026-5932
