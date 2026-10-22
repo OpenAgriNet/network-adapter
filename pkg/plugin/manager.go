@@ -760,6 +760,7 @@ func unzip(src, dest string) error {
 	}
 
 	for _, f := range r.File {
+
 		fpath := filepath.Join(dest, f.Name)
 		// Reject a zip entry whose name climbs out of dest (zip slip):
 		// f.Name is attacker-controlled, and filepath.Join alone does not
@@ -767,54 +768,30 @@ func unzip(src, dest string) error {
 		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
 			return fmt.Errorf("illegal file path in zip: %s", f.Name)
 		}
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(fpath, 0755); err != nil {
-				return err
-			}
-			continue
+		// Ensure directory exists
+		log.Debugf(context.Background(), "Pain : fpath: %s,filepath.Dir(fpath): %s", fpath, filepath.Dir(fpath))
+		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
+			return err
 		}
-		// Only regular files are extracted; a symlink entry could point
-		// outside dest and a later entry would write through it.
-		if !f.Mode().IsRegular() {
-			return fmt.Errorf("unsupported file type in zip: %s", f.Name)
+		// Open the file inside the zip
+		srcFile, err := f.Open()
+		if err != nil {
+			return err
 		}
-		if err := extractZipFile(f, fpath); err != nil {
+		defer srcFile.Close()
+
+		// Create the destination file
+		dstFile, err := os.Create(fpath)
+		if err != nil {
+			return err
+		}
+		defer dstFile.Close()
+
+		// Copy file contents
+		if _, err := io.Copy(dstFile, srcFile); err != nil {
 			return err
 		}
 	}
 
-	return nil
-}
-
-// maxUnzipFileSize caps one extracted entry so a zip bomb cannot fill the disk.
-// A var so tests can lower it.
-var maxUnzipFileSize int64 = 100 << 20
-
-// extractZipFile writes one zip entry to fpath, closing both files before it
-// returns so descriptors are not held until the whole archive is extracted.
-func extractZipFile(f *zip.File, fpath string) error {
-	if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
-		return err
-	}
-	srcFile, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	n, err := io.Copy(dstFile, io.LimitReader(srcFile, maxUnzipFileSize+1))
-	if cerr := dstFile.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return err
-	}
-	if n > maxUnzipFileSize {
-		return fmt.Errorf("zip entry %s exceeds %d bytes", f.Name, maxUnzipFileSize)
-	}
 	return nil
 }

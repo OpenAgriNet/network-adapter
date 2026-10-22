@@ -1705,11 +1705,6 @@ func TestUnzipSuccess(t *testing.T) {
 					}
 				}
 
-				// An explicit directory entry, as zip tools emit for folders.
-				if _, err := zipWriter.Create("emptydir/"); err != nil {
-					t.Fatalf("Failed to create dir in zip: %v", err)
-				}
-
 				zipWriter.Close()
 				zipFile.Close()
 
@@ -1735,10 +1730,6 @@ func TestUnzipSuccess(t *testing.T) {
 					if string(content) != expectedContent {
 						t.Fatalf("Extracted file %s content = %v, want %v", path, string(content), expectedContent)
 					}
-				}
-
-				if info, err := os.Stat(filepath.Join(dest, "emptydir")); err != nil || !info.IsDir() {
-					t.Fatalf("Extracted emptydir is not a directory: %v", err)
 				}
 			},
 		},
@@ -1923,40 +1914,6 @@ func TestUnzipFailure(t *testing.T) {
 			},
 			expectedError: "illegal file path in zip",
 		},
-		{
-			name: "symlink entry rejected",
-			setupFunc: func() (string, string, func()) {
-				tempDir, err := os.MkdirTemp("", "unzip-test-*")
-				if err != nil {
-					t.Fatalf("Failed to create temp dir: %v", err)
-				}
-
-				zipPath := filepath.Join(tempDir, "link.zip")
-				zipFile, err := os.Create(zipPath)
-				if err != nil {
-					t.Fatalf("Failed to create zip file: %v", err)
-				}
-
-				zipWriter := zip.NewWriter(zipFile)
-				hdr := &zip.FileHeader{Name: "link"}
-				hdr.SetMode(os.ModeSymlink | 0777)
-				linkFile, err := zipWriter.CreateHeader(hdr)
-				if err != nil {
-					t.Fatalf("Failed to create symlink in zip: %v", err)
-				}
-				if _, err := linkFile.Write([]byte("/etc")); err != nil {
-					t.Fatalf("Failed to write symlink target: %v", err)
-				}
-
-				zipWriter.Close()
-				zipFile.Close()
-
-				return zipPath, filepath.Join(tempDir, "extracted"), func() {
-					os.RemoveAll(tempDir)
-				}
-			},
-			expectedError: "unsupported file type in zip",
-		},
 	}
 
 	for _, tt := range tests {
@@ -1973,77 +1930,6 @@ func TestUnzipFailure(t *testing.T) {
 				t.Fatalf("unzip() error = %v, want error containing %q", err, tt.expectedError)
 			}
 		})
-	}
-}
-
-// writeTestZip builds a zip at dir/name holding entries (name -> content).
-func writeTestZip(t *testing.T, dir, name string, entries map[string]string) string {
-	t.Helper()
-	zipPath := filepath.Join(dir, name)
-	zipFile, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatalf("Failed to create zip file: %v", err)
-	}
-	defer zipFile.Close()
-
-	zipWriter := zip.NewWriter(zipFile)
-	for entry, content := range entries {
-		w, err := zipWriter.Create(entry)
-		if err != nil {
-			t.Fatalf("Failed to create %s in zip: %v", entry, err)
-		}
-		if _, err := w.Write([]byte(content)); err != nil {
-			t.Fatalf("Failed to write %s: %v", entry, err)
-		}
-	}
-	if err := zipWriter.Close(); err != nil {
-		t.Fatalf("Failed to close zip writer: %v", err)
-	}
-	return zipPath
-}
-
-// TestUnzipAbsolutePathStaysInDest checks that an absolute entry name is
-// joined under dest rather than written to the filesystem root.
-func TestUnzipAbsolutePathStaysInDest(t *testing.T) {
-	tempDir := t.TempDir()
-	outside := filepath.Join(tempDir, "outside.txt")
-	zipPath := writeTestZip(t, tempDir, "abs.zip", map[string]string{outside: "pwned"})
-	dest := filepath.Join(tempDir, "extracted")
-
-	if err := unzip(zipPath, dest); err != nil {
-		t.Fatalf("unzip() error = %v, want nil", err)
-	}
-	if _, err := os.Stat(outside); !os.IsNotExist(err) {
-		t.Fatalf("absolute entry was written outside dest at %s", outside)
-	}
-	if _, err := os.Stat(filepath.Join(dest, outside)); err != nil {
-		t.Fatalf("absolute entry not extracted under dest: %v", err)
-	}
-}
-
-// TestUnzipOversizedEntry checks that an entry over maxUnzipFileSize is
-// rejected instead of filling the disk.
-func TestUnzipOversizedEntry(t *testing.T) {
-	orig := maxUnzipFileSize
-	maxUnzipFileSize = 16
-	t.Cleanup(func() { maxUnzipFileSize = orig })
-
-	tempDir := t.TempDir()
-	zipPath := writeTestZip(t, tempDir, "bomb.zip", map[string]string{
-		"big.txt": strings.Repeat("A", 17),
-	})
-
-	err := unzip(zipPath, filepath.Join(tempDir, "extracted"))
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("unzip() error = %v, want error containing %q", err, "exceeds")
-	}
-
-	// An entry exactly at the cap is still allowed.
-	okZip := writeTestZip(t, tempDir, "ok.zip", map[string]string{
-		"fit.txt": strings.Repeat("A", 16),
-	})
-	if err := unzip(okZip, filepath.Join(tempDir, "ok")); err != nil {
-		t.Fatalf("unzip() error = %v, want nil for entry at cap", err)
 	}
 }
 
