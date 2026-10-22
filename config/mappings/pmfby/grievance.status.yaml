@@ -52,7 +52,7 @@ response: |
         ? $string($value)
     };
     /* Drops an object with no fields instead of sending {}. */
-    $nonEmpty := function($object) { $exists($keys($object)[0]) ? $object };
+    $omitIfEmpty := function($object) { $exists($keys($object)[0]) ? $object };
     $error := function($kind, $message, $cause) {
       { "_error": $merge([$kind, { "message": $message, "cause": $cause }]) }
     };
@@ -63,7 +63,7 @@ response: |
     /* [0] reads a bare record or a list of one alike. */
     $record := response.responseDynamic[0];
     $pmfbyMessage := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
-    $refusalMessage := $isText($pmfbyMessage) ? $lookup($KNOWN_REFUSALS, $lowercase($pmfbyMessage));
+    $refusalMessage := $pmfbyMessage ? $lookup($KNOWN_REFUSALS, $lowercase($pmfbyMessage));
     $isAccepted := $string(response.responseCode) = $PMFBY_SUCCESS_CODE;
     /* PMFBY reads by phone alone, so a record for another ticket is no record. */
     $isOtherTicket := $exists($record.GrievenceSupportTicketNo)
@@ -95,8 +95,8 @@ response: |
               "cropYear": $cropYear,
               "season": $lookup($SEASON_NAMES, $asId($record.RequestSeason)),
               "grievance": {
-                "category": $nonEmpty({ "code": $asId($record.TicketCategoryID), "name": $asText($record.TicketCategoryName) }),
-                "subCategory": $nonEmpty({ "code": $asId($record.TicketSubCategoryID), "name": $asText($record.TicketSubCategoryName) }),
+                "category": $omitIfEmpty({ "code": $asId($record.TicketCategoryID), "name": $asText($record.TicketCategoryName) }),
+                "subCategory": $omitIfEmpty({ "code": $asId($record.TicketSubCategoryID), "name": $asText($record.TicketSubCategoryName) }),
                 "description": $asText($record.GrievenceDescription)
               },
               "case": {
