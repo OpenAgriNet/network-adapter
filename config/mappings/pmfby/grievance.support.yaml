@@ -1,80 +1,112 @@
 # PMFBY support -> POST /krphapi/FGMS/AddKRPHNCIPGrievenceSupportTicket.
-# Files a grievance; no OTP. channels[0] holds the provider, the enrolment and
-# the complaint. "Grievence" is PMFBY's spelling. Required fields and formats are the pack's.
+# Files a grievance; no OTP. "Grievence" is PMFBY's spelling.
+# Required fields and formats are checked by the Grievance pack.
+# The two halves cannot share variables, so the default codes are in both.
 
 request: |
   (
-    $ch := beckn.message.support.channels[0];
-    $g := $ch.grievance;
-    $seasons := { "Kharif": "1", "Rabi": "2", "Zaid": "3" };
-    /* PMFBY takes the filing day as a date in IST. */
-    $filed := $exists($ch.complaintDate) ? $toMillis($ch.complaintDate) : $millis();
+    /* Constants */
+    $DEFAULT_CATEGORY_CODE := "3";
+    $DEFAULT_SUB_CATEGORY_CODE := "10";
+    $DEFAULT_RECEIPT_SOURCE_ID := "134306";
+    $SEASON_CODES := { "Kharif": "1", "Rabi": "2", "Zaid": "3" };
+
+    $DATE_FORMAT := "[Y0001]-[M01]-[D01]";
+    $IST_OFFSET := "+0530";
+
+    /* Helpers */
+    $orDefault := function($value, $default) { $exists($value) ? $string($value) : $default };
+
+    /* Inputs */
+    $channel := beckn.message.support.channels[0];
+    $grievance := $channel.grievance;
+    $filedAt := $exists($channel.complaintDate) ? $toMillis($channel.complaintDate) : $millis();
+
+    /* Output */
     {
-      "requestorMobileNo": $ch.applicantMobile,
-      "applicationNo": $ch.enrolmentId,
-      "requestYear": $string($ch.cropYear),
-      "requestSeason": $lookup($seasons, $ch.season),
-      /* PMFBY's published pair, sent when the caller names none. */
-      "ticketCategoryID": $exists($g.category.code) ? $string($g.category.code) : "3",
-      "ticketSubCategoryID": $exists($g.subCategory.code) ? $string($g.subCategory.code) : "10",
-      "grievenceDescription": $trim($g.description),
-      "complaintDate": $fromMillis($filed, "[Y0001]-[M01]-[D01]", "+0530"),
-      /* This adapter's receipt source id, unless the caller names its own. */
-      "receiptSourceID": $exists($ch.receiptSourceId) ? $string($ch.receiptSourceId) : "134306"
+      "requestorMobileNo": $channel.applicantMobile,
+      "applicationNo": $channel.enrolmentId,
+      "requestYear": $string($channel.cropYear),
+      "requestSeason": $lookup($SEASON_CODES, $channel.season),
+      "ticketCategoryID": $orDefault($grievance.category.code, $DEFAULT_CATEGORY_CODE),
+      "ticketSubCategoryID": $orDefault($grievance.subCategory.code, $DEFAULT_SUB_CATEGORY_CODE),
+      "grievenceDescription": $trim($grievance.description),
+      "complaintDate": $fromMillis($filedAt, $DATE_FORMAT, $IST_OFFSET),
+      "receiptSourceID": $orDefault($channel.receiptSourceId, $DEFAULT_RECEIPT_SOURCE_ID)
     }
   )
 
-# Echoes the request and adds the ticket; filedOn is when it was lodged, in UTC.
-# A refusal PMFBY is known to give is a 400 in our words; any other failure is
-# a 502. PMFBY's own message is logged as the cause, never returned.
+# Echoes the request and adds the ticket. A known PMFBY refusal is a 400 in our
+# words; any other failure is a 502. PMFBY's message is logged, never returned.
 response: |
   (
-    $ch := beckn.message.support.channels[0];
-    $g := $ch.grievance;
-    $ticketNo := response.responseDynamic.GrievenceSupportTicketNo;
-    $said := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
-    /* PMFBY answers every failure with responseCode "0", so its wording is the
-       only way to tell the caller's mistake from PMFBY's own fault. Keyed in
-       lower case. Drop this once PMFBY sends a code per refusal. */
-    $refusals := {
-      "mobile number not matched": "The phone number does not match the one registered for this application number.",
-      "application details not exists": "No PMFBY application was found for this application number."
+    /* Constants */
+    $DEFAULT_CATEGORY_CODE := "3";
+    $DEFAULT_SUB_CATEGORY_CODE := "10";
+    $PMFBY_SUCCESS_CODE := "1";
+    $PROVIDER_NAME := "PMFBY Grievance Portal";
+    $SCHEME := { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" };
+    $INFORMATION_MODE := "Direct";
+    $CASE_STATUS_REGISTERED := "Registered";
+    $TIMESTAMP_FORMAT := "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z";
+
+    $MSG_PHONE_MISMATCH := "The phone number does not match the one registered for this application number.";
+    $MSG_APPLICATION_NOT_FOUND := "No PMFBY application was found for this application number.";
+    $MSG_UNAVAILABLE := "PMFBY could not register the grievance right now. Please try again later.";
+
+    $ERROR_REFUSED := { "status": 400, "code": "BIZ_GENERIC_ERROR" };
+    $ERROR_UNAVAILABLE := { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE" };
+    /* PMFBY fails everything with responseCode "0", so its wording (lower case)
+       is the only way to tell a caller mistake from a PMFBY fault. */
+    $KNOWN_REFUSALS := {
+      "mobile number not matched": $MSG_PHONE_MISMATCH,
+      "application details not exists": $MSG_APPLICATION_NOT_FOUND
     };
-    $refusal := $said ? $lookup($refusals, $lowercase($said));
-    /* responseCode "1" (string or number) with a ticket, "Ticket Already Raised" included. */
-    $string(response.responseCode) = "1" and ($type($ticketNo) = "string" or $type($ticketNo) = "number")
+
+    /* Helpers */
+    $orDefault := function($value, $default) { $exists($value) ? $string($value) : $default };
+    $error := function($kind, $message, $cause) {
+      { "_error": $merge([$kind, { "message": $message, "cause": $cause }]) }
+    };
+
+    /* Inputs */
+    $channel := beckn.message.support.channels[0];
+    $grievance := $channel.grievance;
+    $ticketNo := response.responseDynamic.GrievenceSupportTicketNo;
+    $pmfbyMessage := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
+    $refusalMessage := $pmfbyMessage ? $lookup($KNOWN_REFUSALS, $lowercase($pmfbyMessage));
+    /* "Ticket Already Raised" also comes back as success with a ticket. */
+    $isLodged := $string(response.responseCode) = $PMFBY_SUCCESS_CODE
+      and ($type($ticketNo) = "string" or $type($ticketNo) = "number");
+
+    /* Output */
+    $isLodged
     ? {
       "context": $merge([beckn.context, { "action": "on_support", "timestamp": $now() }]),
       "message": {
         "support": {
           "channels": [{
-            "@context": $ch.`@context`,
-            "@type": $ch.`@type`,
-            "informationMode": "Direct",
-            /* Stated, not echoed: the caller may send only the ids. */
-            "provider": { "id": $ch.provider.id, "descriptor": { "name": "PMFBY Grievance Portal" } },
-            "scheme": { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" },
-            "enrolmentId": $ch.enrolmentId,
-            /* The codes sent, defaults included; a name beside a code is dropped. */
+            "@context": $channel.`@context`,
+            "@type": $channel.`@type`,
+            "informationMode": $INFORMATION_MODE,
+            "provider": { "id": $channel.provider.id, "descriptor": { "name": $PROVIDER_NAME } },
+            "scheme": $SCHEME,
+            "enrolmentId": $channel.enrolmentId,
             "grievance": {
-              "category": { "code": $exists($g.category.code) ? $string($g.category.code) : "3" },
-              "subCategory": { "code": $exists($g.subCategory.code) ? $string($g.subCategory.code) : "10" },
-              "description": $g.description
+              "category": { "code": $orDefault($grievance.category.code, $DEFAULT_CATEGORY_CODE) },
+              "subCategory": { "code": $orDefault($grievance.subCategory.code, $DEFAULT_SUB_CATEGORY_CODE) },
+              "description": $grievance.description
             },
             "case": {
               "ticketNo": $string($ticketNo),
-              "status": { "code": "Registered" },
-              /* Lodge time, not complaintDate: a status read reports when PMFBY
-                 recorded the ticket, and the two must agree. */
-              "filedOn": $fromMillis($millis(), "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z")
+              "status": { "code": $CASE_STATUS_REGISTERED },
+              /* Lodge time, so it agrees with what a status read reports. */
+              "filedOn": $fromMillis($millis(), $TIMESTAMP_FORMAT)
             }
           }]
         }
       }
     }
-    : $exists($refusal)
-    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR", "message": $refusal, "cause": $said } }
-    : { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
-                    "message": "PMFBY could not register the grievance right now. Please try again later.",
-                    "cause": $said } }
+    : $exists($refusalMessage) ? $error($ERROR_REFUSED, $refusalMessage, $pmfbyMessage)
+    : $error($ERROR_UNAVAILABLE, $MSG_UNAVAILABLE, $pmfbyMessage)
   )
