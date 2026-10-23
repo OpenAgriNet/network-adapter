@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -72,6 +74,8 @@ type ExtendedSchemaConfig struct {
 	DownloadTimeout int      // seconds, default 30
 	AllowedDomains  []string // whitelist (empty = all allowed)
 	LocalSchemaPath string   // when non-empty, preload schemas from this directory; network is fallback
+	// @types whose errors keep only the first reason. Empty: every message as before.
+	ConciseErrorTypes []string
 }
 
 // referencedObject represents a domain-specific object with @context.
@@ -216,6 +220,15 @@ func (v *schemav2Validator) validateExtendedSchemas(ctx context.Context, body in
 			var schemaErrors []model.Error
 			v.extractSchemaErrors(err, &schemaErrors)
 
+			// Only a failed schema rule is shortened. An error this validator
+			// already worded (bad @context, unknown @type) is left as it is.
+			var validatorError *model.Error
+			if slices.Contains(refConfig.ConciseErrorTypes, obj.Type) && !errors.As(err, &validatorError) {
+				for i := range schemaErrors {
+					schemaErrors[i].Message = conciseMessage(schemaErrors[i].Details, schemaErrors[i].Message)
+				}
+			}
+			// After this, a path is no longer relative to the object.
 			prefixSchemaErrorPaths(schemaErrors, obj.Path)
 
 			return &model.SchemaValidationErr{Errors: schemaErrors}
@@ -223,6 +236,37 @@ func (v *schemav2Validator) validateExtendedSchemas(ctx context.Context, body in
 	}
 
 	return nil
+}
+
+// How kin-openapi words a failed schema rule.
+const (
+	errorDumpMarker       = "\nSchema:" // starts the schema and value dump
+	nestedReasonPrefix    = "doesn't match schema due to: "
+	missingPropertyPrefix = "property "
+	patternReasonPrefix   = "string doesn't match the regular expression"
+	forbiddenValueReason  = `Doesn't match schema "not"`
+)
+
+// wholeObjectPath matches a path that ends in a combinator: the object as a
+// whole failed a rule, not one field.
+var wholeObjectPath = regexp.MustCompile(`(^|\.)(allOf|anyOf|oneOf)$`)
+
+// conciseMessage keeps kin-openapi's first reason and names the field it is
+// about. It drops the schema and value dumps (the value is the caller's own
+// input) and the reasons of the other branches.
+func conciseMessage(details *model.ErrorDetails, message string) string {
+	message, _, _ = strings.Cut(strings.ReplaceAll(message, nestedReasonPrefix, ""), errorDumpMarker)
+	if details == nil || strings.HasPrefix(message, missingPropertyPrefix) {
+		return message
+	}
+	field := strings.ReplaceAll(details.Path, "/", ".")
+	switch {
+	case field == "" || wholeObjectPath.MatchString(field):
+		return message
+	case strings.HasPrefix(message, patternReasonPrefix) || message == forbiddenValueReason:
+		return field + " is not valid"
+	}
+	return field + ": " + message
 }
 
 // prefixSchemaErrorPaths prefixes objPath onto each error's Details.Path,
