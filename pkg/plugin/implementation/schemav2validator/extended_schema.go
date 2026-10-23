@@ -166,7 +166,11 @@ func preloadSchemasToCache(ctx context.Context, c *schemaCache, baseDir string) 
 }
 
 // validateExtendedSchemas validates all objects with @context against their schemas.
-func (v *schemav2Validator) validateExtendedSchemas(ctx context.Context, body interface{}) error {
+//
+// action is the Beckn action the payload was sent for. A pack that describes
+// several calls with one schema may nominate a schema per action, and this is
+// the layer that knows which one to ask for.
+func (v *schemav2Validator) validateExtendedSchemas(ctx context.Context, body interface{}, action string) error {
 	// Extract "message" object - scan inside message
 	bodyMap, ok := body.(map[string]interface{})
 	if !ok {
@@ -212,7 +216,7 @@ func (v *schemav2Validator) validateExtendedSchemas(ctx context.Context, body in
 		log.Debugf(ctx, "Validating object at path: %s, @context: %s, @type: %s",
 			obj.Path, obj.Context, obj.Type)
 
-		if err := v.schemaCache.validateReferencedObject(ctx, obj, ttl, timeout, allowedDomains, localSchema); err != nil {
+		if err := v.schemaCache.validateReferencedObject(ctx, obj, action, ttl, timeout, allowedDomains, localSchema); err != nil {
 			var schemaErrors []model.Error
 			v.extractSchemaErrors(err, &schemaErrors)
 
@@ -718,10 +722,70 @@ func schemaDeclaresProperty(ref *openapi3.SchemaRef, name string, seen map[*open
 	return false
 }
 
+// schemaForAction returns the schema a pack nominates for this action under
+// x-oan-schema-by-action, or ("", nil) when it nominates none.
+//
+// One schema covering several calls can only tell them apart by which fields
+// a payload happens to carry, and the keyword that does it -- anyOf -- is the
+// one whose per-arm errors kin-openapi discards. A caller who omitted a single
+// field is then told that nothing matched, with no field named, and a payload
+// for one scheme draws complaints belonging to another. Naming a schema per
+// action removes the guess: the call is already known here.
+//
+// Absent the extension nothing changes, so a pack that does not use it, and
+// every other domain sharing this validator, resolves by @type as before.
+func schemaForAction(doc *openapi3.T, schema *openapi3.SchemaRef, action string) (*openapi3.SchemaRef, string, error) {
+	byAction, declared := schema.Value.Extensions["x-oan-schema-by-action"].(map[string]interface{})
+	if !declared {
+		return nil, "", nil
+	}
+	name, served := byAction[action].(string)
+	if !served {
+		// The pack lists the actions it serves, so one it does not list is
+		// refused by name rather than validated against a union that would
+		// accept it. This is the "PMFBY has no init" case, and the caller is
+		// better told that than handed a missing-field list for a call that
+		// does not exist.
+		return nil, "", fmt.Errorf("%s does not serve action %q; it serves %s",
+			schemaTitle(schema), action, strings.Join(sortedKeys(byAction), ", "))
+	}
+	nominated, found := doc.Components.Schemas[name]
+	if !found || nominated.Value == nil {
+		return nil, "", fmt.Errorf("the schema nominates %q for action %q and the document does not define it", name, action)
+	}
+	return nominated, name, nil
+}
+
+// schemaTitle names a schema for an error message, falling back to its
+// JSON-LD type when it carries no title.
+func schemaTitle(schema *openapi3.SchemaRef) string {
+	if schema.Value.Title != "" {
+		return schema.Value.Title
+	}
+	if xJSONLD, ok := schema.Value.Extensions["x-jsonld"].(map[string]interface{}); ok {
+		if atType, ok := xJSONLD["@type"].(string); ok {
+			return atType
+		}
+	}
+	return "this capability"
+}
+
+// sortedKeys returns a map's keys in order, so an error message naming the
+// served actions reads the same on every run.
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // validateReferencedObject validates a single object with @context.
 func (c *schemaCache) validateReferencedObject(
 	ctx context.Context,
 	obj referencedObject,
+	action string,
 	ttl, timeout time.Duration,
 	allowedDomains []string,
 	localSchema bool,
@@ -786,6 +850,15 @@ func (c *schemaCache) validateReferencedObject(
 	if err != nil {
 		log.Errorf(ctx, err, "Schema not found for @type: %s at path: %s", obj.Type, obj.Path)
 		return model.NewCodedErrorWithCause("SCH_INVALID_ENTITY_TYPE", err.Error(), obj.Path, err)
+	}
+
+	// @type names the entity; the action names the call made on it. A pack
+	// that tells the two apart is validated against the one call it is for.
+	if nominated, name, err := schemaForAction(doc, schema, action); err != nil {
+		return model.NewCodedErrorWithCause("SCH_ACTION_NOT_SUPPORTED", err.Error(), obj.Path, err)
+	} else if name != "" {
+		log.Debugf(ctx, "action %s on @type %s validates against %s", action, matched, name)
+		schema = nominated
 	}
 
 	// Strip only the JSON-LD keys this schema does not account for itself.

@@ -541,41 +541,41 @@ func TestExtractSchemaErrors_OneOfReportsEveryBranchCause(t *testing.T) {
 
 // TestExtractSchemaErrors_DiscriminatedBranchesAreNotCauses builds the shape
 // a capability pack uses to hold two schemes in one attribute object: an
-// outer oneOf picking the scheme, each arm an allOf guarded by a "not" or a
-// const, and inside each arm a second oneOf picking the direction.
+// outer oneOf picking the scheme, each arm an allOf whose first conjunct
+// pins scheme.code to the one it is for.
 //
-// Only the arm the payload actually selected has a cause the caller can act
-// on. A support call missing applicantMobile used to be answered with the
-// other scheme's missing "challenge" and an informationMode enum from a
-// direction it never claimed, because every arm's errors were reported as
-// though they were all causes.
+// Only the arm the payload selected has a cause the caller can act on. A
+// PMFBY support call missing applicantMobile used to be answered with
+// PM-KISAN's missing "challenge" as well, because every arm's errors were
+// reported as though they were all causes.
 func TestExtractSchemaErrors_DiscriminatedBranchesAreNotCauses(t *testing.T) {
-	// The arm the payload selected: OnDemand, so the Direct sub-arm is ruled
-	// out by its enum and only "applicantMobile" is a real cause.
-	onDemand := openapi3.NewObjectSchema()
-	onDemand.Required = []string{"applicantMobile"}
-	onDemand.Properties = openapi3.Schemas{
-		"informationMode": openapi3.NewSchemaRef("", &openapi3.Schema{Enum: []interface{}{"OnDemand"}}),
-	}
-	direct := openapi3.NewObjectSchema()
-	direct.Required = []string{"case"}
-	direct.Properties = openapi3.Schemas{
-		"informationMode": openapi3.NewSchemaRef("", &openapi3.Schema{Enum: []interface{}{"Direct"}}),
-	}
-	selected := openapi3.NewObjectSchema()
-	selected.OneOf = openapi3.SchemaRefs{
-		openapi3.NewSchemaRef("", onDemand),
-		openapi3.NewSchemaRef("", direct),
+	schemeCode := func(code string) *openapi3.Schema {
+		guard := openapi3.NewObjectSchema()
+		guard.Properties = openapi3.Schemas{
+			"scheme": openapi3.NewSchemaRef("", &openapi3.Schema{
+				Properties: openapi3.Schemas{
+					"code": openapi3.NewSchemaRef("", &openapi3.Schema{Const: code}),
+				},
+			}),
+		}
+		return guard
 	}
 
-	// The other scheme's arm, excluded by a negated guard the payload trips.
-	excludedGuard := openapi3.NewObjectSchema()
-	excludedGuard.Not = openapi3.NewSchemaRef("", &openapi3.Schema{Required: []string{"scheme"}})
+	// The arm the payload selected, where applicantMobile is the real cause.
+	selectedBody := openapi3.NewObjectSchema()
+	selectedBody.Required = []string{"applicantMobile"}
+	selected := openapi3.NewObjectSchema()
+	selected.AllOf = openapi3.SchemaRefs{
+		openapi3.NewSchemaRef("", schemeCode("PMFBY")),
+		openapi3.NewSchemaRef("", selectedBody),
+	}
+
+	// The other scheme's arm, excluded by the code the payload does carry.
 	excludedBody := openapi3.NewObjectSchema()
 	excludedBody.Required = []string{"challenge"}
 	excluded := openapi3.NewObjectSchema()
 	excluded.AllOf = openapi3.SchemaRefs{
-		openapi3.NewSchemaRef("", excludedGuard),
+		openapi3.NewSchemaRef("", schemeCode("PM-KISAN")),
 		openapi3.NewSchemaRef("", excludedBody),
 	}
 
@@ -586,8 +586,7 @@ func TestExtractSchemaErrors_DiscriminatedBranchesAreNotCauses(t *testing.T) {
 	}
 
 	err := parent.VisitJSON(map[string]interface{}{
-		"scheme":          map[string]interface{}{"code": "PMFBY"},
-		"informationMode": "OnDemand",
+		"scheme": map[string]interface{}{"code": "PMFBY"},
 	}, openapi3.MultiErrors())
 	if err == nil {
 		t.Fatal("expected a validation error")

@@ -632,7 +632,7 @@ components:
 		},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 }
 
@@ -670,7 +670,7 @@ components:
 		},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	schemaErrors := []model.Error{}
@@ -693,7 +693,7 @@ func TestValidateReferencedObject_DomainNotAllowed(t *testing.T) {
 
 	allowedDomains := []string{"trusted.com"}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, allowedDomains, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, allowedDomains, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "domain not allowed")
 
@@ -728,7 +728,7 @@ components:
 		},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	becknErr, ok := err.(*model.Error)
@@ -754,7 +754,7 @@ func TestValidateReferencedObject_SchemaLoadFailure(t *testing.T) {
 		Data:    map[string]interface{}{},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	becknErr, ok := err.(*model.Error)
@@ -803,7 +803,7 @@ func TestValidateReferencedObject_NonHttpSchemeRejectedWhenAllowlistSet(t *testi
 
 			allowedDomains := []string{"raw.githubusercontent.com"}
 
-			err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, allowedDomains, false)
+			err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, allowedDomains, false)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "invalid scheme in @context")
 
@@ -863,7 +863,7 @@ components:
 				Data:    map[string]interface{}{"field1": "value1"},
 			}
 
-			err = cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, tt.allowedDomains, false)
+			err = cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, tt.allowedDomains, false)
 			// So: no domain error and no @context scheme error, which is what
 			// an empty allowlist means. Not "anything is readable".
 			if err != nil {
@@ -890,7 +890,7 @@ func TestValidateExtendedSchemas_NoObjects(t *testing.T) {
 		},
 	}
 
-	err := v.validateExtendedSchemas(ctx, body)
+	err := v.validateExtendedSchemas(ctx, body, "")
 	assert.NoError(t, err)
 }
 
@@ -907,7 +907,7 @@ func TestValidateExtendedSchemas_MissingMessage(t *testing.T) {
 		"context": map[string]interface{}{},
 	}
 
-	err := v.validateExtendedSchemas(ctx, body)
+	err := v.validateExtendedSchemas(ctx, body, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "missing 'message' field")
 }
@@ -939,7 +939,7 @@ func TestValidateExtendedSchemas_DomainNotAllowed_PropagatesCode(t *testing.T) {
 		},
 	}
 
-	err := v.validateExtendedSchemas(ctx, body)
+	err := v.validateExtendedSchemas(ctx, body, "")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -1274,7 +1274,7 @@ components:
 	}
 
 	// localSchema=true, no @context — relies entirely on rawSchemas lookup by @type
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, true)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 }
 
@@ -1306,7 +1306,7 @@ components:
 	}
 
 	// rawSchemas empty, localSchema=true — local miss, falls back to fetching the @context
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, true)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 }
 
@@ -1348,7 +1348,7 @@ components:
 		Data:    map[string]interface{}{"field1": "value1"},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, allowedDomains, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, allowedDomains, false)
 	assert.NoError(t, err, "valid http URL with allowlisted host should pass")
 }
 
@@ -1438,7 +1438,7 @@ func TestValidateReferencedObject_PackStyleKeepsAtType(t *testing.T) {
 		},
 	}
 
-	err := cache.validateReferencedObject(context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(context.Background(), obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 }
 
@@ -1579,7 +1579,7 @@ func TestValidateReferencedObject_AcceptsAndChecksATypeList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			obj := theObjectIn(t, resourceBody(ctxURL, tt.atType, "OnDemand"))
 			err := newSchemaCache(10).validateReferencedObject(
-				context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+				context.Background(), obj, "", 1*time.Hour, 30*time.Second, nil, false)
 
 			if !tt.wantErr {
 				assert.NoError(t, err)
@@ -1668,7 +1668,7 @@ func TestFindReferencedObjects_TypeShapes(t *testing.T) {
 
 				// and it must actually reject when validated
 				err := newSchemaCache(10).validateReferencedObject(
-					context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+					context.Background(), obj, "", 1*time.Hour, 30*time.Second, nil, false)
 				assert.Error(t, err)
 				return
 			}
@@ -1858,7 +1858,7 @@ func TestValidateReferencedObject_RefusesARefThatWouldReadTheDisk(t *testing.T) 
 				Data:    map[string]interface{}{"field1": "value1"},
 			}
 
-			err = cache.validateReferencedObject(context.Background(), obj,
+			err = cache.validateReferencedObject(context.Background(), obj, "",
 				1*time.Hour, 30*time.Second, []string{host.Host}, false)
 
 			// The entry document is allowlisted and https, so nothing before
@@ -1907,7 +1907,7 @@ func TestValidateReferencedObject_RefusesARefToAHostOutsideTheAllowlist(t *testi
 	}
 
 	// Only the entry host is allowlisted. The $ref host is not.
-	err = cache.validateReferencedObject(context.Background(), obj,
+	err = cache.validateReferencedObject(context.Background(), obj, "",
 		1*time.Hour, 30*time.Second, []string{entryHost.Host}, false)
 	if err == nil {
 		t.Fatal("the cross-host $ref was fetched; a payload can point this process at any http host")
@@ -1940,7 +1940,7 @@ func TestValidateReferencedObject_AllowsARefWhenBothHostsAreAllowlisted(t *testi
 		Data:    map[string]interface{}{"field1": "value1"},
 	}
 
-	if err := cache.validateReferencedObject(context.Background(), obj,
+	if err := cache.validateReferencedObject(context.Background(), obj, "",
 		1*time.Hour, 30*time.Second, []string{entryHost.Host, borrowedHost.Host}, false); err != nil {
 		t.Fatalf("both hosts allowlisted, so the chain must load: %v", err)
 	}

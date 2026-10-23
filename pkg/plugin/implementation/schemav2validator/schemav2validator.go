@@ -212,7 +212,7 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 	// Extended Schema validation (if enabled)
 	if v.config.EnableExtendedSchema && v.schemaCache != nil {
 		log.Debugf(ctx, "Starting Extended Schema validation for action: %s", action)
-		if err := v.validateExtendedSchemas(ctx, jsonData); err != nil {
+		if err := v.validateExtendedSchemas(ctx, jsonData, action); err != nil {
 			// Extended Schema failure - return error
 			log.Debugf(ctx, "Extended Schema validation failed for action %s: %v", action, err)
 			return err
@@ -637,7 +637,13 @@ func codedSchemaError(se *openapi3.SchemaError) *model.Error {
 	// sentence worth returning; "not" is the one keyword that leaves it empty.
 	message := se.Reason
 	if message == "" {
-		message = fmt.Sprintf("value does not satisfy %q", se.SchemaField)
+		// "not" is the one keyword kin-openapi leaves without a reason: it
+		// fires when the subschema it negates matched, and a match has
+		// nothing to say.
+		message = "value is not allowed here"
+		if se.SchemaField != "not" {
+			message = fmt.Sprintf("value does not satisfy %q", se.SchemaField)
+		}
 	}
 	errItem := model.NewCodedError(schemaFieldToCode(se.SchemaField), message)
 	if path != "" {
@@ -649,8 +655,14 @@ func codedSchemaError(se *openapi3.SchemaError) *model.Error {
 // compositeSchemaFields are the keywords that report only that some branch
 // failed. They are never the cause a caller can act on, so a leaf walk steps
 // through them to whatever they wrap.
+//
+// "not" is absent deliberately. A failed "not" has nothing underneath it by
+// construction -- the subschema it negates SUCCEEDED, so there is no inner
+// error -- but it is a cause in its own right: something is present that may
+// not be, and the pointer says what. Stepping through it reaches nothing and
+// loses the only thing the schema said.
 var compositeSchemaFields = map[string]bool{
-	"allOf": true, "anyOf": true, "oneOf": true, "not": true,
+	"allOf": true, "anyOf": true, "oneOf": true,
 }
 
 // disjunctiveSchemaFields are the composites whose branches are alternatives
@@ -701,24 +713,38 @@ func leavesUnder(e error, alternatives bool) []*openapi3.SchemaError {
 		if compositeSchemaFields[se.SchemaField] {
 			return nil
 		}
+		// A "not" that fired on the object itself rather than on one of its
+		// members has no pointer and no reason, so it says only that
+		// something somewhere is wrong. Dropping it lets the caller fall
+		// back to whatever else the tree holds.
+		if se.SchemaField == "not" && len(se.JSONPointer()) == 0 {
+			return nil
+		}
 		return []*openapi3.SchemaError{se}
 	}
 	if branches, ok := errorBranches(e); ok {
-		var kept, every []*openapi3.SchemaError
+		var kept, every [][]*openapi3.SchemaError
 		for _, branch := range branches {
 			leaves := leavesUnder(branch, false)
-			every = append(every, leaves...)
+			every = append(every, leaves)
 			if alternatives && discriminatedAway(branch) {
 				continue
 			}
-			kept = append(kept, leaves...)
+			kept = append(kept, leaves)
 		}
 		// Every alternative was ruled out, so none of them tells the caller
-		// which was meant: report what they all said rather than nothing.
+		// which was meant. Most of what they said is about shapes the payload
+		// was never going to be; what ruled each one out is the whole of the
+		// news, so that is what is reported when there is any.
 		if len(kept) == 0 {
-			return every
+			if kept = discriminatorsOf(every); len(kept) == 0 {
+				kept = every
+			}
 		}
-		return kept
+		if alternatives {
+			kept = nearest(kept)
+		}
+		return flatten(kept)
 	}
 	if u := errors.Unwrap(e); u != nil {
 		return leavesUnder(u, alternatives)
@@ -727,12 +753,18 @@ func leavesUnder(e error, alternatives bool) []*openapi3.SchemaError {
 }
 
 // discriminatedAway reports whether an alternative was ruled out by its own
-// terms rather than by a fault in the payload: a negated guard the payload
-// tripped, or a const or enum pinning the value that says which alternative
-// applies. The rest of such a branch is about a shape the caller never claimed
-// to be sending, and reporting it sends them to fix a field that is not
-// theirs -- a support call missing a mobile number was told to supply a
-// challenge, because the branch wanting one had already been excluded.
+// terms rather than by a fault in the payload: a const or an enum pinning the
+// value that says which alternative applies. The rest of such a branch is
+// about a shape the caller never claimed to be sending, and reporting it sends
+// them to fix a field that is not theirs -- a PMFBY support call was told to
+// supply PM-KISAN's challenge, on a branch its scheme code had already
+// excluded.
+//
+// A const or an enum only: the payload carries the value, so the schema is
+// saying which alternative it is. A tripped "not" is NOT read this way even
+// though an alternative can be guarded with one, because the same keyword is
+// how every pack says a field is not allowed here -- reading those as
+// discrimination silences the arm that was actually meant.
 //
 // Only the alternative's own conjuncts count. The search stops at a nested
 // oneOf or anyOf: a discriminator inside one of *its* alternatives rules that
@@ -745,7 +777,7 @@ func discriminatedAway(e error) bool {
 		if disjunctiveSchemaFields[se.SchemaField] {
 			return false
 		}
-		if se.SchemaField == "not" || discriminatorSchemaFields[se.SchemaField] {
+		if discriminatorSchemaFields[se.SchemaField] {
 			return true
 		}
 		if se.Origin == nil {
@@ -784,13 +816,96 @@ func errorBranches(e error) ([]error, bool) {
 	return branches, true
 }
 
+// discriminatorsOf keeps, from each alternative, only what said the
+// alternative was not the one -- dropping the demands it would have made had
+// it been.
+func discriminatorsOf(arms [][]*openapi3.SchemaError) [][]*openapi3.SchemaError {
+	var out [][]*openapi3.SchemaError
+	for _, arm := range arms {
+		var why []*openapi3.SchemaError
+		for _, leaf := range arm {
+			if discriminatorSchemaFields[leaf.SchemaField] {
+				why = append(why, leaf)
+			}
+		}
+		if len(why) > 0 {
+			out = append(out, why)
+		}
+	}
+	return out
+}
+
+// nearest drops the alternatives that ask for everything another one asks for
+// and more.
+//
+// All of them failed, so the caller meant one of them and the schema cannot
+// say which. The one that failed for fewest reasons is the one they came
+// closest to sending; the extra demands of the others hold only if a different
+// alternative was meant. Reporting those is telling a caller to add a field
+// that may well not be theirs to send, next to one that certainly is.
+//
+// An alternative with no reachable cause rules nothing out -- it is a gap in
+// what the validator reported, not an easier way to satisfy the schema.
+func nearest(arms [][]*openapi3.SchemaError) [][]*openapi3.SchemaError {
+	demands := make([]map[string]bool, len(arms))
+	for i, arm := range arms {
+		demands[i] = make(map[string]bool, len(arm))
+		for _, leaf := range arm {
+			demands[i][leafKey(leaf)] = true
+		}
+	}
+	var out [][]*openapi3.SchemaError
+	for i, arm := range arms {
+		if !anyNearerThan(demands, i) {
+			out = append(out, arm)
+		}
+	}
+	return out
+}
+
+// anyNearerThan reports whether some other alternative failed for a strict
+// subset of alternative i's reasons.
+func anyNearerThan(demands []map[string]bool, i int) bool {
+	for j, other := range demands {
+		if j == i || len(other) == 0 || len(other) >= len(demands[i]) {
+			continue
+		}
+		contained := true
+		for key := range other {
+			if !demands[i][key] {
+				contained = false
+				break
+			}
+		}
+		if contained {
+			return true
+		}
+	}
+	return false
+}
+
+// flatten joins the alternatives' leaves back into one list, in branch order.
+func flatten(arms [][]*openapi3.SchemaError) []*openapi3.SchemaError {
+	var out []*openapi3.SchemaError
+	for _, arm := range arms {
+		out = append(out, arm...)
+	}
+	return out
+}
+
+// leafKey identifies a leaf by what it says, so the same complaint reached by
+// two routes counts once.
+func leafKey(leaf *openapi3.SchemaError) string {
+	return leaf.SchemaField + "\x00" + strings.Join(leaf.JSONPointer(), "/") + "\x00" + leaf.Reason
+}
+
 // dedupeSchemaLeaves drops leaves that repeat an earlier one, keeping the
 // first. Alternatives of the same gate routinely fail the same way.
 func dedupeSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError {
 	out := make([]*openapi3.SchemaError, 0, len(leaves))
 	seen := map[string]bool{}
 	for _, leaf := range leaves {
-		key := leaf.SchemaField + "\x00" + strings.Join(leaf.JSONPointer(), "/") + "\x00" + leaf.Reason
+		key := leafKey(leaf)
 		if seen[key] {
 			continue
 		}
