@@ -3,12 +3,14 @@ package schemav2validator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -30,17 +32,17 @@ type payload struct {
 type schemav2Validator struct {
 	config          *Config
 	specMutex       sync.RWMutex
-	specsLoaded     bool                            // true once at least one successful loadAllSpecs has completed
-	actionSchemas   map[string]*openapi3.SchemaRef  // merged across primary + all auxiliary specs
-	bodylessActions map[string]struct{}              // merged across primary + all auxiliary specs
-	schemaCache     *schemaCache                     // cache for extended schemas
+	specsLoaded     bool                           // true once at least one successful loadAllSpecs has completed
+	actionSchemas   map[string]*openapi3.SchemaRef // merged across primary + all auxiliary specs
+	bodylessActions map[string]struct{}            // merged across primary + all auxiliary specs
+	schemaCache     *schemaCache                   // cache for extended schemas
 }
 
 // cachedSpec holds a cached OpenAPI spec.
 type cachedSpec struct {
 	doc             *openapi3.T
 	actionSchemas   map[string]*openapi3.SchemaRef // body operations: action → schema (O(1) lookup)
-	bodylessActions map[string]struct{}             // bodyless operations: path without leading slash → exists
+	bodylessActions map[string]struct{}            // bodyless operations: path without leading slash → exists
 	loadedAt        time.Time
 }
 
@@ -565,40 +567,20 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 		// domain/JSON-LD checks) — pass it through as-is.
 		*schemaErrors = append(*schemaErrors, *becknErr)
 	} else if schemaErr, ok := err.(*openapi3.SchemaError); ok {
-		// Extract path from current error and message from Origin if available
-		pathParts := schemaErr.JSONPointer()
-		path := strings.Join(pathParts, "/")
-		if path == "" {
-			path = schemaErr.SchemaField
-		}
-
-		message := schemaErr.Reason
-		if schemaErr.Origin != nil {
-			originMsg := schemaErr.Origin.Error()
-			// Extract specific field error from nested message
-			if strings.Contains(originMsg, "Error at \"/") {
-				// Find last "Error at" which has the specific field error
-				parts := strings.Split(originMsg, "Error at \"")
-				if len(parts) > 1 {
-					lastPart := parts[len(parts)-1]
-					// Extract field path and update both path and message
-					if idx := strings.Index(lastPart, "\":"); idx > 0 {
-						fieldPath := lastPart[:idx]
-						fieldMsg := strings.TrimSpace(lastPart[idx+2:])
-						path = strings.TrimPrefix(fieldPath, "/")
-						message = fieldMsg
-					}
-				}
-			} else {
-				message = originMsg
+		// A composite keyword (allOf/oneOf) carries its branches' real causes
+		// under Origin. Report those instead of the composite itself: they
+		// name the field and carry the keyword that actually failed, so the
+		// caller is told "property X is missing" rather than that some
+		// unnamed branch did not match.
+		if leaves := schemaErrorLeaves(schemaErr); len(leaves) > 0 {
+			for _, leaf := range rankSchemaLeaves(leaves) {
+				*schemaErrors = append(*schemaErrors, *codedSchemaError(leaf))
 			}
+			return
 		}
-
-		errItem := model.NewCodedError(schemaFieldToCode(schemaErr.SchemaField), message)
-		if path != "" {
-			errItem.Details = &model.ErrorDetails{Path: path}
-		}
-		*schemaErrors = append(*schemaErrors, *errItem)
+		// No reachable cause — anyOf and not discard theirs, so the composite
+		// error is all there is to report.
+		*schemaErrors = append(*schemaErrors, *codedSchemaError(schemaErr))
 	} else if multiErr, ok := err.(openapi3.MultiError); ok {
 		// Nested MultiError
 		for _, e := range multiErr {
@@ -608,6 +590,132 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 		// Generic error — no schema keyword to classify against.
 		*schemaErrors = append(*schemaErrors, *model.NewCodedError("SCH_SCHEMA_VALIDATION_FAILED", err.Error()))
 	}
+}
+
+// discriminatorSchemaFields are the keywords a schema uses to say which of
+// several alternatives a payload is for: a const or an enum pinning a scalar
+// to one value. Inside a failed composite they usually mean "this branch is
+// not the one" rather than "this value is wrong", so they are reported after
+// the causes a caller can act on.
+var discriminatorSchemaFields = map[string]bool{"enum": true, "const": true}
+
+// rankSchemaLeaves puts the actionable causes first while keeping every one of
+// them. Only the order changes: a SchemaValidationErr reports all its causes,
+// but takes its single wire-level code from the first, so a missing property
+// should outrank the enum on whichever guard the payload did not satisfy.
+//
+// This is a presentation heuristic, not a judgement about which branch of a
+// failed oneOf the caller meant. That cannot be recovered here: kin-openapi
+// evaluates a schema's set operations before its properties and returns as
+// soon as the set operations fail, so a branch's discriminating property
+// never gets evaluated and never appears in the tree to be matched against.
+func rankSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError {
+	ranked := make([]*openapi3.SchemaError, 0, len(leaves))
+	for _, leaf := range leaves {
+		if !discriminatorSchemaFields[leaf.SchemaField] {
+			ranked = append(ranked, leaf)
+		}
+	}
+	for _, leaf := range leaves {
+		if discriminatorSchemaFields[leaf.SchemaField] {
+			ranked = append(ranked, leaf)
+		}
+	}
+	return ranked
+}
+
+// codedSchemaError renders one openapi3.SchemaError as a model.Error, taking
+// the taxonomy code from the JSON-schema keyword that failed and the path from
+// the error's own JSON pointer.
+func codedSchemaError(se *openapi3.SchemaError) *model.Error {
+	path := strings.Join(se.JSONPointer(), "/")
+	if path == "" {
+		path = se.SchemaField
+	}
+	// SchemaError.Error() appends a full schema-and-value dump after the
+	// reason, which is what made a NACK body unreadable. Reason alone is the
+	// sentence worth returning; "not" is the one keyword that leaves it empty.
+	message := se.Reason
+	if message == "" {
+		message = fmt.Sprintf("value does not satisfy %q", se.SchemaField)
+	}
+	errItem := model.NewCodedError(schemaFieldToCode(se.SchemaField), message)
+	if path != "" {
+		errItem.Details = &model.ErrorDetails{Path: path}
+	}
+	return errItem
+}
+
+// compositeSchemaFields are the keywords that report only that some branch
+// failed. They are never the cause a caller can act on, so a leaf walk steps
+// through them to whatever they wrap.
+var compositeSchemaFields = map[string]bool{
+	"allOf": true, "anyOf": true, "oneOf": true, "not": true,
+}
+
+// schemaErrorLeaves walks a kin-openapi error tree and returns the concrete
+// assertion failures at its leaves, in encounter order and deduplicated.
+//
+// Two shapes have to be stepped through to reach them. kin-openapi stores a
+// composite's nested causes as Origin = fmt.Errorf("...: %w", multiErr), so
+// the slice of per-branch errors sits one errors.Unwrap below Origin; and
+// those multierror types are named slice types rather than openapi3.MultiError
+// itself, so they are walked by reflection over the slice. Reading
+// Origin.Error() as text instead of walking it is what loses the per-branch
+// attribution: the branches' messages are concatenated, and picking one out of
+// the resulting string selects by position rather than by relevance.
+//
+// anyOf and not are returned empty: kin-openapi discards their branch errors
+// before the caller ever sees them, so there is nothing underneath to find.
+func schemaErrorLeaves(err error) []*openapi3.SchemaError {
+	var out []*openapi3.SchemaError
+	seen := map[string]bool{}
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		if se, ok := e.(*openapi3.SchemaError); ok {
+			if se.Origin != nil {
+				before := len(out)
+				walk(se.Origin)
+				// Something more specific was found underneath; the composite
+				// that wrapped it adds nothing.
+				if len(out) > before {
+					return
+				}
+			}
+			if compositeSchemaFields[se.SchemaField] {
+				return
+			}
+			key := se.SchemaField + "\x00" + strings.Join(se.JSONPointer(), "/") + "\x00" + se.Reason
+			if !seen[key] {
+				seen[key] = true
+				out = append(out, se)
+			}
+			return
+		}
+		// openapi3.MultiError and the unexported multiErrorForOneOf /
+		// multiErrorForAllOf are all []error underneath.
+		if v := reflect.ValueOf(e); v.Kind() == reflect.Slice {
+			for i := 0; i < v.Len(); i++ {
+				if sub, ok := v.Index(i).Interface().(error); ok {
+					walk(sub)
+				}
+			}
+			return
+		}
+		if u := errors.Unwrap(e); u != nil {
+			walk(u)
+		}
+	}
+	// Start below the composite itself, so a composite with no reachable
+	// cause yields nothing and the caller falls back to reporting it.
+	if se, ok := err.(*openapi3.SchemaError); ok && se.Origin != nil {
+		walk(se.Origin)
+		return out
+	}
+	return nil
 }
 
 // buildActionIndex builds two indexes from the loaded OpenAPI spec:

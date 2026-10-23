@@ -34,6 +34,7 @@ plugins=(
     "jsonmapper"
     "WeatherObservation"
     "MandiPrice"
+    "Grievance"
     "KnowledgeAdvisory"
     "AgricultureFacility"
     "manifestloader"
