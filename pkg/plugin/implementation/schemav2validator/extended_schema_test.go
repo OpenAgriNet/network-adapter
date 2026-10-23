@@ -2052,3 +2052,175 @@ func TestSchemaForAction(t *testing.T) {
 		})
 	}
 }
+
+func TestRewriteContext(t *testing.T) {
+	rewrites := []ContextRewrite{
+		{From: "https://published.example/specs/", To: "https://raw.example/specs/branch/"},
+		{From: "https://published.example/", To: "https://other.example/"},
+	}
+	for name, tc := range map[string]struct{ in, want string }{
+		"the first matching prefix wins": {"https://published.example/specs/X/v0.1/context.jsonld", "https://raw.example/specs/branch/X/v0.1/context.jsonld"},
+		"a later prefix still matches":   {"https://published.example/other/context.jsonld", "https://other.example/other/context.jsonld"},
+		"no match is left as is":         {"https://elsewhere.example/X/context.jsonld", "https://elsewhere.example/X/context.jsonld"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := rewriteContext(tc.in, rewrites); got != tc.want {
+				t.Errorf("rewriteContext(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	if got := rewriteContext("https://a.example/x", nil); got != "https://a.example/x" {
+		t.Errorf("no rewrites changed the URL to %q", got)
+	}
+}
+
+// A pack that pins @context to its published URL, served only from the
+// rewrite target: the payload keeps the published URL, the fetch goes to the
+// target, and the allowlist is checked on the target's host.
+func TestValidateExtendedSchemas_ContextRewriteFetchesFromTheTarget(t *testing.T) {
+	const published = "https://published.invalid/specs/"
+	schemaContent := `openapi: 3.1.0
+info:
+  title: Test Schema
+  version: 1.0.0
+components:
+  schemas:
+    TestType:
+      type: object
+      x-jsonld:
+        "@context": ./context.jsonld
+        "@type": TestType
+      required: ["@context", field1]
+      properties:
+        "@context":
+          const: ` + published + `TestType/v0.1/context.jsonld
+        field1:
+          type: string
+          pattern: "^[0-9]{4}$"`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/branch/TestType/v0.1/attributes.yaml" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(schemaContent))
+	}))
+	defer server.Close()
+	serverURL, _ := url.Parse(server.URL)
+
+	validator := func(rewrites []ContextRewrite) *schemav2Validator {
+		return &schemav2Validator{
+			config: &Config{
+				EnableExtendedSchema: true,
+				ExtendedSchemaConfig: ExtendedSchemaConfig{
+					AllowedDomains:  []string{serverURL.Host},
+					ContextRewrites: rewrites,
+				},
+			},
+			schemaCache: newSchemaCache(10),
+		}
+	}
+	body := func(field1 string) map[string]interface{} {
+		return map[string]interface{}{"message": map[string]interface{}{"order": map[string]interface{}{
+			"@context": published + "TestType/v0.1/context.jsonld",
+			"@type":    "TestType",
+			"field1":   field1,
+		}}}
+	}
+	rewrite := []ContextRewrite{{From: published, To: server.URL + "/branch/"}}
+	ctx := context.Background()
+
+	if err := validator(rewrite).validateExtendedSchemas(ctx, body("4821"), ""); err != nil {
+		t.Errorf("a valid object behind a rewritten @context: %v", err)
+	}
+
+	err := validator(rewrite).validateExtendedSchemas(ctx, body("48210"), "")
+	if err == nil {
+		t.Error("an invalid object behind a rewritten @context passed")
+	} else if !strings.Contains(err.Error(), "field1") {
+		t.Errorf("error %v does not name the failing field", err)
+	}
+
+	// Without the rewrite the published host is fetched, and it is not allowed.
+	err = validator(nil).validateExtendedSchemas(ctx, body("4821"), "")
+	var schemaErr *model.SchemaValidationErr
+	if !errors.As(err, &schemaErr) || schemaErr.Errors[0].Code != "SCH_INVALID_JSONLD_CONTEXT" {
+		t.Errorf("without a rewrite: %v, want SCH_INVALID_JSONLD_CONTEXT", err)
+	}
+
+	// A rewrite to a host off the allowlist is refused, not fetched.
+	offList := []ContextRewrite{{From: published, To: "https://not-allowed.invalid/"}}
+	err = validator(offList).validateExtendedSchemas(ctx, body("4821"), "")
+	if !errors.As(err, &schemaErr) || schemaErr.Errors[0].Code != "SCH_INVALID_JSONLD_CONTEXT" {
+		t.Errorf("a rewrite off the allowlist: %v, want SCH_INVALID_JSONLD_CONTEXT", err)
+	}
+}
+
+// A refusal names the rule and the path, never the value: a pack can mark the
+// field no-echo, and kin-openapi appends the value and the schema by default.
+func TestValidateExtendedSchemas_ErrorDoesNotEchoTheValue(t *testing.T) {
+	schemaContent := `openapi: 3.1.0
+info:
+  title: Test Schema
+  version: 1.0.0
+components:
+  schemas:
+    TestType:
+      type: object
+      x-jsonld:
+        "@context": ./context.jsonld
+        "@type": TestType
+      properties:
+        applicant:
+          type: object
+          properties:
+            mobile:
+              type: string
+              pattern: "^[6-9][0-9]{9}$"
+              x-oan-pii:
+                class: contact
+                handling: [no-echo]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(schemaContent))
+	}))
+	defer server.Close()
+
+	v := &schemav2Validator{
+		config:      &Config{EnableExtendedSchema: true, ExtendedSchemaConfig: ExtendedSchemaConfig{}},
+		schemaCache: newSchemaCache(10),
+	}
+	const secret = "5812345670"
+	body := map[string]interface{}{"message": map[string]interface{}{"order": map[string]interface{}{
+		"@context":  server.URL + "/TestType/v0.1/context.jsonld",
+		"@type":     "TestType",
+		"applicant": map[string]interface{}{"mobile": secret},
+	}}}
+
+	err := v.validateExtendedSchemas(context.Background(), body, "")
+	var schemaErr *model.SchemaValidationErr
+	if !errors.As(err, &schemaErr) || len(schemaErr.Errors) == 0 {
+		t.Fatalf("validateExtendedSchemas() = %v, want a schema refusal", err)
+	}
+	got := schemaErr.BecknError()
+	for _, leak := range []string{secret, "Value:", "Schema:", "x-oan-pii"} {
+		if strings.Contains(got.Message, leak) {
+			t.Errorf("message %q carries %q", got.Message, leak)
+		}
+	}
+	if !strings.Contains(got.Message, "regular expression") {
+		t.Errorf("message %q does not say which rule failed", got.Message)
+	}
+	if got.Details == nil || !strings.Contains(got.Details.Path, "mobile") {
+		t.Errorf("details = %+v, want the path to the field", got.Details)
+	}
+}
+
+func TestWithoutDetails(t *testing.T) {
+	in := "string doesn't match the regular expression \"^[0-9]{4}$\"\nSchema:\n  {\"pattern\": \"^[0-9]{4}$\"}\n\nValue:\n  \"48210\"\n"
+	if got := withoutDetails(in); got != "string doesn't match the regular expression \"^[0-9]{4}$\"" {
+		t.Errorf("withoutDetails() = %q", got)
+	}
+	if got := withoutDetails("  plain reason  "); got != "plain reason" {
+		t.Errorf("withoutDetails() = %q, want the reason trimmed", got)
+	}
+}

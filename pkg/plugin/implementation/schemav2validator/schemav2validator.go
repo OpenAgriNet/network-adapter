@@ -203,8 +203,9 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 		openapi3.EnableFormatValidation(),
 	}
 	if err := schema.Value.VisitJSON(jsonData, opts...); err != nil {
-		log.Debugf(ctx, "Schema validation failed: %v", err)
-		return v.formatValidationError(err)
+		formatted := v.formatValidationError(err)
+		log.Debugf(ctx, "Schema validation failed: %v", formatted)
+		return formatted
 	}
 
 	log.Debugf(ctx, "base schema validation passed for action: %s", action)
@@ -588,7 +589,7 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 		}
 	} else {
 		// Generic error — no schema keyword to classify against.
-		*schemaErrors = append(*schemaErrors, *model.NewCodedError("SCH_SCHEMA_VALIDATION_FAILED", err.Error()))
+		*schemaErrors = append(*schemaErrors, *model.NewCodedError("SCH_SCHEMA_VALIDATION_FAILED", withoutDetails(err.Error())))
 	}
 }
 
@@ -973,6 +974,17 @@ func dedupeSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError 
 		out = append(out, leaf)
 	}
 	return out
+}
+
+// withoutDetails keeps the reason and drops the schema and the caller's value
+// that kin-openapi appends (ADR-0003).
+func withoutDetails(message string) string {
+	for _, marker := range []string{"\nSchema:", "\nValue:"} {
+		if i := strings.Index(message, marker); i >= 0 {
+			message = message[:i]
+		}
+	}
+	return strings.TrimSpace(message)
 }
 
 // buildActionIndex builds two indexes from the loaded OpenAPI spec:
