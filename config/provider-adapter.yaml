@@ -236,6 +236,11 @@ modules:
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
 
+            # Pack @types whose errors keep only the first reason, without the
+            # schema dump, the caller's value or the other branches' reasons.
+            # Unlisted types keep the full message.
+            extendedSchema_conciseErrorTypes: "openagrinet:Grievance"
+
         # ------------------------------------------------------------------
         # jsonmapper -- the JSONata mapper.
         #

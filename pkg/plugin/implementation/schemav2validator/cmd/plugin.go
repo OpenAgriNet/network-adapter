@@ -104,6 +104,9 @@ func (vp schemav2ValidatorProvider) New(ctx context.Context, config map[string]s
 		if v, ok := config["extendedSchema_localSchemaPath"]; ok && v != "" {
 			cfg.ExtendedSchemaConfig.LocalSchemaPath = v
 		}
+		if v, ok := config["extendedSchema_conciseErrorTypes"]; ok && v != "" {
+			cfg.ExtendedSchemaConfig.ConciseErrorTypes = strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' })
+		}
 
 	}
 

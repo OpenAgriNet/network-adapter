@@ -1987,3 +1987,78 @@ func TestPayloadDirectedReader(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateExtendedSchemas_ConciseTypes_NamesTheFieldAndDropsTheDump(t *testing.T) {
+	for name, c := range map[string]struct {
+		listed []string
+		want   string
+	}{
+		"listed":   {[]string{"Season"}, `season: value is not one of the allowed values ["Kharif","Rabi","Zaid"]`},
+		"unlisted": {[]string{"Other"}, `value is not one of the allowed values ["Kharif","Rabi","Zaid"]`},
+		"none":     {nil, `value is not one of the allowed values ["Kharif","Rabi","Zaid"]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := &schemav2Validator{
+				config:      &Config{EnableExtendedSchema: true, ExtendedSchemaConfig: ExtendedSchemaConfig{LocalSchemaPath: "preloaded", ConciseErrorTypes: c.listed}},
+				schemaCache: newSchemaCache(10),
+			}
+			v.schemaCache.rawSchemas["Season/attributes.yaml"] = []byte(`openapi: 3.0.3
+info: {title: Season, version: 1.0.0}
+components:
+  schemas:
+    Season:
+      type: object
+      properties:
+        season: {type: string, enum: [Kharif, Rabi, Zaid]}`)
+			body := map[string]interface{}{"message": map[string]interface{}{"channel": map[string]interface{}{
+				"@context": "https://example.org/Season/v1.0/context.jsonld", "@type": "Season", "season": "Khariff"}}}
+			var schemaErr *model.SchemaValidationErr
+			if err := v.validateExtendedSchemas(context.Background(), body); !errors.As(err, &schemaErr) {
+				t.Fatalf("err = %v, want a schema error", err)
+			}
+			if got := schemaErr.Errors[0].Message; got != c.want {
+				t.Errorf("Message = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestConciseMessage(t *testing.T) {
+	for _, c := range []struct{ path, in, want string }{
+		{"cropYear", `string doesn't match the regular expression "^[0-9]{4}$"` + "\nSchema:\n {}\n\nValue:\n \"x\"", "cropYear is not valid"},
+		{"description", "minimum string length is 10\nSchema:\n {}", "description: minimum string length is 10"},
+		{"case/ticketNo", "string doesn't match the regular expression \"^[0-9]+$\"\nSchema:", "case.ticketNo is not valid"},
+		{"description", `property "description" is missing` + "\nSchema:", `property "description" is missing`},
+		{"allOf", "doesn't match schema due to: doesn't match any schema from \"anyOf\"\nSchema:\n {}\n Or doesn't match", `doesn't match any schema from "anyOf"`},
+		{"allOf", "doesn't match schema due to: Doesn't match schema \"not\"\nSchema:\n {}", `Doesn't match schema "not"`},
+		{"enrolmentId", "Doesn't match schema \"not\"\nSchema:\n {}\n\nValue:\n \"123456789012\"", "enrolmentId is not valid"},
+		{"grievance/oneOf", "value doesn't match any schema from \"oneOf\"", `value doesn't match any schema from "oneOf"`},
+		{"", "some reason", "some reason"},
+	} {
+		if got := conciseMessage(&model.ErrorDetails{Path: c.path}, c.in); got != c.want {
+			t.Errorf("conciseMessage(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
+func TestValidateExtendedSchemas_ConciseTypes_LeavesTheValidatorsOwnErrorsAlone(t *testing.T) {
+	v := &schemav2Validator{
+		config:      &Config{EnableExtendedSchema: true, ExtendedSchemaConfig: ExtendedSchemaConfig{LocalSchemaPath: "preloaded", ConciseErrorTypes: []string{"Season"}}},
+		schemaCache: newSchemaCache(10),
+	}
+	// The document holds no schema named Season, so the type cannot be found.
+	v.schemaCache.rawSchemas["Season/attributes.yaml"] = []byte(`openapi: 3.0.3
+info: {title: Other, version: 1.0.0}
+components:
+  schemas:
+    Other: {type: object}`)
+	body := map[string]interface{}{"message": map[string]interface{}{"channel": map[string]interface{}{
+		"@context": "https://example.org/Season/v1.0/context.jsonld", "@type": "Season"}}}
+	var schemaErr *model.SchemaValidationErr
+	if err := v.validateExtendedSchemas(context.Background(), body); !errors.As(err, &schemaErr) {
+		t.Fatalf("err = %v, want a schema error", err)
+	}
+	if got := schemaErr.Errors[0]; got.Code != "SCH_INVALID_ENTITY_TYPE" || strings.HasPrefix(got.Message, "message.channel") {
+		t.Errorf("error = %+v, want the validator's own message without a field prefix", got)
+	}
+}

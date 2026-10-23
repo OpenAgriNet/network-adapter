@@ -42,6 +42,7 @@ schemaValidator:
 | `extendedSchema_maxCacheSize` | string | No | `"100"` | Maximum number of cached domain schemas |
 | `extendedSchema_downloadTimeout` | string | No | `"30"` | Timeout for downloading domain schemas |
 | `extendedSchema_allowedDomains` | string | No | `""` | Comma-separated domain whitelist (empty = all allowed) |
+| `extendedSchema_conciseErrorTypes` | string | No | `""` | Comma-separated `@type`s whose schema errors are shortened to the first reason with the field named, without the schema or value dump (empty = every message in full) |
 | `extendedSchema_localSchemaPath` | string | No | `""` | Path to local schema directory; schemas preloaded at startup, network used as fallback |
 
 ### Auxiliary Specs
