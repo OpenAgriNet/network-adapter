@@ -72,6 +72,26 @@ type ExtendedSchemaConfig struct {
 	DownloadTimeout int      // seconds, default 30
 	AllowedDomains  []string // whitelist (empty = all allowed)
 	LocalSchemaPath string   // when non-empty, preload schemas from this directory; network is fallback
+	// ContextRewrites change where a pack is fetched from, never the
+	// payload's @context; the first matching prefix wins (ADR-0003).
+	ContextRewrites []ContextRewrite
+}
+
+// ContextRewrite is one @context prefix and the prefix to fetch it from.
+type ContextRewrite struct {
+	From string
+	To   string
+}
+
+// rewriteContext returns where to fetch contextURL from. The allowlist is
+// checked on the result, the host actually read.
+func rewriteContext(contextURL string, rewrites []ContextRewrite) string {
+	for _, r := range rewrites {
+		if r.From != "" && strings.HasPrefix(contextURL, r.From) {
+			return r.To + strings.TrimPrefix(contextURL, r.From)
+		}
+	}
+	return contextURL
 }
 
 // referencedObject represents a domain-specific object with @context.
@@ -209,6 +229,7 @@ func (v *schemav2Validator) validateExtendedSchemas(ctx context.Context, body in
 
 	// Validate each object
 	for _, obj := range objects {
+		obj.Context = rewriteContext(obj.Context, refConfig.ContextRewrites)
 		log.Debugf(ctx, "Validating object at path: %s, @context: %s, @type: %s",
 			obj.Path, obj.Context, obj.Type)
 
@@ -797,7 +818,7 @@ func (c *schemaCache) validateReferencedObject(
 		openapi3.EnableFormatValidation(),
 	}
 	if err := schema.Value.VisitJSON(domainData, opts...); err != nil {
-		log.Debugf(ctx, "Validation failed for @type: %s at path: %s: %v", obj.Type, obj.Path, err)
+		log.Debugf(ctx, "Validation failed for @type: %s at path: %s: %s", obj.Type, obj.Path, withoutDetails(err.Error()))
 		return err
 	}
 
