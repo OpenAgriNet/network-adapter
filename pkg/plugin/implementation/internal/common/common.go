@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
@@ -34,6 +35,24 @@ import (
 // do it. What a function returns reaches the mapping as _local, so the mapping
 // still decides what the provider is asked for. Most capabilities need none.
 type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
+
+// Envelope seals a provider's request once, before the retry loop, and
+// returns the opener for its answer (ADR-0001).
+type Envelope interface {
+	Seal(ctx context.Context, exchange Exchange, mapped []byte) (sealed []byte, open Opener, err error)
+}
+
+// Opener decrypts the answer to one sealed request.
+type Opener func(ctx context.Context, answer []byte) ([]byte, error)
+
+// Exchange is the call an envelope wraps: action, Beckn payload and call plan,
+// and the registry, for an envelope that calls another participant too.
+type Exchange struct {
+	Action   string
+	Beckn    any
+	Plan     *model.ProviderRecord
+	Registry definition.ProviderRecordLookup
+}
 
 // Config holds configuration parameters for the step.
 type Config struct {
@@ -57,6 +76,14 @@ type Config struct {
 	// tried in order until one finds a binding.
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
+
+	// EnvelopeByProvider, keyed by participant id. Unlisted providers get
+	// plain JSON. Built by the domain package.
+	EnvelopeByProvider map[string]Envelope `yaml:"-" json:"-"`
+
+	// HostedElsewhere: provider -> action -> binding key of the participant
+	// that serves it (ADR-0002).
+	HostedElsewhere map[string]map[string]string `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
@@ -232,6 +259,35 @@ func applyDefaults(cfg *Config) error {
 		profile.Provider = provider
 		if err := profile.validate(); err != nil {
 			return err
+		}
+	}
+
+	// An envelope for an unserved provider is a typo; refuse it.
+	for provider, envelope := range cfg.EnvelopeByProvider {
+		if !served[provider] {
+			return fmt.Errorf(
+				"an envelope is configured for %q, which is not a provider in bindingKeys (%s)",
+				provider, strings.Join(cfg.BindingKeys, ", "))
+		}
+		if envelope == nil {
+			return fmt.Errorf("the envelope configured for %q is nil", provider)
+		}
+	}
+
+	// A host for an unserved provider is a typo too, and a key the registry
+	// cannot index would fail every call.
+	for provider, actions := range cfg.HostedElsewhere {
+		if !served[provider] {
+			return fmt.Errorf(
+				"an action host is configured for %q, which is not a provider in bindingKeys (%s)",
+				provider, strings.Join(cfg.BindingKeys, ", "))
+		}
+		for action, key := range actions {
+			participant, capability, found := strings.Cut(key, separator)
+			if action == "" || !found || participant == "" || capability == "" {
+				return fmt.Errorf("%s: the host for %q must be a binding key, participant%scapability; got %q",
+					provider, action, separator, key)
+			}
 		}
 	}
 	return nil
