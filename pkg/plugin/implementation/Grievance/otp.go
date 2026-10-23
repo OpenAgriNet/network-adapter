@@ -17,6 +17,9 @@ const challengeMethod = "SMS_OTP"
 // identityType is the OTP service's type for a registration number (enrolmentId).
 const identityType = "Ben_id"
 
+// mobileType is the OTP service's type for applicant.mobile.
+const mobileType = "Mobile"
+
 // hooks are the grievance packs' side of the envelope: where the challenge
 // sits in a payload, and what PM-KISAN's "yes" looks like.
 var hooks = envelope.Hooks{Challenge: verifyRequest, Succeeded: succeeded}
@@ -42,8 +45,8 @@ func verifyRequest(exchange common.Exchange) (map[string]any, error) {
 	return map[string]any{"Types": kind, "Values": identity, "OTP": otp}, nil
 }
 
-// challengeIn reads enrolmentId and the challenge from support's channel or
-// the commitment's attributes.
+// challengeIn reads enrolmentId (else applicant.mobile) and the challenge from
+// support's channel or the commitment's attributes.
 func challengeIn(exchange common.Exchange) (kind, identity, method, otp string) {
 	payload, _ := exchange.Beckn.(map[string]any)
 	message, _ := payload["message"].(map[string]any)
@@ -61,6 +64,10 @@ func challengeIn(exchange common.Exchange) (kind, identity, method, otp string) 
 	}
 	if id := text(holder["enrolmentId"]); id != "" {
 		kind, identity = identityType, id
+	} else if applicant, ok := holder["applicant"].(map[string]any); ok {
+		if id := text(applicant["mobile"]); id != "" {
+			kind, identity = mobileType, id
+		}
 	}
 	challenge, _ := holder["challenge"].(map[string]any)
 	if response, ok := challenge["response"].(map[string]any); ok {

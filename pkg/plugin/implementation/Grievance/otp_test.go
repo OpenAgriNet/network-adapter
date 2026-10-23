@@ -24,14 +24,14 @@ func TestSucceededFailsClosed(t *testing.T) {
 	}
 }
 
-// The registration number is the only identifier.
+// The slot names the kind: enrolmentId or applicant.mobile.
 func TestChallengeInReadsTheKindFromTheSlot(t *testing.T) {
 	for name, tc := range map[string]struct {
 		attributes map[string]any
 		kind, id   string
 	}{
 		"enrolmentId":          {map[string]any{"enrolmentId": "UP12345678A"}, "Ben_id", "UP12345678A"},
-		"a mobile":             {map[string]any{"applicant": map[string]any{"mobile": "9812345670"}}, "", ""},
+		"mobile":               {map[string]any{"applicant": map[string]any{"mobile": "9812345670"}}, "Mobile", "9812345670"},
 		"an Aadhaar":           {map[string]any{"applicant": map[string]any{"aadhaar": "123456789012"}}, "", ""},
 		"the old idType shape": {map[string]any{"applicant": map[string]any{"idType": "Mobile", "id": "9812345670"}}, "", ""},
 		"nothing":              {map[string]any{}, "", ""},
