@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -237,7 +238,47 @@ func (h *harness) mustSend(t *testing.T, body []byte) *answer {
 	if got == nil {
 		t.Fatal("the step passed the request on instead of answering it")
 	}
+	if len(got.Message.Support.Channels) > 0 {
+		assertPackShape(t, got.channel())
+	}
+	if len(got.Message.Contract.Commitments) > 0 {
+		assertPackShape(t, got.attributes())
+	}
 	return got
+}
+
+// calendarDate is what the pack's CalendarDate accepts, and the whole of it.
+var calendarDate = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+
+// assertPackShape checks the rules the Grievance pack enforces that a mapping
+// can quietly break, because nothing in this harness validates against it: the
+// step answers, and the pack is read by the peer that receives the answer.
+//
+// Only the hard ones are here -- a required member left out, or a date written
+// as an instant. Both have shipped before, and neither shows up in an
+// assertion about the field the test is actually about.
+func assertPackShape(t *testing.T, attributes map[string]any) {
+	t.Helper()
+	if attributes["informationMode"] != "Direct" {
+		return
+	}
+	// case: required [ticketNo, status, filedOn] on a Direct answer.
+	if record := band(attributes, "case"); record != nil {
+		for _, field := range []string{"ticketNo", "status", "filedOn"} {
+			if _, present := record[field]; !present {
+				t.Errorf("case.%s is missing; the pack requires it on a Direct answer", field)
+			}
+		}
+		if filed, ok := record["filedOn"].(string); ok && !calendarDate.MatchString(filed) {
+			t.Errorf("case.filedOn = %q, want a calendar date (the pack's CalendarDate)", filed)
+		}
+	}
+	// Complaint: required [description].
+	if complaint := band(attributes, "grievance"); complaint != nil {
+		if _, present := complaint["description"]; !present {
+			t.Errorf("grievance = %v, want a description or no grievance band at all", complaint)
+		}
+	}
 }
 
 const packContext = "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld"
@@ -354,13 +395,12 @@ func assertFailedUpstream(t *testing.T, err error, message string) {
 	}
 }
 
-// assertJustNowUTC fails unless value is an RFC 3339 UTC instant within a minute of now.
-func assertJustNowUTC(t *testing.T, value any) {
+// assertFiledToday fails unless value is today's date in IST, which is the day
+// the farmer filed on and the day PMFBY will report back.
+func assertFiledToday(t *testing.T, value any) {
 	t.Helper()
-	text, _ := value.(string)
-	at, err := time.Parse("2006-01-02T15:04:05Z", text)
-	if err != nil || time.Since(at).Abs() > time.Minute {
-		t.Errorf("filedOn = %v, want this moment as YYYY-MM-DDTHH:MM:SSZ", value)
+	if value != todayIST() {
+		t.Errorf("filedOn = %v, want today in IST (%s)", value, todayIST())
 	}
 }
 
@@ -404,7 +444,7 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	}
 	filed := band(channel, "case")
 	status := band(filed, "status")
-	assertJustNowUTC(t, filed["filedOn"])
+	assertFiledToday(t, filed["filedOn"])
 	if filed["ticketNo"] != knownTicket || len(status) != 1 || status["code"] != "Registered" ||
 		band(channel, "provider")["id"] != "pmfby" ||
 		channel["informationMode"] != "Direct" || channel["scheme"] == nil {
@@ -515,7 +555,7 @@ func TestSupport_CallerDateAndSource_SentInsteadOfDefaults(t *testing.T) {
 			if sent["complaintDate"] != want || sent["receiptSourceID"] != "200001" {
 				t.Errorf("PMFBY was sent %v / %v, want %s and the caller's source", sent["complaintDate"], sent["receiptSourceID"], want)
 			}
-			assertJustNowUTC(t, band(got.channel(), "case")["filedOn"])
+			assertFiledToday(t, band(got.channel(), "case")["filedOn"])
 		})
 	}
 }
@@ -528,7 +568,7 @@ func TestSupport_TicketAlreadyRaised_ReturnsTheExistingTicket(t *testing.T) {
 	if filed["ticketNo"] != "121026000099003" || band(filed, "status")["code"] != "Registered" {
 		t.Errorf("case = %v, want the existing ticket, Registered", filed)
 	}
-	assertJustNowUTC(t, filed["filedOn"])
+	assertFiledToday(t, filed["filedOn"])
 }
 
 // A refusal PMFBY is known to give is a 400 in our words, never PMFBY's.
@@ -674,7 +714,7 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 	}
 	filed := band(attributes, "case")
 	if attributes["enrolmentId"] != "040108251010160770605" || attributes["informationMode"] != "Direct" ||
-		filed["ticketNo"] != knownTicket || filed["filedOn"] != "2026-10-04T10:00:00Z" || filed["cropName"] != "Paddy" {
+		filed["ticketNo"] != knownTicket || filed["filedOn"] != "2026-10-04" || filed["cropName"] != "Paddy" {
 		t.Errorf("commitmentAttributes = %v", attributes)
 	}
 	// "Under Review" is not a phrase the lookup lists, so it is UnderReview.
@@ -751,13 +791,23 @@ func TestStatus_KnownTicket_DropsPersonalAndInternalFields(t *testing.T) {
 	}
 }
 
-// InsertDateTime comes back as filedOn in UTC, whatever offset PMFBY states.
-func TestStatus_InsertDateTimeWithOffset_FiledOnInUTC(t *testing.T) {
-	record := strings.Replace(knownTicketRecord, `"2026-10-04T10:00:00.000Z"`, `"2026-10-04T15:30:00+05:30"`, 1)
-	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
-		mustSend(t, request("status", statusAttributes()))
-	if filed := band(got.attributes(), "case")["filedOn"]; filed != "2026-10-04T10:00:00Z" {
-		t.Errorf("filedOn = %v, want 2026-10-04T10:00:00Z", filed)
+// filedOn is the day in IST, whatever offset PMFBY states it in -- including
+// a late-evening filing, which is the next day in UTC and must not shift.
+func TestStatus_InsertDateTime_FiledOnIsTheISTDay(t *testing.T) {
+	for stated, want := range map[string]string{
+		"2026-10-04T15:30:00+05:30": "2026-10-04",
+		"2026-10-04T10:00:00.000Z":  "2026-10-04",
+		"2026-10-04T20:00:00.000Z":  "2026-10-05",
+		"2026-10-05T01:30:00+05:30": "2026-10-05",
+	} {
+		t.Run(stated, func(t *testing.T) {
+			record := strings.Replace(knownTicketRecord, `"2026-10-04T10:00:00.000Z"`, `"`+stated+`"`, 1)
+			got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+				mustSend(t, request("status", statusAttributes()))
+			if filed := band(got.attributes(), "case")["filedOn"]; filed != want {
+				t.Errorf("filedOn = %v, want %s", filed, want)
+			}
+		})
 	}
 }
 
@@ -792,9 +842,6 @@ func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
 	}{
 		"null category name":  {`"TicketCategoryName":"Claim"`, `"TicketCategoryName":null`, "grievance", "category"},
 		"empty sub-category":  {`"TicketSubCategoryName":"Claim not received"`, `"TicketSubCategoryName":""`, "grievance", "subCategory"},
-		"null description":    {`"GrievenceDescription":"Claim not received"`, `"GrievenceDescription":null`, "grievance", "description"},
-		"null insert time":    {`"InsertDateTime":"2026-10-04T10:00:00.000Z"`, `"InsertDateTime":null`, "case", "filedOn"},
-		"date-only insert":    {`"InsertDateTime":"2026-10-04T10:00:00.000Z"`, `"InsertDateTime":"2026-10-04"`, "case", "filedOn"},
 		"null application no": {`"ApplicationNo":"040108251010160770605"`, `"ApplicationNo":null`, "", "enrolmentId"},
 		"empty crop":          {`"CropName":"Paddy"`, `"CropName":""`, "case", "cropName"},
 	} {
@@ -813,6 +860,38 @@ func TestStatus_NullFields_DroppedNotMappedOrFailed(t *testing.T) {
 				t.Errorf("case = %v, want the rest of the answer intact", band(got.attributes(), "case"))
 			}
 		})
+	}
+}
+
+// filedOn is required on an answer and a date is not ours to invent, so a
+// record PMFBY dates unusably is its fault, not a grievance we can report.
+func TestStatus_NoUsableFilingDate_Returns502(t *testing.T) {
+	for name, stated := range map[string]string{
+		"null":       `null`,
+		"empty":      `""`,
+		"date only":  `"2026-10-04"`,
+		"not a time": `"04/10/2026"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			record := strings.Replace(knownTicketRecord, `"2026-10-04T10:00:00.000Z"`, stated, 1)
+			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+				send(t, request("status", statusAttributes()))
+			assertFailedUpstream(t, err, "PMFBY returned the grievance without a usable filing date.")
+		})
+	}
+}
+
+// The complaint rides only with its description: the pack requires one, so a
+// category on its own would be an answer the caller has to refuse.
+func TestStatus_NoDescription_DropsTheWholeComplaint(t *testing.T) {
+	record := strings.Replace(knownTicketRecord, `"GrievenceDescription":"Claim not received"`, `"GrievenceDescription":null`, 1)
+	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+		mustSend(t, request("status", statusAttributes()))
+	if complaint, present := got.attributes()["grievance"]; present {
+		t.Errorf("grievance = %v, want no grievance band at all", complaint)
+	}
+	if band(got.attributes(), "case")["ticketNo"] != knownTicket {
+		t.Error("the rest of the answer should survive")
 	}
 }
 

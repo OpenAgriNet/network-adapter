@@ -48,7 +48,8 @@ response: |
     $SCHEME := { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" };
     $INFORMATION_MODE := "Direct";
     $CASE_STATUS_REGISTERED := "Registered";
-    $TIMESTAMP_FORMAT := "[Y0001]-[M01]-[D01]T[H01]:[m01]:[s01]Z";
+    $DATE_FORMAT := "[Y0001]-[M01]-[D01]";
+    $IST_OFFSET := "+0530";
 
     $MSG_PHONE_MISMATCH := "The phone number does not match the one registered for this application number.";
     $MSG_APPLICATION_NOT_FOUND := "No PMFBY application was found for this application number.";
@@ -100,8 +101,9 @@ response: |
             "case": {
               "ticketNo": $string($ticketNo),
               "status": { "code": $CASE_STATUS_REGISTERED },
-              /* Lodge time, so it agrees with what a status read reports. */
-              "filedOn": $fromMillis($millis(), $TIMESTAMP_FORMAT)
+              /* Today, not the caller's complaintDate: a status read reports
+                 PMFBY's InsertDateTime, which is when the row was written. */
+              "filedOn": $fromMillis($millis(), $DATE_FORMAT, $IST_OFFSET)
             }
           }]
         }
