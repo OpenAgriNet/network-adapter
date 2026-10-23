@@ -3,12 +3,14 @@ package schemav2validator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -30,17 +32,17 @@ type payload struct {
 type schemav2Validator struct {
 	config          *Config
 	specMutex       sync.RWMutex
-	specsLoaded     bool                            // true once at least one successful loadAllSpecs has completed
-	actionSchemas   map[string]*openapi3.SchemaRef  // merged across primary + all auxiliary specs
-	bodylessActions map[string]struct{}              // merged across primary + all auxiliary specs
-	schemaCache     *schemaCache                     // cache for extended schemas
+	specsLoaded     bool                           // true once at least one successful loadAllSpecs has completed
+	actionSchemas   map[string]*openapi3.SchemaRef // merged across primary + all auxiliary specs
+	bodylessActions map[string]struct{}            // merged across primary + all auxiliary specs
+	schemaCache     *schemaCache                   // cache for extended schemas
 }
 
 // cachedSpec holds a cached OpenAPI spec.
 type cachedSpec struct {
 	doc             *openapi3.T
 	actionSchemas   map[string]*openapi3.SchemaRef // body operations: action → schema (O(1) lookup)
-	bodylessActions map[string]struct{}             // bodyless operations: path without leading slash → exists
+	bodylessActions map[string]struct{}            // bodyless operations: path without leading slash → exists
 	loadedAt        time.Time
 }
 
@@ -210,7 +212,7 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 	// Extended Schema validation (if enabled)
 	if v.config.EnableExtendedSchema && v.schemaCache != nil {
 		log.Debugf(ctx, "Starting Extended Schema validation for action: %s", action)
-		if err := v.validateExtendedSchemas(ctx, jsonData); err != nil {
+		if err := v.validateExtendedSchemas(ctx, jsonData, action); err != nil {
 			// Extended Schema failure - return error
 			log.Debugf(ctx, "Extended Schema validation failed for action %s: %v", action, err)
 			return err
@@ -565,40 +567,20 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 		// domain/JSON-LD checks) — pass it through as-is.
 		*schemaErrors = append(*schemaErrors, *becknErr)
 	} else if schemaErr, ok := err.(*openapi3.SchemaError); ok {
-		// Extract path from current error and message from Origin if available
-		pathParts := schemaErr.JSONPointer()
-		path := strings.Join(pathParts, "/")
-		if path == "" {
-			path = schemaErr.SchemaField
-		}
-
-		message := schemaErr.Reason
-		if schemaErr.Origin != nil {
-			originMsg := schemaErr.Origin.Error()
-			// Extract specific field error from nested message
-			if strings.Contains(originMsg, "Error at \"/") {
-				// Find last "Error at" which has the specific field error
-				parts := strings.Split(originMsg, "Error at \"")
-				if len(parts) > 1 {
-					lastPart := parts[len(parts)-1]
-					// Extract field path and update both path and message
-					if idx := strings.Index(lastPart, "\":"); idx > 0 {
-						fieldPath := lastPart[:idx]
-						fieldMsg := strings.TrimSpace(lastPart[idx+2:])
-						path = strings.TrimPrefix(fieldPath, "/")
-						message = fieldMsg
-					}
-				}
-			} else {
-				message = originMsg
+		// A composite keyword (allOf/oneOf) carries its branches' real causes
+		// under Origin. Report those instead of the composite itself: they
+		// name the field and carry the keyword that actually failed, so the
+		// caller is told "property X is missing" rather than that some
+		// unnamed branch did not match.
+		if leaves := schemaErrorLeaves(schemaErr); len(leaves) > 0 {
+			for _, leaf := range rankSchemaLeaves(leaves) {
+				*schemaErrors = append(*schemaErrors, *codedSchemaError(leaf))
 			}
+			return
 		}
-
-		errItem := model.NewCodedError(schemaFieldToCode(schemaErr.SchemaField), message)
-		if path != "" {
-			errItem.Details = &model.ErrorDetails{Path: path}
-		}
-		*schemaErrors = append(*schemaErrors, *errItem)
+		// No reachable cause — anyOf and not discard theirs, so the composite
+		// error is all there is to report.
+		*schemaErrors = append(*schemaErrors, *codedSchemaError(schemaErr))
 	} else if multiErr, ok := err.(openapi3.MultiError); ok {
 		// Nested MultiError
 		for _, e := range multiErr {
@@ -608,6 +590,329 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 		// Generic error — no schema keyword to classify against.
 		*schemaErrors = append(*schemaErrors, *model.NewCodedError("SCH_SCHEMA_VALIDATION_FAILED", err.Error()))
 	}
+}
+
+// discriminatorSchemaFields are the keywords a schema uses to say which of
+// several alternatives a payload is for: a const or an enum pinning a scalar
+// to one value. Inside a failed composite they usually mean "this branch is
+// not the one" rather than "this value is wrong", so they are reported after
+// the causes a caller can act on.
+var discriminatorSchemaFields = map[string]bool{"enum": true, "const": true}
+
+// rankSchemaLeaves puts the actionable causes first while keeping every one of
+// them. Only the order changes: a SchemaValidationErr reports all its causes,
+// but takes its single wire-level code from the first, so a missing property
+// should outrank the enum on whichever guard the payload did not satisfy.
+//
+// This is a presentation heuristic, not a judgement about which branch of a
+// failed oneOf the caller meant. That cannot be recovered here: kin-openapi
+// evaluates a schema's set operations before its properties and returns as
+// soon as the set operations fail, so a branch's discriminating property
+// never gets evaluated and never appears in the tree to be matched against.
+func rankSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError {
+	ranked := make([]*openapi3.SchemaError, 0, len(leaves))
+	for _, leaf := range leaves {
+		if !discriminatorSchemaFields[leaf.SchemaField] {
+			ranked = append(ranked, leaf)
+		}
+	}
+	for _, leaf := range leaves {
+		if discriminatorSchemaFields[leaf.SchemaField] {
+			ranked = append(ranked, leaf)
+		}
+	}
+	return ranked
+}
+
+// codedSchemaError renders one openapi3.SchemaError as a model.Error, taking
+// the taxonomy code from the JSON-schema keyword that failed and the path from
+// the error's own JSON pointer.
+func codedSchemaError(se *openapi3.SchemaError) *model.Error {
+	path := strings.Join(se.JSONPointer(), "/")
+	if path == "" {
+		path = se.SchemaField
+	}
+	// SchemaError.Error() appends a full schema-and-value dump after the
+	// reason, which is what made a NACK body unreadable. Reason alone is the
+	// sentence worth returning; "not" is the one keyword that leaves it empty.
+	message := se.Reason
+	if message == "" {
+		// "not" is the one keyword kin-openapi leaves without a reason: it
+		// fires when the subschema it negates matched, and a match has
+		// nothing to say.
+		message = "value is not allowed here"
+		if se.SchemaField != "not" {
+			message = fmt.Sprintf("value does not satisfy %q", se.SchemaField)
+		}
+	}
+	errItem := model.NewCodedError(schemaFieldToCode(se.SchemaField), message)
+	if path != "" {
+		errItem.Details = &model.ErrorDetails{Path: path}
+	}
+	return errItem
+}
+
+// compositeSchemaFields are the keywords that report only that some branch
+// failed. They are never the cause a caller can act on, so a leaf walk steps
+// through them to whatever they wrap.
+//
+// "not" is absent deliberately. A failed "not" has nothing underneath it by
+// construction -- the subschema it negates SUCCEEDED, so there is no inner
+// error -- but it is a cause in its own right: something is present that may
+// not be, and the pointer says what. Stepping through it reaches nothing and
+// loses the only thing the schema said.
+var compositeSchemaFields = map[string]bool{
+	"allOf": true, "anyOf": true, "oneOf": true,
+}
+
+// disjunctiveSchemaFields are the composites whose branches are alternatives
+// rather than conjuncts: one of them was meant to match, and the rest are
+// shapes the payload was never claiming to be.
+var disjunctiveSchemaFields = map[string]bool{"oneOf": true, "anyOf": true}
+
+// schemaErrorLeaves walks a kin-openapi error tree and returns the concrete
+// assertion failures at its leaves, in encounter order and deduplicated.
+//
+// Two shapes have to be stepped through to reach them. kin-openapi stores a
+// composite's nested causes as Origin = fmt.Errorf("...: %w", multiErr), so
+// the slice of per-branch errors sits one errors.Unwrap below Origin; and
+// those multierror types are named slice types rather than openapi3.MultiError
+// itself, so they are walked by reflection over the slice. Reading
+// Origin.Error() as text instead of walking it is what loses the per-branch
+// attribution: the branches' messages are concatenated, and picking one out of
+// the resulting string selects by position rather than by relevance.
+//
+// anyOf and not are returned empty: kin-openapi discards their branch errors
+// before the caller ever sees them, so there is nothing underneath to find.
+func schemaErrorLeaves(err error) []*openapi3.SchemaError {
+	se, ok := err.(*openapi3.SchemaError)
+	if !ok || se.Origin == nil {
+		return nil
+	}
+	// Start below the composite itself, so a composite with no reachable
+	// cause yields nothing and the caller falls back to reporting it.
+	return dedupeSchemaLeaves(leavesUnder(se.Origin, disjunctiveSchemaFields[se.SchemaField]))
+}
+
+// leavesUnder returns the reportable leaves under one node of the tree.
+// alternatives says whether e holds the branches of a oneOf or an anyOf, in
+// which case the ones the schema ruled out are dropped; otherwise its members
+// are conjuncts and every one of them is a cause in its own right.
+func leavesUnder(e error, alternatives bool) []*openapi3.SchemaError {
+	if e == nil {
+		return nil
+	}
+	if se, ok := e.(*openapi3.SchemaError); ok {
+		if se.Origin != nil {
+			// Something more specific underneath; the composite that wrapped
+			// it adds nothing.
+			if sub := leavesUnder(se.Origin, disjunctiveSchemaFields[se.SchemaField]); len(sub) > 0 {
+				return sub
+			}
+		}
+		if compositeSchemaFields[se.SchemaField] {
+			return nil
+		}
+		// A "not" that fired on the object itself rather than on one of its
+		// members has no pointer and no reason, so it says only that
+		// something somewhere is wrong. Dropping it lets the caller fall
+		// back to whatever else the tree holds.
+		if se.SchemaField == "not" && len(se.JSONPointer()) == 0 {
+			return nil
+		}
+		return []*openapi3.SchemaError{se}
+	}
+	if branches, ok := errorBranches(e); ok {
+		var kept, every [][]*openapi3.SchemaError
+		for _, branch := range branches {
+			leaves := leavesUnder(branch, false)
+			every = append(every, leaves)
+			if alternatives && discriminatedAway(branch) {
+				continue
+			}
+			kept = append(kept, leaves)
+		}
+		// Every alternative was ruled out, so none of them tells the caller
+		// which was meant. Most of what they said is about shapes the payload
+		// was never going to be; what ruled each one out is the whole of the
+		// news, so that is what is reported when there is any.
+		if len(kept) == 0 {
+			if kept = discriminatorsOf(every); len(kept) == 0 {
+				kept = every
+			}
+		}
+		if alternatives {
+			kept = nearest(kept)
+		}
+		return flatten(kept)
+	}
+	if u := errors.Unwrap(e); u != nil {
+		return leavesUnder(u, alternatives)
+	}
+	return nil
+}
+
+// discriminatedAway reports whether an alternative was ruled out by its own
+// terms rather than by a fault in the payload: a const or an enum pinning the
+// value that says which alternative applies. The rest of such a branch is
+// about a shape the caller never claimed to be sending, and reporting it sends
+// them to fix a field that is not theirs -- a PMFBY support call was told to
+// supply PM-KISAN's challenge, on a branch its scheme code had already
+// excluded.
+//
+// A const or an enum only: the payload carries the value, so the schema is
+// saying which alternative it is. A tripped "not" is NOT read this way even
+// though an alternative can be guarded with one, because the same keyword is
+// how every pack says a field is not allowed here -- reading those as
+// discrimination silences the arm that was actually meant.
+//
+// Only the alternative's own conjuncts count. The search stops at a nested
+// oneOf or anyOf: a discriminator inside one of *its* alternatives rules that
+// one out, not the branch that contains the choice.
+func discriminatedAway(e error) bool {
+	if e == nil {
+		return false
+	}
+	if se, ok := e.(*openapi3.SchemaError); ok {
+		if disjunctiveSchemaFields[se.SchemaField] {
+			return false
+		}
+		if discriminatorSchemaFields[se.SchemaField] {
+			return true
+		}
+		if se.Origin == nil {
+			return false
+		}
+		e = se.Origin
+	}
+	if branches, ok := errorBranches(e); ok {
+		for _, branch := range branches {
+			if discriminatedAway(branch) {
+				return true
+			}
+		}
+		return false
+	}
+	if u := errors.Unwrap(e); u != nil {
+		return discriminatedAway(u)
+	}
+	return false
+}
+
+// errorBranches returns the members of a multierror. openapi3.MultiError and
+// the unexported multiErrorForOneOf / multiErrorForAllOf are all []error
+// underneath but share no interface, so the slice is read by reflection.
+func errorBranches(e error) ([]error, bool) {
+	v := reflect.ValueOf(e)
+	if v.Kind() != reflect.Slice {
+		return nil, false
+	}
+	branches := make([]error, 0, v.Len())
+	for i := 0; i < v.Len(); i++ {
+		if sub, ok := v.Index(i).Interface().(error); ok {
+			branches = append(branches, sub)
+		}
+	}
+	return branches, true
+}
+
+// discriminatorsOf keeps, from each alternative, only what said the
+// alternative was not the one -- dropping the demands it would have made had
+// it been.
+func discriminatorsOf(arms [][]*openapi3.SchemaError) [][]*openapi3.SchemaError {
+	var out [][]*openapi3.SchemaError
+	for _, arm := range arms {
+		var why []*openapi3.SchemaError
+		for _, leaf := range arm {
+			if discriminatorSchemaFields[leaf.SchemaField] {
+				why = append(why, leaf)
+			}
+		}
+		if len(why) > 0 {
+			out = append(out, why)
+		}
+	}
+	return out
+}
+
+// nearest drops the alternatives that ask for everything another one asks for
+// and more.
+//
+// All of them failed, so the caller meant one of them and the schema cannot
+// say which. The one that failed for fewest reasons is the one they came
+// closest to sending; the extra demands of the others hold only if a different
+// alternative was meant. Reporting those is telling a caller to add a field
+// that may well not be theirs to send, next to one that certainly is.
+//
+// An alternative with no reachable cause rules nothing out -- it is a gap in
+// what the validator reported, not an easier way to satisfy the schema.
+func nearest(arms [][]*openapi3.SchemaError) [][]*openapi3.SchemaError {
+	demands := make([]map[string]bool, len(arms))
+	for i, arm := range arms {
+		demands[i] = make(map[string]bool, len(arm))
+		for _, leaf := range arm {
+			demands[i][leafKey(leaf)] = true
+		}
+	}
+	var out [][]*openapi3.SchemaError
+	for i, arm := range arms {
+		if !anyNearerThan(demands, i) {
+			out = append(out, arm)
+		}
+	}
+	return out
+}
+
+// anyNearerThan reports whether some other alternative failed for a strict
+// subset of alternative i's reasons.
+func anyNearerThan(demands []map[string]bool, i int) bool {
+	for j, other := range demands {
+		if j == i || len(other) == 0 || len(other) >= len(demands[i]) {
+			continue
+		}
+		contained := true
+		for key := range other {
+			if !demands[i][key] {
+				contained = false
+				break
+			}
+		}
+		if contained {
+			return true
+		}
+	}
+	return false
+}
+
+// flatten joins the alternatives' leaves back into one list, in branch order.
+func flatten(arms [][]*openapi3.SchemaError) []*openapi3.SchemaError {
+	var out []*openapi3.SchemaError
+	for _, arm := range arms {
+		out = append(out, arm...)
+	}
+	return out
+}
+
+// leafKey identifies a leaf by what it says, so the same complaint reached by
+// two routes counts once.
+func leafKey(leaf *openapi3.SchemaError) string {
+	return leaf.SchemaField + "\x00" + strings.Join(leaf.JSONPointer(), "/") + "\x00" + leaf.Reason
+}
+
+// dedupeSchemaLeaves drops leaves that repeat an earlier one, keeping the
+// first. Alternatives of the same gate routinely fail the same way.
+func dedupeSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError {
+	out := make([]*openapi3.SchemaError, 0, len(leaves))
+	seen := map[string]bool{}
+	for _, leaf := range leaves {
+		key := leafKey(leaf)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, leaf)
+	}
+	return out
 }
 
 // buildActionIndex builds two indexes from the loaded OpenAPI spec:

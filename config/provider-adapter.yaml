@@ -505,6 +505,32 @@ modules:
               # concurrency for this capability.
               searchConcurrency: 1
 
+          # ------------------------------------------------------------------
+          # Grievance -- support files a grievance, status reads it back.
+          # ------------------------------------------------------------------
+          - id: Grievance
+            config:
+              bindingKeys: "pmfby|openagrinet:Grievance"
+
+              # Paired by position, tried in order: status names the binding on
+              # its contract, support on its channel.
+              providerIdAt: "message.contract.commitments[].offer.provider.id, message.support.channels[].provider.id"
+              capabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type, message.support.channels[].@type"
+
+              # Logs in at PMFBY's NICUsersLogin and sends the token bare in
+              # Authorization, held until the login reply's validTo.
+              # tokenUrl is set per deployment.
+              pmfby:
+                authScheme: tokenHeader
+                tokenUrl: <>
+                tokenUserField: appAccessUID
+                tokenUserEnv: PMFBY_ACCESS_UID
+                tokenSecretField: appAccessPWD
+                tokenSecretEnv: PMFBY_ACCESS_PWD
+                tokenResponseField: responseDynamic.token.Token
+                tokenExpiryField: responseDynamic.token.validTo
+                headerName: Authorization
+
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
       # request falls through to the 404 above -- which looks like a registry
@@ -516,6 +542,7 @@ modules:
         - MandiPrice          # its binding key, or pass through
         - KnowledgeAdvisory   # its binding key, or pass through
         - AgricultureFacility # its binding key, or pass through
+        - Grievance           # its binding key, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------

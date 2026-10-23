@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -52,6 +53,9 @@ type Config struct {
 	// A network convention, not a preference: every participant must agree or
 	// requests silently fail to match. Configurable only so a spec change can
 	// be tracked without waiting for a release. Both or neither.
+	//
+	// Either may list several comma-separated paths, paired by position and
+	// tried in order until one finds a binding.
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
@@ -79,7 +83,7 @@ type Config struct {
 // safe for concurrent use.
 type Step struct {
 	config        *Config
-	paths         Paths
+	paths         []Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
 	mapper        definition.Mapper
@@ -106,14 +110,14 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		return nil, nil, err
 	}
 
-	paths, err := BindingPaths(cfg)
+	pathList, err := bindingPathList(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	step := &Step{
 		config:        cfg,
-		paths:         paths,
+		paths:         pathList,
 		prerequisites: prerequisites,
 		registry:      registry,
 		mapper:        mapper,
@@ -135,6 +139,53 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	return step, closer, nil
 }
 
+// ParseStepConfig reads the flat map a deployment writes into a typed Config.
+// Defaults and validation stay in the domain package's New, which is the one
+// place that knows what the capability needs.
+//
+// EXPORTED for the cmd package that builds a plugin. Every provider step reads
+// the same four settings the same way, and a copy per plugin is one more place
+// for a key name to be misspelled with nothing to catch it.
+func ParseStepConfig(config map[string]string) (*Config, error) {
+	cfg := &Config{
+		BindingKeys:      splitList(config["bindingKeys"]),
+		ProviderIDAt:     config["providerIdAt"],
+		CapabilityCodeAt: config["capabilityCodeAt"],
+	}
+
+	if raw := config["maxResponseBytes"]; raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid maxResponseBytes value '%s': %w", raw, err)
+		}
+		if value <= 0 {
+			return nil, fmt.Errorf("maxResponseBytes must be positive, got %d", value)
+		}
+		cfg.MaxResponseBytes = value
+	}
+
+	// One credential profile per provider.
+	auth, err := ParseProviderAuth(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AuthByProvider = auth
+
+	return cfg, nil
+}
+
+// splitList reads a comma-separated config value, trimming spaces and dropping
+// blanks.
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // BindingPaths resolves where this step reads a binding key from.
 //
 // Both halves or neither: one overridden and one defaulted would match nothing,
@@ -144,21 +195,45 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 // same way this step does -- AgricultureFacility, whose search.go fans one
 // request out over several capability types. The alternative is reading the
 // same two config fields a second time, which is how the two drift apart.
+//
+// A path list is refused: such a caller reads only one pair.
 func BindingPaths(cfg *Config) (Paths, error) {
-	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
-		return BecknV2, nil
-	}
-	if cfg.ProviderIDAt == "" {
-		return Paths{}, errors.New("capabilityCodeAt is set without providerIdAt")
-	}
-	if cfg.CapabilityCodeAt == "" {
-		return Paths{}, errors.New("providerIdAt is set without capabilityCodeAt")
-	}
-	paths := Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
-	if err := paths.Validate(); err != nil {
+	pathList, err := bindingPathList(cfg)
+	if err != nil {
 		return Paths{}, err
 	}
-	return paths, nil
+	if len(pathList) > 1 {
+		return Paths{}, errors.New("providerIdAt and capabilityCodeAt list several paths, which only the step itself reads")
+	}
+	return pathList[0], nil
+}
+
+// bindingPathList returns the path pairs to try, in order: the comma-separated
+// halves paired by position.
+func bindingPathList(cfg *Config) ([]Paths, error) {
+	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
+		return []Paths{BecknV2}, nil
+	}
+	if cfg.ProviderIDAt == "" {
+		return nil, errors.New("capabilityCodeAt is set without providerIdAt")
+	}
+	if cfg.CapabilityCodeAt == "" {
+		return nil, errors.New("providerIdAt is set without capabilityCodeAt")
+	}
+	providers := strings.Split(cfg.ProviderIDAt, ",")
+	capabilities := strings.Split(cfg.CapabilityCodeAt, ",")
+	if len(providers) != len(capabilities) {
+		return nil, fmt.Errorf("providerIdAt lists %d paths and capabilityCodeAt %d; they pair by position",
+			len(providers), len(capabilities))
+	}
+	pairs := make([]Paths, len(providers))
+	for i := range providers {
+		pairs[i] = Paths{ProviderID: strings.TrimSpace(providers[i]), CapabilityCode: strings.TrimSpace(capabilities[i])}
+		if err := pairs[i].Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return pairs, nil
 }
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.
