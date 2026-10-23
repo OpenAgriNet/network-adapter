@@ -2690,3 +2690,31 @@ func TestRefusal_NoErrorField_AnswersAsBefore(t *testing.T) {
 		t.Errorf("Run() = %v, body %s, %d calls; want the mapped answer after one call", err, stepCtx.ResponseBody, calls)
 	}
 }
+
+// TestSplitList_CommaSeparated_TrimsAndDropsBlanks pins what an operator may
+// write around the commas. Trailing and doubled separators are ordinary in a
+// hand-edited config and must not produce an empty binding key.
+func TestSplitList_CommaSeparated_TrimsAndDropsBlanks(t *testing.T) {
+	for raw, want := range map[string][]string{
+		"":    nil,
+		"   ": nil,
+		"a|openagrinet:One, b|openagrinet:Two ,,": {"a|openagrinet:One", "b|openagrinet:Two"},
+	} {
+		if got := splitList(raw); !reflect.DeepEqual(got, want) {
+			t.Errorf("splitList(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+// TestParseStepConfig_MaxResponseBytes_Refused covers the one setting that is
+// parsed rather than copied: a cap that cannot be read, or that is not a cap.
+func TestParseStepConfig_MaxResponseBytes_Refused(t *testing.T) {
+	for _, raw := range []string{"not-a-number", "0", "-1"} {
+		if _, err := ParseStepConfig(map[string]string{
+			"bindingKeys":      "a|openagrinet:One",
+			"maxResponseBytes": raw,
+		}); err == nil {
+			t.Errorf("ParseStepConfig(maxResponseBytes=%q) = nil, want an error", raw)
+		}
+	}
+}

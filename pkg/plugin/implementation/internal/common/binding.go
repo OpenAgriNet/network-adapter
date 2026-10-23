@@ -44,11 +44,25 @@ func (b Binding) Key() string {
 // spanning several is asking for something this design cannot express, and
 // guessing would silently serve part of it.
 func BindingFrom(paths Paths, body []byte) (Binding, error) {
+	payload, err := decodePayload(body)
+	if err != nil {
+		return Binding{}, err
+	}
+	return bindingIn(paths, payload)
+}
+
+// decodePayload reads a body into the shape the path walkers take.
+func decodePayload(body []byte) (any, error) {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return Binding{}, fmt.Errorf("payload could not be read: %w", err)
+		return nil, fmt.Errorf("payload could not be read: %w", err)
 	}
+	return payload, nil
+}
 
+// bindingIn is BindingFrom over a payload that is already decoded, so a caller
+// trying several path pairs reads the body once rather than once per pair.
+func bindingIn(paths Paths, payload any) (Binding, error) {
 	// Checked before distinctness: N commitments naming the SAME provider and
 	// type collapse to one key, so they would pass unnoticed and the mapping
 	// would answer commitments[0] and drop the rest -- a confident, signed,

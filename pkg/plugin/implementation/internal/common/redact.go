@@ -139,10 +139,12 @@ func (a *authenticator) secretForms() []string {
 		}
 		return forms
 	case util.AuthSchemeTokenQuery, util.AuthSchemeTokenHeader:
-		// oauth2's two halves, with query's escaping: the secret goes to the
-		// token endpoint, and the token it returns travels in a QUERY STRING --
-		// which is the exposed placement, so its escaped form has to be
-		// covered too or a token containing "+" or "=" survives redaction.
+		// oauth2's two halves: the secret goes to the token endpoint, and the
+		// token it returns travels in a query string under tokenQuery or a
+		// header under tokenHeader. Both forms are covered for both schemes --
+		// the escaped one matters in a query string, where a token containing
+		// "+" or "=" would otherwise survive redaction, and covering it on
+		// tokenHeader as well costs nothing and cannot miss.
 		var forms []string
 		if secret := os.Getenv(a.cfg.TokenSecretEnv); secret != "" {
 			forms = append(forms, secret)

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -136,6 +137,53 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 
 	log.Infof(ctx, "Upstream step created for %s", strings.Join(cfg.BindingKeys, ", "))
 	return step, closer, nil
+}
+
+// ParseStepConfig reads the flat map a deployment writes into a typed Config.
+// Defaults and validation stay in the domain package's New, which is the one
+// place that knows what the capability needs.
+//
+// EXPORTED for the cmd package that builds a plugin. Every provider step reads
+// the same four settings the same way, and a copy per plugin is one more place
+// for a key name to be misspelled with nothing to catch it.
+func ParseStepConfig(config map[string]string) (*Config, error) {
+	cfg := &Config{
+		BindingKeys:      splitList(config["bindingKeys"]),
+		ProviderIDAt:     config["providerIdAt"],
+		CapabilityCodeAt: config["capabilityCodeAt"],
+	}
+
+	if raw := config["maxResponseBytes"]; raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid maxResponseBytes value '%s': %w", raw, err)
+		}
+		if value <= 0 {
+			return nil, fmt.Errorf("maxResponseBytes must be positive, got %d", value)
+		}
+		cfg.MaxResponseBytes = value
+	}
+
+	// One credential profile per provider.
+	auth, err := ParseProviderAuth(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AuthByProvider = auth
+
+	return cfg, nil
+}
+
+// splitList reads a comma-separated config value, trimming spaces and dropping
+// blanks.
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // BindingPaths resolves where this step reads a binding key from.

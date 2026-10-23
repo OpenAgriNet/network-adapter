@@ -134,31 +134,36 @@ func (a *AuthProfile) validate() error {
 		if a.Scheme == util.AuthSchemeTokenHeader && a.HeaderName == "" {
 			return fmt.Errorf("%s: authScheme tokenHeader requires headerName", a.Provider)
 		}
-		if a.TokenExpiryField != "" {
+		// The lifetime comes from exactly one of the two: a field the provider
+		// sets on each token, or a fixed duration configured here.
+		switch {
+		case a.TokenExpiryField != "" && a.TokenTTLRaw != "":
 			// Two lifetimes would leave an operator guessing which one holds.
-			if a.TokenTTLRaw != "" {
-				return fmt.Errorf("%s: set tokenTtl or tokenExpiryField, not both", a.Provider)
+			return fmt.Errorf("%s: set tokenTtl or tokenExpiryField, not both", a.Provider)
+
+		case a.TokenExpiryField != "":
+			// The provider states it per token, so there is nothing to parse.
+
+		case a.TokenTTLRaw != "":
+			ttl, err := time.ParseDuration(a.TokenTTLRaw)
+			if err != nil {
+				return fmt.Errorf("%s: tokenTtl %q is not a duration: %w",
+					a.Provider, a.TokenTTLRaw, err)
 			}
-			break
-		}
-		if a.TokenTTLRaw == "" {
+			// Below the skew every token is already expired when it arrives,
+			// so each call would exchange one and then discard it -- two round
+			// trips per request and a token endpoint hit at the request rate.
+			if ttl <= util.TokenRefreshSkew {
+				return fmt.Errorf("%s: tokenTtl %s must exceed the %s refresh skew, "+
+					"or every token is expired before it is used",
+					a.Provider, ttl, util.TokenRefreshSkew)
+			}
+			a.TokenTTL = ttl
+
+		default:
 			return fmt.Errorf("%s: authScheme %s requires tokenTtl or tokenExpiryField, "+
 				"or the token's lifetime is unknown", a.Provider, a.Scheme)
 		}
-		ttl, err := time.ParseDuration(a.TokenTTLRaw)
-		if err != nil {
-			return fmt.Errorf("%s: tokenTtl %q is not a duration: %w",
-				a.Provider, a.TokenTTLRaw, err)
-		}
-		// Below the skew every token is already expired when it arrives, so
-		// each call would exchange one and then discard it -- two round trips
-		// per request and a token endpoint hit at the request rate.
-		if ttl <= util.TokenRefreshSkew {
-			return fmt.Errorf("%s: tokenTtl %s must exceed the %s refresh skew, "+
-				"or every token is expired before it is used",
-				a.Provider, ttl, util.TokenRefreshSkew)
-		}
-		a.TokenTTL = ttl
 	case "":
 		return fmt.Errorf("%s: authScheme is required, "+
 			"and is none where the upstream needs no credential", a.Provider)

@@ -101,18 +101,6 @@ func TestParseConfig_MisspelledAuthSetting_Refused(t *testing.T) {
 	}
 }
 
-func TestSplitList_CommaSeparated_TrimsAndDropsBlanks(t *testing.T) {
-	for raw, want := range map[string][]string{
-		"":    nil,
-		"   ": nil,
-		pmfbyBindingKey + ", b|openagrinet:Two ,,": {pmfbyBindingKey, "b|openagrinet:Two"},
-	} {
-		if got := splitList(raw); !reflect.DeepEqual(got, want) {
-			t.Errorf("splitList(%q) = %v, want %v", raw, got, want)
-		}
-	}
-}
-
 func TestNew_ShippedPMFBYConfig_BuildsStep(t *testing.T) {
 	step, closer, err := grievanceProvider{}.New(context.Background(), stubRegistry{}, stubMapper{}, pmfbyConfig())
 	if err != nil {
