@@ -539,6 +539,118 @@ func TestExtractSchemaErrors_OneOfReportsEveryBranchCause(t *testing.T) {
 	}
 }
 
+// TestExtractSchemaErrors_DiscriminatedBranchesAreNotCauses builds the shape
+// a capability pack uses to hold two schemes in one attribute object: an
+// outer oneOf picking the scheme, each arm an allOf guarded by a "not" or a
+// const, and inside each arm a second oneOf picking the direction.
+//
+// Only the arm the payload actually selected has a cause the caller can act
+// on. A support call missing applicantMobile used to be answered with the
+// other scheme's missing "challenge" and an informationMode enum from a
+// direction it never claimed, because every arm's errors were reported as
+// though they were all causes.
+func TestExtractSchemaErrors_DiscriminatedBranchesAreNotCauses(t *testing.T) {
+	// The arm the payload selected: OnDemand, so the Direct sub-arm is ruled
+	// out by its enum and only "applicantMobile" is a real cause.
+	onDemand := openapi3.NewObjectSchema()
+	onDemand.Required = []string{"applicantMobile"}
+	onDemand.Properties = openapi3.Schemas{
+		"informationMode": openapi3.NewSchemaRef("", &openapi3.Schema{Enum: []interface{}{"OnDemand"}}),
+	}
+	direct := openapi3.NewObjectSchema()
+	direct.Required = []string{"case"}
+	direct.Properties = openapi3.Schemas{
+		"informationMode": openapi3.NewSchemaRef("", &openapi3.Schema{Enum: []interface{}{"Direct"}}),
+	}
+	selected := openapi3.NewObjectSchema()
+	selected.OneOf = openapi3.SchemaRefs{
+		openapi3.NewSchemaRef("", onDemand),
+		openapi3.NewSchemaRef("", direct),
+	}
+
+	// The other scheme's arm, excluded by a negated guard the payload trips.
+	excludedGuard := openapi3.NewObjectSchema()
+	excludedGuard.Not = openapi3.NewSchemaRef("", &openapi3.Schema{Required: []string{"scheme"}})
+	excludedBody := openapi3.NewObjectSchema()
+	excludedBody.Required = []string{"challenge"}
+	excluded := openapi3.NewObjectSchema()
+	excluded.AllOf = openapi3.SchemaRefs{
+		openapi3.NewSchemaRef("", excludedGuard),
+		openapi3.NewSchemaRef("", excludedBody),
+	}
+
+	parent := openapi3.NewObjectSchema()
+	parent.OneOf = openapi3.SchemaRefs{
+		openapi3.NewSchemaRef("", selected),
+		openapi3.NewSchemaRef("", excluded),
+	}
+
+	err := parent.VisitJSON(map[string]interface{}{
+		"scheme":          map[string]interface{}{"code": "PMFBY"},
+		"informationMode": "OnDemand",
+	}, openapi3.MultiErrors())
+	if err == nil {
+		t.Fatal("expected a validation error")
+	}
+
+	v := &schemav2Validator{}
+	var schemaErrors []model.Error
+	v.extractSchemaErrors(err, &schemaErrors)
+	t.Logf("extracted = %+v", schemaErrors)
+
+	if len(schemaErrors) != 1 {
+		t.Fatalf("want exactly the one cause the caller can act on, got %d: %+v",
+			len(schemaErrors), schemaErrors)
+	}
+	got := schemaErrors[0]
+	if got.Details == nil || got.Details.Path != "applicantMobile" {
+		t.Errorf("Path = %+v, want applicantMobile", got.Details)
+	}
+	if got.Code != "SCH_REQUIRED_FIELD_MISSING" {
+		t.Errorf("Code = %s, want SCH_REQUIRED_FIELD_MISSING", got.Code)
+	}
+}
+
+// TestExtractSchemaErrors_AllBranchesDiscriminatedStillReports covers the
+// fallback. When the payload picks no arm at all -- here the discriminator
+// itself is absent -- every arm is excluded and dropping them all would leave
+// a rejection with no stated cause. All of them are reported instead.
+func TestExtractSchemaErrors_AllBranchesDiscriminatedStillReports(t *testing.T) {
+	first := openapi3.NewObjectSchema()
+	first.Properties = openapi3.Schemas{
+		"mode": openapi3.NewSchemaRef("", &openapi3.Schema{Enum: []interface{}{"a"}}),
+	}
+	second := openapi3.NewObjectSchema()
+	second.Properties = openapi3.Schemas{
+		"mode": openapi3.NewSchemaRef("", &openapi3.Schema{Enum: []interface{}{"b"}}),
+	}
+
+	parent := openapi3.NewObjectSchema()
+	parent.OneOf = openapi3.SchemaRefs{
+		openapi3.NewSchemaRef("", first),
+		openapi3.NewSchemaRef("", second),
+	}
+
+	err := parent.VisitJSON(map[string]interface{}{"mode": "c"}, openapi3.MultiErrors())
+	if err == nil {
+		t.Fatal("expected a validation error")
+	}
+
+	v := &schemav2Validator{}
+	var schemaErrors []model.Error
+	v.extractSchemaErrors(err, &schemaErrors)
+	t.Logf("extracted = %+v", schemaErrors)
+
+	if len(schemaErrors) == 0 {
+		t.Fatal("every branch was discriminated away and nothing was reported")
+	}
+	for _, e := range schemaErrors {
+		if e.Code != "SCH_INVALID_ENUM" {
+			t.Errorf("Code = %s, want SCH_INVALID_ENUM", e.Code)
+		}
+	}
+}
+
 // TestExtractSchemaErrors_AnyOfHasNoReachableCause documents the one shape
 // that cannot be improved: kin-openapi discards an anyOf's per-branch errors
 // before returning, so there is nothing under Origin to walk and the

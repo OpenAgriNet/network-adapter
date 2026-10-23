@@ -653,6 +653,11 @@ var compositeSchemaFields = map[string]bool{
 	"allOf": true, "anyOf": true, "oneOf": true, "not": true,
 }
 
+// disjunctiveSchemaFields are the composites whose branches are alternatives
+// rather than conjuncts: one of them was meant to match, and the rest are
+// shapes the payload was never claiming to be.
+var disjunctiveSchemaFields = map[string]bool{"oneOf": true, "anyOf": true}
+
 // schemaErrorLeaves walks a kin-openapi error tree and returns the concrete
 // assertion failures at its leaves, in encounter order and deduplicated.
 //
@@ -668,54 +673,131 @@ var compositeSchemaFields = map[string]bool{
 // anyOf and not are returned empty: kin-openapi discards their branch errors
 // before the caller ever sees them, so there is nothing underneath to find.
 func schemaErrorLeaves(err error) []*openapi3.SchemaError {
-	var out []*openapi3.SchemaError
-	seen := map[string]bool{}
-	var walk func(error)
-	walk = func(e error) {
-		if e == nil {
-			return
-		}
-		if se, ok := e.(*openapi3.SchemaError); ok {
-			if se.Origin != nil {
-				before := len(out)
-				walk(se.Origin)
-				// Something more specific was found underneath; the composite
-				// that wrapped it adds nothing.
-				if len(out) > before {
-					return
-				}
-			}
-			if compositeSchemaFields[se.SchemaField] {
-				return
-			}
-			key := se.SchemaField + "\x00" + strings.Join(se.JSONPointer(), "/") + "\x00" + se.Reason
-			if !seen[key] {
-				seen[key] = true
-				out = append(out, se)
-			}
-			return
-		}
-		// openapi3.MultiError and the unexported multiErrorForOneOf /
-		// multiErrorForAllOf are all []error underneath.
-		if v := reflect.ValueOf(e); v.Kind() == reflect.Slice {
-			for i := 0; i < v.Len(); i++ {
-				if sub, ok := v.Index(i).Interface().(error); ok {
-					walk(sub)
-				}
-			}
-			return
-		}
-		if u := errors.Unwrap(e); u != nil {
-			walk(u)
-		}
+	se, ok := err.(*openapi3.SchemaError)
+	if !ok || se.Origin == nil {
+		return nil
 	}
 	// Start below the composite itself, so a composite with no reachable
 	// cause yields nothing and the caller falls back to reporting it.
-	if se, ok := err.(*openapi3.SchemaError); ok && se.Origin != nil {
-		walk(se.Origin)
-		return out
+	return dedupeSchemaLeaves(leavesUnder(se.Origin, disjunctiveSchemaFields[se.SchemaField]))
+}
+
+// leavesUnder returns the reportable leaves under one node of the tree.
+// alternatives says whether e holds the branches of a oneOf or an anyOf, in
+// which case the ones the schema ruled out are dropped; otherwise its members
+// are conjuncts and every one of them is a cause in its own right.
+func leavesUnder(e error, alternatives bool) []*openapi3.SchemaError {
+	if e == nil {
+		return nil
+	}
+	if se, ok := e.(*openapi3.SchemaError); ok {
+		if se.Origin != nil {
+			// Something more specific underneath; the composite that wrapped
+			// it adds nothing.
+			if sub := leavesUnder(se.Origin, disjunctiveSchemaFields[se.SchemaField]); len(sub) > 0 {
+				return sub
+			}
+		}
+		if compositeSchemaFields[se.SchemaField] {
+			return nil
+		}
+		return []*openapi3.SchemaError{se}
+	}
+	if branches, ok := errorBranches(e); ok {
+		var kept, every []*openapi3.SchemaError
+		for _, branch := range branches {
+			leaves := leavesUnder(branch, false)
+			every = append(every, leaves...)
+			if alternatives && discriminatedAway(branch) {
+				continue
+			}
+			kept = append(kept, leaves...)
+		}
+		// Every alternative was ruled out, so none of them tells the caller
+		// which was meant: report what they all said rather than nothing.
+		if len(kept) == 0 {
+			return every
+		}
+		return kept
+	}
+	if u := errors.Unwrap(e); u != nil {
+		return leavesUnder(u, alternatives)
 	}
 	return nil
+}
+
+// discriminatedAway reports whether an alternative was ruled out by its own
+// terms rather than by a fault in the payload: a negated guard the payload
+// tripped, or a const or enum pinning the value that says which alternative
+// applies. The rest of such a branch is about a shape the caller never claimed
+// to be sending, and reporting it sends them to fix a field that is not
+// theirs -- a support call missing a mobile number was told to supply a
+// challenge, because the branch wanting one had already been excluded.
+//
+// Only the alternative's own conjuncts count. The search stops at a nested
+// oneOf or anyOf: a discriminator inside one of *its* alternatives rules that
+// one out, not the branch that contains the choice.
+func discriminatedAway(e error) bool {
+	if e == nil {
+		return false
+	}
+	if se, ok := e.(*openapi3.SchemaError); ok {
+		if disjunctiveSchemaFields[se.SchemaField] {
+			return false
+		}
+		if se.SchemaField == "not" || discriminatorSchemaFields[se.SchemaField] {
+			return true
+		}
+		if se.Origin == nil {
+			return false
+		}
+		e = se.Origin
+	}
+	if branches, ok := errorBranches(e); ok {
+		for _, branch := range branches {
+			if discriminatedAway(branch) {
+				return true
+			}
+		}
+		return false
+	}
+	if u := errors.Unwrap(e); u != nil {
+		return discriminatedAway(u)
+	}
+	return false
+}
+
+// errorBranches returns the members of a multierror. openapi3.MultiError and
+// the unexported multiErrorForOneOf / multiErrorForAllOf are all []error
+// underneath but share no interface, so the slice is read by reflection.
+func errorBranches(e error) ([]error, bool) {
+	v := reflect.ValueOf(e)
+	if v.Kind() != reflect.Slice {
+		return nil, false
+	}
+	branches := make([]error, 0, v.Len())
+	for i := 0; i < v.Len(); i++ {
+		if sub, ok := v.Index(i).Interface().(error); ok {
+			branches = append(branches, sub)
+		}
+	}
+	return branches, true
+}
+
+// dedupeSchemaLeaves drops leaves that repeat an earlier one, keeping the
+// first. Alternatives of the same gate routinely fail the same way.
+func dedupeSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError {
+	out := make([]*openapi3.SchemaError, 0, len(leaves))
+	seen := map[string]bool{}
+	for _, leaf := range leaves {
+		key := leaf.SchemaField + "\x00" + strings.Join(leaf.JSONPointer(), "/") + "\x00" + leaf.Reason
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, leaf)
+	}
+	return out
 }
 
 // buildActionIndex builds two indexes from the loaded OpenAPI spec:
