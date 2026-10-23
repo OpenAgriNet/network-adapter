@@ -23,7 +23,19 @@ var newStepFunc = Grievance.New
 // step reads the same settings the same way, so the reading is shared; what is
 // defaulted and what is refused are left to Grievance.New.
 func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Config, error) {
-	return common.ParseStepConfig(config)
+	// Envelope settings first: the credential parser refuses settings it does
+	// not know.
+	envelopes, rest, err := Grievance.ParseEnvelopes(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := common.ParseStepConfig(rest)
+	if err != nil {
+		return nil, err
+	}
+	cfg.EnvelopeByProvider = envelopes.Envelopes
+	cfg.HostedElsewhere = envelopes.HostedElsewhere
+	return cfg, nil
 }
 
 // New creates a new grievance provider step instance.
