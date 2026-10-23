@@ -6,3 +6,7 @@
 # place so the fixed build is picked up the moment Chainguard publishes it --
 # remove this line at that point, not before.
 CVE-2026-85091
+
+# GO-2026-5932: x/crypto/openpgp is unmaintained and has no fix; we never import it
+# (only blake2b and pbkdf2). Remove this line if anything starts importing openpgp.
+GO-2026-5932
