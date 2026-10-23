@@ -22,7 +22,7 @@ const dispatchMappingRef = "https://m.example.com/mausamgram/weather-observation
 // Kept minimal on purpose: this test is about which step claims a request, not
 // about what any of them would do with it.
 const dispatchRequest = `{
-  "context": { "version": "2.0.0", "action": "select" },
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "bharatvistar.oan.local" },
   "message": { "contract": { "commitments": [ {
     "resources": [ { "resourceAttributes": { "@type": "openagrinet:WeatherObservation" } } ],
     "offer": { "provider": { "id": "mausamgram" } }
@@ -102,7 +102,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 
 	// A request for the FIRST capability, run through both steps in order, as a
 	// pipeline would.
-	ctx := &model.StepContext{Context: t.Context(), Body: []byte(dispatchRequest)}
+	ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: us, Body: []byte(dispatchRequest)}
 	for i, step := range steps {
 		if err := step.Run(ctx); err != nil {
 			t.Fatalf("step %d: %v", i, err)

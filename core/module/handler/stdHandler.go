@@ -339,6 +339,7 @@ func (h *stdHandler) stepCtx(r *http.Request, rh http.Header) (*model.StepContex
 		Body:                 body,
 		Role:                 h.role,
 		SubID:                subID,
+		OwnSubscriberID:      h.SubscriberID,
 		RespHeader:           rh,
 		ProtocolVersion:      protocolVersion,
 		MessageID:            messageID,

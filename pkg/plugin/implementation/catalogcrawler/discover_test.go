@@ -24,7 +24,7 @@ func targetNetwork() model.AdmittedNetwork {
 	return model.AdmittedNetwork{
 		ID:           "mahavistara.oan.local",
 		DiscoveryURL: "https://mahavistara.oan.local/network",
-		Source:       &model.FederationDirection{SchemaPacks: []string{weatherPack}},
+		Agreement:    model.Agreement{Source: &model.FederationDirection{SchemaPacks: []string{weatherPack}}},
 	}
 }
 
@@ -133,14 +133,14 @@ func TestDiscoverBodyRefusesAnUnreadableIntent(t *testing.T) {
 	}
 }
 
-func TestDiscoverURLAppendsTheAction(t *testing.T) {
+func TestDiscoverURLIsTheAddressAsPublished(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct{ base, want string }{
-		"plain":    {"https://network.oan.local/network", "https://network.oan.local/network/discover"},
-		"trailing": {"https://network.oan.local/network/", "https://network.oan.local/network/discover"},
-		"padded":   {"  https://network.oan.local/network  ", "https://network.oan.local/network/discover"},
-		"root":     {"https://network.oan.local", "https://network.oan.local/discover"},
+		"as published": {"https://network.oan.local/federation/discovery", "https://network.oan.local/federation/discovery"},
+		"our mount":    {"https://network.oan.local/network/discover", "https://network.oan.local/network/discover"},
+		"padded":       {"  https://network.oan.local/network/discover  ", "https://network.oan.local/network/discover"},
+		"root":         {"https://network.oan.local", "https://network.oan.local"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := discoverURL(tc.base)
@@ -256,22 +256,24 @@ func TestNetworkCallSignsAsUs(t *testing.T) {
 	}
 }
 
-func TestNetworkCallSendsToTheActionEndpoint(t *testing.T) {
+func TestNetworkCallSendsToTheAddressPublished(t *testing.T) {
 	t.Parallel()
 
+	// Any path: services.discovery names the endpoint, so a network may serve
+	// it from somewhere that looks nothing like our own mount.
 	var path string
 	caller, url := testCaller(t, func(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
 		answerCatalogs(0)(w, r)
 	})
 	network := targetNetwork()
-	network.DiscoveryURL = url + "/network"
+	network.DiscoveryURL = url + "/federation/discovery"
 
 	if _, err := collectDiscover(caller, network); err != nil {
 		t.Fatalf("discover() returned an unexpected error: %v", err)
 	}
-	if path != "/network/discover" {
-		t.Errorf("called %q, want /network/discover", path)
+	if path != "/federation/discovery" {
+		t.Errorf("called %q, want /federation/discovery", path)
 	}
 }
 

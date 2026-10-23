@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"time"
 
@@ -23,9 +22,6 @@ import (
 const (
 	protocolVersion = "2.0.0"
 	discoverAction  = "discover"
-
-	packFile    = "attributes.yaml"
-	contextFile = "context.jsonld"
 )
 
 // discoverBody builds the discover we send to one network. We name both ends; the
@@ -42,7 +38,7 @@ func discoverBody(network model.AdmittedNetwork, ourNetworkID, intent string,
 		"transactionId": uuid.NewString(),
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 	}
-	if contexts := schemaContexts(network.SourcePacks()); len(contexts) > 0 {
+	if contexts := network.SourceContexts(); len(contexts) > 0 {
 		beckn["schemaContext"] = contexts
 	}
 
@@ -75,26 +71,14 @@ func parseIntent(intent string) (map[string]any, error) {
 	return asked, nil
 }
 
-// schemaContexts turns the packs we take into the context documents a discover
-// filters on. Discovery matches any of them, so three asked for is three back.
-func schemaContexts(packs []string) []string {
-	contexts := make([]string, 0, len(packs))
-	for _, pack := range packs {
-		if trimmed := strings.TrimSpace(pack); trimmed != "" {
-			contexts = append(contexts, strings.TrimSuffix(trimmed, packFile)+contextFile)
-		}
-	}
-	return contexts
-}
-
-// discoverURL appends the action to the network's base. A network publishes the base
-// its network module is mounted at; the adapter takes the action from the URL.
+// discoverURL is the address a network published, called as it stands.
+// services.discovery names the discover endpoint itself, not a mount to append
+// to, so a network is free to serve it from any path.
 func discoverURL(base string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(base))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("catalogcrawler: %q is not an address a discover can be sent to", base)
 	}
-	parsed.Path = path.Join(parsed.Path, discoverAction)
 	return parsed.String(), nil
 }
 
