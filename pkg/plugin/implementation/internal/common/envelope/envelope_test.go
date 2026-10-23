@@ -390,6 +390,7 @@ func TestSealRefusesANonceShorterThanGCMs(t *testing.T) {
 func TestNewEnvelopeRefusesABadTimeout(t *testing.T) {
 	for name, set := range map[string]func(*envelopeSettings){
 		"otpVerifyTimeoutMs": func(s *envelopeSettings) { s.verifyTimeoutMs = "soon" },
+		"followUpTimeoutMs":  func(s *envelopeSettings) { s.followUpTimeoutMs = "0" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := pmkisanSettings()
