@@ -232,6 +232,9 @@ modules:
             # one-line change.
             extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
 
+            # Fetch api-schemas/ from the branch until the published URL serves it (ADR-0003).
+            extendedSchema_contextRewrite: "https://openagrinet.github.io/network-specs/api-schemas/|https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/"
+
             extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
@@ -507,10 +510,11 @@ modules:
 
           # ------------------------------------------------------------------
           # Grievance -- support files a grievance, status reads it back.
+          # PM-KISAN: init (OTP), then support or status with the OTP.
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:Grievance"
+              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance"
 
               # Paired by position, tried in order: status names the binding on
               # its contract, support on its channel.
@@ -530,6 +534,27 @@ modules:
                 tokenResponseField: responseDynamic.token.Token
                 tokenExpiryField: responseDynamic.token.validTo
                 headerName: Authorization
+
+              # PM-KISAN grievance: encrypted bodies, OTP on the chatbot service (ADR-0001, ADR-0002).
+              pmkisan:
+                authScheme: none
+                envelope: aesGcm
+                envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
+                envelopeNonceEnv: PMKISAN_GRIEVANCE_IV
+                envelopeTokenEnv: PMKISAN_SERVICE_TOKEN
+                envelopeTokenField: TokenNo
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpEnvelope: aesCbcKeyInBand
+                otpBindingKey: "pmkisan-chatbot|openagrinet:SchemeApplication"
+                otpTokenEnv: PMKISAN_OTP_TOKEN
+                otpTokenField: Token
+                otpRequestField: EncryptedRequest
+                otpResponsePaths: "d.output,output"
+                otpActions: init
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: "support,status"
+                otpVerifyTimeoutMs: "10000"
 
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
