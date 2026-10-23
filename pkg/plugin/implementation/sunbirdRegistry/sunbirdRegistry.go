@@ -129,10 +129,12 @@ func classify(err error) string {
 }
 
 const (
-	pluginID                = "sunbirdRegistry"
-	pluginType              = "registry"
-	operationLookup         = "lookup"
-	operationProviderRecord = "provider_record"
+	pluginID                  = "sunbirdRegistry"
+	pluginType                = "registry"
+	operationLookup           = "lookup"
+	operationProviderRecord   = "provider_record"
+	operationAdmittedNetworks = "admitted_networks"
+	operationAdmittedNetwork  = "admitted_network"
 )
 
 // Config holds configuration parameters for the registry client.
@@ -186,12 +188,57 @@ type Client struct {
 // documentation of what a provider expects; the adapter presents what its
 // operator configured.
 type participant struct {
-	ParticipantID string `json:"participantId"`
-	Type          string `json:"type"`
-	Role          string `json:"role"`
-	Status        string `json:"status"`
-	BaseURL       string `json:"baseUrl"`
-	Keys          []key  `json:"keys"`
+	ParticipantID string   `json:"participantId"`
+	Type          string   `json:"type"`
+	Role          roleList `json:"role"`
+	Status        string   `json:"status"`
+	BaseURL       string   `json:"baseUrl"`
+	Keys          []key    `json:"keys"`
+
+	// Set only on a network we admitted.
+	FederationRole federationRole `json:"federationRole"`
+	ProjectionTtl  int            `json:"projectionTtl"` // seconds; 0 forbids caching
+}
+
+// roleList is the layers a participant serves. The registry stores it as an
+// array, so a participant serving several carries them all.
+type roleList []string
+
+func (r roleList) has(role string) bool {
+	for _, carried := range r {
+		if strings.EqualFold(carried, role) {
+			return true
+		}
+	}
+	return false
+}
+
+// primary is the role to report where one value is expected.
+func (r roleList) primary() string {
+	if len(r) == 0 {
+		return ""
+	}
+	return r[0]
+}
+
+// federationRole is what we agreed with a network, keyed by direction. A
+// direction is agreed when its key is present.
+type federationRole struct {
+	Source    *federationDirection `json:"source"`
+	Requester *federationDirection `json:"requester"`
+}
+
+// federationDirection is one agreed direction. Only the packs are read here;
+// the rest of the record is for whoever admitted the network.
+type federationDirection struct {
+	SchemaPacks []string `json:"schemaPacks"`
+}
+
+func (d *federationDirection) agreed() *model.FederationDirection {
+	if d == nil {
+		return nil
+	}
+	return &model.FederationDirection{SchemaPacks: d.SchemaPacks}
 }
 
 // key is one published key. A participant publishes several -- separate signing
@@ -225,7 +272,10 @@ func (k key) isSigning() bool {
 }
 
 type eqFilter struct {
-	Eq string `json:"eq"`
+	Eq string `json:"eq,omitempty"`
+
+	// Contains matches inside a list field; eq matches no list.
+	Contains string `json:"contains,omitempty"`
 }
 
 type searchRequest struct {
@@ -289,7 +339,7 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 	// Always bounded. The sibling registry plugins apply their timeout only when
 	// one is configured, which leaves it at zero -- meaning no timeout at all --
 	// when it is not. That matters because the transport retryablehttp ships with
-	// sets no ResponseHeaderTimeout, so a peer that accepts the connection and
+	// sets no ResponseHeaderTimeout, so a network that accepts the connection and
 	// then goes quiet is otherwise bounded by nothing.
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -553,10 +603,11 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		Subscriber: model.Subscriber{
 			SubscriberID: p.ParticipantID,
 			URL:          p.BaseURL,
-			// role is the Beckn role -- BAP, BPP or NETWORK. type is the
-			// registry's own discriminator (node or upstream) and means
-			// something else entirely, so it is not what a subscriber's Type is.
-			Type: p.Role,
+			// role is the layer this participant serves -- consumer, provider
+			// or network. type is the registry's own discriminator (node or
+			// upstream) and means something else, so it is not a subscriber's
+			// Type.
+			Type: p.Role.primary(),
 		},
 		KeyID:            k.OSID,
 		SigningPublicKey: k.publicKey(),
