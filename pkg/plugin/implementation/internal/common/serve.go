@@ -207,8 +207,12 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 	// The provider body is not logged: it can carry the farmer's details.
+	// Its message is, so it is stripped of both our credentials and whatever
+	// of the request it quoted back -- a refusal naming the mobile it could
+	// not find is the ordinary shape of one.
 	if cause, err := refusalIn(becknResponse); err != nil {
-		log.Warnf(ctx, "%s refused the request: %v (provider said: %q)", plan.BindingKey, err, s.redactString(cause))
+		log.Warnf(ctx, "%s refused the request: %v (provider said: %q)",
+			plan.BindingKey, err, s.redactString(redactSent(cause, upstreamRequest)))
 		return err
 	}
 	if len(becknResponse) == 0 {
