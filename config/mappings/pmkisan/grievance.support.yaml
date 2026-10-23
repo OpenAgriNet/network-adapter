@@ -1,0 +1,79 @@
+# PM-KISAN grievance support -> /LodgeGrievance: lodge a grievance.
+
+request: |
+  (
+    $ch := beckn.message.support.channels[0];
+    {
+      "Type":                 "Reg_No_Details",
+      "IdentityNo":           $ch.enrolmentId,
+      "GrievanceType":        $ch.grievance.category.code,
+      "GrievanceDescription": $trim($ch.grievance.description)
+    }
+  )
+
+# Known refusal: 400, else 502 (ADR-0004). Success adds case.ticketNo and filedOn (IST).
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    $false := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
+    $refused := $false(response.Status) or $false(response.Responce)
+      or $false(response.Rsponce) or $false(response.status);
+    /* Text or number; empty is none. */
+    $handle := function($v) {
+      ($type($v) = "string" and $v != "") or $type($v) = "number" ? $string($v)
+    };
+    $ticketNo := $exists($handle(response.GrievanceID))
+      ? $handle(response.GrievanceID)
+      : $handle(response.GrievanceNo);
+    $ch := beckn.message.support.channels[0];
+
+    /* The portal's reason, lower-cased, to what the caller is told. */
+    $KNOWN_REFUSALS := {
+      "registration number not found": {
+        "message": "PM-KISAN has no registration for this enrolmentId.",
+        "path": "$.message.support.channels[0].enrolmentId"
+      }
+    };
+    $portalMessage := (
+      $m := response.message ? response.message : response.Message;
+      $type($m) = "string" ? $trim($m)
+    );
+    $known := $portalMessage ? $lookup($KNOWN_REFUSALS, $lowercase($portalMessage));
+
+    $filedOn := $exists(beckn.context.timestamp)
+      ? $fromMillis($toMillis(beckn.context.timestamp), "[Y0001]-[M01]-[D01]", "+0530")
+      : $now("[Y0001]-[M01]-[D01]", "+0530");
+    $refused and $exists($known)
+    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR",
+                    "message": $known.message, "path": $known.path, "cause": $portalMessage } }
+    : $refused
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN did not accept the grievance", "cause": $portalMessage } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_support", "timestamp": $now() }]),
+      "message": {
+        "support": {
+          "channels": [{
+            "@context":        $ch.`@context`,
+            "@type":           $ch.`@type`,
+            "informationMode": "Direct",
+            "provider":        $ch.provider,
+            "scheme":          $ch.scheme,
+            "enrolmentId":     $ch.enrolmentId,
+            /* The code and description sent; a name beside the code is dropped. */
+            "grievance": {
+              "category":    { "code": $ch.grievance.category.code },
+              "description": $ch.grievance.description
+            },
+            "case": {
+              "ticketNo": $ticketNo,
+              "status":   { "code": "Registered" },
+              /* IST: status matches on this date. */
+              "filedOn":  $filedOn
+            }
+          }]
+        }
+      }
+    }
+  )

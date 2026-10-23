@@ -1,0 +1,47 @@
+# PM-KISAN grievance init -> /ChatbotOTP on the OTP service: send an OTP.
+
+request: |
+  {
+    "Types":  "Ben_id",
+    "Values": beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId
+  }
+
+# "True" is sent (on_init DRAFT, challenge.issued); anything else is a 502.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    $true := function($v) { $exists($v) and $lowercase($string($v)) = "true" };
+    $sent := $true(response.Rsponce) or $true(response.Responce) or $true(response.Status);
+    $commitment := beckn.message.contract.commitments[0];
+    $ca := $commitment.commitmentAttributes;
+
+    $otpWindowMillis := 10 * 60 * 1000;
+    $not($sent)
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN could not send the OTP" } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_init", "timestamp": $now() }]),
+      "message": {
+        "contract": $merge([beckn.message.contract, {
+          "commitments": [$merge([$commitment, {
+            "status": { "descriptor": { "code": "DRAFT" } },
+            "commitmentAttributes": {
+              "@context":        $ca.`@context`,
+              "@type":           $ca.`@type`,
+              "informationMode": "OnDemand",
+              "scheme":          $ca.scheme,
+              "challenge": {
+                "issued": {
+                  "method":    "SMS_OTP",
+                  "length":    4,
+                  "valueType": "NUMERIC",
+                  "expiresAt": $fromMillis($millis() + $otpWindowMillis)
+                }
+              }
+            }
+          }])]
+        }])
+      }
+    }
+  )
