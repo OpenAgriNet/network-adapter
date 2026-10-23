@@ -232,6 +232,9 @@ func (v *schemav2Validator) validateExtendedSchemas(ctx context.Context, body in
 // prefixSchemaErrorPaths prefixes objPath onto each error's Details.Path,
 // updating it in place when Details already exists so any other field (e.g.
 // a chained Cause) set upstream is preserved rather than discarded.
+//
+// Where the object sits is supplied here, so a refusal about the object as a
+// whole leaves its path empty rather than naming the same place twice.
 func prefixSchemaErrorPaths(schemaErrors []model.Error, objPath string) {
 	for i := range schemaErrors {
 		prefixed := objPath
@@ -838,7 +841,7 @@ func (c *schemaCache) validateReferencedObject(
 		var err error
 		doc, err = c.loadSchemaFromPath(ctx, schemaPath, ttl, timeout, allowedDomains, false)
 		if err != nil {
-			return model.NewCodedErrorWithCause("SCH_SCHEMA_ADAPTATION_FAILED", err.Error(), obj.Path, err)
+			return model.NewCodedErrorWithCause("SCH_SCHEMA_ADAPTATION_FAILED", err.Error(), "", err)
 		}
 	}
 
@@ -849,13 +852,13 @@ func (c *schemaCache) validateReferencedObject(
 	}
 	if err != nil {
 		log.Errorf(ctx, err, "Schema not found for @type: %s at path: %s", obj.Type, obj.Path)
-		return model.NewCodedErrorWithCause("SCH_INVALID_ENTITY_TYPE", err.Error(), obj.Path, err)
+		return model.NewCodedErrorWithCause("SCH_INVALID_ENTITY_TYPE", err.Error(), "", err)
 	}
 
 	// @type names the entity; the action names the call made on it. A pack
 	// that tells the two apart is validated against the one call it is for.
 	if nominated, name, err := schemaForAction(doc, schema, action); err != nil {
-		return model.NewCodedErrorWithCause("SCH_ACTION_NOT_SUPPORTED", err.Error(), obj.Path, err)
+		return model.NewCodedErrorWithCause("SCH_ACTION_NOT_SUPPORTED", err.Error(), "", err)
 	} else if name != "" {
 		log.Debugf(ctx, "action %s on @type %s validates against %s", action, matched, name)
 		schema = nominated

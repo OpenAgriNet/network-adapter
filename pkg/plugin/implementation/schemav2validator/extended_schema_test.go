@@ -735,8 +735,10 @@ components:
 	if !ok || becknErr.Code != "SCH_INVALID_ENTITY_TYPE" {
 		t.Errorf("err = %+v (%T), want *model.Error with Code=SCH_INVALID_ENTITY_TYPE", err, err)
 	}
-	if becknErr.Details == nil || becknErr.Details.Path != obj.Path {
-		t.Errorf("Details.Path = %+v, want %q", becknErr.Details, obj.Path)
+	// Empty, not obj.Path: validateExtendedSchemas prefixes where the object
+	// sits, and naming it here too would deliver it twice over.
+	if becknErr.Details != nil && becknErr.Details.Path != "" {
+		t.Errorf("Details.Path = %q, want it left for the caller to fill", becknErr.Details.Path)
 	}
 	if becknErr.Unwrap() == nil {
 		t.Error("expected Unwrap() to reach the underlying findSchemaByType error, got nil")
@@ -761,8 +763,10 @@ func TestValidateReferencedObject_SchemaLoadFailure(t *testing.T) {
 	if !ok || becknErr.Code != "SCH_SCHEMA_ADAPTATION_FAILED" {
 		t.Errorf("err = %+v (%T), want *model.Error with Code=SCH_SCHEMA_ADAPTATION_FAILED", err, err)
 	}
-	if becknErr.Details == nil || becknErr.Details.Path != obj.Path {
-		t.Errorf("Details.Path = %+v, want %q", becknErr.Details, obj.Path)
+	// Empty, not obj.Path: validateExtendedSchemas prefixes where the object
+	// sits, and naming it here too would deliver it twice over.
+	if becknErr.Details != nil && becknErr.Details.Path != "" {
+		t.Errorf("Details.Path = %q, want it left for the caller to fill", becknErr.Details.Path)
 	}
 	if becknErr.Unwrap() == nil {
 		t.Error("expected Unwrap() to reach the underlying loadSchemaFromPath error, got nil")
@@ -1984,6 +1988,66 @@ func TestPayloadDirectedReader(t *testing.T) {
 			}
 			assert.NoError(t, err)
 			assert.Contains(t, string(data), "Borrowed")
+		})
+	}
+}
+
+func TestSchemaForAction(t *testing.T) {
+	doc := &openapi3.T{Components: &openapi3.Components{Schemas: openapi3.Schemas{
+		"GrievanceStatus": openapi3.NewSchemaRef("", openapi3.NewObjectSchema()),
+		"GrievanceInit":   openapi3.NewSchemaRef("", openapi3.NewObjectSchema()),
+	}}}
+	nominating := func(byAction map[string]interface{}) *openapi3.SchemaRef {
+		schema := openapi3.NewObjectSchema()
+		schema.Title = "openagrinet:Grievance"
+		schema.Extensions = map[string]interface{}{"x-oan-schema-by-action": byAction}
+		return openapi3.NewSchemaRef("", schema)
+	}
+	served := map[string]interface{}{"init": "GrievanceInit", "status": "GrievanceStatus"}
+
+	tests := []struct {
+		name     string
+		schema   *openapi3.SchemaRef
+		action   string
+		wantName string
+		wantErr  string
+	}{{
+		name: "a pack nominating nothing resolves by @type as before", action: "status",
+		schema: openapi3.NewSchemaRef("", openapi3.NewObjectSchema()),
+	}, {
+		name: "the call names its schema", action: "status",
+		schema: nominating(served), wantName: "GrievanceStatus",
+	}, {
+		name: "a call the pack does not serve is refused by name", action: "confirm",
+		schema:  nominating(served),
+		wantErr: `openagrinet:Grievance does not serve action "confirm"; it serves init, status`,
+	}, {
+		name: "nominating a schema the document lacks is the pack's mistake", action: "status",
+		schema:  nominating(map[string]interface{}{"status": "Absent"}),
+		wantErr: `the schema nominates "Absent" for action "status" and the document does not define it`,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nominated, name, err := schemaForAction(doc, tt.schema, tt.action)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if name != tt.wantName {
+				t.Errorf("name = %q, want %q", name, tt.wantName)
+			}
+			if tt.wantName == "" && nominated != nil {
+				t.Errorf("nominated = %v, want nil", nominated)
+			}
+			if tt.wantName != "" && nominated != doc.Components.Schemas[tt.wantName] {
+				t.Errorf("nominated is not the document's %s", tt.wantName)
+			}
 		})
 	}
 }
