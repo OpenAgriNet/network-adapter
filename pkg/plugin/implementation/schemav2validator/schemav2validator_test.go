@@ -402,13 +402,13 @@ func TestValidate_NumericOverflowFailsSecondUnmarshal(t *testing.T) {
 	}
 }
 
-// TestExtractSchemaErrors_CompositeOriginFallsBackToGeneric exercises the
-// Origin != nil branch (oneOf/anyOf/allOf composite failures), previously
-// uncovered by any test. Since kin-openapi attributes the failure to the
-// composite keyword itself (not the nested cause), classification correctly
-// falls back to the generic SCH_SCHEMA_VALIDATION_FAILED rather than
-// guessing at whichever nested branch failed.
-func TestExtractSchemaErrors_CompositeOriginFallsBackToGeneric(t *testing.T) {
+// TestExtractSchemaErrors_CompositeReportsNestedCause exercises the
+// Origin != nil branch (oneOf/allOf composite failures). kin-openapi
+// attributes the failure to the composite keyword itself, but keeps the
+// branches' real causes under Origin, so the extracted error is the nested
+// cause -- classified by the keyword that actually failed -- rather than the
+// generic SCH_SCHEMA_VALIDATION_FAILED the composite would give.
+func TestExtractSchemaErrors_CompositeReportsNestedCause(t *testing.T) {
 	sub := openapi3.NewObjectSchema().WithProperty("name", openapi3.NewStringSchema())
 	sub.Required = []string{"name"}
 
@@ -436,18 +436,18 @@ func TestExtractSchemaErrors_CompositeOriginFallsBackToGeneric(t *testing.T) {
 	}
 	got := schemaErrors[0]
 	t.Logf("extracted = %+v", got)
-	if got.Code != "SCH_SCHEMA_VALIDATION_FAILED" {
-		t.Errorf("Code = %s, want SCH_SCHEMA_VALIDATION_FAILED", got.Code)
+	if got.Code != "SCH_REQUIRED_FIELD_MISSING" {
+		t.Errorf("Code = %s, want SCH_REQUIRED_FIELD_MISSING", got.Code)
 	}
-	if got.Message == "" {
-		t.Error("Message = \"\", want a non-empty message describing the nested cause")
+	if !strings.HasPrefix(got.Message, `property "name" is missing`) {
+		t.Errorf("Message = %q, want it to name the missing property", got.Message)
 	}
 }
 
-// TestExtractSchemaErrors_CompositeOriginParsesNestedFieldPath exercises the
-// "Error at \"/path\": reason" string-parsing branch specifically — triggered
-// when the nested cause inside an allOf/oneOf failure occurred on a property
-// deep enough to have a tagged reversePath. Previously uncovered by any test.
+// TestExtractSchemaErrors_CompositeOriginParsesNestedFieldPath confirms a
+// nested cause deep enough to carry a tagged reversePath keeps its full path
+// through the leaf walk, so the caller is pointed at nested/name rather than
+// at the allOf that wrapped it.
 func TestExtractSchemaErrors_CompositeOriginParsesNestedFieldPath(t *testing.T) {
 	innerSub := openapi3.NewObjectSchema().WithProperty("name", openapi3.NewStringSchema())
 	innerSub.Required = []string{"name"}
@@ -485,6 +485,90 @@ func TestExtractSchemaErrors_CompositeOriginParsesNestedFieldPath(t *testing.T) 
 	// exact match against that library-formatted tail.
 	if !strings.HasPrefix(got.Message, `property "name" is missing`) {
 		t.Errorf("Message = %q, want it to start with %q", got.Message, `property "name" is missing`)
+	}
+}
+
+// TestExtractSchemaErrors_OneOfReportsEveryBranchCause pins the behaviour a
+// two-branch oneOf needs: when a payload matches neither branch, every
+// branch's cause is reported, not just one of them.
+//
+// This is the shape a scheme-discriminated schema has -- one branch per
+// scheme, each requiring its own fields -- and reading the composite's
+// Origin as text instead of walking it used to collapse the result to
+// whichever cause came last in the concatenated string. A caller who had
+// omitted a field required by the branch their payload was actually for
+// would then be told about a field belonging to the other branch entirely.
+func TestExtractSchemaErrors_OneOfReportsEveryBranchCause(t *testing.T) {
+	first := openapi3.NewObjectSchema()
+	first.Required = []string{"season"}
+	second := openapi3.NewObjectSchema()
+	second.Required = []string{"challenge"}
+
+	parent := openapi3.NewObjectSchema()
+	parent.OneOf = openapi3.SchemaRefs{
+		openapi3.NewSchemaRef("", first),
+		openapi3.NewSchemaRef("", second),
+	}
+
+	err := parent.VisitJSON(map[string]interface{}{}, openapi3.MultiErrors())
+	if err == nil {
+		t.Fatal("expected a validation error")
+	}
+
+	v := &schemav2Validator{}
+	var schemaErrors []model.Error
+	v.extractSchemaErrors(err, &schemaErrors)
+
+	paths := map[string]string{}
+	for _, e := range schemaErrors {
+		if e.Details != nil {
+			paths[e.Details.Path] = e.Code
+		}
+	}
+	t.Logf("extracted = %+v", schemaErrors)
+
+	for _, want := range []string{"season", "challenge"} {
+		code, ok := paths[want]
+		if !ok {
+			t.Errorf("no error reported for %q; got paths %v", want, paths)
+			continue
+		}
+		if code != "SCH_REQUIRED_FIELD_MISSING" {
+			t.Errorf("Code for %q = %s, want SCH_REQUIRED_FIELD_MISSING", want, code)
+		}
+	}
+}
+
+// TestExtractSchemaErrors_AnyOfHasNoReachableCause documents the one shape
+// that cannot be improved: kin-openapi discards an anyOf's per-branch errors
+// before returning, so there is nothing under Origin to walk and the
+// composite itself is all that can be reported.
+func TestExtractSchemaErrors_AnyOfHasNoReachableCause(t *testing.T) {
+	first := openapi3.NewObjectSchema()
+	first.Required = []string{"season"}
+	second := openapi3.NewObjectSchema()
+	second.Required = []string{"challenge"}
+
+	parent := openapi3.NewObjectSchema()
+	parent.AnyOf = openapi3.SchemaRefs{
+		openapi3.NewSchemaRef("", first),
+		openapi3.NewSchemaRef("", second),
+	}
+
+	err := parent.VisitJSON(map[string]interface{}{}, openapi3.MultiErrors())
+	if err == nil {
+		t.Fatal("expected a validation error")
+	}
+
+	v := &schemav2Validator{}
+	var schemaErrors []model.Error
+	v.extractSchemaErrors(err, &schemaErrors)
+
+	if len(schemaErrors) != 1 {
+		t.Fatalf("expected exactly one extracted error, got %d: %+v", len(schemaErrors), schemaErrors)
+	}
+	if got := schemaErrors[0].Code; got != "SCH_SCHEMA_VALIDATION_FAILED" {
+		t.Errorf("Code = %s, want SCH_SCHEMA_VALIDATION_FAILED", got)
 	}
 }
 
