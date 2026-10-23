@@ -12,15 +12,15 @@ request: |
     }
   )
 
-# Empty PMFBY fields are dropped. No record, or one for another ticket, is a
-# 400 in our words; any other failure is a 502. PMFBY's message is logged,
-# never returned.
+# Empty PMFBY fields are dropped. No record, or none naming the ticket asked
+# for, is a 400 in our words; any other failure is a 502. PMFBY's message is
+# logged -- stripped of the request it quoted -- and never returned.
 response: |
   (
     /* Constants */
     $PMFBY_SUCCESS_CODE := "1";
     $SCHEME := { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" };
-    $INFORMATION_MODE := "Direct";
+    $INFORMATION_MODE := "OnDemand";
     $COMMITMENT_STATUS_ACTIVE := "ACTIVE";
     $DEFAULT_CASE_STATUS := "UnderReview";
     $CASE_STATUS_CODES := { "open": "Registered", "resolved": "Resolved" };
@@ -65,15 +65,17 @@ response: |
     /* Inputs */
     $commitment := beckn.message.contract.commitments[0];
     $attributes := $commitment.commitmentAttributes;
-    /* [0] reads a bare record or a list of one alike. */
-    $record := response.responseDynamic[0];
+    $requestedTicket := $string($attributes.case.ticketNo);
+    /* The record that NAMES the ticket asked for, searched across every record
+       returned rather than taken from the first. PMFBY reads by phone, so the
+       list can hold this farmer's other grievances, and a record that does not
+       name its own ticket cannot be shown as the answer to this one. The
+       predicate reads a bare record and a list alike. */
+    $record := response.responseDynamic[$string(GrievenceSupportTicketNo) = $requestedTicket][0];
     $pmfbyMessage := $type(response.responseMessage) = "string" ? $trim(response.responseMessage);
     $refusalMessage := $pmfbyMessage ? $lookup($KNOWN_REFUSALS, $lowercase($pmfbyMessage));
     $isAccepted := $string(response.responseCode) = $PMFBY_SUCCESS_CODE;
-    /* PMFBY reads by phone alone, so a record for another ticket is no record. */
-    $isOtherTicket := $exists($record.GrievenceSupportTicketNo)
-      and $string($record.GrievenceSupportTicketNo) != $string($attributes.case.ticketNo);
-    $isFound := $isAccepted and ($isText($record.ApplicationNo) or $isText($record.TicketStatus)) and $not($isOtherTicket);
+    $isFound := $isAccepted and ($isText($record.ApplicationNo) or $isText($record.TicketStatus));
     $mappedStatus := $isText($record.TicketStatus) ? $lookup($CASE_STATUS_CODES, $lowercase($trim($record.TicketStatus)));
     $caseStatus := $exists($mappedStatus) ? $mappedStatus : $DEFAULT_CASE_STATUS;
     $requestYear := $asId($record.RequestYear);
@@ -110,7 +112,9 @@ response: |
                 "description": $description
               },
               "case": {
-                "ticketNo": $attributes.case.ticketNo,
+                /* The record's own ticket, not the one asked for: the answer
+                   reports what PMFBY returned, never what the caller said. */
+                "ticketNo": $string($record.GrievenceSupportTicketNo),
                 "status": { "code": $caseStatus },
                 "filedOn": $filedOn,
                 "reply": $reply,

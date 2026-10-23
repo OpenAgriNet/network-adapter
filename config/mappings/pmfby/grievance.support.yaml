@@ -46,7 +46,7 @@ response: |
     $PMFBY_SUCCESS_CODE := "1";
     $PROVIDER_NAME := "PMFBY Grievance Portal";
     $SCHEME := { "code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana" };
-    $INFORMATION_MODE := "Direct";
+    $INFORMATION_MODE := "OnDemand";
     $CASE_STATUS_REGISTERED := "Registered";
     $DATE_FORMAT := "[Y0001]-[M01]-[D01]";
     $IST_OFFSET := "+0530";

@@ -39,6 +39,7 @@ const (
 // knownTicketRecord is PMFBY's record for knownTicket, personal data included.
 // It carries the category by name only.
 const knownTicketRecord = `{"responseCode":"1","responseMessage":"Fetched","recordCount":1,"responseDynamic":{
+	"GrievenceSupportTicketNo":"` + knownTicket + `",
 	"GrievenceSupportTicketID":109301,"TicketStatus":"Under Review",
 	"ComplaintDate":"2026-10-04","InsertDateTime":"2026-10-04T10:00:00.000Z","ApplicationNo":"040108251010160770605",
 	"GrievenceDescription":"Claim not received",
@@ -259,14 +260,14 @@ var calendarDate = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
 // assertion about the field the test is actually about.
 func assertPackShape(t *testing.T, attributes map[string]any) {
 	t.Helper()
-	if attributes["informationMode"] != "Direct" {
+	if attributes["informationMode"] != "OnDemand" {
 		return
 	}
-	// case: required [ticketNo, status, filedOn] on a Direct answer.
+	// case: required [ticketNo, status, filedOn] on an answer.
 	if record := band(attributes, "case"); record != nil {
 		for _, field := range []string{"ticketNo", "status", "filedOn"} {
 			if _, present := record[field]; !present {
-				t.Errorf("case.%s is missing; the pack requires it on a Direct answer", field)
+				t.Errorf("case.%s is missing; the pack requires it on an answer", field)
 			}
 		}
 		if filed, ok := record["filedOn"].(string); ok && !calendarDate.MatchString(filed) {
@@ -447,7 +448,7 @@ func TestSupport_Lodged_SendsPMFBYFieldsAndReturnsTicket(t *testing.T) {
 	assertFiledToday(t, filed["filedOn"])
 	if filed["ticketNo"] != knownTicket || len(status) != 1 || status["code"] != "Registered" ||
 		band(channel, "provider")["id"] != "pmfby" ||
-		channel["informationMode"] != "Direct" || channel["scheme"] == nil {
+		channel["informationMode"] != "OnDemand" || channel["scheme"] == nil {
 		t.Errorf("channel = %v", channel)
 	}
 	for _, private := range []string{"applicantMobile", "ticketId"} {
@@ -713,7 +714,7 @@ func TestStatus_KnownTicket_ReturnsCaseRecordAndComplaint(t *testing.T) {
 		t.Errorf("grievance = %v, want the complaint as PMFBY holds it", grievance)
 	}
 	filed := band(attributes, "case")
-	if attributes["enrolmentId"] != "040108251010160770605" || attributes["informationMode"] != "Direct" ||
+	if attributes["enrolmentId"] != "040108251010160770605" || attributes["informationMode"] != "OnDemand" ||
 		filed["ticketNo"] != knownTicket || filed["filedOn"] != "2026-10-04" || filed["cropName"] != "Paddy" {
 		t.Errorf("commitmentAttributes = %v", attributes)
 	}
@@ -913,7 +914,10 @@ func TestStatus_TicketStatus_MapsToCaseStatusCode(t *testing.T) {
 // No record, or one for another ticket (PMFBY reads by phone alone), is a 400
 // in our words.
 func TestStatus_NoMatchingRecord_Returns400(t *testing.T) {
-	another := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{"GrievenceSupportTicketNo":"100626000099002",`, 1)
+	another := strings.Replace(knownTicketRecord, `"GrievenceSupportTicketNo":"`+knownTicket+`"`, `"GrievenceSupportTicketNo":"100626000099002"`, 1)
+	// A record that does not name its own ticket cannot be shown as the answer
+	// to the one asked for: PMFBY reads by phone, so it may be another case.
+	unnamed := strings.Replace(knownTicketRecord, `"GrievenceSupportTicketNo":"`+knownTicket+`",`, ``, 1)
 	for name, reply := range map[string]string{
 		"no record":       `{"responseCode":"0","responseMessage":"No record found","responseDynamic":[]}`,
 		"null":            `{"responseCode":"1","responseDynamic":null}`,
@@ -921,6 +925,7 @@ func TestStatus_NoMatchingRecord_Returns400(t *testing.T) {
 		"empty in list":   `{"responseCode":"1","responseDynamic":[{}]}`,
 		"all fields null": `{"responseCode":"1","responseDynamic":{"ApplicationNo":null,"TicketStatus":null}}`,
 		"another ticket":  another,
+		"ticket unnamed":  unnamed,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: reply}}, 0).
@@ -947,11 +952,30 @@ func TestStatus_PortalFails_Returns502WithoutItsText(t *testing.T) {
 }
 
 func TestStatus_RecordNamingTheTicket_ReturnsIt(t *testing.T) {
-	record := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":{"GrievenceSupportTicketNo":"`+knownTicket+`",`, 1)
-	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: record}}, 0).
+	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: knownTicketRecord}}, 0).
 		mustSend(t, request("status", statusAttributes()))
 	if no := band(got.attributes(), "case")["ticketNo"]; no != knownTicket {
 		t.Errorf("ticketNo = %v, want %s", no, knownTicket)
+	}
+}
+
+// PMFBY reads by phone, so the list can hold this farmer's other grievances.
+// The one naming the ticket asked for is the answer, wherever it sits.
+func TestStatus_MatchingTicketAfterTheFirst_IsFound(t *testing.T) {
+	other := `{"GrievenceSupportTicketNo":"100626000099002","TicketStatus":"Resolved",` +
+		`"InsertDateTime":"2026-10-01T10:00:00.000Z","ApplicationNo":"040108251010160770999",` +
+		`"CropName":"Wheat"}`
+	one := strings.Replace(knownTicketRecord, `"responseDynamic":{`, `"responseDynamic":[`+other+`,{`, 1)
+	list := strings.Replace(one, `}}`, `}]}`, 1)
+
+	got := newHarness(t, &pmfbyStub{answers: map[string]string{statusPath: list}}, 0).
+		mustSend(t, request("status", statusAttributes()))
+	record := band(got.attributes(), "case")
+	if record["ticketNo"] != knownTicket {
+		t.Errorf("ticketNo = %v, want %s: the second record is the one asked for", record["ticketNo"], knownTicket)
+	}
+	if record["cropName"] != "Paddy" {
+		t.Errorf("cropName = %v, want Paddy: the first record is somebody else's case", record["cropName"])
 	}
 }
 
