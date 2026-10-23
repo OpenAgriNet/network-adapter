@@ -511,10 +511,11 @@ modules:
           # ------------------------------------------------------------------
           # Grievance -- support files a grievance, status reads it back.
           # PM-KISAN: init (OTP), then support or status with the OTP.
+          # PM-KISAN application status: init (OTP), then status.
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance"
+              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance,pmkisan-chatbot|openagrinet:SchemeApplication"
 
               # Paired by position, tried in order: status names the binding on
               # its contract, support on its channel.
@@ -555,6 +556,22 @@ modules:
                 otpVerifyPath: /ChatbotOTPVerified
                 otpVerifyActions: "support,status"
                 otpVerifyTimeoutMs: "10000"
+
+              # PM-KISAN application status: the chatbot service, with a follow-up read (ADR-0005).
+              pmkisan-chatbot:
+                authScheme: none
+                envelope: aesCbcKeyInBand
+                envelopeTokenEnv: PMKISAN_OTP_TOKEN
+                envelopeTokenField: Token
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: status
+                otpVerifyTimeoutMs: "10000"
+                followUpPath: /ChatbotBeneficiaryStatus
+                followUpField: _beneficiaryStatus
+                followUpActions: status
+                followUpTimeoutMs: "10000"
 
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
