@@ -599,6 +599,19 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 // the causes a caller can act on.
 var discriminatorSchemaFields = map[string]bool{"enum": true, "const": true}
 
+// guardSchemaFields is the narrower keyword that rules an alternative out
+// altogether, as opposed to merely ranking its causes low.
+//
+// Every pack on the network writes a guard the same way: a const pinning the
+// one value that says this alternative applies, kept as its own conjunct so
+// the rest of the alternative is read only once the guard holds. Ordinary
+// value constraints use an enum -- an information mode, a season, a list of
+// category codes. Reading an enum as a guard confuses the two, and a payload
+// whose only fault was an enum field then looked like a payload meant for
+// some other alternative entirely: a PMFBY catalog with a numeric category
+// code was answered with PM-KISAN's complaints about its scheme code.
+var guardSchemaFields = map[string]bool{"const": true}
+
 // foreignFieldSchemaFields is the keyword that fires when a closed branch is
 // shown a property it does not declare. Among branches of a disjunction that
 // is the weakest cause of all: a payload for one alternative carries the
@@ -740,25 +753,30 @@ func leavesUnder(e error, alternatives bool) []*openapi3.SchemaError {
 		return []*openapi3.SchemaError{se}
 	}
 	if branches, ok := errorBranches(e); ok {
-		var kept, every [][]*openapi3.SchemaError
+		every := make([][]*openapi3.SchemaError, 0, len(branches))
+		ruledOut := make([]bool, 0, len(branches))
+		allRuledOut := alternatives
 		for _, branch := range branches {
-			leaves := leavesUnder(branch, false)
-			every = append(every, leaves)
-			if alternatives && discriminatedAway(branch) {
-				// An alternative that fails its own pinned value and nothing
-				// else is one the caller all but sent: every other demand it
-				// makes is already met, so the pinned value is the field they
-				// got wrong, not a sign they meant a different alternative. A
-				// season outside its enum is the fault. An alternative that
-				// wants more besides is the other reading, and reporting what
-				// it wants sends the caller to fill in fields that are not
-				// theirs.
-				if onlyDiscriminators(leaves) {
-					kept = append(kept, leaves)
-				}
-				continue
+			every = append(every, leavesUnder(branch, false))
+			out := alternatives && discriminatedAway(branch)
+			ruledOut = append(ruledOut, out)
+			allRuledOut = allRuledOut && out
+		}
+		// An alternative still standing on its own terms is the one the
+		// caller was aiming at, so the alternatives their own pinned values
+		// ruled out have nothing to add -- whatever else those happened to
+		// report. Only when every alternative was ruled out is what ruled
+		// them out worth reporting, and then only from the ones that failed
+		// on a pinned value and nothing else: such an alternative is one the
+		// caller all but sent, so the pinned value is the field they got
+		// wrong. A season outside its enum is the fault. An alternative that
+		// wants more besides is the other reading, and reporting what it
+		// wants sends the caller to fill in fields that are not theirs.
+		var kept [][]*openapi3.SchemaError
+		for i, leaves := range every {
+			if !ruledOut[i] || (allRuledOut && onlyDiscriminators(leaves)) {
+				kept = append(kept, leaves)
 			}
-			kept = append(kept, leaves)
 		}
 		// Every alternative was ruled out, so none of them tells the caller
 		// which was meant. Most of what they said is about shapes the payload
@@ -805,7 +823,7 @@ func discriminatedAway(e error) bool {
 		if disjunctiveSchemaFields[se.SchemaField] {
 			return false
 		}
-		if discriminatorSchemaFields[se.SchemaField] {
+		if guardSchemaFields[se.SchemaField] {
 			return true
 		}
 		if se.Origin == nil {
