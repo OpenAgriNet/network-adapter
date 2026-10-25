@@ -2018,9 +2018,10 @@ func TestSchemaForAction(t *testing.T) {
 		name: "the call names its schema", action: "status",
 		schema: nominating(served), wantName: "GrievanceStatus",
 	}, {
-		name: "a call the pack does not serve is refused by name", action: "confirm",
-		schema:  nominating(served),
-		wantErr: `openagrinet:Grievance does not serve action "confirm"; it serves init, status`,
+		// The key narrows and never restricts: an entity travels on more calls
+		// than a pack names, and which calls exist is the base spec's to say.
+		name: "a call the pack does not name falls back to the whole type", action: "confirm",
+		schema: nominating(served),
 	}, {
 		name: "nominating a schema the document lacks is the pack's mistake", action: "status",
 		schema:  nominating(map[string]interface{}{"status": "Absent"}),

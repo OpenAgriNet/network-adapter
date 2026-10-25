@@ -726,7 +726,7 @@ func schemaDeclaresProperty(ref *openapi3.SchemaRef, name string, seen map[*open
 }
 
 // schemaForAction returns the schema a pack nominates for this action under
-// x-oan-schema-by-action, or ("", nil) when it nominates none.
+// x-oan-schema-by-action, or ("", nil) when it nominates none for it.
 //
 // One schema covering several calls can only tell them apart by which fields
 // a payload happens to carry, and the keyword that does it -- anyOf -- is the
@@ -735,53 +735,29 @@ func schemaDeclaresProperty(ref *openapi3.SchemaRef, name string, seen map[*open
 // for one scheme draws complaints belonging to another. Naming a schema per
 // action removes the guess: the call is already known here.
 //
-// Absent the extension nothing changes, so a pack that does not use it, and
-// every other domain sharing this validator, resolves by @type as before.
+// The extension narrows and never restricts. An action it does not name falls
+// back to the whole type, so a pack that does not use it, a pack that uses it
+// for some of its calls, and every other domain sharing this validator all
+// resolve by @type exactly as they did before.
 func schemaForAction(doc *openapi3.T, schema *openapi3.SchemaRef, action string) (*openapi3.SchemaRef, string, error) {
 	byAction, declared := schema.Value.Extensions["x-oan-schema-by-action"].(map[string]interface{})
 	if !declared {
 		return nil, "", nil
 	}
-	name, served := byAction[action].(string)
-	if !served {
-		// The pack lists the actions it serves, so one it does not list is
-		// refused by name rather than validated against a union that would
-		// accept it. This is the "PMFBY has no init" case, and the caller is
-		// better told that than handed a missing-field list for a call that
-		// does not exist.
-		return nil, "", fmt.Errorf("%s does not serve action %q; it serves %s",
-			schemaTitle(schema), action, strings.Join(sortedKeys(byAction), ", "))
+	name, named := byAction[action].(string)
+	if !named {
+		// An entity travels on more calls than a pack names here -- the
+		// catalog a discover answer carries is the same one catalog/publish
+		// pushes -- and which calls exist is the base spec's to say, not an
+		// attributes pack's. An action the pack does not name is validated
+		// against the whole type rather than refused.
+		return nil, "", nil
 	}
 	nominated, found := doc.Components.Schemas[name]
 	if !found || nominated.Value == nil {
 		return nil, "", fmt.Errorf("the schema nominates %q for action %q and the document does not define it", name, action)
 	}
 	return nominated, name, nil
-}
-
-// schemaTitle names a schema for an error message, falling back to its
-// JSON-LD type when it carries no title.
-func schemaTitle(schema *openapi3.SchemaRef) string {
-	if schema.Value.Title != "" {
-		return schema.Value.Title
-	}
-	if xJSONLD, ok := schema.Value.Extensions["x-jsonld"].(map[string]interface{}); ok {
-		if atType, ok := xJSONLD["@type"].(string); ok {
-			return atType
-		}
-	}
-	return "this capability"
-}
-
-// sortedKeys returns a map's keys in order, so an error message naming the
-// served actions reads the same on every run.
-func sortedKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // validateReferencedObject validates a single object with @context.

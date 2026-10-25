@@ -599,10 +599,24 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 // the causes a caller can act on.
 var discriminatorSchemaFields = map[string]bool{"enum": true, "const": true}
 
+// foreignFieldSchemaFields is the keyword that fires when a closed branch is
+// shown a property it does not declare. Among branches of a disjunction that
+// is the weakest cause of all: a payload for one alternative carries the
+// fields of that alternative, so every other branch reports each of them as
+// unsupported whatever is actually wrong with the payload. Reporting those
+// last keeps a sibling branch from answering "applicantMobile is unsupported"
+// to a payload whose only fault is a misspelt season.
+//
+// It still ranks ahead of nothing when it is the whole story: a payload with a
+// genuinely unknown field produces this and only this, and order among equals
+// is unchanged, so the unknown field is still what the caller is told.
+var foreignFieldSchemaFields = map[string]bool{"properties": true}
+
 // rankSchemaLeaves puts the actionable causes first while keeping every one of
 // them. Only the order changes: a SchemaValidationErr reports all its causes,
 // but takes its single wire-level code from the first, so a missing property
-// should outrank the enum on whichever guard the payload did not satisfy.
+// should outrank the enum on whichever guard the payload did not satisfy, and
+// both should outrank a sibling branch calling their fields unsupported.
 //
 // This is a presentation heuristic, not a judgement about which branch of a
 // failed oneOf the caller meant. That cannot be recovered here: kin-openapi
@@ -611,14 +625,17 @@ var discriminatorSchemaFields = map[string]bool{"enum": true, "const": true}
 // never gets evaluated and never appears in the tree to be matched against.
 func rankSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError {
 	ranked := make([]*openapi3.SchemaError, 0, len(leaves))
-	for _, leaf := range leaves {
-		if !discriminatorSchemaFields[leaf.SchemaField] {
-			ranked = append(ranked, leaf)
-		}
-	}
-	for _, leaf := range leaves {
-		if discriminatorSchemaFields[leaf.SchemaField] {
-			ranked = append(ranked, leaf)
+	for _, tier := range []func(*openapi3.SchemaError) bool{
+		func(l *openapi3.SchemaError) bool {
+			return !discriminatorSchemaFields[l.SchemaField] && !foreignFieldSchemaFields[l.SchemaField]
+		},
+		func(l *openapi3.SchemaError) bool { return discriminatorSchemaFields[l.SchemaField] },
+		func(l *openapi3.SchemaError) bool { return foreignFieldSchemaFields[l.SchemaField] },
+	} {
+		for _, leaf := range leaves {
+			if tier(leaf) {
+				ranked = append(ranked, leaf)
+			}
 		}
 	}
 	return ranked
@@ -728,6 +745,17 @@ func leavesUnder(e error, alternatives bool) []*openapi3.SchemaError {
 			leaves := leavesUnder(branch, false)
 			every = append(every, leaves)
 			if alternatives && discriminatedAway(branch) {
+				// An alternative that fails its own pinned value and nothing
+				// else is one the caller all but sent: every other demand it
+				// makes is already met, so the pinned value is the field they
+				// got wrong, not a sign they meant a different alternative. A
+				// season outside its enum is the fault. An alternative that
+				// wants more besides is the other reading, and reporting what
+				// it wants sends the caller to fill in fields that are not
+				// theirs.
+				if onlyDiscriminators(leaves) {
+					kept = append(kept, leaves)
+				}
 				continue
 			}
 			kept = append(kept, leaves)
@@ -797,6 +825,20 @@ func discriminatedAway(e error) bool {
 		return discriminatedAway(u)
 	}
 	return false
+}
+
+// onlyDiscriminators reports whether an alternative failed on its pinned
+// values and on nothing else.
+func onlyDiscriminators(leaves []*openapi3.SchemaError) bool {
+	if len(leaves) == 0 {
+		return false
+	}
+	for _, leaf := range leaves {
+		if !discriminatorSchemaFields[leaf.SchemaField] {
+			return false
+		}
+	}
+	return true
 }
 
 // errorBranches returns the members of a multierror. openapi3.MultiError and
