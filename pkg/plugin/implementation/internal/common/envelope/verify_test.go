@@ -246,7 +246,7 @@ func TestNewProviderEnvelopeRefusesInconsistentOTPSettings(t *testing.T) {
 		"verify actions with no path":   func(s *envelopeSettings) { s.verifyPath = "" },
 		"otp settings with no envelope": func(s *envelopeSettings) { s.otp.kind = "" },
 		"otp envelope with no host":     func(s *envelopeSettings) { s.otp.bindingKey = "" },
-		"a host that is no binding key": func(s *envelopeSettings) { s.otp.bindingKey = "pmkisan-chatbot" },
+		"a host that is no binding key": func(s *envelopeSettings) { s.otp.bindingKey = "pmkisan-status" },
 		"neither envelope nor otp":      func(s *envelopeSettings) { *s = envelopeSettings{} },
 	} {
 		t.Run(name, func(t *testing.T) {

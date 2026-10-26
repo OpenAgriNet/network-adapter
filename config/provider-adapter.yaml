@@ -536,7 +536,7 @@ modules:
                 tokenExpiryField: responseDynamic.token.validTo
                 headerName: Authorization
 
-              # PM-KISAN grievance: encrypted bodies, OTP on the chatbot service (ADR-0001, ADR-0002).
+              # PM-KISAN grievance: encrypted bodies, OTP through pmkisan-status (ADR-0001, ADR-0002).
               pmkisan:
                 authScheme: none
                 envelope: aesGcm
@@ -547,7 +547,7 @@ modules:
                 envelopeRequestField: EncryptedRequest
                 envelopeResponsePaths: "d.output,output"
                 otpEnvelope: aesCbcKeyInBand
-                otpBindingKey: "pmkisan-chatbot|openagrinet:SchemeApplication"
+                otpBindingKey: "pmkisan-status|openagrinet:SchemeApplication"
                 otpTokenEnv: PMKISAN_OTP_TOKEN
                 otpTokenField: Token
                 otpRequestField: EncryptedRequest

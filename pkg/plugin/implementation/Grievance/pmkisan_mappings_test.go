@@ -317,7 +317,7 @@ func (s *pkRegistry) ProviderRecord(_ context.Context, key string) (*model.Provi
 }
 
 // pkOTPBindingKey is the OTP service's participant, as the shipped config names it.
-const pkOTPBindingKey = "pmkisan-chatbot|openagrinet:SchemeApplication"
+const pkOTPBindingKey = "pmkisan-status|openagrinet:SchemeApplication"
 
 // runPMKISAN drives the real step over the shipped mappings against p, configured as
 // config/provider-adapter.yaml configures it.
@@ -361,7 +361,7 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 				Mappings: mappings.URL + "/grievance.status.yaml", TimeoutMs: 30000, RetryMax: 2},
 		},
 	}, others: map[string]*model.ProviderRecord{
-		pkOTPBindingKey: {BindingKey: pkOTPBindingKey, ParticipantID: "pmkisan-chatbot", BaseURL: otpHost.URL},
+		pkOTPBindingKey: {BindingKey: pkOTPBindingKey, ParticipantID: "pmkisan-status", BaseURL: otpHost.URL},
 	}}
 
 	// The envelope is built from the provider block exactly as the plugin's
