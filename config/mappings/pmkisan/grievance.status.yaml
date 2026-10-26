@@ -46,7 +46,6 @@ response: |
     $record := $filter($records, function($r) { $iso($r.GrievanceDate) = $ca.case.filedOn })[0];
     $phrase := $text($record.GrievanceStatus);
     $remark := $text($record.OfficerReply);
-    $complaint := $text($record.GrievanceDescription);
 
     $refused
     ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
@@ -66,9 +65,8 @@ response: |
             "commitmentAttributes": {
               "@context":        $ca.`@context`,
               "@type":           $ca.`@type`,
-              "informationMode": "Direct",
+              "informationMode": "OnDemand",
               "scheme":          $ca.scheme,
-              "grievance": $complaint ? { "description": $complaint },
               "case": {
                 "status": {
                   "code": $phrase
