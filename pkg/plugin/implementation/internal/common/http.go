@@ -13,6 +13,10 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
+	"github.com/beckn-one/beckn-onix/pkg/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // call makes the upstream request the plan describes, retrying within util.Budget.
@@ -111,8 +115,15 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	// is the line that answers "what did we ask, and what came back".
 	requested := s.redactString(req.URL.String())
 
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	httpCtx, httpSpan := tracer.Start(attemptCtx, "http "+call.Path)
+	defer httpSpan.End()
+	req = req.WithContext(httpCtx)
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		httpSpan.RecordError(err)
+		httpSpan.SetStatus(codes.Error, "transport_error")
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -137,6 +148,7 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		// quoted back, credential and all.
 		log.Warnf(ctx, "provider returned %s for %s %s: %s",
 			resp.Status, method, requested, s.explainRedacted(body))
+		httpSpan.SetStatus(codes.Error, resp.Status)
 
 		// A held token the provider has stopped accepting is dropped, so the
 		// next call exchanges a fresh one.
