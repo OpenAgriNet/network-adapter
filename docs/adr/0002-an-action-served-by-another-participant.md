@@ -6,14 +6,15 @@
 ## Context
 
 PM-KISAN grievance's `init` (send the OTP) and the OTP verify before `support`
-and `status` are served by the chatbot service, not the grievance service. A
-binding has one participant, so one `baseUrl`. The chatbot service is already
+and `status` are served by PM-KISAN's OTP service (its chatbot service), not
+the grievance service. A binding has one participant, so one `baseUrl`. The
+OTP service is already
 a participant in the registry for application status.
 
 ## Decision
 
 The provider block names the OTP service by binding key:
-`otpBindingKey: "pmkisan-chatbot|openagrinet:SchemeApplication"`.
+`otpBindingKey: "pmkisan-status|openagrinet:SchemeApplication"`.
 `common.Config.HostedElsewhere` (provider → action → binding key) sends those
 actions to that participant's `baseUrl`, read from the registry per call with
 the same active checks as any participant (`common.HostOf`). The verify reads
@@ -28,5 +29,5 @@ it the same way. An unpublished binding is a 502.
 
 ## Consequences
 
-Grievance depends on the chatbot's binding being active in the registry. Moving
+Grievance depends on the `pmkisan-status` binding being active in the registry. Moving
 the OTP service is one registry write, with no restart.

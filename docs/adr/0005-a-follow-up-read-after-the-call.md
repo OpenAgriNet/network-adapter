@@ -11,10 +11,13 @@ registry holds one call per action.
 
 ## Decision
 
-The envelope makes the second read after a successful first one
-(`followUpPath`, `followUpField`, `followUpActions`) and adds its answer to the
-first under `followUpField`, on its own time budget (`followUpTimeoutMs`). The
-mapping reads both. A failed follow-up leaves the field absent, never empty:
+The Grievance plugin makes the second read after a successful first one, on
+the provider's own host (`followUpPath`, `followUpField`, `followUpActions`),
+and adds its answer to the first under `followUpField`, on its own time budget
+(`followUpTimeoutMs`). The mapping reads both. It lives in the plugin, not in
+the shared envelope, because PM-KISAN application status is its only user; the
+envelope provides only `Reseal` (seal again without spending the OTP) and
+`Post`. A failed follow-up leaves the field absent, never empty:
 absent means "not checked", `[]` means "nothing found".
 
 ## Alternatives considered
