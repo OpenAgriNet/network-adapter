@@ -27,5 +27,5 @@ returned.
 
 ## Consequences
 
-Each new reason is a line in the mapping's `KNOWN_REFUSALS`. A reason not yet
+Each new reason is a line in the mapping's `$refusals`. A reason not yet
 listed is a 502 until it is.
