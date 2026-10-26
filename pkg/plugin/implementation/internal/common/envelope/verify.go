@@ -30,11 +30,12 @@ type verify struct {
 	path     string
 	actions  map[string]bool
 	codec    *cbcCodec
-	host     func(context.Context, common.Exchange) (string, error)
-	hooks    Hooks
-	client   *http.Client
-	// budget is the verify's own time budget, not the guarded action's.
-	budget model.ActionPlan
+	// bindingKey names the OTP service's participant, its host read per call;
+	// empty: the provider is the OTP service.
+	bindingKey string
+	hooks      Hooks
+	client     *http.Client
+	budget     model.ActionPlan // the verify's own, not the guarded action's
 }
 
 // check verifies the challenge. Unreachable: 502. Not a yes: 400
@@ -72,4 +73,15 @@ func (v *verify) check(ctx context.Context, exchange common.Exchange) error {
 			errors.New("the OTP is wrong or has expired"))
 	}
 	return nil
+}
+
+// host is the OTP service's base URL.
+func (v *verify) host(ctx context.Context, exchange common.Exchange) (string, error) {
+	if v.bindingKey != "" {
+		return common.HostOf(ctx, exchange.Registry, v.bindingKey)
+	}
+	if exchange.Plan == nil || exchange.Plan.BaseURL == "" {
+		return "", errors.New("no call plan to find the provider's host on")
+	}
+	return exchange.Plan.BaseURL, nil
 }

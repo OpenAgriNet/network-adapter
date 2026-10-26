@@ -11,9 +11,10 @@ response: |
   $exists(_status)
   ? {}
   : (
-    $false := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
-    $refused := $false(response.Status) or $false(response.Responce)
-      or $false(response.Rsponce) or $false(response.status);
+    /* PM-KISAN's yes/no flag: same keys as pmkisanSaidYes() in Grievance/otp.go. */
+    $isFalse := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
+    $refused := $isFalse(response.Rsponce) or $isFalse(response.Responce)
+      or $isFalse(response.Status) or $isFalse(response.status);
 
     $c  := beckn.message.contract.commitments[0];
     $ca := $c.commitmentAttributes;
@@ -46,13 +47,15 @@ response: |
     $record := $filter($records, function($r) { $iso($r.GrievanceDate) = $ca.case.filedOn })[0];
     $phrase := $text($record.GrievanceStatus);
     $remark := $text($record.OfficerReply);
+    $complaint := $text($record.GrievanceDescription);
 
     $refused
     ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
                     "message": "PM-KISAN could not read the grievance" } }
     : $not($exists($record))
     ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR",
-                    "message": "No grievance matches this registration number and filing date." } }
+                    "message": "No grievance matches this registration number and filing date.",
+                    "path": "$.message.contract.commitments[0].commitmentAttributes.case.filedOn" } }
     : {
       "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
       "message": {
@@ -67,6 +70,7 @@ response: |
               "@type":           $ca.`@type`,
               "informationMode": "OnDemand",
               "scheme":          $ca.scheme,
+              "grievance":       $complaint ? { "description": $complaint },
               "case": {
                 "status": {
                   "code": $phrase

@@ -95,7 +95,7 @@ func (f *followUp) Seal(ctx context.Context, exchange common.Exchange, mapped []
 	}
 	return sealed, func(ctx context.Context, answer []byte) ([]byte, error) {
 		plain, err := open(ctx, answer)
-		if err != nil || !succeeded(plain) {
+		if err != nil || !pmkisanSaidYes(plain) {
 			return plain, err
 		}
 		extra, ok := f.read(ctx, exchange, mapped)

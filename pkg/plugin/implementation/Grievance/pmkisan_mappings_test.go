@@ -623,9 +623,9 @@ func TestPMKISANStatusAnswersTheGrievanceFiledOnThatDate(t *testing.T) {
 	if got := pkAt(t, attributes, "informationMode"); got != "OnDemand" {
 		t.Errorf("informationMode = %v, want OnDemand", got)
 	}
-	// The pack's status answer carries the case, not the complaint.
-	if _, present := attributes.(map[string]any)["grievance"]; present {
-		t.Errorf("grievance = %v, want none: the status answer carries the case alone", attributes.(map[string]any)["grievance"])
+	if got := pkAt(t, attributes, "grievance"); fmt.Sprint(got) !=
+		fmt.Sprint(map[string]any{"description": "Third instalment for 2026 has not been credited."}) {
+		t.Errorf("grievance = %v, want the matching record's description alone", got)
 	}
 	for field, want := range map[string]any{
 		"filedOn":   "2026-09-28",
@@ -692,6 +692,10 @@ func TestPMKISANStatusReportsNothingOnFileAsARefusal(t *testing.T) {
 	beckn, status := pkBecknErr(t, err)
 	if status != http.StatusBadRequest || beckn.Code != "BIZ_GENERIC_ERROR" {
 		t.Errorf("got %s/%d, want BIZ_GENERIC_ERROR/400", beckn.Code, status)
+	}
+	const filedOn = "$.message.contract.commitments[0].commitmentAttributes.case.filedOn"
+	if beckn.Details == nil || beckn.Details.Path != filedOn {
+		t.Errorf("details = %+v, want path %s", beckn.Details, filedOn)
 	}
 }
 

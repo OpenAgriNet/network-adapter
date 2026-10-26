@@ -2,7 +2,7 @@
 
 request: |
   {
-    "Types":  "Ben_id",
+    "Types":  "Ben_id",  /* identityType in Grievance/otp.go; keep them together */
     "Values": beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId
   }
 
@@ -11,8 +11,10 @@ response: |
   $exists(_status)
   ? {}
   : (
-    $true := function($v) { $exists($v) and $lowercase($string($v)) = "true" };
-    $sent := $true(response.Rsponce) or $true(response.Responce) or $true(response.Status);
+    /* PM-KISAN's yes/no flag: same keys as pmkisanSaidYes() in Grievance/otp.go. */
+    $isTrue := function($v) { $exists($v) and $lowercase($string($v)) = "true" };
+    $sent := $isTrue(response.Rsponce) or $isTrue(response.Responce)
+      or $isTrue(response.Status) or $isTrue(response.status);
     $commitment := beckn.message.contract.commitments[0];
     $ca := $commitment.commitmentAttributes;
 

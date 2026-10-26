@@ -310,32 +310,19 @@ func applyDefaults(cfg *Config) error {
 		}
 	}
 
-	// An envelope for an unserved provider is a typo; refuse it.
-	for provider, envelope := range cfg.EnvelopeByProvider {
+	// An envelope or host for an unserved provider is a typo; refuse it.
+	for provider := range cfg.EnvelopeByProvider {
 		if !served[provider] {
 			return fmt.Errorf(
 				"an envelope is configured for %q, which is not a provider in bindingKeys (%s)",
 				provider, strings.Join(cfg.BindingKeys, ", "))
 		}
-		if envelope == nil {
-			return fmt.Errorf("the envelope configured for %q is nil", provider)
-		}
 	}
-
-	// A host for an unserved provider is a typo too, and a key the registry
-	// cannot index would fail every call.
-	for provider, actions := range cfg.HostedElsewhere {
+	for provider := range cfg.HostedElsewhere {
 		if !served[provider] {
 			return fmt.Errorf(
 				"an action host is configured for %q, which is not a provider in bindingKeys (%s)",
 				provider, strings.Join(cfg.BindingKeys, ", "))
-		}
-		for action, key := range actions {
-			participant, capability, found := strings.Cut(key, separator)
-			if action == "" || !found || participant == "" || capability == "" {
-				return fmt.Errorf("%s: the host for %q must be a binding key, participant%scapability; got %q",
-					provider, action, separator, key)
-			}
 		}
 	}
 	return nil

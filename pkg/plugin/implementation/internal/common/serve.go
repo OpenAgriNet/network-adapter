@@ -188,6 +188,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	}
 
 	// The participant's host, unless another participant serves this action.
+	// auth stays the originating provider's credential, not the host's.
 	base := plan.BaseURL
 	if key := s.config.HostedElsewhere[provider][action]; key != "" {
 		if base, err = HostOf(ctx, s.registry, key); err != nil {
@@ -197,9 +198,8 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	// The provider's envelope, if any: seal once before the retry loop, open
 	// once after it.
-	envelope, wrapped := s.config.EnvelopeByProvider[provider]
 	var open Opener
-	if wrapped {
+	if envelope, wrapped := s.config.EnvelopeByProvider[provider]; wrapped {
 		exchange := Exchange{Action: action, Beckn: beckn, Plan: plan, Registry: s.registry}
 		if upstreamRequest, open, err = envelope.Seal(ctx, exchange, upstreamRequest); err != nil {
 			return err
@@ -211,7 +211,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	if wrapped && open != nil {
+	if open != nil {
 		if upstreamResponse, err = open(ctx, upstreamResponse); err != nil {
 			return err
 		}

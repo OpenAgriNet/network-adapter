@@ -18,7 +18,6 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // keySeparator joins the ciphertext and its key on the wire: cipher@key.
@@ -37,13 +36,13 @@ type cbcCodec struct {
 	random io.Reader
 }
 
-// newCBCCodec validates otp* settings.
-func newCBCCodec(provider string, s realmSettings) (*cbcCodec, error) {
-	return newCBCCodecFrom(provider, "otp", "otpEnvelope", s)
-}
-
-// newCBCCodecFrom validates settings under the given prefix (otp or envelope).
-func newCBCCodecFrom(provider, prefix, kindSetting string, s realmSettings) (*cbcCodec, error) {
+// newCBCCodec validates the settings under prefix: "otp" (otpEnvelope) or
+// "envelope" (envelope).
+func newCBCCodec(provider, prefix string, s cbcSettings) (*cbcCodec, error) {
+	kindSetting := "envelope"
+	if prefix == "otp" {
+		kindSetting = "otpEnvelope"
+	}
 	if s.kind != envelopeAESCBCKeyInBand {
 		return nil, fmt.Errorf("%s: %s %q is not one this plugin knows; want %s",
 			provider, kindSetting, s.kind, envelopeAESCBCKeyInBand)
@@ -90,44 +89,29 @@ func (c *cbcCodec) seal(ctx context.Context, mapped []byte) ([]byte, common.Open
 
 // open decrypts an answer; failures as in gcmCodec.Open (502/500/502).
 func (c *cbcCodec) open(ctx context.Context, answer []byte, requestKey string) ([]byte, error) {
-	var wire any
-	if err := json.Unmarshal(answer, &wire); err != nil {
-		log.Warnf(ctx, "%s's OTP service answered with a body that is not JSON (%d bytes)", c.provider, len(answer))
-		return nil, refused(fmt.Errorf("%s answered without an envelope", c.provider))
+	sealed, err := sealedIn(ctx, c.provider, answer, c.responsePaths)
+	if err != nil {
+		return nil, err
 	}
-	sealed, found := sealedAnswer(wire, c.responsePaths)
-	if !found {
-		log.Warnf(ctx, "%s's OTP service answered with no envelope at any configured path", c.provider)
-		return nil, refused(fmt.Errorf("%s answered without an envelope", c.provider))
-	}
-
 	// base64 has no '@', so the last one, if any, starts the reply's key.
-	ciphertext, key := strings.TrimSpace(sealed), requestKey
-	if at := strings.LastIndex(ciphertext, keySeparator); at >= 0 {
-		if replyKey := ciphertext[at+1:]; replyKey != "" {
+	ciphertext, key := sealed, requestKey
+	if at := strings.LastIndex(sealed, keySeparator); at >= 0 {
+		if replyKey := sealed[at+1:]; replyKey != "" {
 			key = replyKey
 		}
-		ciphertext = ciphertext[:at]
+		ciphertext = sealed[:at]
 	}
-	raw, err := base64.StdEncoding.DecodeString(ciphertext)
-	if err != nil || len(raw) == 0 {
-		log.Warnf(ctx, "%s's OTP service answered with plain text where its envelope belongs: %s",
-			c.provider, redactToken(util.Explain([]byte(sealed)), c.tokenEnv))
-		return nil, refused(fmt.Errorf("%s rejected the request", c.provider))
+	raw, err := decodeSealed(ctx, c.provider, c.tokenEnv, ciphertext)
+	if err != nil {
+		return nil, err
 	}
-
 	plain, err := cbcDecrypt(key, raw)
 	if err != nil {
 		log.Errorf(ctx, err, "%s's OTP service answer will not decrypt", c.provider)
 		return nil, model.NewCodedErr(http.StatusInternalServerError, codeInternal,
 			fmt.Errorf("the answer from %s could not be decrypted", c.provider))
 	}
-	plain = bytes.Trim(plain, " \t\r\n\x00")
-	if !json.Valid(plain) {
-		log.Warnf(ctx, "%s's OTP service sealed something other than JSON (%d bytes)", c.provider, len(plain))
-		return nil, refused(fmt.Errorf("%s answered with something that is not JSON", c.provider))
-	}
-	return plain, nil
+	return plainJSON(ctx, c.provider, plain)
 }
 
 // newKeyString is 16 random bytes as 32 lower-case hex characters.

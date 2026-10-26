@@ -10,6 +10,10 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
+	"github.com/beckn-one/beckn-onix/pkg/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // maxAnswerBytes caps the answers to calls made here and through Post.
@@ -40,7 +44,11 @@ func postSealed(ctx context.Context, client *http.Client, provider, what, base, 
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, endpoint, bytes.NewReader(sealed))
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	httpCtx, httpSpan := tracer.Start(attemptCtx, "http "+path)
+	defer httpSpan.End()
+
+	req, err := http.NewRequestWithContext(httpCtx, http.MethodPost, endpoint, bytes.NewReader(sealed))
 	if err != nil {
 		return nil, err
 	}
@@ -48,6 +56,8 @@ func postSealed(ctx context.Context, client *http.Client, provider, what, base, 
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Warnf(ctx, "%s could not be reached for %s: %v", provider, what, err)
+		httpSpan.RecordError(err)
+		httpSpan.SetStatus(codes.Error, "transport_error")
 		return nil, refused(fmt.Errorf("%s did not answer %s", provider, what))
 	}
 	defer resp.Body.Close()
@@ -55,8 +65,10 @@ func postSealed(ctx context.Context, client *http.Client, provider, what, base, 
 	if err != nil {
 		return nil, refused(fmt.Errorf("%s's answer to %s could not be read", provider, what))
 	}
+	log.Infof(ctx, "POST %s -> %s, %d bytes", endpoint, resp.Status, len(answer))
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		log.Warnf(ctx, "%s returned %s for %s", provider, resp.Status, what)
+		httpSpan.SetStatus(codes.Error, resp.Status)
 		return nil, refused(fmt.Errorf("%s returned %s for %s", provider, resp.Status, what))
 	}
 	return answer, nil
