@@ -100,13 +100,9 @@ func (c *Client) searchNetworks(ctx context.Context, tracer trace.Tracer, extra 
 	return searchRecords[participant](ctx, c, tracer, c.searchURL, filters)
 }
 
-// agreementWith returns what we agreed with a participant, from its record
-// alone. The zero Agreement means we admitted nobody by that id.
-//
-// Deliberately not AdmittedNetwork: that one answers "can we CALL this network",
-// so it also wants a network role and a discover address. Whether we agreed to
-// ANSWER someone is written in federationRole and nowhere else, and a record
-// missing those other fields is a half-filled admission, not an absent one.
+// agreementWith returns what we agreed with a participant, from federationRole
+// alone. Not AdmittedNetwork: that answers whether we can CALL them, which a
+// half-filled record fails without meaning we may answer it.
 func (c *Client) agreementWith(ctx context.Context, participantID string) (model.Agreement, error) {
 	if strings.TrimSpace(participantID) == "" {
 		return model.Agreement{}, nil

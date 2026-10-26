@@ -761,26 +761,22 @@ const discoverAction = "discover"
 // codeUnauthorizedAction is the Beckn code for a caller who may not do this.
 const codeUnauthorizedAction = "AUT_UNAUTHORIZED_ACTION"
 
-// servedRequest is who is asking, what for, and which capabilities their body
-// named. The step reads these off the request and hands them over.
+// servedRequest is who is asking, what for, and which capabilities they named.
 type servedRequest struct {
 	caller       string
 	action       string
 	capabilities []string
 }
 
-// refused classifies an agreement refusal. 400 and not 500: this is the
-// caller's side to fix, not ours. Not 401 either -- their credentials are fine,
-// and retrying with better ones changes nothing.
+// refused classifies an agreement refusal. 400, not 500: the caller's side to
+// fix. Not 401 either -- no credential changes the answer.
 func refused(err error) error {
 	return model.NewBadReqErr(codeUnauthorizedAction, err)
 }
 
 // CheckCrossNetworkRequester refuses a caller we never agreed to answer, and on
-// a discover one asking beyond what the agreement covers.
-//
-// It reads our own admission records rather than a key lookup, so it holds
-// whether or not the request was signed. Only the caller is judged.
+// a discover one asking beyond the agreement. Reads our own records, not a key
+// lookup, so it holds whether or not the request was signed.
 func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action string, capabilities []string) error {
 	if strings.TrimSpace(caller) == "" {
 		return nil
@@ -788,8 +784,7 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 
 	agreed, err := c.agreementWith(ctx, caller)
 	if err != nil {
-		// Refuse rather than allow: a registry we could not ask is not an
-		// agreement we can honour.
+		// A registry we could not ask is not an agreement we can honour.
 		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
 	}
 	// No agreement is an ordinary participant -- a provider, our own deployment,

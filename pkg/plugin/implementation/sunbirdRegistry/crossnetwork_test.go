@@ -167,9 +167,6 @@ func TestARegistryThatCannotBeAskedRefuses(t *testing.T) {
 func TestARefusalIsTheCallersFaultNotOurs(t *testing.T) {
 	t.Parallel()
 
-	// A refused caller is known and well formed -- they asked for something we
-	// did not agree to give. Unclassified it would surface as a 500, which
-	// blames this adapter and tells them nothing they can act on.
 	client := admittingClient(t, federationRole{Source: agreedPacks()})
 
 	var coded *model.CodedErr
@@ -181,9 +178,7 @@ func TestARefusalIsTheCallersFaultNotOurs(t *testing.T) {
 	}
 }
 
-// A half-filled admission record is still an admission. The usability tests the
-// crawler applies -- a network role, a discover address -- say whether we can
-// CALL a network, and have no bearing on whether we agreed to answer it.
+// A half-filled admission record is still an admission.
 func TestARecordMissingTheNetworkRoleIsStillJudged(t *testing.T) {
 	t.Parallel()
 

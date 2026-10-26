@@ -8,20 +8,14 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
 
-// crossNetworkRequester is the half of the registry this step needs: judging a
-// caller against what we agreed when we admitted them. Narrowed from the
-// registry so a plugin that only distributes keys is refused at startup rather
-// than passing every request.
+// crossNetworkRequester is the half of the registry this step needs. Narrowed
+// so a plugin that only distributes keys fails at startup, not per request.
 type crossNetworkRequester interface {
 	CheckCrossNetworkRequester(ctx context.Context, caller, action string, capabilities []string) error
 }
 
-// crossNetworkRequesterStep refuses a caller we did not agree to answer.
-//
-// It reads the caller from the body rather than from a verified signature, so a
-// mount that also runs validateSign should list it AFTER that step -- there the
-// caller has been proved. Listed alone it still enforces the agreement, against
-// a senderId the caller wrote.
+// crossNetworkRequesterStep refuses a caller we did not agree to answer. List
+// it after validateSign: alone, it judges a senderId nobody proved.
 type crossNetworkRequesterStep struct {
 	registry crossNetworkRequester
 }
@@ -41,10 +35,7 @@ func (s *crossNetworkRequesterStep) Run(ctx *model.StepContext) error {
 		return model.WrapExtractContextErr("could not read the request context", becknErr)
 	}
 
-	// senderId names the caller on every mount another network reaches. Refused
-	// rather than skipped: a request naming nobody cannot be judged, and
-	// treating that as "allow" is the one outcome worth never reaching by
-	// accident.
+	// Refused, not skipped: naming nobody must never read as "allow".
 	caller := model.ResolveCallerID(becknContext, model.RoleBPP)
 	if caller == "" {
 		return model.NewBadReqErr("", fmt.Errorf(
@@ -55,8 +46,7 @@ func (s *crossNetworkRequesterStep) Run(ctx *model.StepContext) error {
 	return s.registry.CheckCrossNetworkRequester(ctx, caller, action, schemaContextOf(becknContext))
 }
 
-// schemaContextOf reads the capabilities a discover names. Absent is an empty
-// list, which the agreement check refuses for a discover and ignores otherwise.
+// schemaContextOf reads the capabilities a discover names.
 func schemaContextOf(becknContext map[string]any) []string {
 	listed, _ := becknContext["schemaContext"].([]any)
 	capabilities := make([]string, 0, len(listed))
