@@ -147,11 +147,11 @@ func TestShippedConfig_GrievanceEntry_BuildsStep(t *testing.T) {
 	if _, ok := cfg.Envelopes[pmkisanBindingKey]; !ok {
 		t.Error("the shipped entry gives PM-KISAN grievance no envelope; the portal would be sent plaintext")
 	}
-	if _, ok := cfg.EnvelopeByProvider["pmkisan-status"]; !ok {
-		t.Error("the shipped entry gives pmkisan-status no envelope; the chatbot service would be sent plaintext")
+	if _, ok := cfg.Envelopes["pmkisan|openagrinet:SchemeApplication"]; !ok {
+		t.Error("the shipped entry gives PM-KISAN application status no envelope; the chatbot service would be sent plaintext")
 	}
-	if cfg.AuthByProvider["pmkisan-status"] == nil {
-		t.Error("the shipped entry gives pmkisan-status no auth profile; application status would not start")
+	if cfg.AuthByProvider["pmkisan"] == nil {
+		t.Error("the shipped entry gives pmkisan no auth profile; application status would not start")
 	}
 	if _, _, err := (grievanceProvider{}).New(context.Background(), stubRegistry{}, stubMapper{}, shipped); err != nil {
 		t.Fatalf("the shipped entry does not build a step: %v", err)

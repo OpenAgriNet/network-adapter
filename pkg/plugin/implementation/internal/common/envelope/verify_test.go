@@ -246,7 +246,7 @@ func TestNewProviderEnvelopeRefusesInconsistentOTPSettings(t *testing.T) {
 		"verify actions with no path":   func(s *envelopeSettings) { s.verifyPath = "" },
 		"otp settings with no envelope": func(s *envelopeSettings) { s.otp.kind = "" },
 		"otp envelope with no host":     func(s *envelopeSettings) { s.otp.bindingKey = "" },
-		"a host that is no binding key": func(s *envelopeSettings) { s.otp.bindingKey = "pmkisan-status" },
+		"a host that is no binding key": func(s *envelopeSettings) { s.otp.bindingKey = "pmkisan" },
 		"neither envelope nor otp":      func(s *envelopeSettings) { *s = envelopeSettings{} },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -285,7 +285,7 @@ func statusSettings() envelopeSettings {
 
 func TestAProviderWhollyOnTheOTPServiceVerifiesOnItsOwnHost(t *testing.T) {
 	t.Setenv(testOTPTokenEnv, testOTPToken)
-	e, err := newProviderEnvelope("pmkisan-status", statusSettings(), testHooks)
+	e, err := newProviderEnvelope("pmkisan", statusSettings(), testHooks)
 	if err != nil {
 		t.Fatalf("newProviderEnvelope() = %v", err)
 	}
@@ -325,7 +325,7 @@ func TestNewProviderEnvelopeRefusesInconsistentStatusSettings(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := statusSettings()
 			tweak(&s)
-			if _, err := newProviderEnvelope("pmkisan-status", s, testHooks); err == nil {
+			if _, err := newProviderEnvelope("pmkisan", s, testHooks); err == nil {
 				t.Fatal("newProviderEnvelope() accepted settings that cannot work")
 			}
 		})
@@ -388,7 +388,7 @@ func TestTheVerifyKeepsToItsOwnBudget(t *testing.T) {
 // SealWithoutVerify seals a further request with the action's codec and spends no OTP.
 func TestSealWithoutVerifySkipsTheVerify(t *testing.T) {
 	t.Setenv(testOTPTokenEnv, testOTPToken)
-	e, err := newProviderEnvelope("pmkisan-status", statusSettings(), testHooks)
+	e, err := newProviderEnvelope("pmkisan", statusSettings(), testHooks)
 	if err != nil {
 		t.Fatalf("newProviderEnvelope() = %v", err)
 	}

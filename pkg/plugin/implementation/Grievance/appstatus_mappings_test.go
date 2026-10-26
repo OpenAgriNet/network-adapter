@@ -27,7 +27,7 @@ import (
 
 const (
 	asCapability = "openagrinet:SchemeApplication"
-	asBindingKey = "pmkisan-status|" + asCapability
+	asBindingKey = "pmkisan|" + asCapability
 
 	// The chatbot service, named by the participant's baseUrl; the registry
 	// rows and the plugin paths carry the method alone.
@@ -47,7 +47,7 @@ const asInitRequest = `{
       "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmkisan:application-status",
-        "provider": { "id": "pmkisan-status", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
         "resourceIds": ["res:pmkisan:application-status"]
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
@@ -75,7 +75,7 @@ const asStatusRequest = `{
       "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:application-status",
-        "provider": { "id": "pmkisan-status", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
+        "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
         "resourceIds": ["res:pmkisan:application-status"]
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
@@ -196,7 +196,7 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 
 	registry := &pkRegistry{plan: &model.ProviderRecord{
 		BindingKey:     asBindingKey,
-		ParticipantID:  "pmkisan-status",
+		ParticipantID:  "pmkisan",
 		CapabilityCode: asCapability,
 		BaseURL:        host.URL + asService,
 		Actions: map[string]model.ActionPlan{
@@ -208,16 +208,16 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 	}}
 
 	envelopes, _, err := Grievance.ParseEnvelopes(map[string]string{
-		"envelope-pmkisan-status":              "aesCbcKeyInBand",
-		"envelopeTokenEnv-pmkisan-status":      "TEST_PMKISAN_OTP_TOKEN",
-		"envelopeTokenField-pmkisan-status":    "Token",
-		"envelopeRequestField-pmkisan-status":  "EncryptedRequest",
-		"envelopeResponsePaths-pmkisan-status": "d.output,output",
-		"otpVerifyPath-pmkisan-status":         "/ChatbotOTPVerified",
-		"otpVerifyActions-pmkisan-status":      "status",
-		"followUpPath-pmkisan-status":          "/ChatbotBeneficiaryStatus",
-		"followUpField-pmkisan-status":         "_beneficiaryStatus",
-		"followUpActions-pmkisan-status":       "status",
+		"envelope-pmkisan|openagrinet:SchemeApplication":              "aesCbcKeyInBand",
+		"envelopeTokenEnv-pmkisan|openagrinet:SchemeApplication":      "TEST_PMKISAN_OTP_TOKEN",
+		"envelopeTokenField-pmkisan|openagrinet:SchemeApplication":    "Token",
+		"envelopeRequestField-pmkisan|openagrinet:SchemeApplication":  "EncryptedRequest",
+		"envelopeResponsePaths-pmkisan|openagrinet:SchemeApplication": "d.output,output",
+		"otpVerifyPath-pmkisan|openagrinet:SchemeApplication":         "/ChatbotOTPVerified",
+		"otpVerifyActions-pmkisan|openagrinet:SchemeApplication":      "status",
+		"followUpPath-pmkisan|openagrinet:SchemeApplication":          "/ChatbotBeneficiaryStatus",
+		"followUpField-pmkisan|openagrinet:SchemeApplication":         "_beneficiaryStatus",
+		"followUpActions-pmkisan|openagrinet:SchemeApplication":       "status",
 	})
 	if err != nil {
 		t.Fatalf("ParseEnvelopes() = %v", err)
@@ -228,9 +228,9 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type",
 		AuthByProvider: map[string]*common.AuthProfile{
-			"pmkisan-status": {Scheme: util.AuthSchemeNone},
+			"pmkisan": {Scheme: util.AuthSchemeNone},
 		},
-		EnvelopeByProvider: envelopes.Envelopes,
+		Envelopes: envelopes.Envelopes,
 	})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)

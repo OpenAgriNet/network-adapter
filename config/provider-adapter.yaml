@@ -515,7 +515,7 @@ modules:
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance,pmkisan-status|openagrinet:SchemeApplication"
+              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance,pmkisan|openagrinet:SchemeApplication"
 
               # Paired by position, tried in order: status names the binding on
               # its contract, support on its channel.
@@ -562,9 +562,9 @@ modules:
                 otpVerifyActions: "support,status"
                 otpVerifyTimeoutMs: "10000"
 
-              # PM-KISAN application status: OTP, the record, then a follow-up read of its blockers (ADR-0005).
-              pmkisan-status:
-                authScheme: none
+              # Application status: the binding's host is the OTP service itself; OTP,
+              # the record, then a follow-up read of its blockers (ADR-0005).
+              "pmkisan|openagrinet:SchemeApplication":
                 envelope: aesCbcKeyInBand
                 envelopeTokenEnv: PMKISAN_OTP_TOKEN
                 envelopeTokenField: Token
