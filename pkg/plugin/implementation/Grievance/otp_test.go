@@ -18,8 +18,8 @@ func TestSucceededFailsClosed(t *testing.T) {
 		`{"Message":"sent"}`:  false,
 		`not json`:            false,
 	} {
-		if got := succeeded([]byte(answer)); got != want {
-			t.Errorf("succeeded(%s) = %v, want %v", answer, got, want)
+		if got := pmkisanSaidYes([]byte(answer)); got != want {
+			t.Errorf("pmkisanSaidYes(%s) = %v, want %v", answer, got, want)
 		}
 	}
 }

@@ -37,7 +37,7 @@ type cbcCodec struct {
 }
 
 // newCBCCodec validates the otp* settings.
-func newCBCCodec(provider string, s realmSettings) (*cbcCodec, error) {
+func newCBCCodec(provider string, s cbcSettings) (*cbcCodec, error) {
 	if s.kind != envelopeAESCBCKeyInBand {
 		return nil, fmt.Errorf("%s: otpEnvelope %q is not one this plugin knows; want %s",
 			provider, s.kind, envelopeAESCBCKeyInBand)

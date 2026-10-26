@@ -15,16 +15,17 @@ import (
 const challengeMethod = "SMS_OTP"
 
 // identityType is the OTP service's type for a registration number (enrolmentId).
+// The PM-KISAN mappings write the same value as a literal; change them together.
 const identityType = "Ben_id"
 
-// hooks are the grievance packs' side of the envelope: where the challenge
+// pmkisanHooks are the grievance packs' side of the envelope: where the challenge
 // sits in a payload, and what PM-KISAN's "yes" looks like.
-var hooks = envelope.Hooks{Challenge: verifyRequest, Succeeded: succeeded}
+var pmkisanHooks = envelope.Hooks{Challenge: verifyRequest, Succeeded: pmkisanSaidYes}
 
 // ParseEnvelopes reads each provider's envelope settings out of the plugin
 // config. See envelope.Parse.
 func ParseEnvelopes(config map[string]string) (envelope.Parsed, map[string]string, error) {
-	return envelope.Parse(config, hooks)
+	return envelope.Parse(config, pmkisanHooks)
 }
 
 // verifyRequest is the OTP service's verify body: identifier, its type and
@@ -59,32 +60,33 @@ func challengeIn(exchange common.Exchange) (kind, identity, method, otp string) 
 			holder, _ = commitment["commitmentAttributes"].(map[string]any)
 		}
 	}
-	if id := text(holder["enrolmentId"]); id != "" {
+	if id := trimmedString(holder["enrolmentId"]); id != "" {
 		kind, identity = identityType, id
 	}
 	challenge, _ := holder["challenge"].(map[string]any)
 	if response, ok := challenge["response"].(map[string]any); ok {
-		method, otp = text(response["method"]), text(response["value"])
+		method, otp = trimmedString(response["method"]), trimmedString(response["value"])
 	}
 	return kind, identity, method, otp
 }
 
-// succeeded is true only for a "True" flag; anything else fails closed.
-func succeeded(plain []byte) bool {
+// pmkisanSaidYes is true only for a "True" flag; anything else fails closed. The
+// PM-KISAN mappings check the same keys.
+func pmkisanSaidYes(plain []byte) bool {
 	var answer map[string]any
 	if json.Unmarshal(plain, &answer) != nil {
 		return false
 	}
 	for _, key := range []string{"Rsponce", "Responce", "Status", "status"} {
 		if value, ok := answer[key]; ok {
-			return strings.EqualFold(text(value), "true")
+			return strings.EqualFold(trimmedString(value), "true")
 		}
 	}
 	return false
 }
 
-// text returns a trimmed string, or "" if the value is not one.
-func text(value any) string {
+// trimmedString returns a trimmed string, or "" if the value is not one.
+func trimmedString(value any) string {
 	s, _ := value.(string)
 	return strings.TrimSpace(s)
 }

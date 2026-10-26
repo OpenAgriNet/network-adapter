@@ -16,9 +16,10 @@ response: |
   $exists(_status)
   ? {}
   : (
-    $false := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
-    $refused := $false(response.Status) or $false(response.Responce)
-      or $false(response.Rsponce) or $false(response.status);
+    /* PM-KISAN's yes/no flag: same keys as pmkisanSaidYes() in Grievance/otp.go. */
+    $isFalse := function($v) { $exists($v) and $lowercase($string($v)) = "false" };
+    $refused := $isFalse(response.Rsponce) or $isFalse(response.Responce)
+      or $isFalse(response.Status) or $isFalse(response.status);
     /* Text or number; empty is none. */
     $handle := function($v) {
       ($type($v) = "string" and $v != "") or $type($v) = "number" ? $string($v)
@@ -29,7 +30,7 @@ response: |
     $ch := beckn.message.support.channels[0];
 
     /* The portal's reason, lower-cased, to what the caller is told. */
-    $KNOWN_REFUSALS := {
+    $refusals := {
       "registration number not found": {
         "message": "PM-KISAN has no registration for this enrolmentId.",
         "path": "$.message.support.channels[0].enrolmentId"
@@ -39,7 +40,7 @@ response: |
       $m := response.message ? response.message : response.Message;
       $type($m) = "string" ? $trim($m)
     );
-    $known := $portalMessage ? $lookup($KNOWN_REFUSALS, $lowercase($portalMessage));
+    $known := $portalMessage ? $lookup($refusals, $lowercase($portalMessage));
 
     $filedOn := $exists(beckn.context.timestamp)
       ? $fromMillis($toMillis(beckn.context.timestamp), "[Y0001]-[M01]-[D01]", "+0530")

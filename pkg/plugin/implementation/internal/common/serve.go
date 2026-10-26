@@ -188,6 +188,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	}
 
 	// The participant's host, unless another participant serves this action.
+	// auth stays the originating provider's credential, not the host's.
 	base := plan.BaseURL
 	if key := s.config.HostedElsewhere[provider][action]; key != "" {
 		if base, err = HostOf(ctx, s.registry, key); err != nil {

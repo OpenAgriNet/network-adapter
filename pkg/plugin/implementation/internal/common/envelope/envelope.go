@@ -56,16 +56,16 @@ var envelopeFields = map[string]func(*envelopeSettings, string){
 type envelopeSettings struct {
 	kind, keyEnv, nonceEnv, tokenEnv, tokenField, requestField, responsePaths string
 
-	otp             realmSettings
+	otp             cbcSettings
 	otpActions      string
 	verifyPath      string
 	verifyActions   string
 	verifyTimeoutMs string
 }
 
-// realmSettings configures a CBC codec. bindingKey names the registry binding
+// cbcSettings configures a CBC codec. bindingKey names the registry binding
 // whose participant is the OTP service, a host other than the provider's.
-type realmSettings struct {
+type cbcSettings struct {
 	kind, bindingKey, tokenEnv, tokenField, requestField, responsePaths string
 }
 
@@ -169,62 +169,88 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 	}
 	e := &providerEnvelope{provider: provider, otpBindingKey: strings.TrimSpace(s.otp.bindingKey),
 		otpActions: listSet(s.otpActions)}
-	switch s.kind {
-	case "":
-		// Without the kind the body would go out unsealed.
-		if s.keyEnv != "" || s.nonceEnv != "" || s.tokenEnv != "" || s.tokenField != "" ||
-			s.requestField != "" || s.responsePaths != "" {
-			return nil, fmt.Errorf("%s: envelope settings are present but envelope is not set", provider)
-		}
-	default:
-		base, err := newGCMCodec(provider, s)
-		if err != nil {
-			return nil, err
-		}
-		e.base = base
-	}
 
-	if s.otp.kind != "" {
-		otp, err := newCBCCodec(provider, s.otp)
-		if err != nil {
-			return nil, err
-		}
-		if len(e.otpActions) == 0 {
-			return nil, fmt.Errorf("%s: otpEnvelope needs otpActions, the actions sent through it", provider)
-		}
-		participant, capability, found := strings.Cut(e.otpBindingKey, "|")
-		if !found || participant == "" || capability == "" {
-			return nil, fmt.Errorf("%s: otpEnvelope needs otpBindingKey, the binding key (participant|capability) "+
-				"whose participant is the OTP service; got %q", provider, e.otpBindingKey)
-		}
-		e.otp = otp
-	} else if len(e.otpActions) > 0 || e.otpBindingKey != "" || s.otp.tokenEnv != "" || s.otp.requestField != "" || s.otp.responsePaths != "" {
-		return nil, fmt.Errorf("%s: otp settings are present but otpEnvelope is not set", provider)
-	}
-
-	verifyTimeoutMs, err := timeoutSetting(provider, "otpVerifyTimeoutMs", s.verifyTimeoutMs)
+	base, err := parseBaseCodec(provider, s)
 	if err != nil {
 		return nil, err
 	}
-
-	verifyActions := listSet(s.verifyActions)
-	switch {
-	case s.verifyPath == "" && len(verifyActions) == 0:
-	case s.verifyPath == "" || len(verifyActions) == 0:
-		return nil, fmt.Errorf("%s: otpVerifyPath and otpVerifyActions are set together or not at all", provider)
-	case hooks.Challenge == nil:
-		return nil, fmt.Errorf("%s: otpVerifyPath needs Hooks.Challenge, to read the OTP from a payload", provider)
-	case e.otp == nil:
-		return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope: the OTP is verified on the OTP service", provider)
-	default:
-		e.verify = &verify{provider: provider, path: s.verifyPath, actions: verifyActions, codec: e.otp.(*cbcCodec),
-			bindingKey: e.otpBindingKey, hooks: hooks, client: &http.Client{CheckRedirect: util.RefuseOffHostRedirect}, budget: model.ActionPlan{TimeoutMs: verifyTimeoutMs}}
+	if base != nil {
+		e.base = base
+	}
+	otp, err := parseOTPCodec(provider, s, e.otpBindingKey, e.otpActions)
+	if err != nil {
+		return nil, err
+	}
+	if otp != nil {
+		e.otp = otp
+	}
+	if e.verify, err = parseVerify(provider, s, hooks, otp, e.otpBindingKey); err != nil {
+		return nil, err
 	}
 
 	if e.base == nil && e.otp == nil {
 		return nil, fmt.Errorf("%s: an envelope block needs envelope or otpEnvelope", provider)
 	}
 	return e, nil
+}
+
+// parseBaseCodec reads the envelope* block: the codec for the provider's own
+// calls, or nil for plain JSON.
+func parseBaseCodec(provider string, s envelopeSettings) (*gcmCodec, error) {
+	if s.kind != "" {
+		return newGCMCodec(provider, s)
+	}
+	// Without the kind the body would go out unsealed.
+	if s.keyEnv != "" || s.nonceEnv != "" || s.tokenEnv != "" || s.tokenField != "" ||
+		s.requestField != "" || s.responsePaths != "" {
+		return nil, fmt.Errorf("%s: envelope settings are present but envelope is not set", provider)
+	}
+	return nil, nil
+}
+
+// parseOTPCodec reads the otp* block: the codec for the OTP service, or nil.
+func parseOTPCodec(provider string, s envelopeSettings, bindingKey string, actions map[string]bool) (*cbcCodec, error) {
+	if s.otp.kind == "" {
+		if len(actions) > 0 || bindingKey != "" || s.otp.tokenEnv != "" || s.otp.requestField != "" || s.otp.responsePaths != "" {
+			return nil, fmt.Errorf("%s: otp settings are present but otpEnvelope is not set", provider)
+		}
+		return nil, nil
+	}
+	otp, err := newCBCCodec(provider, s.otp)
+	if err != nil {
+		return nil, err
+	}
+	if len(actions) == 0 {
+		return nil, fmt.Errorf("%s: otpEnvelope needs otpActions, the actions sent through it", provider)
+	}
+	participant, capability, found := strings.Cut(bindingKey, "|")
+	if !found || participant == "" || capability == "" {
+		return nil, fmt.Errorf("%s: otpEnvelope needs otpBindingKey, the binding key (participant|capability) "+
+			"whose participant is the OTP service; got %q", provider, bindingKey)
+	}
+	return otp, nil
+}
+
+// parseVerify reads the otpVerify* block: the OTP check before guarded actions, or nil.
+func parseVerify(provider string, s envelopeSettings, hooks Hooks, otp *cbcCodec, bindingKey string) (*verify, error) {
+	timeoutMs, err := timeoutSetting(provider, "otpVerifyTimeoutMs", s.verifyTimeoutMs)
+	if err != nil {
+		return nil, err
+	}
+	actions := listSet(s.verifyActions)
+	switch {
+	case s.verifyPath == "" && len(actions) == 0:
+		return nil, nil
+	case s.verifyPath == "" || len(actions) == 0:
+		return nil, fmt.Errorf("%s: otpVerifyPath and otpVerifyActions are set together or not at all", provider)
+	case hooks.Challenge == nil:
+		return nil, fmt.Errorf("%s: otpVerifyPath needs Hooks.Challenge, to read the OTP from a payload", provider)
+	case otp == nil:
+		return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope: the OTP is verified on the OTP service", provider)
+	}
+	return &verify{provider: provider, path: s.verifyPath, actions: actions, codec: otp, bindingKey: bindingKey,
+		hooks: hooks, client: &http.Client{CheckRedirect: util.RefuseOffHostRedirect},
+		budget: model.ActionPlan{TimeoutMs: timeoutMs}}, nil
 }
 
 // withToken adds the service token to the plaintext. It is added here, not in

@@ -29,8 +29,8 @@ const (
 	testOTPToken      = "test-otp-token"
 )
 
-func otpRealm() realmSettings {
-	return realmSettings{kind: envelopeAESCBCKeyInBand, bindingKey: testOTPBindingKey, tokenEnv: testOTPTokenEnv, tokenField: "Token",
+func otpRealm() cbcSettings {
+	return cbcSettings{kind: envelopeAESCBCKeyInBand, bindingKey: testOTPBindingKey, tokenEnv: testOTPTokenEnv, tokenField: "Token",
 		requestField: "EncryptedRequest", responsePaths: "d.output,output"}
 }
 
@@ -137,11 +137,11 @@ func TestCBCSealFailsClosedWithoutItsToken(t *testing.T) {
 }
 
 func TestNewCBCCodecRefusesIncompleteSettings(t *testing.T) {
-	for name, tweak := range map[string]func(*realmSettings){
-		"unknown kind":        func(s *realmSettings) { s.kind = "aesGcm" },
-		"no request field":    func(s *realmSettings) { s.requestField = "" },
-		"no response path":    func(s *realmSettings) { s.responsePaths = "" },
-		"token with no field": func(s *realmSettings) { s.tokenField = "" },
+	for name, tweak := range map[string]func(*cbcSettings){
+		"unknown kind":        func(s *cbcSettings) { s.kind = "aesGcm" },
+		"no request field":    func(s *cbcSettings) { s.requestField = "" },
+		"no response path":    func(s *cbcSettings) { s.responsePaths = "" },
+		"token with no field": func(s *cbcSettings) { s.tokenField = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := otpRealm()
