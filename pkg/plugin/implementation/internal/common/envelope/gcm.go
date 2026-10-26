@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,11 +15,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
-
-// keySizes are the AES key lengths in bytes, decoded from hex.
-var keySizes = map[int]bool{16: true, 24: true, 32: true}
 
 // minNonceSize is GCM's standard nonce length. A shorter one is refused; it
 // only makes the fixed-nonce break below easier.
@@ -85,23 +82,13 @@ func (c *gcmCodec) Seal(ctx context.Context, mapped []byte) ([]byte, error) {
 // Open decrypts the answer. Missing or plain-text envelope: 502. Will not
 // decrypt (our key is wrong): 500. Not JSON: 502. Neither text is logged.
 func (c *gcmCodec) Open(ctx context.Context, answer []byte) ([]byte, error) {
-	var wire any
-	if err := json.Unmarshal(answer, &wire); err != nil {
-		log.Warnf(ctx, "%s answered with a body that is not JSON (%d bytes)", c.provider, len(answer))
-		return nil, refused(fmt.Errorf("%s answered without an envelope", c.provider))
-	}
-	sealed, found := sealedAnswer(wire, c.responsePaths)
-	if !found {
-		log.Warnf(ctx, "%s answered with no envelope at any configured path", c.provider)
-		return nil, refused(fmt.Errorf("%s answered without an envelope", c.provider))
-	}
-
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(sealed))
+	sealed, err := sealedIn(ctx, c.provider, answer, c.responsePaths)
 	if err != nil {
-		// A plain-text rejection: log it redacted, never return it.
-		log.Warnf(ctx, "%s answered with plain text where its envelope belongs: %s",
-			c.provider, redactToken(util.Explain([]byte(sealed)), c.tokenEnv))
-		return nil, refused(fmt.Errorf("%s rejected the request", c.provider))
+		return nil, err
+	}
+	raw, err := decodeSealed(ctx, c.provider, c.tokenEnv, sealed)
+	if err != nil {
+		return nil, err
 	}
 
 	gcm, nonce, err := c.cipher(ctx)
@@ -115,11 +102,7 @@ func (c *gcmCodec) Open(ctx context.Context, answer []byte) ([]byte, error) {
 		return nil, model.NewCodedErr(http.StatusInternalServerError, codeInternal,
 			fmt.Errorf("the answer from %s could not be decrypted", c.provider))
 	}
-	if !json.Valid(plain) {
-		log.Warnf(ctx, "%s sealed something other than JSON (%d bytes)", c.provider, len(plain))
-		return nil, refused(fmt.Errorf("%s answered with something that is not JSON", c.provider))
-	}
-	return plain, nil
+	return plainJSON(ctx, c.provider, plain)
 }
 
 // cipher builds the AEAD from the environment.
@@ -128,15 +111,11 @@ func (c *gcmCodec) cipher(ctx context.Context) (cipher.AEAD, []byte, error) {
 	if rawKey == "" || rawNonce == "" {
 		return nil, nil, unconfigured(ctx, c.provider, c.keyEnv+" and "+c.nonceEnv+" must both be set")
 	}
-	key, err := decodeHex(rawKey)
+	key, err := hex.DecodeString(strings.TrimSpace(rawKey))
 	if err != nil {
 		return nil, nil, unconfigured(ctx, c.provider, c.keyEnv+" is not hex")
 	}
-	if !keySizes[len(key)] {
-		return nil, nil, unconfigured(ctx, c.provider, fmt.Sprintf("%s decodes to %d bytes; AES needs 16, 24 or 32",
-			c.keyEnv, len(key)))
-	}
-	nonce, err := decodeHex(rawNonce)
+	nonce, err := hex.DecodeString(strings.TrimSpace(rawNonce))
 	if err != nil {
 		return nil, nil, unconfigured(ctx, c.provider, c.nonceEnv+" is not hex")
 	}
@@ -145,11 +124,10 @@ func (c *gcmCodec) cipher(ctx context.Context) (cipher.AEAD, []byte, error) {
 			c.nonceEnv, len(nonce), minNonceSize))
 	}
 
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(key) // refuses a key that is not 16, 24 or 32 bytes
 	if err != nil {
-		return nil, nil, unconfigured(ctx, c.provider, "the AES key was refused: "+err.Error())
+		return nil, nil, unconfigured(ctx, c.provider, c.keyEnv+" is not an AES key: "+err.Error())
 	}
-	// Any nonce length the provider issued, from minNonceSize up.
 	gcm, err := cipher.NewGCMWithNonceSize(block, len(nonce))
 	if err != nil {
 		return nil, nil, unconfigured(ctx, c.provider, "GCM could not be built: "+err.Error())

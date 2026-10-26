@@ -3,10 +3,10 @@
 package envelope
 
 import (
+	"bytes"
 	"context"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -144,11 +144,6 @@ func (e *providerEnvelope) hostedElsewhere() map[string]string {
 	return hosted
 }
 
-// otpHost is the OTP service's base URL, read from the registry per call.
-func (e *providerEnvelope) otpHost(ctx context.Context, exchange common.Exchange) (string, error) {
-	return common.HostOf(ctx, exchange.Registry, e.otpBindingKey)
-}
-
 // Seal verifies the OTP if the action needs it, then seals the request. A wrong
 // OTP stops the call.
 func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error) {
@@ -174,13 +169,9 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 	}
 	e := &providerEnvelope{provider: provider, otpBindingKey: strings.TrimSpace(s.otp.bindingKey),
 		otpActions: listSet(s.otpActions)}
-	// The verify carries the farmer's identifier, so it refuses an off-host
-	// redirect as the main call does.
-	client := &http.Client{CheckRedirect: util.RefuseOffHostRedirect}
-
 	switch s.kind {
 	case "":
-		// Without the kind the body would go out unsealed: refuse at startup.
+		// Without the kind the body would go out unsealed.
 		if s.keyEnv != "" || s.nonceEnv != "" || s.tokenEnv != "" || s.tokenField != "" ||
 			s.requestField != "" || s.responsePaths != "" {
 			return nil, fmt.Errorf("%s: envelope settings are present but envelope is not set", provider)
@@ -227,7 +218,7 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 		return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope: the OTP is verified on the OTP service", provider)
 	default:
 		e.verify = &verify{provider: provider, path: s.verifyPath, actions: verifyActions, codec: e.otp.(*cbcCodec),
-			host: e.otpHost, hooks: hooks, client: client, budget: model.ActionPlan{TimeoutMs: verifyTimeoutMs}}
+			bindingKey: e.otpBindingKey, hooks: hooks, client: &http.Client{CheckRedirect: util.RefuseOffHostRedirect}, budget: model.ActionPlan{TimeoutMs: verifyTimeoutMs}}
 	}
 
 	if e.base == nil && e.otp == nil {
@@ -235,9 +226,6 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 	}
 	return e, nil
 }
-
-
-// --- shared by the codecs ----------------------------------------------------
 
 // withToken adds the service token to the plaintext. It is added here, not in
 // the mapping, because mapping files are public.
@@ -294,8 +282,14 @@ func parsePaths(provider, setting, raw string) ([][]string, error) {
 	return paths, nil
 }
 
-// sealedAnswer finds the sealed string at the first path that holds one.
-func sealedAnswer(wire any, paths [][]string) (string, bool) {
+// sealedIn finds the sealed string at the first of paths that holds one.
+// Not JSON, or no envelope: 502.
+func sealedIn(ctx context.Context, provider string, answer []byte, paths [][]string) (string, error) {
+	var wire any
+	if err := json.Unmarshal(answer, &wire); err != nil {
+		log.Warnf(ctx, "%s answered with a body that is not JSON (%d bytes)", provider, len(answer))
+		return "", refused(fmt.Errorf("%s answered without an envelope", provider))
+	}
 	for _, path := range paths {
 		node := wire
 		for _, key := range path {
@@ -307,10 +301,33 @@ func sealedAnswer(wire any, paths [][]string) (string, bool) {
 			node = fields[key]
 		}
 		if value, ok := node.(string); ok {
-			return value, true
+			return strings.TrimSpace(value), nil
 		}
 	}
-	return "", false
+	log.Warnf(ctx, "%s answered with no envelope at any configured path", provider)
+	return "", refused(fmt.Errorf("%s answered without an envelope", provider))
+}
+
+// decodeSealed base64-decodes a sealed string. Plain text there is the
+// provider's rejection: logged redacted, never returned (502).
+func decodeSealed(ctx context.Context, provider, tokenEnv, sealed string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(sealed)
+	if err != nil || len(raw) == 0 {
+		log.Warnf(ctx, "%s answered with plain text where its envelope belongs: %s",
+			provider, redactToken(util.Explain([]byte(sealed)), tokenEnv))
+		return nil, refused(fmt.Errorf("%s rejected the request", provider))
+	}
+	return raw, nil
+}
+
+// plainJSON checks that a decrypted answer is JSON (502 if not).
+func plainJSON(ctx context.Context, provider string, plain []byte) ([]byte, error) {
+	plain = bytes.Trim(plain, " \t\r\n\x00")
+	if !json.Valid(plain) {
+		log.Warnf(ctx, "%s sealed something other than JSON (%d bytes)", provider, len(plain))
+		return nil, refused(fmt.Errorf("%s answered with something that is not JSON", provider))
+	}
+	return plain, nil
 }
 
 // unconfigured returns a 500; the detail goes to the log, not the wire.
@@ -334,15 +351,6 @@ func redactToken(text, tokenEnv string) string {
 // refused is a 502: the provider's answer is unusable.
 func refused(err error) error {
 	return model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable, err)
-}
-
-// decodeHex decodes hex, ignoring whitespace.
-func decodeHex(raw string) ([]byte, error) {
-	cleaned := strings.Join(strings.Fields(raw), "")
-	if cleaned == "" {
-		return nil, errors.New("empty")
-	}
-	return hex.DecodeString(cleaned)
 }
 
 // listSet reads a comma-separated list into a set.

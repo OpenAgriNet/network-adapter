@@ -197,9 +197,8 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	// The provider's envelope, if any: seal once before the retry loop, open
 	// once after it.
-	envelope, wrapped := s.config.EnvelopeByProvider[provider]
 	var open Opener
-	if wrapped {
+	if envelope, wrapped := s.config.EnvelopeByProvider[provider]; wrapped {
 		exchange := Exchange{Action: action, Beckn: beckn, Plan: plan, Registry: s.registry}
 		if upstreamRequest, open, err = envelope.Seal(ctx, exchange, upstreamRequest); err != nil {
 			return err
@@ -211,7 +210,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	if wrapped && open != nil {
+	if open != nil {
 		if upstreamResponse, err = open(ctx, upstreamResponse); err != nil {
 			return err
 		}

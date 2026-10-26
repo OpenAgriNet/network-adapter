@@ -239,19 +239,13 @@ func TestRunIsAnUpstreamFailureWhenTheNamedHostIsUnpublished(t *testing.T) {
 	}
 }
 
-func TestNewRefusesAHostForAProviderItDoesNotServeOrABadKey(t *testing.T) {
-	for name, hosts := range map[string]map[string]map[string]string{
-		"an unserved provider": {"someone-else": {"init": otherBindingKey}},
-		"a key with no |":      {testProvider: {"init": "other-host"}},
-		"an empty half":        {testProvider: {"init": "|openagrinet:Other"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg := &Config{BindingKeys: []string{testBindingKey}, HostedElsewhere: hosts}
-			cfg.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
-			if _, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, cfg); err == nil {
-				t.Error("New() accepted it")
-			}
-		})
+// A malformed binding key is refused by envelope.Parse, before New.
+func TestNewRefusesAHostForAProviderItDoesNotServe(t *testing.T) {
+	hosts := map[string]map[string]string{"someone-else": {"init": otherBindingKey}}
+	cfg := &Config{BindingKeys: []string{testBindingKey}, HostedElsewhere: hosts}
+	cfg.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
+	if _, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, cfg); err == nil {
+		t.Error("New() accepted it")
 	}
 }
 

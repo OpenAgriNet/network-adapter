@@ -30,11 +30,11 @@ type verify struct {
 	path     string
 	actions  map[string]bool
 	codec    *cbcCodec
-	host     func(context.Context, common.Exchange) (string, error)
-	hooks    Hooks
-	client   *http.Client
-	// budget is the verify's own time budget, not the guarded action's.
-	budget model.ActionPlan
+	// bindingKey names the OTP service's participant; its host is read per call.
+	bindingKey string
+	hooks      Hooks
+	client     *http.Client
+	budget     model.ActionPlan // the verify's own, not the guarded action's
 }
 
 // check verifies the challenge. Unreachable: 502. Not a yes: 400
@@ -44,7 +44,7 @@ func (v *verify) check(ctx context.Context, exchange common.Exchange) error {
 	if err != nil {
 		return err
 	}
-	base, err := v.host(ctx, exchange)
+	base, err := common.HostOf(ctx, exchange.Registry, v.bindingKey)
 	if err != nil {
 		return err
 	}
