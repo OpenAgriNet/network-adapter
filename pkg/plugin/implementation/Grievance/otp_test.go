@@ -38,13 +38,13 @@ func TestChallengeInReadsTheKindFromTheSlot(t *testing.T) {
 	} {
 		payload := map[string]any{"message": map[string]any{"contract": map[string]any{"commitments": []any{
 			map[string]any{"commitmentAttributes": tc.attributes}}}}}
-		if kind, id, _, _ := challengeIn(common.Exchange{Beckn: payload}); kind != tc.kind || id != tc.id {
+		if _, kind, id, _, _ := challengeIn(common.Exchange{Beckn: payload}); kind != tc.kind || id != tc.id {
 			t.Errorf("challengeIn(%s) = %q, %q, want %q, %q", name, kind, id, tc.kind, tc.id)
 		}
 	}
 	support := map[string]any{"message": map[string]any{"support": map[string]any{"orderId": "UP12345678A",
 		"channels": []any{map[string]any{"enrolmentId": "BR295454592"}}}}}
-	if kind, id, _, _ := challengeIn(common.Exchange{Beckn: support}); kind != "Ben_id" || id != "BR295454592" {
+	if _, kind, id, _, _ := challengeIn(common.Exchange{Beckn: support}); kind != "Ben_id" || id != "BR295454592" {
 		t.Errorf("challengeIn(support) = %q, %q, want the channel's enrolmentId, not orderId", kind, id)
 	}
 }
@@ -58,15 +58,20 @@ func TestVerifyRequestRefusesWhatCannotBeVerified(t *testing.T) {
 	for name, tc := range map[string]struct {
 		exchange common.Exchange
 		code     string
+		field    string
 	}{
-		"no OTP":         {withOTP("SMS_OTP", ""), "SCH_REQUIRED_FIELD_MISSING"},
-		"another method": {withOTP("EMAIL_OTP", "4821"), "SCH_INVALID_FORMAT"},
+		"no OTP":         {withOTP("SMS_OTP", ""), "SCH_REQUIRED_FIELD_MISSING", "challenge.response.value"},
+		"another method": {withOTP("EMAIL_OTP", "4821"), "SCH_INVALID_FORMAT", "challenge.response.method"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := verifyRequest(tc.exchange)
 			var be model.BecknErrorer
 			if !errors.As(err, &be) || be.BecknError().Code != tc.code {
-				t.Errorf("verifyRequest() = %v, want %s", err, tc.code)
+				t.Fatalf("verifyRequest() = %v, want %s", err, tc.code)
+			}
+			want := "$.message.contract.commitments[0].commitmentAttributes." + tc.field
+			if d := be.BecknError().Details; d == nil || d.Path != want {
+				t.Errorf("details = %+v, want path %s", d, want)
 			}
 		})
 	}
