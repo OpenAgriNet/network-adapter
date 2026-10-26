@@ -136,7 +136,6 @@ const (
 	operationLookup           = "lookup"
 	operationProviderRecord   = "provider_record"
 	operationAdmittedNetworks = "admitted_networks"
-	operationAdmittedNetwork  = "admitted_network"
 )
 
 // Config holds configuration parameters for the registry client.
@@ -638,7 +637,6 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		ValidFrom:        validFrom,
 		ValidUntil:       validUntil,
 		Status:           status,
-		Agreement:        p.FederationRole.agreed(),
 	}
 }
 

@@ -138,34 +138,7 @@ func TestAdmittedNetworksReturnsEveryDirection(t *testing.T) {
 	}
 }
 
-func TestAdmittedNetworkFindsOneByID(t *testing.T) {
-	t.Parallel()
-
-	network, err := serveRecords(t, networkRecord()).AdmittedNetwork(context.Background(), testNetworkID)
-	if err != nil {
-		t.Fatalf("AdmittedNetwork() returned an unexpected error: %v", err)
-	}
-	if network == nil {
-		t.Fatal("expected a network, got nil")
-	}
-	if network.ID != testNetworkID {
-		t.Errorf("ID = %q, want %q", network.ID, testNetworkID)
-	}
-}
-
-func TestAdmittedNetworkReportsAnUnknownNetworkAsNil(t *testing.T) {
-	t.Parallel()
-
-	network, err := serveRecords(t).AdmittedNetwork(context.Background(), testNetworkID)
-	if err != nil {
-		t.Fatalf("AdmittedNetwork() returned an unexpected error: %v", err)
-	}
-	if network != nil {
-		t.Errorf("expected nil for a network we never admitted, got %+v", network)
-	}
-}
-
-func TestAdmittedNetworkLookupsReportAnUnreachableRegistry(t *testing.T) {
+func TestAdmittedNetworksReportAnUnreachableRegistry(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,9 +149,6 @@ func TestAdmittedNetworkLookupsReportAnUnreachableRegistry(t *testing.T) {
 
 	if _, err := c.AdmittedNetworks(context.Background()); err == nil {
 		t.Error("AdmittedNetworks(): expected an error when the registry cannot be asked")
-	}
-	if _, err := c.AdmittedNetwork(context.Background(), testNetworkID); err == nil {
-		t.Error("AdmittedNetwork(): expected an error when the registry cannot be asked")
 	}
 }
 
@@ -215,14 +185,6 @@ func TestAdmittedLookupsEmitMetrics(t *testing.T) {
 			operation: operationAdmittedNetworks,
 			call: func(c *Client) error {
 				_, err := c.AdmittedNetworks(ctx)
-				return err
-			},
-		},
-		{
-			name:      "finding one network",
-			operation: operationAdmittedNetwork,
-			call: func(c *Client) error {
-				_, err := c.AdmittedNetwork(ctx, testNetworkID)
 				return err
 			},
 		},
@@ -279,12 +241,12 @@ func TestANetworkWithNoIDIsNotLookedUp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	network, err := newTestClient(t, srv.URL, nil).AdmittedNetwork(context.Background(), "   ")
+	agreed, err := newTestClient(t, srv.URL, nil).agreementWith(context.Background(), "   ")
 	if err != nil {
-		t.Fatalf("AdmittedNetwork: %v", err)
+		t.Fatalf("agreementWith: %v", err)
 	}
-	if network != nil {
-		t.Errorf("resolved %+v from a blank network id", network)
+	if agreed.Agreed() {
+		t.Errorf("resolved %+v from a blank network id", agreed)
 	}
 	if asked {
 		t.Error("the registry was searched for a network with no id, which matches any record missing one")

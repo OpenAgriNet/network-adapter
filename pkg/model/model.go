@@ -33,10 +33,6 @@ type Subscription struct {
 	Updated            time.Time `json:"updated,omitzero" format:"date-time"`
 	Nonce              string    `json:"nonce,omitzero"`
 	NetworkMemberships []string  `json:"network_memberships,omitempty"`
-
-	// Agreement is set only on a network we admitted. It says which way round we
-	// agreed and what the agreement covers; every other participant has none.
-	Agreement Agreement `json:"agreement,omitzero"`
 }
 
 // nonUsableKeySubscriptionStatuses are the Subscription.Status values that mean a

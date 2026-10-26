@@ -45,44 +45,6 @@ func (c *Client) AdmittedNetworks(ctx context.Context) ([]model.AdmittedNetwork,
 	return networks, nil
 }
 
-// AdmittedNetwork reports what we agreed with one network, or nil if we never
-// admitted it. Nil is an answer; an error means we could not ask.
-func (c *Client) AdmittedNetwork(ctx context.Context, networkID string) (*model.AdmittedNetwork, error) {
-	start := time.Now()
-	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
-	ctx, span := tracer.Start(ctx, "registry network")
-	defer span.End()
-
-	if strings.TrimSpace(networkID) == "" {
-		span.SetAttributes(telemetry.AttrErrorType.String(outcomeNotFound))
-		c.emitMetrics(ctx, start, operationAdmittedNetwork, outcomeNotFound)
-		return nil, nil
-	}
-
-	records, err := c.searchNetworks(ctx, tracer, map[string]eqFilter{
-		"participantId": {Eq: networkID},
-	})
-	if err != nil {
-		return nil, c.lookupFailed(ctx, span, start, operationAdmittedNetwork, err)
-	}
-
-	for _, record := range records {
-		if network, ok := admittedFrom(record); ok {
-			span.SetAttributes(telemetry.AttrErrorType.String(outcomeFound))
-			c.emitMetrics(ctx, start, operationAdmittedNetwork, outcomeFound)
-			log.Infof(ctx, "OAN registry resolved network %s, agreed %v", network.ID, network.Directions())
-			return &network, nil
-		}
-	}
-
-	// Not an error -- the registry answered, and the answer is no agreement.
-	// Info so a refused crawl is traceable without reading as a fault.
-	span.SetAttributes(telemetry.AttrErrorType.String(outcomeNotFound))
-	c.emitMetrics(ctx, start, operationAdmittedNetwork, outcomeNotFound)
-	log.Infof(ctx, "OAN registry has no usable agreement with network %s", networkID)
-	return nil, nil
-}
-
 func (c *Client) lookupFailed(ctx context.Context, span trace.Span, start time.Time, operation string, err error) error {
 	outcome := classify(err)
 	span.RecordError(err)
