@@ -82,7 +82,7 @@ response: |
             "commitmentAttributes": {
               "@context":        $ca.`@context`,
               "@type":           $ca.`@type`,
-              "informationMode": "Direct",
+              "informationMode": "OnDemand",
               "scheme":          $ca.scheme,
               "enrolmentId":     $text(response.Reg_No),
               "application": {

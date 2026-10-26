@@ -351,7 +351,7 @@ func TestAppStatusReadsTheRecordAndWhatIsBlockingPayment(t *testing.T) {
 	want := map[string]any{
 		"@context":        "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
 		"@type":           "openagrinet:SchemeApplication",
-		"informationMode": "Direct",
+		"informationMode": "OnDemand",
 		"scheme":          map[string]any{"code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi"},
 		"enrolmentId":     "UP45678901C",
 		"application": map[string]any{
