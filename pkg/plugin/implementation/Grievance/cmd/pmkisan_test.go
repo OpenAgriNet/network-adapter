@@ -30,7 +30,7 @@ func bothSchemesConfig() map[string]string {
 		"envelopeRequestField-pmkisan":  "EncryptedRequest",
 		"envelopeResponsePaths-pmkisan": "d.output,output",
 		"otpEnvelope-pmkisan":           "aesCbcKeyInBand",
-		"otpBindingKey-pmkisan":         "pmkisan-chatbot|openagrinet:SchemeApplication",
+		"otpBindingKey-pmkisan":         "pmkisan-status|openagrinet:SchemeApplication",
 		"otpTokenEnv-pmkisan":           "PMKISAN_OTP_TOKEN",
 		"otpTokenField-pmkisan":         "Token",
 		"otpRequestField-pmkisan":       "EncryptedRequest",
@@ -55,7 +55,7 @@ func TestParseConfig_PMKISANBlock_ReadsEnvelope(t *testing.T) {
 	if _, ok := cfg.EnvelopeByProvider["pmkisan"]; !ok || len(cfg.EnvelopeByProvider) != 1 {
 		t.Errorf("EnvelopeByProvider = %v, want pmkisan's alone -- PMFBY speaks plain JSON", cfg.EnvelopeByProvider)
 	}
-	if got := cfg.HostedElsewhere["pmkisan"]["init"]; got != "pmkisan-chatbot|openagrinet:SchemeApplication" {
+	if got := cfg.HostedElsewhere["pmkisan"]["init"]; got != "pmkisan-status|openagrinet:SchemeApplication" {
 		t.Errorf("HostedElsewhere = %v, want pmkisan's init on the chatbot service's participant", cfg.HostedElsewhere)
 	}
 	if len(cfg.AuthByProvider) != 2 || cfg.AuthByProvider["pmkisan"].Scheme != "none" {

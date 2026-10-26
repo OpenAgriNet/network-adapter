@@ -25,7 +25,7 @@ const (
 	cbcReplyPlain = `{"Rsponce":"True","Message":"OTP Verified"}`
 
 	testOTPTokenEnv   = "TEST_PMKISAN_OTP_TOKEN"
-	testOTPBindingKey = "pmkisan-chatbot|openagrinet:SchemeApplication"
+	testOTPBindingKey = "pmkisan-status|openagrinet:SchemeApplication"
 	testOTPToken      = "test-otp-token"
 )
 
