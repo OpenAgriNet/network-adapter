@@ -763,6 +763,8 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 			s, err = newValidateSignStep(h.signValidator, h.km, h.payloadStore)
 		case "validateSchema":
 			s, err = newValidateSchemaStep(h.schemaValidator, h.basePath)
+		case "checkCrossNetworkRequester":
+			s, err = newCrossNetworkRequesterStep(h.registry)
 		case "addRoute":
 			s, err = newAddRouteStep(h.router, h.basePath)
 		case "checkPolicy":

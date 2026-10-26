@@ -247,37 +247,3 @@ func TestProviderSatisfiesTheInterface(t *testing.T) {
 
 	var _ definition.RegistryLookupProvider = Provider
 }
-
-func TestParseConfigReadsCrossNetworkCheck(t *testing.T) {
-	provider := sunbirdRegistryProvider{}
-
-	for _, tc := range []struct {
-		name  string
-		value string
-		want  bool
-	}{
-		{"absent means off", "", false},
-		{"true", "true", true},
-		{"false", "false", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			config := map[string]string{"url": "http://registry.invalid/api/v1"}
-			if tc.value != "" {
-				config["crossNetworkCheck"] = tc.value
-			}
-			cfg, err := provider.parseConfig(config)
-			if err != nil {
-				t.Fatalf("parseConfig() returned an unexpected error: %v", err)
-			}
-			if cfg.CrossNetworkCheck != tc.want {
-				t.Errorf("CrossNetworkCheck = %v, want %v", cfg.CrossNetworkCheck, tc.want)
-			}
-		})
-	}
-
-	if _, err := provider.parseConfig(map[string]string{
-		"url": "http://registry.invalid/api/v1", "crossNetworkCheck": "yes please",
-	}); err == nil {
-		t.Error("an unparseable crossNetworkCheck was accepted")
-	}
-}

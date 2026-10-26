@@ -158,10 +158,6 @@ type Config struct {
 	// truncated, because half a JSON document fails to decode with an error
 	// that says nothing about the cause.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
-
-	// CrossNetworkCheck refuses a key to a network we did not agree to give to.
-	// Off by default, so a deployment that federates with nobody is unchanged.
-	CrossNetworkCheck bool `yaml:"crossNetworkCheck" json:"crossNetworkCheck"`
 }
 
 // Client resolves participants from the registry. It is safe for concurrent
@@ -173,7 +169,6 @@ type Client struct {
 	cache             definition.Cache
 	cacheTTL          time.Duration
 	maxResponseBytes  int64
-	crossNetworkCheck bool
 }
 
 // participant is the subset of a registry record this plugin reads. The
@@ -413,7 +408,6 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 		cache:             cache,
 		cacheTTL:          cfg.CacheTTL,
 		maxResponseBytes:  maxResponseBytes,
-		crossNetworkCheck: cfg.CrossNetworkCheck,
 	}
 
 	closer := func() error {
@@ -439,7 +433,6 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 // distinguishable instead of collapsing into the same empty result.
 func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.Subscription, error) {
 	start := time.Now()
-	asked := servedRequestFrom(ctx)
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry lookup")
 	defer span.End()
@@ -456,11 +449,6 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 	cacheKey := fmt.Sprintf("registry_lookup_%s_%s", req.SubscriberID, req.KeyID)
 	if cached, ok := c.cached(ctx, tracer, cacheKey); ok {
 		log.Debugf(ctx, "OAN registry lookup cache hit for key: %s", cacheKey)
-		if err := c.agreedToGiveTo(ctx, asked, cached); err != nil {
-			span.SetAttributes(telemetry.AttrErrorType.String(outcomeRefused))
-			c.emitMetrics(ctx, start, operationLookup, outcomeRefused)
-			return nil, err
-		}
 		span.SetAttributes(telemetry.AttrErrorType.String(outcomeCacheHit))
 		c.emitMetrics(ctx, start, operationLookup, outcomeCacheHit)
 		return cached, nil
@@ -489,12 +477,6 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 
 	status, outcome := resolveStatus(found, matched)
 	results := []model.Subscription{toSubscription(found, matched, status)}
-
-	if err := c.agreedToGiveTo(ctx, asked, results); err != nil {
-		span.SetAttributes(telemetry.AttrErrorType.String(outcomeRefused))
-		c.emitMetrics(ctx, start, operationLookup, outcomeRefused)
-		return nil, err
-	}
 
 	// The header's algorithm was already validated upstream, so a disagreement
 	// here cannot let a bad signature through -- but it means the record and the
@@ -776,80 +758,60 @@ func (c *Client) emitMetrics(ctx context.Context, start time.Time, operation, ou
 // one the agreed subset can be checked against.
 const discoverAction = "discover"
 
-// servedRequest is who signed the request we are serving, what they are asking
-// for, and which capabilities their body named. Read before the span wraps the
-// context, which would otherwise hide the StepContext behind a plain one.
+// codeUnauthorizedAction is the Beckn code for a caller who may not do this.
+const codeUnauthorizedAction = "AUT_UNAUTHORIZED_ACTION"
+
+// servedRequest is who is asking, what for, and which capabilities their body
+// named. The step reads these off the request and hands them over.
 type servedRequest struct {
 	caller       string
 	action       string
 	capabilities []string
 }
 
-func servedRequestFrom(ctx context.Context) servedRequest {
-	asked := servedRequest{caller: remoteIDOf(ctx)}
-	sc, ok := ctx.(*model.StepContext)
-	if !ok || len(sc.Body) == 0 {
-		return asked
-	}
-	var payload struct {
-		Context map[string]any `json:"context"`
-	}
-	if err := json.Unmarshal(sc.Body, &payload); err != nil || payload.Context == nil {
-		return asked
-	}
-	if asked.caller == "" {
-		asked.caller = model.ResolveCallerID(payload.Context, model.RoleBPP)
-	}
-	asked.action, _ = payload.Context["action"].(string)
-	asked.capabilities = schemaContextOf(payload.Context)
-	return asked
+// refused classifies an agreement refusal. 400 and not 500: this is the
+// caller's side to fix, not ours. Not 401 either -- their credentials are fine,
+// and retrying with better ones changes nothing.
+func refused(err error) error {
+	return model.NewBadReqErr(codeUnauthorizedAction, err)
 }
 
-func remoteIDOf(ctx context.Context) string {
-	v, _ := ctx.Value(model.ContextKeyRemoteID).(string)
-	return v
-}
-
-func schemaContextOf(beckn map[string]any) []string {
-	listed, _ := beckn["schemaContext"].([]any)
-	capabilities := make([]string, 0, len(listed))
-	for _, entry := range listed {
-		if name, ok := entry.(string); ok && strings.TrimSpace(name) != "" {
-			capabilities = append(capabilities, name)
-		}
-	}
-	return capabilities
-}
-
-// agreedToGiveTo refuses a key to a network we never agreed to give to, which
-// stops the request at validateSign. Only the caller is judged.
-func (c *Client) agreedToGiveTo(ctx context.Context, asked servedRequest, results []model.Subscription) error {
-	if !c.crossNetworkCheck || len(results) == 0 || asked.caller == "" {
+// CheckCrossNetworkRequester refuses a caller we never agreed to answer, and on
+// a discover one asking beyond what the agreement covers.
+//
+// It reads our own admission records rather than a key lookup, so it holds
+// whether or not the request was signed. Only the caller is judged.
+func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action string, capabilities []string) error {
+	if strings.TrimSpace(caller) == "" {
 		return nil
 	}
 
-	for _, sub := range results {
-		if !strings.EqualFold(sub.SubscriberID, asked.caller) {
-			continue
-		}
-		// Our own participants agreed nothing, so there is nothing to honour.
-		if !sub.Agreement.Agreed() {
-			return nil
-		}
-		if !sub.Agreement.IsRequester() {
-			log.Infof(ctx, "OAN registry refusing %s: we agreed %v, which is not giving to them",
-				asked.caller, sub.Agreement.Directions())
-			return fmt.Errorf("%s is not a network we agreed to give to", asked.caller)
-		}
-		// Only a discover names capabilities. Every other action is governed by
-		// the direction alone, which we just checked.
-		if asked.action != discoverAction {
-			log.Infof(ctx, "OAN registry %s may call us for %q", asked.caller, asked.action)
-			return nil
-		}
-		return agreedToGiveThese(ctx, asked, sub.Agreement.RequesterContexts())
+	network, err := c.AdmittedNetwork(ctx, caller)
+	if err != nil {
+		// Refuse rather than allow: a registry we could not ask is not an
+		// agreement we can honour.
+		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
 	}
-	return nil
+	// No record is an ordinary participant -- a provider, our own deployment,
+	// or a caller signature validation will reject anyway. No federation rule
+	// applies to them.
+	if network == nil {
+		return nil
+	}
+
+	if !network.IsRequester() {
+		log.Infof(ctx, "OAN registry refusing %s: we agreed %v, which is not giving to them",
+			caller, network.Directions())
+		return refused(fmt.Errorf("%s is not a network we agreed to give to", caller))
+	}
+	// Only a discover names capabilities. Every other action is governed by the
+	// direction alone, which we just checked.
+	if action != discoverAction {
+		log.Infof(ctx, "OAN registry %s may call us for %q", caller, action)
+		return nil
+	}
+	return agreedToGiveThese(ctx, servedRequest{caller: caller, action: action, capabilities: capabilities},
+		network.RequesterContexts())
 }
 
 // agreedToGiveThese refuses a caller asking beyond what the agreement covers.
@@ -858,13 +820,13 @@ func (c *Client) agreedToGiveTo(ctx context.Context, asked servedRequest, result
 func agreedToGiveThese(ctx context.Context, asked servedRequest, agreed []string) error {
 	if len(asked.capabilities) == 0 {
 		log.Infof(ctx, "OAN registry refusing %s: named no capability, which asks for everything", asked.caller)
-		return fmt.Errorf("%s named no capability", asked.caller)
+		return refused(fmt.Errorf("%s named no capability", asked.caller))
 	}
 	for _, want := range asked.capabilities {
 		if !slices.Contains(agreed, want) {
 			log.Infof(ctx, "OAN registry refusing %s: asked for %s, which we did not agree to give",
 				asked.caller, want)
-			return fmt.Errorf("%s asked for a capability we did not agree to give", asked.caller)
+			return refused(fmt.Errorf("%s asked for a capability we did not agree to give", asked.caller))
 		}
 	}
 	log.Infof(ctx, "OAN registry %s may call us, and asked only within what we agreed", asked.caller)
