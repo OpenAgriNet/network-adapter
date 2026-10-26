@@ -503,7 +503,7 @@ func TestPMKISANSupportLodgesTheGrievanceInPlaintextTheMappingNeverSees(t *testi
 	channel := pkAt(t, support, "channels", 0)
 	for field, want := range map[string]any{
 		"@type":           pkCapability,
-		"informationMode": "Direct",
+		"informationMode": "OnDemand",
 	} {
 		if got := pkAt(t, channel, field); got != want {
 			t.Errorf("channel %s = %v, want %v", field, got, want)
@@ -620,12 +620,12 @@ func TestPMKISANStatusAnswersTheGrievanceFiledOnThatDate(t *testing.T) {
 		t.Error("on_status carries contract.descriptor; the complaint now travels in the grievance band")
 	}
 	attributes := pkAt(t, contract, "commitments", 0, "commitmentAttributes")
-	if got := pkAt(t, attributes, "informationMode"); got != "Direct" {
-		t.Errorf("informationMode = %v, want Direct", got)
+	if got := pkAt(t, attributes, "informationMode"); got != "OnDemand" {
+		t.Errorf("informationMode = %v, want OnDemand", got)
 	}
-	if got := pkAt(t, attributes, "grievance"); fmt.Sprint(got) !=
-		fmt.Sprint(map[string]any{"description": "Third instalment for 2026 has not been credited."}) {
-		t.Errorf("grievance = %v, want the matching record's description alone", got)
+	// The pack's status answer carries the case, not the complaint.
+	if _, present := attributes.(map[string]any)["grievance"]; present {
+		t.Errorf("grievance = %v, want none: the status answer carries the case alone", attributes.(map[string]any)["grievance"])
 	}
 	for field, want := range map[string]any{
 		"filedOn":   "2026-09-28",

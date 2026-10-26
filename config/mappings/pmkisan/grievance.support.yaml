@@ -57,7 +57,7 @@ response: |
           "channels": [{
             "@context":        $ch.`@context`,
             "@type":           $ch.`@type`,
-            "informationMode": "Direct",
+            "informationMode": "OnDemand",
             "provider":        $ch.provider,
             "scheme":          $ch.scheme,
             "enrolmentId":     $ch.enrolmentId,
