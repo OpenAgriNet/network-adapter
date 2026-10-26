@@ -385,8 +385,8 @@ func TestTheVerifyKeepsToItsOwnBudget(t *testing.T) {
 	}
 }
 
-// Reseal seals a further request with the action's codec and spends no OTP.
-func TestResealSealsWithoutVerifying(t *testing.T) {
+// SealWithoutVerify seals a further request with the action's codec and spends no OTP.
+func TestSealWithoutVerifySkipsTheVerify(t *testing.T) {
 	t.Setenv(testOTPTokenEnv, testOTPToken)
 	e, err := newProviderEnvelope("pmkisan-status", statusSettings(), testHooks)
 	if err != nil {
@@ -396,17 +396,17 @@ func TestResealSealsWithoutVerifying(t *testing.T) {
 	server := httptest.NewServer(otp)
 	defer server.Close()
 
-	wire, _, err := e.Reseal(context.Background(), common.Exchange{Action: "status", Beckn: statusPayload(validOTP),
+	wire, _, err := e.SealWithoutVerify(context.Background(), common.Exchange{Action: "status", Beckn: statusPayload(validOTP),
 		Plan: &model.ProviderRecord{BaseURL: server.URL}}, []byte(`{"Types":"Ben_id","Values":"UP12345678A"}`))
 	if err != nil {
-		t.Fatalf("Reseal() = %v", err)
+		t.Fatalf("SealWithoutVerify() = %v", err)
 	}
 	if otp.calls != 0 {
-		t.Errorf("Reseal() called the verify %d time(s)", otp.calls)
+		t.Errorf("SealWithoutVerify() called the verify %d time(s)", otp.calls)
 	}
 	var body map[string]string
 	_ = json.Unmarshal(wire, &body)
 	if !strings.Contains(body["EncryptedRequest"], "@") {
-		t.Errorf("Reseal() sealed %q, want cipher@key", body["EncryptedRequest"])
+		t.Errorf("SealWithoutVerify() sealed %q, want cipher@key", body["EncryptedRequest"])
 	}
 }

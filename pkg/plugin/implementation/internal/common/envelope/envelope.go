@@ -131,14 +131,15 @@ type providerEnvelope struct {
 }
 
 var (
-	_ common.Envelope = (*providerEnvelope)(nil)
-	_ Resealer        = (*providerEnvelope)(nil)
+	_ common.Envelope  = (*providerEnvelope)(nil)
+	_ UnverifiedSealer = (*providerEnvelope)(nil)
 )
 
-// Resealer seals a further request for an action without running its verify,
-// for a second call after the first (an OTP is spent once).
-type Resealer interface {
-	Reseal(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error)
+// UnverifiedSealer seals a request for an action WITHOUT running its OTP
+// verify: for a second call after a verified first (an OTP is spent once).
+// Calling it by mistake skips the OTP check.
+type UnverifiedSealer interface {
+	SealWithoutVerify(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error)
 }
 
 // hostedElsewhere sends the OTP actions to the OTP service's participant.
@@ -161,11 +162,11 @@ func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, m
 			return nil, nil, err
 		}
 	}
-	return e.Reseal(ctx, exchange, mapped)
+	return e.SealWithoutVerify(ctx, exchange, mapped)
 }
 
-// Reseal seals with the action's codec and runs no verify.
-func (e *providerEnvelope) Reseal(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error) {
+// SealWithoutVerify seals with the action's codec and skips the OTP verify.
+func (e *providerEnvelope) SealWithoutVerify(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error) {
 	c := e.base
 	if e.otpActions[exchange.Action] {
 		c = e.otp

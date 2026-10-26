@@ -470,6 +470,10 @@ func TestAppStatusReportsNoRegistrationAsARefusal(t *testing.T) {
 	if strings.Contains(beckn.Message, "9812345670") {
 		t.Errorf("the answer %q passes the portal's text through", beckn.Message)
 	}
+	const mobile = "$.message.contract.commitments[0].commitmentAttributes.applicant.mobile"
+	if beckn.Details == nil || beckn.Details.Path != mobile {
+		t.Errorf("details = %+v, want path %s, the identifier the caller sent", beckn.Details, mobile)
+	}
 	if chatbot.calls["/ChatbotBeneficiaryStatus"] != 0 {
 		t.Error("the blockers were read for a registration that does not exist")
 	}
@@ -480,6 +484,8 @@ func TestAppStatusFailsClosedOnARecordItCannotUse(t *testing.T) {
 		"no flag":          `{"Reg_No":"UP45678901C","LatestInstallmentPaid":3}`,
 		"no instalments":   `{"Rsponce":"True","Reg_No":"UP45678901C"}`,
 		"a negative count": `{"Rsponce":"True","Reg_No":"UP45678901C","LatestInstallmentPaid":"-1"}`,
+		"no Reg_No":        `{"Rsponce":"True","LatestInstallmentPaid":3}`,
+		"a blank Reg_No":   `{"Rsponce":"True","Reg_No":"  ","LatestInstallmentPaid":3}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			chatbot := newASChatbot(t)

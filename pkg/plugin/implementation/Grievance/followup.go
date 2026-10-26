@@ -28,14 +28,14 @@ type followUpSettings struct{ path, field, actions, timeoutMs string }
 // host and adds its answer under field; on failure the field is absent, never
 // empty (ADR-0005). PM-KISAN application status reads its blockers this way.
 type followUp struct {
-	inner     common.Envelope
-	reseal    envelope.Resealer
-	provider  string
-	path      string
-	field     string
-	actions   map[string]bool
-	timeoutMs int
-	client    *http.Client
+	inner      common.Envelope
+	unverified envelope.UnverifiedSealer
+	provider   string
+	path       string
+	field      string
+	actions    map[string]bool
+	timeoutMs  int
+	client     *http.Client
 }
 
 var _ common.Envelope = (*followUp)(nil)
@@ -70,7 +70,7 @@ func newFollowUp(provider string, s followUpSettings, inner common.Envelope) (*f
 	if s.path == "" || s.field == "" || len(actions) == 0 {
 		return nil, fmt.Errorf("%s: followUpPath, followUpField and followUpActions are set together or not at all", provider)
 	}
-	reseal, ok := inner.(envelope.Resealer)
+	unverified, ok := inner.(envelope.UnverifiedSealer)
 	if inner == nil || !ok {
 		return nil, fmt.Errorf("%s: a follow-up needs the provider's envelope to seal it", provider)
 	}
@@ -82,7 +82,7 @@ func newFollowUp(provider string, s followUpSettings, inner common.Envelope) (*f
 		}
 		timeoutMs = ms
 	}
-	return &followUp{inner: inner, reseal: reseal, provider: provider, path: s.path, field: s.field,
+	return &followUp{inner: inner, unverified: unverified, provider: provider, path: s.path, field: s.field,
 		actions: actions, timeoutMs: timeoutMs, client: envelope.NewClient()}, nil
 }
 
@@ -116,7 +116,7 @@ func (f *followUp) read(ctx context.Context, exchange common.Exchange, mapped []
 	if exchange.Plan == nil || exchange.Plan.BaseURL == "" {
 		return nil, false
 	}
-	sealed, open, err := f.reseal.Reseal(ctx, exchange, mapped)
+	sealed, open, err := f.unverified.SealWithoutVerify(ctx, exchange, mapped)
 	if err != nil {
 		log.Warnf(ctx, "%s's follow-up %s was not sent: %v", f.provider, f.path, err)
 		return nil, false
