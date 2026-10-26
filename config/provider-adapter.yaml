@@ -535,9 +535,14 @@ modules:
                 tokenExpiryField: responseDynamic.token.validTo
                 headerName: Authorization
 
-              # PM-KISAN grievance: encrypted bodies, OTP through pmkisan-status (ADR-0001, ADR-0002).
+              # PM-KISAN: one participant. Its capabilities use different envelopes
+              # and hosts, so their settings are blocks named by binding key.
               pmkisan:
                 authScheme: none
+
+              # Grievance: encrypted bodies; the OTP on the SchemeApplication
+              # binding's host (ADR-0001, ADR-0002).
+              "pmkisan|openagrinet:Grievance":
                 envelope: aesGcm
                 envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
                 envelopeNonceEnv: PMKISAN_GRIEVANCE_IV
@@ -546,7 +551,7 @@ modules:
                 envelopeRequestField: EncryptedRequest
                 envelopeResponsePaths: "d.output,output"
                 otpEnvelope: aesCbcKeyInBand
-                otpBindingKey: "pmkisan-status|openagrinet:SchemeApplication"
+                otpBindingKey: "pmkisan|openagrinet:SchemeApplication"
                 otpTokenEnv: PMKISAN_OTP_TOKEN
                 otpTokenField: Token
                 otpRequestField: EncryptedRequest

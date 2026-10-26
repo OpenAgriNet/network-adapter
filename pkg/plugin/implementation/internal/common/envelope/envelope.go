@@ -70,7 +70,7 @@ type cbcSettings struct {
 }
 
 // Parsed is each provider's envelope and the actions it sends elsewhere, for
-// common.Config's EnvelopeByProvider and HostedElsewhere.
+// common.Config's Envelopes and HostedElsewhere.
 type Parsed struct {
 	Envelopes       map[string]common.Envelope
 	HostedElsewhere map[string]map[string]string

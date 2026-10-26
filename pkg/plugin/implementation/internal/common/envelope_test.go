@@ -76,7 +76,7 @@ func (e *reversingEnvelope) Seal(_ context.Context, exchange Exchange, mapped []
 func envelopedStep(t *testing.T, url string, mapper definition.Mapper, envelope Envelope) *Step {
 	t.Helper()
 	return newStep(t, &stubRegistry{plan: planWithAction(url, "select")}, mapper, func(c *Config) {
-		c.EnvelopeByProvider = map[string]Envelope{testProvider: envelope}
+		c.Envelopes = map[string]Envelope{testProvider: envelope}
 	})
 }
 
@@ -98,6 +98,24 @@ func TestRunSealsTheRequestAndOpensTheAnswer(t *testing.T) {
 	}
 	if envelope.sealed != 1 || envelope.opened != 1 {
 		t.Errorf("sealed %d, opened %d; want one of each", envelope.sealed, envelope.opened)
+	}
+}
+
+// One provider can serve two capabilities with different envelopes: a binding's
+// own envelope wins over its provider's.
+func TestRunUsesTheBindingsOwnEnvelopeOverItsProviders(t *testing.T) {
+	var sent string
+	url := recordingUpstream(t, string(reverse([]byte(`{}`))), &sent)
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"ok":true}`)}
+	own, providers := &reversingEnvelope{}, &reversingEnvelope{}
+	step := newStep(t, &stubRegistry{plan: planWithAction(url, "select")}, mapper, func(c *Config) {
+		c.Envelopes = map[string]Envelope{testBindingKey: own, testProvider: providers}
+	})
+	if _, err := runStep(t, step, selectBody); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if own.sealed != 1 || providers.sealed != 0 {
+		t.Errorf("binding's envelope sealed %d, provider's %d; want the binding's alone", own.sealed, providers.sealed)
 	}
 }
 
@@ -134,7 +152,7 @@ func TestRunStopsWhenTheEnvelopeRefuses(t *testing.T) {
 func TestNewRefusesAnEnvelopeForAProviderItDoesNotServe(t *testing.T) {
 	cfg := &Config{BindingKeys: []string{testBindingKey}}
 	cfg.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
-	cfg.EnvelopeByProvider = map[string]Envelope{"elsewhere": &reversingEnvelope{}}
+	cfg.Envelopes = map[string]Envelope{"elsewhere": &reversingEnvelope{}}
 	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, cfg)
 	if err == nil || !strings.Contains(err.Error(), "elsewhere") {
 		t.Fatalf("New() = %v, want the stray provider refused", err)

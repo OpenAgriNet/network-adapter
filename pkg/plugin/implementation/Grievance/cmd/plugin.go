@@ -33,7 +33,7 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 	if err != nil {
 		return nil, err
 	}
-	cfg.EnvelopeByProvider = envelopes.Envelopes
+	cfg.Envelopes = envelopes.Envelopes
 	cfg.HostedElsewhere = envelopes.HostedElsewhere
 	return cfg, nil
 }

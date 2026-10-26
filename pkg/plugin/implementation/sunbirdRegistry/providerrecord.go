@@ -56,6 +56,10 @@ type providerBinding struct {
 	CapabilityCode string       `json:"capabilityCode"`
 	Actions        []actionPlan `json:"actions"`
 	Status         string       `json:"status"`
+	// BaseURL, when set, is this capability's host in place of the
+	// participant's: one participant whose capabilities are served by
+	// different services.
+	BaseURL string `json:"baseUrl"`
 }
 
 // actionPlan is one action's upstream call, as the registry publishes it.
@@ -337,11 +341,15 @@ func toProviderRecord(binding providerBinding, owner participant) *model.Provide
 		}
 	}
 
+	baseURL := owner.BaseURL
+	if strings.TrimSpace(binding.BaseURL) != "" {
+		baseURL = strings.TrimSpace(binding.BaseURL)
+	}
 	return &model.ProviderRecord{
 		BindingKey:     binding.BindingKey,
 		ParticipantID:  binding.ParticipantID,
 		CapabilityCode: binding.CapabilityCode,
-		BaseURL:        owner.BaseURL,
+		BaseURL:        baseURL,
 		Actions:        actions,
 	}
 }

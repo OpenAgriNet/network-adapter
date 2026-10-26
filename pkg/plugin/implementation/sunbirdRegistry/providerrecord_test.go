@@ -110,6 +110,26 @@ func resolvePlan(t *testing.T, c *Client) (*model.ProviderRecord, error) {
 
 // --- happy path ------------------------------------------------------------
 
+// A binding's own baseUrl is the capability's host; without one, the
+// participant's is.
+func TestProviderRecordPrefersTheBindingsBaseURL(t *testing.T) {
+	t.Parallel()
+
+	const own = "https://chatbot.pmkisan.example/services/chatbot.asmx"
+	binding := bindingRecord()
+	binding.BaseURL = own
+	srv := newRegistryServer(t, envelopeJSON(t, binding), envelopeJSON(t, upstreamRecord()))
+	defer srv.Close()
+
+	got, err := resolvePlan(t, newTestClient(t, srv.URL, nil))
+	if err != nil {
+		t.Fatalf("ProviderRecord() returned an unexpected error: %v", err)
+	}
+	if got.BaseURL != own {
+		t.Errorf("base url = %q, want the binding's %q over the participant's", got.BaseURL, own)
+	}
+}
+
 func TestProviderRecordResolvesACallPlan(t *testing.T) {
 	t.Parallel()
 

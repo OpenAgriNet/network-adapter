@@ -78,12 +78,13 @@ type Config struct {
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 
-	// EnvelopeByProvider, keyed by participant id. Unlisted providers get
-	// plain JSON. Built by the domain package.
-	EnvelopeByProvider map[string]Envelope `yaml:"-" json:"-"`
+	// Envelopes, keyed by binding key, or by participant id for all of that
+	// provider's bindings. Unlisted bindings get plain JSON. Built by the
+	// domain package.
+	Envelopes map[string]Envelope `yaml:"-" json:"-"`
 
-	// HostedElsewhere: provider -> action -> binding key of the participant
-	// that serves it (ADR-0002).
+	// HostedElsewhere: binding key or participant id -> action -> binding key
+	// whose host serves it (ADR-0002).
 	HostedElsewhere map[string]map[string]string `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
@@ -310,19 +311,22 @@ func applyDefaults(cfg *Config) error {
 		}
 	}
 
-	// An envelope or host for an unserved provider is a typo; refuse it.
-	for provider := range cfg.EnvelopeByProvider {
-		if !served[provider] {
+	// An envelope or host for an unserved provider or binding is a typo.
+	for _, key := range cfg.BindingKeys {
+		served[key] = true
+	}
+	for key := range cfg.Envelopes {
+		if !served[key] {
 			return fmt.Errorf(
-				"an envelope is configured for %q, which is not a provider in bindingKeys (%s)",
-				provider, strings.Join(cfg.BindingKeys, ", "))
+				"an envelope is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				key, strings.Join(cfg.BindingKeys, ", "))
 		}
 	}
-	for provider := range cfg.HostedElsewhere {
-		if !served[provider] {
+	for key := range cfg.HostedElsewhere {
+		if !served[key] {
 			return fmt.Errorf(
-				"an action host is configured for %q, which is not a provider in bindingKeys (%s)",
-				provider, strings.Join(cfg.BindingKeys, ", "))
+				"an action host is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				key, strings.Join(cfg.BindingKeys, ", "))
 		}
 	}
 	return nil

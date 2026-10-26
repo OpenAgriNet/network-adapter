@@ -187,10 +187,10 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
 	}
 
-	// The participant's host, unless another participant serves this action.
+	// The binding's host, unless another binding serves this action.
 	// auth stays the originating provider's credential, not the host's.
 	base := plan.BaseURL
-	if key := s.config.HostedElsewhere[provider][action]; key != "" {
+	if key := forBinding(s.config.HostedElsewhere, plan.BindingKey)[action]; key != "" {
 		if base, err = HostOf(ctx, s.registry, key); err != nil {
 			return err
 		}
@@ -199,7 +199,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// The provider's envelope, if any: seal once before the retry loop, open
 	// once after it.
 	var open Opener
-	if envelope, wrapped := s.config.EnvelopeByProvider[provider]; wrapped {
+	if envelope := forBinding(s.config.Envelopes, plan.BindingKey); envelope != nil {
 		exchange := Exchange{Action: action, Beckn: beckn, Plan: plan, Registry: s.registry}
 		if upstreamRequest, open, err = envelope.Seal(ctx, exchange, upstreamRequest); err != nil {
 			return err
@@ -337,4 +337,12 @@ func decodeBody(body []byte) (any, error) {
 		return nil, fmt.Errorf("could not read JSON: %w", err)
 	}
 	return decoded, nil
+}
+
+// forBinding is the setting for bindingKey: its own, else its provider's.
+func forBinding[T any](byKey map[string]T, bindingKey string) T {
+	if v, ok := byKey[bindingKey]; ok {
+		return v
+	}
+	return byKey[providerIDFrom(bindingKey)]
 }
