@@ -30,7 +30,7 @@ func bothSchemesConfig() map[string]string {
 		"envelopeRequestField-pmkisan":  "EncryptedRequest",
 		"envelopeResponsePaths-pmkisan": "d.output,output",
 		"otpEnvelope-pmkisan":           "aesCbcKeyInBand",
-		"otpBindingKey-pmkisan":         "pmkisan-status|openagrinet:SchemeApplication",
+		"otpBindingKey-pmkisan":         "pmkisan|openagrinet:SchemeApplication",
 		"otpTokenEnv-pmkisan":           "PMKISAN_OTP_TOKEN",
 		"otpTokenField-pmkisan":         "Token",
 		"otpRequestField-pmkisan":       "EncryptedRequest",
@@ -52,11 +52,11 @@ func TestParseConfig_PMKISANBlock_ReadsEnvelope(t *testing.T) {
 	if len(cfg.BindingKeys) != 2 {
 		t.Errorf("BindingKeys = %v, want both schemes", cfg.BindingKeys)
 	}
-	if _, ok := cfg.EnvelopeByProvider["pmkisan"]; !ok || len(cfg.EnvelopeByProvider) != 1 {
-		t.Errorf("EnvelopeByProvider = %v, want pmkisan's alone -- PMFBY speaks plain JSON", cfg.EnvelopeByProvider)
+	if _, ok := cfg.Envelopes["pmkisan"]; !ok || len(cfg.Envelopes) != 1 {
+		t.Errorf("Envelopes = %v, want pmkisan's alone -- PMFBY speaks plain JSON", cfg.Envelopes)
 	}
-	if got := cfg.HostedElsewhere["pmkisan"]["init"]; got != "pmkisan-status|openagrinet:SchemeApplication" {
-		t.Errorf("HostedElsewhere = %v, want pmkisan's init on the chatbot service's participant", cfg.HostedElsewhere)
+	if got := cfg.HostedElsewhere["pmkisan"]["init"]; got != "pmkisan|openagrinet:SchemeApplication" {
+		t.Errorf("HostedElsewhere = %v, want pmkisan's init on the SchemeApplication binding's host", cfg.HostedElsewhere)
 	}
 	if len(cfg.AuthByProvider) != 2 || cfg.AuthByProvider["pmkisan"].Scheme != "none" {
 		t.Errorf("AuthByProvider = %v, want pmfby and pmkisan", cfg.AuthByProvider)
@@ -144,8 +144,8 @@ func TestShippedConfig_GrievanceEntry_BuildsStep(t *testing.T) {
 	if !strings.Contains(cfg.ProviderIDAt, "message.support.channels[]") {
 		t.Error("the shipped entry gives support no binding path; every PM-KISAN lodge would pass through unserved")
 	}
-	if _, ok := cfg.EnvelopeByProvider["pmkisan"]; !ok {
-		t.Error("the shipped entry gives pmkisan no envelope; the portal would be sent plaintext")
+	if _, ok := cfg.Envelopes[pmkisanBindingKey]; !ok {
+		t.Error("the shipped entry gives PM-KISAN grievance no envelope; the portal would be sent plaintext")
 	}
 	if _, ok := cfg.EnvelopeByProvider["pmkisan-status"]; !ok {
 		t.Error("the shipped entry gives pmkisan-status no envelope; the chatbot service would be sent plaintext")

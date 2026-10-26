@@ -317,7 +317,7 @@ func (s *pkRegistry) ProviderRecord(_ context.Context, key string) (*model.Provi
 }
 
 // pkOTPBindingKey is the OTP service's participant, as the shipped config names it.
-const pkOTPBindingKey = "pmkisan-status|openagrinet:SchemeApplication"
+const pkOTPBindingKey = "pmkisan|openagrinet:SchemeApplication"
 
 // runPMKISAN drives the real step over the shipped mappings against p, configured as
 // config/provider-adapter.yaml configures it.
@@ -361,28 +361,28 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 				Mappings: mappings.URL + "/grievance.status.yaml", TimeoutMs: 30000, RetryMax: 2},
 		},
 	}, others: map[string]*model.ProviderRecord{
-		pkOTPBindingKey: {BindingKey: pkOTPBindingKey, ParticipantID: "pmkisan-status", BaseURL: otpHost.URL},
+		pkOTPBindingKey: {BindingKey: pkOTPBindingKey, ParticipantID: "pmkisan", BaseURL: otpHost.URL}, // the binding's own host
 	}}
 
-	// The envelope is built from the provider block exactly as the plugin's
+	// The envelope is built from the binding's block exactly as the plugin's
 	// cmd package builds it from config/provider-adapter.yaml.
 	envelopes, _, err := Grievance.ParseEnvelopes(map[string]string{
-		"envelope-pmkisan":              "aesGcm",
-		"envelopeKeyEnv-pmkisan":        "TEST_PMKISAN_KEY",
-		"envelopeNonceEnv-pmkisan":      "TEST_PMKISAN_NONCE",
-		"envelopeTokenEnv-pmkisan":      "TEST_PMKISAN_TOKEN",
-		"envelopeTokenField-pmkisan":    "TokenNo",
-		"envelopeRequestField-pmkisan":  "EncryptedRequest",
-		"envelopeResponsePaths-pmkisan": "d.output,output",
-		"otpEnvelope-pmkisan":           "aesCbcKeyInBand",
-		"otpBindingKey-pmkisan":         pkOTPBindingKey,
-		"otpTokenEnv-pmkisan":           "TEST_PMKISAN_OTP_TOKEN",
-		"otpTokenField-pmkisan":         "Token",
-		"otpRequestField-pmkisan":       "EncryptedRequest",
-		"otpResponsePaths-pmkisan":      "d.output,output",
-		"otpActions-pmkisan":            "init",
-		"otpVerifyPath-pmkisan":         "/ChatbotOTPVerified",
-		"otpVerifyActions-pmkisan":      "support,status",
+		"envelope-pmkisan|openagrinet:Grievance":              "aesGcm",
+		"envelopeKeyEnv-pmkisan|openagrinet:Grievance":        "TEST_PMKISAN_KEY",
+		"envelopeNonceEnv-pmkisan|openagrinet:Grievance":      "TEST_PMKISAN_NONCE",
+		"envelopeTokenEnv-pmkisan|openagrinet:Grievance":      "TEST_PMKISAN_TOKEN",
+		"envelopeTokenField-pmkisan|openagrinet:Grievance":    "TokenNo",
+		"envelopeRequestField-pmkisan|openagrinet:Grievance":  "EncryptedRequest",
+		"envelopeResponsePaths-pmkisan|openagrinet:Grievance": "d.output,output",
+		"otpEnvelope-pmkisan|openagrinet:Grievance":           "aesCbcKeyInBand",
+		"otpBindingKey-pmkisan|openagrinet:Grievance":         pkOTPBindingKey,
+		"otpTokenEnv-pmkisan|openagrinet:Grievance":           "TEST_PMKISAN_OTP_TOKEN",
+		"otpTokenField-pmkisan|openagrinet:Grievance":         "Token",
+		"otpRequestField-pmkisan|openagrinet:Grievance":       "EncryptedRequest",
+		"otpResponsePaths-pmkisan|openagrinet:Grievance":      "d.output,output",
+		"otpActions-pmkisan|openagrinet:Grievance":            "init",
+		"otpVerifyPath-pmkisan|openagrinet:Grievance":         "/ChatbotOTPVerified",
+		"otpVerifyActions-pmkisan|openagrinet:Grievance":      "support,status",
 	})
 	if err != nil {
 		t.Fatalf("ParseEnvelopes() = %v", err)
@@ -396,8 +396,8 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 		AuthByProvider: map[string]*common.AuthProfile{
 			"pmkisan": {Scheme: util.AuthSchemeNone},
 		},
-		EnvelopeByProvider: envelopes.Envelopes,
-		HostedElsewhere:    envelopes.HostedElsewhere,
+		Envelopes:       envelopes.Envelopes,
+		HostedElsewhere: envelopes.HostedElsewhere,
 	})
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
