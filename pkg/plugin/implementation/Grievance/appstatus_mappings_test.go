@@ -27,7 +27,7 @@ import (
 
 const (
 	asCapability = "openagrinet:SchemeApplication"
-	asBindingKey = "pmkisan-chatbot|" + asCapability
+	asBindingKey = "pmkisan-status|" + asCapability
 
 	// The chatbot service, named by the participant's baseUrl; the registry
 	// rows and the plugin paths carry the method alone.
@@ -47,7 +47,7 @@ const asInitRequest = `{
       "status": { "descriptor": { "code": "DRAFT" } },
       "offer": {
         "id": "off:pmkisan:application-status",
-        "provider": { "id": "pmkisan-chatbot", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
+        "provider": { "id": "pmkisan-status", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
         "resourceIds": ["res:pmkisan:application-status"]
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
@@ -75,7 +75,7 @@ const asStatusRequest = `{
       "status": { "descriptor": { "code": "ACTIVE" } },
       "offer": {
         "id": "off:pmkisan:application-status",
-        "provider": { "id": "pmkisan-chatbot", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
+        "provider": { "id": "pmkisan-status", "descriptor": { "name": "PM-KISAN Chatbot Service" } },
         "resourceIds": ["res:pmkisan:application-status"]
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
@@ -196,7 +196,7 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 
 	registry := &pkRegistry{plan: &model.ProviderRecord{
 		BindingKey:     asBindingKey,
-		ParticipantID:  "pmkisan-chatbot",
+		ParticipantID:  "pmkisan-status",
 		CapabilityCode: asCapability,
 		BaseURL:        host.URL + asService,
 		Actions: map[string]model.ActionPlan{
@@ -208,16 +208,16 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 	}}
 
 	envelopes, _, err := Grievance.ParseEnvelopes(map[string]string{
-		"envelope-pmkisan-chatbot":              "aesCbcKeyInBand",
-		"envelopeTokenEnv-pmkisan-chatbot":      "TEST_PMKISAN_OTP_TOKEN",
-		"envelopeTokenField-pmkisan-chatbot":    "Token",
-		"envelopeRequestField-pmkisan-chatbot":  "EncryptedRequest",
-		"envelopeResponsePaths-pmkisan-chatbot": "d.output,output",
-		"otpVerifyPath-pmkisan-chatbot":         "/ChatbotOTPVerified",
-		"otpVerifyActions-pmkisan-chatbot":      "status",
-		"followUpPath-pmkisan-chatbot":          "/ChatbotBeneficiaryStatus",
-		"followUpField-pmkisan-chatbot":         "_beneficiaryStatus",
-		"followUpActions-pmkisan-chatbot":       "status",
+		"envelope-pmkisan-status":              "aesCbcKeyInBand",
+		"envelopeTokenEnv-pmkisan-status":      "TEST_PMKISAN_OTP_TOKEN",
+		"envelopeTokenField-pmkisan-status":    "Token",
+		"envelopeRequestField-pmkisan-status":  "EncryptedRequest",
+		"envelopeResponsePaths-pmkisan-status": "d.output,output",
+		"otpVerifyPath-pmkisan-status":         "/ChatbotOTPVerified",
+		"otpVerifyActions-pmkisan-status":      "status",
+		"followUpPath-pmkisan-status":          "/ChatbotBeneficiaryStatus",
+		"followUpField-pmkisan-status":         "_beneficiaryStatus",
+		"followUpActions-pmkisan-status":       "status",
 	})
 	if err != nil {
 		t.Fatalf("ParseEnvelopes() = %v", err)
@@ -228,7 +228,7 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type",
 		AuthByProvider: map[string]*common.AuthProfile{
-			"pmkisan-chatbot": {Scheme: util.AuthSchemeNone},
+			"pmkisan-status": {Scheme: util.AuthSchemeNone},
 		},
 		EnvelopeByProvider: envelopes.Envelopes,
 	})
@@ -426,8 +426,9 @@ func TestAppStatusReadsTheRecordsFieldsAsTheyArrive(t *testing.T) {
 		path           []any
 		want           any
 	}{
-		{"a .NET date", `"2021-06-14T00:00:00"`, `"/Date(1623609000000)/"`, []any{"registeredOn"}, "2021-06-14T00:00:00+05:30"},
-		{"a US date with a time", `"2021-06-14T00:00:00"`, `"6/14/2021 12:00:00 AM"`, []any{"registeredOn"}, "2021-06-14T00:00:00+05:30"},
+		// ISO only until a real answer shows another format.
+		{"a .NET date is left out", `"2021-06-14T00:00:00"`, `"/Date(1623609000000)/"`, []any{"registeredOn"}, nil},
+		{"a US date is left out", `"2021-06-14T00:00:00"`, `"6/14/2021 12:00:00 AM"`, []any{"registeredOn"}, nil},
 		{"a bare ISO date", `"2021-06-14T00:00:00"`, `"2021-06-14"`, []any{"registeredOn"}, "2021-06-14T00:00:00+05:30"},
 		{"a date it cannot read", `"2021-06-14T00:00:00"`, `"sometime in June"`, []any{"registeredOn"}, nil},
 		{"a count as text", `15`, `"0"`, []any{"latestInstalmentPaid"}, float64(0)},

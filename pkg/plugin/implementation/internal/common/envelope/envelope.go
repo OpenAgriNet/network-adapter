@@ -30,7 +30,7 @@ const (
 const codeInternal = "NET_INTERNAL_ERROR"
 
 // envelopeFields maps each provider-block setting to its field. envelope* is the
-// default codec, otp* a separate OTP service, followUp* a second read.
+// default codec, otp* a separate OTP service.
 var envelopeFields = map[string]func(*envelopeSettings, string){
 	"envelope":              func(s *envelopeSettings, v string) { s.kind = v },
 	"envelopeKeyEnv":        func(s *envelopeSettings, v string) { s.keyEnv = v },
@@ -50,11 +50,6 @@ var envelopeFields = map[string]func(*envelopeSettings, string){
 	"otpVerifyPath":      func(s *envelopeSettings, v string) { s.verifyPath = v },
 	"otpVerifyActions":   func(s *envelopeSettings, v string) { s.verifyActions = v },
 	"otpVerifyTimeoutMs": func(s *envelopeSettings, v string) { s.verifyTimeoutMs = v },
-
-	"followUpPath":      func(s *envelopeSettings, v string) { s.followUpPath = v },
-	"followUpField":     func(s *envelopeSettings, v string) { s.followUpField = v },
-	"followUpActions":   func(s *envelopeSettings, v string) { s.followUpActions = v },
-	"followUpTimeoutMs": func(s *envelopeSettings, v string) { s.followUpTimeoutMs = v },
 }
 
 // envelopeSettings is one provider's envelope as written in config.
@@ -66,8 +61,6 @@ type envelopeSettings struct {
 	verifyPath      string
 	verifyActions   string
 	verifyTimeoutMs string
-
-	followUpPath, followUpField, followUpActions, followUpTimeoutMs string
 }
 
 // realmSettings configures a CBC codec. bindingKey names the registry binding
@@ -126,8 +119,8 @@ type codec interface {
 	seal(ctx context.Context, mapped []byte) ([]byte, common.Opener, error)
 }
 
-// providerEnvelope picks a codec per action and runs the OTP verify and
-// follow-up read where configured. A nil field means that feature is off.
+// providerEnvelope picks a codec per action and runs the OTP verify where
+// configured. A nil field means that feature is off.
 type providerEnvelope struct {
 	provider      string
 	base          codec // nil: plain JSON
@@ -135,10 +128,19 @@ type providerEnvelope struct {
 	otpBindingKey string
 	otpActions    map[string]bool
 	verify        *verify
-	followUp      *followUp
 }
 
-var _ common.Envelope = (*providerEnvelope)(nil)
+var (
+	_ common.Envelope = (*providerEnvelope)(nil)
+	_ Resealer        = (*providerEnvelope)(nil)
+)
+
+// Resealer seals a further request for an action without running its verify,
+// for a capability that makes a second call after the first (an OTP is spent
+// once). Every envelope Parse returns is one.
+type Resealer interface {
+	Reseal(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error)
+}
 
 // hostedElsewhere sends the OTP actions to the OTP service's participant.
 func (e *providerEnvelope) hostedElsewhere() map[string]string {
@@ -157,15 +159,6 @@ func (e *providerEnvelope) otpHost(ctx context.Context, exchange common.Exchange
 	return common.HostOf(ctx, exchange.Registry, e.otpBindingKey)
 }
 
-// hostFor is where an action's calls go: the OTP service for an OTP action,
-// the participant for the rest.
-func (e *providerEnvelope) hostFor(ctx context.Context, exchange common.Exchange) (string, error) {
-	if e.otpActions[exchange.Action] {
-		return e.otpHost(ctx, exchange)
-	}
-	return participantHost(ctx, exchange)
-}
-
 // Seal verifies the OTP if the action needs it, then seals the request. A wrong
 // OTP stops the call.
 func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error) {
@@ -174,6 +167,11 @@ func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, m
 			return nil, nil, err
 		}
 	}
+	return e.Reseal(ctx, exchange, mapped)
+}
+
+// Reseal seals with the action's codec and runs no verify.
+func (e *providerEnvelope) Reseal(ctx context.Context, exchange common.Exchange, mapped []byte) ([]byte, common.Opener, error) {
 	c := e.base
 	if e.otpActions[exchange.Action] {
 		c = e.otp
@@ -181,15 +179,7 @@ func (e *providerEnvelope) Seal(ctx context.Context, exchange common.Exchange, m
 	if c == nil {
 		return mapped, func(_ context.Context, answer []byte) ([]byte, error) { return answer, nil }, nil
 	}
-	sealed, open, err := c.seal(ctx, mapped)
-	if err != nil || e.followUp == nil || !e.followUp.actions[exchange.Action] {
-		return sealed, open, err
-	}
-	base, err := e.hostFor(ctx, exchange)
-	if err != nil {
-		return nil, nil, err
-	}
-	return sealed, e.followUp.wrap(c, base, mapped, open), nil
+	return c.seal(ctx, mapped)
 }
 
 // newProviderEnvelope validates the settings. Secrets are read at call time.
@@ -199,9 +189,9 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 	}
 	e := &providerEnvelope{provider: provider, otpBindingKey: strings.TrimSpace(s.otp.bindingKey),
 		otpActions: listSet(s.otpActions)}
-	// The verify and follow-up calls carry the farmer's identifier, so they
-	// refuse an off-host redirect as the main call does.
-	client := &http.Client{CheckRedirect: util.RefuseOffHostRedirect}
+	// The verify carries the farmer's identifier, so it refuses an off-host
+	// redirect as the main call does.
+	client := NewClient()
 
 	switch s.kind {
 	case "":
@@ -211,7 +201,6 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 			return nil, fmt.Errorf("%s: envelope settings are present but envelope is not set", provider)
 		}
 	case envelopeAESCBCKeyInBand:
-
 		if s.keyEnv != "" || s.nonceEnv != "" {
 			return nil, fmt.Errorf("%s: envelope %s carries its key in band; drop envelopeKeyEnv and envelopeNonceEnv",
 				provider, envelopeAESCBCKeyInBand)
@@ -252,12 +241,9 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 	if err != nil {
 		return nil, err
 	}
-	followUpTimeoutMs, err := timeoutSetting(provider, "followUpTimeoutMs", s.followUpTimeoutMs)
-	if err != nil {
-		return nil, err
-	}
 
 	verifyActions := listSet(s.verifyActions)
+	baseCBC, keyInBand := e.base.(*cbcCodec)
 	switch {
 	case s.verifyPath == "" && len(verifyActions) == 0:
 	case s.verifyPath == "" || len(verifyActions) == 0:
@@ -265,33 +251,16 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 	case hooks.Challenge == nil:
 		return nil, fmt.Errorf("%s: otpVerifyPath needs Hooks.Challenge, to read the OTP from a payload", provider)
 	case e.otp != nil:
-		// Separate OTP service: verify there.
+		// The OTP service is another participant (otpBindingKey): verify there.
 		e.verify = &verify{provider: provider, path: s.verifyPath, actions: verifyActions, codec: e.otp.(*cbcCodec),
 			host: e.otpHost, hooks: hooks, client: client, budget: model.ActionPlan{TimeoutMs: verifyTimeoutMs}}
-	default:
-		// The participant is the OTP service: verify on its host.
-		cbc, onOTPService := e.base.(*cbcCodec)
-		if !onOTPService {
-			return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope, or envelope %s: the OTP is verified on the OTP service",
-				provider, envelopeAESCBCKeyInBand)
-		}
-		e.verify = &verify{provider: provider, path: s.verifyPath, actions: verifyActions, codec: cbc,
+	case keyInBand:
+		// The provider is the OTP service itself: verify on its own host.
+		e.verify = &verify{provider: provider, path: s.verifyPath, actions: verifyActions, codec: baseCBC,
 			host: participantHost, hooks: hooks, client: client, budget: model.ActionPlan{TimeoutMs: verifyTimeoutMs}}
-	}
-
-	followUpActions := listSet(s.followUpActions)
-	switch {
-	case s.followUpPath == "" && s.followUpField == "" && len(followUpActions) == 0:
-	case s.followUpPath == "" || s.followUpField == "" || len(followUpActions) == 0:
-		return nil, fmt.Errorf("%s: followUpPath, followUpField and followUpActions are set together or not at all", provider)
 	default:
-		for action := range followUpActions {
-			if e.otpActions[action] && e.otp == nil || !e.otpActions[action] && e.base == nil {
-				return nil, fmt.Errorf("%s: followUpActions names %s, which has no envelope to send a follow-up through", provider, action)
-			}
-		}
-		e.followUp = &followUp{provider: provider, path: s.followUpPath, field: s.followUpField, actions: followUpActions,
-			succeeded: hooks.Succeeded, client: client, budget: model.ActionPlan{TimeoutMs: followUpTimeoutMs}}
+		return nil, fmt.Errorf("%s: otpVerifyPath needs otpEnvelope, or envelope %s: the OTP is verified on the OTP service",
+			provider, envelopeAESCBCKeyInBand)
 	}
 
 	if e.base == nil && e.otp == nil {

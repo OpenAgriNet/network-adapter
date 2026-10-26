@@ -12,8 +12,21 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
-// maxAnswerBytes caps the OTP verify and follow-up answers.
+// maxAnswerBytes caps the answers to calls made here and through Post.
 const maxAnswerBytes = 64 << 10
+
+// NewClient is the client for calls made beside the main one: it refuses an
+// off-host redirect, as common's does, since they carry the same identifiers.
+func NewClient() *http.Client {
+	return &http.Client{CheckRedirect: util.RefuseOffHostRedirect}
+}
+
+// Post POSTs a sealed body to base+path once, within timeoutMs (0: the
+// default). Unreachable or non-2xx: 502. For a capability's own further calls.
+func Post(ctx context.Context, client *http.Client, provider, what, base, path string,
+	timeoutMs int, sealed []byte) ([]byte, error) {
+	return postSealed(ctx, client, provider, what, base, path, model.ActionPlan{TimeoutMs: timeoutMs}, sealed)
+}
 
 // postSealed POSTs a sealed body to base+path once, within its own budget.
 // Unreachable or non-2xx: 502.

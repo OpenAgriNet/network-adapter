@@ -515,7 +515,7 @@ modules:
           # ------------------------------------------------------------------
           - id: Grievance
             config:
-              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance,pmkisan-chatbot|openagrinet:SchemeApplication"
+              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance,pmkisan-status|openagrinet:SchemeApplication"
 
               # Paired by position, tried in order: status names the binding on
               # its contract, support on its channel.
@@ -557,8 +557,8 @@ modules:
                 otpVerifyActions: "support,status"
                 otpVerifyTimeoutMs: "10000"
 
-              # PM-KISAN application status: the chatbot service, with a follow-up read (ADR-0005).
-              pmkisan-chatbot:
+              # PM-KISAN application status: OTP, the record, then a follow-up read of its blockers (ADR-0005).
+              pmkisan-status:
                 authScheme: none
                 envelope: aesCbcKeyInBand
                 envelopeTokenEnv: PMKISAN_OTP_TOKEN

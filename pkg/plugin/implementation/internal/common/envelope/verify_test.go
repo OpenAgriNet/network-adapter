@@ -275,18 +275,17 @@ func TestAProviderWithOnlyAnOTPRealmSendsItsOtherActionsPlain(t *testing.T) {
 	}
 }
 
-// chatbotSettings is a provider whose every call is on the OTP service, as
+// statusSettings is a provider whose every call is on the OTP service, as
 // PM-KISAN's application status is.
-func chatbotSettings() envelopeSettings {
+func statusSettings() envelopeSettings {
 	return envelopeSettings{kind: envelopeAESCBCKeyInBand, tokenEnv: testOTPTokenEnv, tokenField: "Token",
 		requestField: "EncryptedRequest", responsePaths: "d.output,output",
-		verifyPath: "/ChatbotOTPVerified", verifyActions: "status",
-		followUpPath: "/ChatbotBeneficiaryStatus", followUpField: "_beneficiaryStatus", followUpActions: "status"}
+		verifyPath: "/ChatbotOTPVerified", verifyActions: "status"}
 }
 
 func TestAProviderWhollyOnTheOTPServiceVerifiesOnItsOwnHost(t *testing.T) {
 	t.Setenv(testOTPTokenEnv, testOTPToken)
-	e, err := newProviderEnvelope("pmkisan-chatbot", chatbotSettings(), testHooks)
+	e, err := newProviderEnvelope("pmkisan-status", statusSettings(), testHooks)
 	if err != nil {
 		t.Fatalf("newProviderEnvelope() = %v", err)
 	}
@@ -313,23 +312,20 @@ func TestAProviderWhollyOnTheOTPServiceVerifiesOnItsOwnHost(t *testing.T) {
 	var body map[string]string
 	_ = json.Unmarshal(wire, &body)
 	if !strings.Contains(body["EncryptedRequest"], "@") {
-		t.Errorf("status sealed %q, want the chatbot service's cipher@key", body["EncryptedRequest"])
+		t.Errorf("status sealed %q, want the key-in-band cipher@key", body["EncryptedRequest"])
 	}
 }
 
-func TestNewProviderEnvelopeRefusesInconsistentChatbotSettings(t *testing.T) {
+func TestNewProviderEnvelopeRefusesInconsistentStatusSettings(t *testing.T) {
 	for name, tweak := range map[string]func(*envelopeSettings){
 		"a fixed key on a key-in-band envelope": func(s *envelopeSettings) { s.keyEnv = "K" },
-		"follow-up with no field":               func(s *envelopeSettings) { s.followUpField = "" },
-		"follow-up with no actions":             func(s *envelopeSettings) { s.followUpActions = "" },
-		"follow-up with no path":                func(s *envelopeSettings) { s.followUpPath = "" },
 		"verify with no OTP service":            func(s *envelopeSettings) { *s = pmkisanSettings(); s.verifyPath, s.verifyActions = "/v", "status" },
 		"no request field":                      func(s *envelopeSettings) { s.requestField = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			s := chatbotSettings()
+			s := statusSettings()
 			tweak(&s)
-			if _, err := newProviderEnvelope("pmkisan-chatbot", s, testHooks); err == nil {
+			if _, err := newProviderEnvelope("pmkisan-status", s, testHooks); err == nil {
 				t.Fatal("newProviderEnvelope() accepted settings that cannot work")
 			}
 		})
@@ -386,5 +382,31 @@ func TestTheVerifyKeepsToItsOwnBudget(t *testing.T) {
 	}
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("the verify took %v; it should stop at its own 50ms budget, not support's 30s", took)
+	}
+}
+
+// Reseal seals a further request with the action's codec and spends no OTP.
+func TestResealSealsWithoutVerifying(t *testing.T) {
+	t.Setenv(testOTPTokenEnv, testOTPToken)
+	e, err := newProviderEnvelope("pmkisan-status", statusSettings(), testHooks)
+	if err != nil {
+		t.Fatalf("newProviderEnvelope() = %v", err)
+	}
+	otp := &otpService{t: t}
+	server := httptest.NewServer(otp)
+	defer server.Close()
+
+	wire, _, err := e.Reseal(context.Background(), common.Exchange{Action: "status", Beckn: statusPayload(validOTP),
+		Plan: &model.ProviderRecord{BaseURL: server.URL}}, []byte(`{"Types":"Ben_id","Values":"UP12345678A"}`))
+	if err != nil {
+		t.Fatalf("Reseal() = %v", err)
+	}
+	if otp.calls != 0 {
+		t.Errorf("Reseal() called the verify %d time(s)", otp.calls)
+	}
+	var body map[string]string
+	_ = json.Unmarshal(wire, &body)
+	if !strings.Contains(body["EncryptedRequest"], "@") {
+		t.Errorf("Reseal() sealed %q, want cipher@key", body["EncryptedRequest"])
 	}
 }

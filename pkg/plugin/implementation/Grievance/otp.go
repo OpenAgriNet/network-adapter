@@ -24,10 +24,22 @@ const mobileType = "Mobile"
 // sits in a payload, and what PM-KISAN's "yes" looks like.
 var hooks = envelope.Hooks{Challenge: verifyRequest, Succeeded: succeeded}
 
-// ParseEnvelopes reads each provider's envelope settings out of the plugin
-// config. See envelope.Parse.
+// ParseEnvelopes reads each provider's envelope and follow-up settings out of
+// the plugin config. See envelope.Parse.
 func ParseEnvelopes(config map[string]string) (envelope.Parsed, map[string]string, error) {
-	return envelope.Parse(config, hooks)
+	followUps, config := splitFollowUps(config)
+	parsed, rest, err := envelope.Parse(config, hooks)
+	if err != nil {
+		return envelope.Parsed{}, nil, err
+	}
+	for provider, s := range followUps {
+		wrapped, err := newFollowUp(provider, *s, parsed.Envelopes[provider])
+		if err != nil {
+			return envelope.Parsed{}, nil, err
+		}
+		parsed.Envelopes[provider] = wrapped
+	}
+	return parsed, rest, nil
 }
 
 // verifyRequest is the OTP service's verify body: identifier, its type and
