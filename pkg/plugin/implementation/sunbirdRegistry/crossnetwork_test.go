@@ -180,3 +180,42 @@ func TestARefusalIsTheCallersFaultNotOurs(t *testing.T) {
 		t.Errorf("status: got %d, want 400", coded.HTTPStatus())
 	}
 }
+
+// A half-filled admission record is still an admission. The usability tests the
+// crawler applies -- a network role, a discover address -- say whether we can
+// CALL a network, and have no bearing on whether we agreed to answer it.
+func TestARecordMissingTheNetworkRoleIsStillJudged(t *testing.T) {
+	t.Parallel()
+
+	record := admittedRecord(federationRole{Source: agreedPacks()})
+	record.Role = roleList{"provider"}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, recordJSON(t, record))
+	}))
+	t.Cleanup(srv.Close)
+
+	err := discoverFor(t, newTestClient(t, srv.URL, nil), testAgreedContext)
+	if err == nil {
+		t.Fatal("a network we only read from must be refused whatever else its record says")
+	}
+	if !strings.Contains(err.Error(), "not a network we agreed to give to") {
+		t.Errorf("the refusal must name the direction: %v", err)
+	}
+}
+
+func TestARecordWithNoDiscoverAddressIsStillJudged(t *testing.T) {
+	t.Parallel()
+
+	record := admittedRecord(federationRole{Source: agreedPacks()})
+	record.BaseURL = ""
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, recordJSON(t, record))
+	}))
+	t.Cleanup(srv.Close)
+
+	if err := discoverFor(t, newTestClient(t, srv.URL, nil), testAgreedContext); err == nil {
+		t.Fatal("an address we cannot call them at does not make them one we may answer")
+	}
+}

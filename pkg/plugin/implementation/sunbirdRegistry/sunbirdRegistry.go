@@ -786,22 +786,22 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 		return nil
 	}
 
-	network, err := c.AdmittedNetwork(ctx, caller)
+	agreed, err := c.agreementWith(ctx, caller)
 	if err != nil {
 		// Refuse rather than allow: a registry we could not ask is not an
 		// agreement we can honour.
 		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
 	}
-	// No record is an ordinary participant -- a provider, our own deployment,
+	// No agreement is an ordinary participant -- a provider, our own deployment,
 	// or a caller signature validation will reject anyway. No federation rule
 	// applies to them.
-	if network == nil {
+	if !agreed.Agreed() {
 		return nil
 	}
 
-	if !network.IsRequester() {
+	if !agreed.IsRequester() {
 		log.Infof(ctx, "OAN registry refusing %s: we agreed %v, which is not giving to them",
-			caller, network.Directions())
+			caller, agreed.Directions())
 		return refused(fmt.Errorf("%s is not a network we agreed to give to", caller))
 	}
 	// Only a discover names capabilities. Every other action is governed by the
@@ -811,7 +811,7 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 		return nil
 	}
 	return agreedToGiveThese(ctx, servedRequest{caller: caller, action: action, capabilities: capabilities},
-		network.RequesterContexts())
+		agreed.RequesterContexts())
 }
 
 // agreedToGiveThese refuses a caller asking beyond what the agreement covers.

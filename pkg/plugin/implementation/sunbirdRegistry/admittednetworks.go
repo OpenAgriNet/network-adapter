@@ -100,6 +100,32 @@ func (c *Client) searchNetworks(ctx context.Context, tracer trace.Tracer, extra 
 	return searchRecords[participant](ctx, c, tracer, c.searchURL, filters)
 }
 
+// agreementWith returns what we agreed with a participant, from its record
+// alone. The zero Agreement means we admitted nobody by that id.
+//
+// Deliberately not AdmittedNetwork: that one answers "can we CALL this network",
+// so it also wants a network role and a discover address. Whether we agreed to
+// ANSWER someone is written in federationRole and nowhere else, and a record
+// missing those other fields is a half-filled admission, not an absent one.
+func (c *Client) agreementWith(ctx context.Context, participantID string) (model.Agreement, error) {
+	if strings.TrimSpace(participantID) == "" {
+		return model.Agreement{}, nil
+	}
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	records, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
+		fieldParticipantID: {Eq: participantID},
+	})
+	if err != nil {
+		return model.Agreement{}, err
+	}
+	for _, record := range records {
+		if agreed := record.FederationRole.agreed(); agreed.Agreed() {
+			return agreed, nil
+		}
+	}
+	return model.Agreement{}, nil
+}
+
 // admittedFrom reports the record as a network, or ok=false when we cannot act
 // on it: suspended, not a network, no discover address, or no agreed direction.
 func admittedFrom(record participant) (model.AdmittedNetwork, bool) {
