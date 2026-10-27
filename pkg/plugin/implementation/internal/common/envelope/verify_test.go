@@ -296,7 +296,7 @@ func TestAProviderWhollyOnTheOTPServiceVerifiesOnItsOwnHost(t *testing.T) {
 	payload := map[string]any{"message": map[string]any{"contract": map[string]any{"commitments": []any{
 		map[string]any{"commitmentAttributes": map[string]any{
 			"applicant": map[string]any{"mobile": "9812345670"},
-			"challenge": map[string]any{"response": map[string]any{"method": "SMS_OTP", "value": validOTP}},
+			"challenge": map[string]any{"response": map[string]any{"method": "OTP", "value": validOTP}},
 		}}}}}}
 	wire, _, err := e.Seal(context.Background(), common.Exchange{Action: "status", Beckn: payload,
 		Plan: &model.ProviderRecord{BaseURL: server.URL}}, []byte(`{"Types":"Mobile","Values":"9812345670"}`))

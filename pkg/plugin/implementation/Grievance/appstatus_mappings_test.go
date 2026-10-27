@@ -85,7 +85,7 @@ const asStatusRequest = `{
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "applicant": { "mobile": "9812345670" },
-        "challenge": { "response": { "method": "SMS_OTP", "value": "4821" } }
+        "challenge": { "response": { "method": "OTP", "value": "4821" } }
       }
     }]
   }}
@@ -283,9 +283,9 @@ func TestAppStatusInitAsksForAnOTPByTheSlotItIsIn(t *testing.T) {
 			attributes := asAttributes(t, body)
 			challenge, _ := attributes["challenge"].(map[string]any)
 			issued, _ := challenge["issued"].(map[string]any)
-			if issued["method"] != "SMS_OTP" || issued["length"] != float64(4) || issued["valueType"] != "NUMERIC" ||
-				issued["expiresAt"] == nil || issued["sentTo"] != nil {
-				t.Errorf("challenge.issued = %v, want method, length 4, valueType NUMERIC, expiresAt and no sentTo", issued)
+			if issued["method"] != "OTP" || issued["channel"] != "SMS" || issued["length"] != float64(4) ||
+				issued["valueType"] != "NUMERIC" || issued["expiresAt"] == nil || issued["sentTo"] != nil {
+				t.Errorf("challenge.issued = %v, want OTP on SMS, length 4, valueType NUMERIC, expiresAt and no sentTo", issued)
 			}
 			if attributes["applicant"] != nil || attributes["enrolmentId"] != nil || attributes["informationMode"] != "OnDemand" {
 				t.Errorf("attributes = %v, want OnDemand with the identifier not echoed", attributes)
@@ -516,7 +516,7 @@ func TestAppStatusAWrongOTPReadsNothing(t *testing.T) {
 func TestAppStatusRefusesAMissingOTP(t *testing.T) {
 	for _, tc := range []struct{ name, from, to, code string }{
 		{"no OTP", `,
-        "challenge": { "response": { "method": "SMS_OTP", "value": "4821" } }`, ``, "SCH_REQUIRED_FIELD_MISSING"},
+        "challenge": { "response": { "method": "OTP", "value": "4821" } }`, ``, "SCH_REQUIRED_FIELD_MISSING"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			chatbot := newASChatbot(t)

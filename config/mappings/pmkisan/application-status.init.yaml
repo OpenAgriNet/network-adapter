@@ -45,7 +45,8 @@ response: |
               "scheme":          $ca.scheme,
               "challenge": {
                 "issued": {
-                  "method":    "SMS_OTP",
+                  "method":    "OTP",
+                  "channel":   "SMS",
                   "length":    4,
                   "valueType": "NUMERIC",
                   "expiresAt": $fromMillis($millis() + $otpWindowMillis)
