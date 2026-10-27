@@ -10,7 +10,7 @@ import (
 )
 
 // challengeMethod is the only accepted challenge.
-const challengeMethod = "SMS_OTP"
+const challengeMethod = "OTP"
 
 // identityType is the OTP service's type for a registration number (enrolmentId).
 // The PM-KISAN mappings write the same value as a literal; change them together.

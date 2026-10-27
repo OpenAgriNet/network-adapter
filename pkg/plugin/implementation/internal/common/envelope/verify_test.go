@@ -112,7 +112,7 @@ func planOn(t *testing.T, url string) *model.ProviderRecord {
 func supportPayload(otp string) map[string]any {
 	channel := map[string]any{"provider": map[string]any{"id": "pmkisan"}, "enrolmentId": "UP12345678A"}
 	if otp != "" {
-		channel["challenge"] = map[string]any{"response": map[string]any{"method": "SMS_OTP", "value": otp}}
+		channel["challenge"] = map[string]any{"response": map[string]any{"method": "OTP", "value": otp}}
 	}
 	return map[string]any{"message": map[string]any{"support": map[string]any{
 		"channels": []any{channel}}}}
@@ -121,7 +121,7 @@ func supportPayload(otp string) map[string]any {
 func statusPayload(otp string) map[string]any {
 	attributes := map[string]any{"enrolmentId": "UP12345678A"}
 	if otp != "" {
-		attributes["challenge"] = map[string]any{"response": map[string]any{"method": "SMS_OTP", "value": otp}}
+		attributes["challenge"] = map[string]any{"response": map[string]any{"method": "OTP", "value": otp}}
 	}
 	return map[string]any{"message": map[string]any{"contract": map[string]any{
 		"commitments": []any{map[string]any{"commitmentAttributes": attributes}}}}}
