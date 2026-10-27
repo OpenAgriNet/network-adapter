@@ -217,33 +217,17 @@ modules:
             # internal service or a cloud metadata endpoint.
             #
             # ALL THREE HOSTS ARE REQUIRED. Loading one capability pack pulls
-            # 13-16 documents across exactly these three (measured, not
-            # assumed): the pack itself and AgricultureResource from the raw
-            # CDN, then Descriptor/GeoJSONGeometry/Location/Address from
-            # schema.beckn.io, which in turn $ref schema.nfh.global. Remove
-            # any one and no pack loads at all -- the failure is
-            # SCH_SCHEMA_ADAPTATION_FAILED on every payload, not a partial
-            # validation.
+            # 13-16 documents across exactly these three: the pack itself and
+            # AgricultureResource from openagrinet.github.io, then Descriptor,
+            # GeoJSONGeometry, Location and Address from schema.beckn.io, which
+            # in turn $ref schema.nfh.global. Remove any one and no pack loads
+            # at all -- the failure is SCH_SCHEMA_ADAPTATION_FAILED on every
+            # payload, not a partial validation.
             #
-            # Keep it as tight as the packs allow. raw.githubusercontent.com
-            # is world-writable, so this trusts every GitHub account for
-            # schema content; narrowing it to a path prefix, or mirroring the
-            # packs on a host we control, is the real fix and is not a
-            # one-line change.
-            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
-
-            # A pack's @context is the published URL it is served from. These two are
-            # not published yet, so each is redirected to the same files on the branch.
-            # Comma-separated "published @context prefix | fetch it from here instead"
-            # pairs; whitespace around either side is ignored. Delete both pairs once
-            # the packs go live -- the other eight are published and are left out so
-            # they keep resolving from the site.
-            extendedSchema_contextRewrite: >-
-              https://openagrinet.github.io/network-specs/schema/Grievance/ |
-              https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/schema/Grievance/
-              ,
-              https://openagrinet.github.io/network-specs/schema/SchemeApplication/ |
-              https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/schema/SchemeApplication/
+            # openagrinet.github.io is here because a pack's @context is the
+            # published URL it is served from, and that is the only address
+            # this adapter fetches a pack from.
+            extendedSchema_allowedDomains: "openagrinet.github.io,schema.beckn.io,schema.nfh.global"
 
             extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
