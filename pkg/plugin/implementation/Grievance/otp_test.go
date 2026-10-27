@@ -60,7 +60,7 @@ func TestVerifyRequestRefusesWhatCannotBeVerified(t *testing.T) {
 		code     string
 		field    string
 	}{
-		"no OTP":         {withOTP("SMS_OTP", ""), "SCH_REQUIRED_FIELD_MISSING", "challenge.response.value"},
+		"no OTP":         {withOTP("OTP", ""), "SCH_REQUIRED_FIELD_MISSING", "challenge.response.value"},
 		"another method": {withOTP("EMAIL_OTP", "4821"), "SCH_INVALID_FORMAT", "challenge.response.method"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -75,7 +75,7 @@ func TestVerifyRequestRefusesWhatCannotBeVerified(t *testing.T) {
 			}
 		})
 	}
-	fields, err := verifyRequest(withOTP("SMS_OTP", "4821"))
+	fields, err := verifyRequest(withOTP("OTP", "4821"))
 	if err != nil || fields["Types"] != "Ben_id" || fields["Values"] != "UP12345678A" || fields["OTP"] != "4821" {
 		t.Errorf("verifyRequest() = %v, %v; want the identifier, its type and the OTP", fields, err)
 	}

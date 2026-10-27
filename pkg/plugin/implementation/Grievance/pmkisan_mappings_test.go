@@ -71,7 +71,7 @@ const pkSupportRequest = `{
           "category": { "code": "G003", "name": "Installment not received" },
           "description": "  Third instalment for 2026 has not been credited.  "
         },
-        "challenge": { "response": { "method": "SMS_OTP", "value": "4821" } }
+        "challenge": { "response": { "method": "OTP", "value": "4821" } }
       }]
     }
   }
@@ -101,7 +101,7 @@ const pkStatusRequest = `{
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
         "enrolmentId": "UP12345678A",
         "case": { "filedOn": "2026-09-28" },
-        "challenge": { "response": { "method": "SMS_OTP", "value": "4821" } }
+        "challenge": { "response": { "method": "OTP", "value": "4821" } }
       }
     }]
   }}
@@ -799,8 +799,8 @@ func TestPMKISANInitAsksTheOTPServiceForAnOTP(t *testing.T) {
 	}
 	challenge, _ := attributes["challenge"].(map[string]any)
 	issued, _ := challenge["issued"].(map[string]any)
-	if issued["method"] != "SMS_OTP" {
-		t.Errorf("challenge.issued.method = %v, want SMS_OTP", issued["method"])
+	if issued["method"] != "OTP" || issued["channel"] != "SMS" {
+		t.Errorf("challenge.issued method, channel = %v, %v, want OTP, SMS", issued["method"], issued["channel"])
 	}
 	if issued["length"] != float64(4) || issued["valueType"] != "NUMERIC" {
 		t.Errorf("challenge.issued length, valueType = %v, %v, want 4, NUMERIC", issued["length"], issued["valueType"])
@@ -878,7 +878,7 @@ func TestPMKISANAWrongOTPLodgesAndReadsNothing(t *testing.T) {
 
 func TestPMKISANStatusRefusesWithoutAnOTP(t *testing.T) {
 	request := strings.Replace(pkStatusRequest, `,
-        "challenge": { "response": { "method": "SMS_OTP", "value": "4821" } }`, ``, 1)
+        "challenge": { "response": { "method": "OTP", "value": "4821" } }`, ``, 1)
 	if request == pkStatusRequest {
 		t.Fatal("the edit did not apply to the request")
 	}
