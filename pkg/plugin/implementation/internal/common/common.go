@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
@@ -35,6 +36,24 @@ import (
 // do it. What a function returns reaches the mapping as _local, so the mapping
 // still decides what the provider is asked for. Most capabilities need none.
 type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
+
+// Envelope seals a provider's request once, before the retry loop, and
+// returns the opener for its answer (ADR-0001).
+type Envelope interface {
+	Seal(ctx context.Context, exchange Exchange, mapped []byte) (sealed []byte, open Opener, err error)
+}
+
+// Opener decrypts the answer to one sealed request.
+type Opener func(ctx context.Context, answer []byte) ([]byte, error)
+
+// Exchange is the call an envelope wraps: action, Beckn payload and call plan,
+// and the registry, for an envelope that calls another participant too.
+type Exchange struct {
+	Action   string
+	Beckn    any
+	Plan     *model.ProviderRecord
+	Registry definition.ProviderRecordLookup
+}
 
 // Config holds configuration parameters for the step.
 type Config struct {
@@ -58,6 +77,15 @@ type Config struct {
 	// tried in order until one finds a binding.
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
+
+	// Envelopes, keyed by binding key, or by participant id for all of that
+	// provider's bindings. Unlisted bindings get plain JSON. Built by the
+	// domain package.
+	Envelopes map[string]Envelope `yaml:"-" json:"-"`
+
+	// HostedElsewhere: binding key or participant id -> action -> binding key
+	// whose host serves it (ADR-0002).
+	HostedElsewhere map[string]map[string]string `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
@@ -280,6 +308,25 @@ func applyDefaults(cfg *Config) error {
 		profile.Provider = provider
 		if err := profile.validate(); err != nil {
 			return err
+		}
+	}
+
+	// An envelope or host for an unserved provider or binding is a typo.
+	for _, key := range cfg.BindingKeys {
+		served[key] = true
+	}
+	for key := range cfg.Envelopes {
+		if !served[key] {
+			return fmt.Errorf(
+				"an envelope is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				key, strings.Join(cfg.BindingKeys, ", "))
+		}
+	}
+	for key := range cfg.HostedElsewhere {
+		if !served[key] {
+			return fmt.Errorf(
+				"an action host is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				key, strings.Join(cfg.BindingKeys, ", "))
 		}
 	}
 	return nil

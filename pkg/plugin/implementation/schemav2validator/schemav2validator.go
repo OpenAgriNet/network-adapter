@@ -201,8 +201,9 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 		openapi3.EnableFormatValidation(),
 	}
 	if err := schema.Value.VisitJSON(jsonData, opts...); err != nil {
-		log.Debugf(ctx, "Schema validation failed: %v", err)
-		return v.formatValidationError(err)
+		formatted := v.formatValidationError(err)
+		log.Debugf(ctx, "Schema validation failed: %v", formatted)
+		return formatted
 	}
 
 	log.Debugf(ctx, "base schema validation passed for action: %s", action)

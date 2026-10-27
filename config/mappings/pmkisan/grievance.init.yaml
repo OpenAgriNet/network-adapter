@@ -1,0 +1,57 @@
+# PM-KISAN grievance init -> /ChatbotOTP on the OTP service: send an OTP.
+
+request: |
+  {
+    "Types":  "Ben_id",  /* identityType in Grievance/otp.go; keep them together */
+    "Values": beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId
+  }
+
+# "True" is sent (on_init DRAFT, challenge.issued); anything else is a 502.
+# Same response as application-status.init.yaml, OTP window included: keep them in step.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    /* PM-KISAN's yes/no flag, lower-cased: the first of Rsponce, Responce, Status,
+       status that is present. Same rule as pmkisanSaidYes() in Grievance/otp.go;
+       copied verbatim into every PM-KISAN mapping. */
+    $statusText := function($r) {
+      $exists($r.Rsponce) ? $lowercase($string($r.Rsponce))
+      : $exists($r.Responce) ? $lowercase($string($r.Responce))
+      : $exists($r.Status) ? $lowercase($string($r.Status))
+      : $exists($r.status) ? $lowercase($string($r.status))
+    };
+    $sent := $statusText(response) = "true";
+    $commitment := beckn.message.contract.commitments[0];
+    $ca := $commitment.commitmentAttributes;
+
+    $otpWindowMillis := 10 * 60 * 1000;
+    $not($sent)
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN could not send the OTP" } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_init", "timestamp": $now() }]),
+      "message": {
+        "contract": $merge([beckn.message.contract, {
+          "commitments": [$merge([$commitment, {
+            "status": { "descriptor": { "code": "DRAFT" } },
+            "commitmentAttributes": {
+              "@context":        $ca.`@context`,
+              "@type":           $ca.`@type`,
+              "informationMode": "OnDemand",
+              "scheme":          $ca.scheme,
+              "challenge": {
+                "issued": {
+                  "method":    "OTP",
+                  "channel":   "SMS",
+                  "length":    4,
+                  "valueType": "NUMERIC",
+                  "expiresAt": $fromMillis($millis() + $otpWindowMillis)
+                }
+              }
+            }
+          }])]
+        }])
+      }
+    }
+  )

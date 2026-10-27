@@ -181,14 +181,40 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	// Resolved from the binding key, so a step serving several providers
 	// authenticates each as itself. Startup guarantees a profile per served
 	// provider; this guards a record arriving for an undeclared key.
-	auth, configured := s.auth[providerIDFrom(plan.BindingKey)]
+	provider := providerIDFrom(plan.BindingKey)
+	auth, configured := s.auth[provider]
 	if !configured {
 		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
 	}
 
-	upstreamResponse, err := s.call(ctx, auth, plan.BaseURL, call, upstreamRequest)
+	// The binding's host, unless another binding serves this action.
+	// auth stays the originating provider's credential, not the host's.
+	base := plan.BaseURL
+	if key := forBinding(s.config.HostedElsewhere, plan.BindingKey)[action]; key != "" {
+		if base, err = HostOf(ctx, s.registry, key); err != nil {
+			return err
+		}
+	}
+
+	// The provider's envelope, if any: seal once before the retry loop, open
+	// once after it.
+	var open Opener
+	if envelope := forBinding(s.config.Envelopes, plan.BindingKey); envelope != nil {
+		exchange := Exchange{Action: action, Beckn: beckn, Plan: plan, Registry: s.registry}
+		if upstreamRequest, open, err = envelope.Seal(ctx, exchange, upstreamRequest); err != nil {
+			return err
+		}
+	}
+
+	upstreamResponse, err := s.call(ctx, auth, base, call, upstreamRequest)
 	if err != nil {
 		return err
+	}
+
+	if open != nil {
+		if upstreamResponse, err = open(ctx, upstreamResponse); err != nil {
+			return err
+		}
 	}
 
 	answer, err := decodeBody(upstreamResponse)
@@ -311,4 +337,12 @@ func decodeBody(body []byte) (any, error) {
 		return nil, fmt.Errorf("could not read JSON: %w", err)
 	}
 	return decoded, nil
+}
+
+// forBinding is the setting for bindingKey: its own, else its provider's.
+func forBinding[T any](byKey map[string]T, bindingKey string) T {
+	if v, ok := byKey[bindingKey]; ok {
+		return v
+	}
+	return byKey[providerIDFrom(bindingKey)]
 }

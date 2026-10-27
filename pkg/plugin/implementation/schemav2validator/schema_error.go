@@ -102,8 +102,19 @@ func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model
 			v.extractSchemaErrors(sub, schemaErrors)
 		}
 	default:
-		*schemaErrors = append(*schemaErrors, *model.NewCodedError("SCH_SCHEMA_VALIDATION_FAILED", err.Error()))
+		*schemaErrors = append(*schemaErrors, *model.NewCodedError("SCH_SCHEMA_VALIDATION_FAILED", withoutDetails(err.Error())))
 	}
+}
+
+// Keeps the reason and drops the schema and the caller's value that kin-openapi
+// appends, which can carry PII (ADR-0003).
+func withoutDetails(message string) string {
+	for _, marker := range []string{"\nSchema:", "\nValue:"} {
+		if i := strings.Index(message, marker); i >= 0 {
+			message = message[:i]
+		}
+	}
+	return strings.TrimSpace(message)
 }
 
 // Reorders causes without dropping any: SchemaValidationErr reports them all
