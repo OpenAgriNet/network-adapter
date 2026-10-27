@@ -27,7 +27,7 @@ type AuthProfile struct {
 	// operator guessing which block to look at.
 	Provider string
 
-	// One of none, basic, header, query, oauth2 or tokenQuery.
+	// One of none, basic, header, query, oauth2, tokenQuery or tokenHeader.
 	Scheme string
 
 	// Variable NAMES, never the values.
@@ -60,18 +60,18 @@ type AuthProfile struct {
 	TokenSecretName string
 	TokenSecretEnv  string
 
-	// Where the token sits in the response body, as a top-level key.
+	// Where the token sits in the response body, as a dotted path.
 	TokenResponseField string
 
-	// How long a token may be held, as written in config and as parsed.
-	//
-	// Configured because the response carries no expiry at all -- nothing in it
-	// says how long the token lives, so an operator states what they believe
-	// and this refuses to guess. Set it too long and calls fail with the
-	// provider's own rejection until it lapses; the cache is dropped on such a
-	// rejection so the next call re-exchanges rather than waiting that out.
+	// How long a token may be held, for a response that states no expiry. Too
+	// long costs one rejected call: the rejection drops the token.
 	TokenTTLRaw string
 	TokenTTL    time.Duration
+
+	// Where the response states the token's expiry, as a dotted path to Unix
+	// seconds or an RFC 3339 time. Set this or tokenTtl: the issuer's own
+	// expiry beats an estimate.
+	TokenExpiryField string
 }
 
 // authenticator is one provider's profile plus the token it holds.
@@ -116,43 +116,61 @@ func (a *AuthProfile) validate() error {
 				"%s: authScheme oauth2 requires tokenUrl, clientIdEnv and clientSecretEnv",
 				a.Provider)
 		}
-	case util.AuthSchemeTokenQuery:
+	case util.AuthSchemeTokenQuery, util.AuthSchemeTokenHeader:
 		// Every one of these is required, and none can be defaulted: the JSON
-		// keys, the response key and the parameter name are all this
+		// keys, the response key and the parameter or header name are all this
 		// provider's spelling, and guessing any of them sends a malformed
 		// request whose rejection says nothing about the cause.
 		if a.TokenURL == "" || a.TokenUserField == "" || a.TokenUserEnv == "" ||
 			a.TokenSecretName == "" || a.TokenSecretEnv == "" ||
-			a.TokenResponseField == "" || a.QueryName == "" {
-			return fmt.Errorf("%s: authScheme tokenQuery requires tokenUrl, "+
-				"tokenUserField, tokenUserEnv, tokenSecretField, tokenSecretEnv, "+
-				"tokenResponseField and queryName", a.Provider)
+			a.TokenResponseField == "" {
+			return fmt.Errorf("%s: authScheme %s requires tokenUrl, "+
+				"tokenUserField, tokenUserEnv, tokenSecretField, tokenSecretEnv "+
+				"and tokenResponseField", a.Provider, a.Scheme)
 		}
-		if a.TokenTTLRaw == "" {
-			return fmt.Errorf("%s: authScheme tokenQuery requires tokenTtl, "+
-				"because the token response carries no expiry to read", a.Provider)
+		if a.Scheme == util.AuthSchemeTokenQuery && a.QueryName == "" {
+			return fmt.Errorf("%s: authScheme tokenQuery requires queryName", a.Provider)
 		}
-		ttl, err := time.ParseDuration(a.TokenTTLRaw)
-		if err != nil {
-			return fmt.Errorf("%s: tokenTtl %q is not a duration: %w",
-				a.Provider, a.TokenTTLRaw, err)
+		if a.Scheme == util.AuthSchemeTokenHeader && a.HeaderName == "" {
+			return fmt.Errorf("%s: authScheme tokenHeader requires headerName", a.Provider)
 		}
-		// Below the skew every token is already expired when it arrives, so
-		// each call would exchange one and then discard it -- two round trips
-		// per request and a token endpoint hit at the request rate.
-		if ttl <= util.TokenRefreshSkew {
-			return fmt.Errorf("%s: tokenTtl %s must exceed the %s refresh skew, "+
-				"or every token is expired before it is used",
-				a.Provider, ttl, util.TokenRefreshSkew)
+		// The lifetime comes from exactly one of the two: a field the provider
+		// sets on each token, or a fixed duration configured here.
+		switch {
+		case a.TokenExpiryField != "" && a.TokenTTLRaw != "":
+			// Two lifetimes would leave an operator guessing which one holds.
+			return fmt.Errorf("%s: set tokenTtl or tokenExpiryField, not both", a.Provider)
+
+		case a.TokenExpiryField != "":
+			// The provider states it per token, so there is nothing to parse.
+
+		case a.TokenTTLRaw != "":
+			ttl, err := time.ParseDuration(a.TokenTTLRaw)
+			if err != nil {
+				return fmt.Errorf("%s: tokenTtl %q is not a duration: %w",
+					a.Provider, a.TokenTTLRaw, err)
+			}
+			// Below the skew every token is already expired when it arrives,
+			// so each call would exchange one and then discard it -- two round
+			// trips per request and a token endpoint hit at the request rate.
+			if ttl <= util.TokenRefreshSkew {
+				return fmt.Errorf("%s: tokenTtl %s must exceed the %s refresh skew, "+
+					"or every token is expired before it is used",
+					a.Provider, ttl, util.TokenRefreshSkew)
+			}
+			a.TokenTTL = ttl
+
+		default:
+			return fmt.Errorf("%s: authScheme %s requires tokenTtl or tokenExpiryField, "+
+				"or the token's lifetime is unknown", a.Provider, a.Scheme)
 		}
-		a.TokenTTL = ttl
 	case "":
 		return fmt.Errorf("%s: authScheme is required, "+
 			"and is none where the upstream needs no credential", a.Provider)
 	default:
 		return fmt.Errorf(
 			"%s: unknown authScheme %q: must be none, basic, header, query, "+
-				"oauth2 or tokenQuery", a.Provider, a.Scheme)
+				"oauth2, tokenQuery or tokenHeader", a.Provider, a.Scheme)
 	}
 	return nil
 }
@@ -245,7 +263,8 @@ var authFields = map[string]func(*AuthProfile, string){
 	// Kept as written and turned into a duration by validate, so a bad value is
 	// refused at startup naming the provider rather than read as zero -- which
 	// would mean re-exchanging a token on every single call.
-	"tokenTtl": func(p *AuthProfile, v string) { p.TokenTTLRaw = v },
+	"tokenTtl":         func(p *AuthProfile, v string) { p.TokenTTLRaw = v },
+	"tokenExpiryField": func(p *AuthProfile, v string) { p.TokenExpiryField = v },
 }
 
 // providerIDFrom returns the provider half of "<participantId>|<capabilityCode>".
@@ -306,6 +325,14 @@ func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
+
+	case util.AuthSchemeTokenHeader:
+		// Exchanged like tokenQuery, sent bare in the header.
+		token, err := s.providerToken(req.Context(), auth)
+		if err != nil {
+			return err
+		}
+		req.Header.Set(cfg.HeaderName, token)
 
 	case util.AuthSchemeTokenQuery:
 		// Exchanged like oauth2, placed like query: the same held token, put

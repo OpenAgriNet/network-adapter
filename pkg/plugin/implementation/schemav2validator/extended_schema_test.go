@@ -632,7 +632,7 @@ components:
 		},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 }
 
@@ -670,7 +670,7 @@ components:
 		},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	schemaErrors := []model.Error{}
@@ -693,7 +693,7 @@ func TestValidateReferencedObject_DomainNotAllowed(t *testing.T) {
 
 	allowedDomains := []string{"trusted.com"}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, allowedDomains, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, allowedDomains, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "domain not allowed")
 
@@ -728,15 +728,17 @@ components:
 		},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	becknErr, ok := err.(*model.Error)
 	if !ok || becknErr.Code != "SCH_INVALID_ENTITY_TYPE" {
 		t.Errorf("err = %+v (%T), want *model.Error with Code=SCH_INVALID_ENTITY_TYPE", err, err)
 	}
-	if becknErr.Details == nil || becknErr.Details.Path != obj.Path {
-		t.Errorf("Details.Path = %+v, want %q", becknErr.Details, obj.Path)
+	// Empty, not obj.Path: validateExtendedSchemas prefixes where the object
+	// sits, and naming it here too would deliver it twice over.
+	if becknErr.Details != nil && becknErr.Details.Path != "" {
+		t.Errorf("Details.Path = %q, want it left for the caller to fill", becknErr.Details.Path)
 	}
 	if becknErr.Unwrap() == nil {
 		t.Error("expected Unwrap() to reach the underlying findSchemaByType error, got nil")
@@ -754,15 +756,17 @@ func TestValidateReferencedObject_SchemaLoadFailure(t *testing.T) {
 		Data:    map[string]interface{}{},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.Error(t, err)
 
 	becknErr, ok := err.(*model.Error)
 	if !ok || becknErr.Code != "SCH_SCHEMA_ADAPTATION_FAILED" {
 		t.Errorf("err = %+v (%T), want *model.Error with Code=SCH_SCHEMA_ADAPTATION_FAILED", err, err)
 	}
-	if becknErr.Details == nil || becknErr.Details.Path != obj.Path {
-		t.Errorf("Details.Path = %+v, want %q", becknErr.Details, obj.Path)
+	// Empty, not obj.Path: validateExtendedSchemas prefixes where the object
+	// sits, and naming it here too would deliver it twice over.
+	if becknErr.Details != nil && becknErr.Details.Path != "" {
+		t.Errorf("Details.Path = %q, want it left for the caller to fill", becknErr.Details.Path)
 	}
 	if becknErr.Unwrap() == nil {
 		t.Error("expected Unwrap() to reach the underlying loadSchemaFromPath error, got nil")
@@ -803,7 +807,7 @@ func TestValidateReferencedObject_NonHttpSchemeRejectedWhenAllowlistSet(t *testi
 
 			allowedDomains := []string{"raw.githubusercontent.com"}
 
-			err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, allowedDomains, false)
+			err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, allowedDomains, false)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "invalid scheme in @context")
 
@@ -863,7 +867,7 @@ components:
 				Data:    map[string]interface{}{"field1": "value1"},
 			}
 
-			err = cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, tt.allowedDomains, false)
+			err = cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, tt.allowedDomains, false)
 			// So: no domain error and no @context scheme error, which is what
 			// an empty allowlist means. Not "anything is readable".
 			if err != nil {
@@ -890,7 +894,7 @@ func TestValidateExtendedSchemas_NoObjects(t *testing.T) {
 		},
 	}
 
-	err := v.validateExtendedSchemas(ctx, body)
+	err := v.validateExtendedSchemas(ctx, body, "")
 	assert.NoError(t, err)
 }
 
@@ -907,7 +911,7 @@ func TestValidateExtendedSchemas_MissingMessage(t *testing.T) {
 		"context": map[string]interface{}{},
 	}
 
-	err := v.validateExtendedSchemas(ctx, body)
+	err := v.validateExtendedSchemas(ctx, body, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "missing 'message' field")
 }
@@ -939,7 +943,7 @@ func TestValidateExtendedSchemas_DomainNotAllowed_PropagatesCode(t *testing.T) {
 		},
 	}
 
-	err := v.validateExtendedSchemas(ctx, body)
+	err := v.validateExtendedSchemas(ctx, body, "")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -1274,7 +1278,7 @@ components:
 	}
 
 	// localSchema=true, no @context — relies entirely on rawSchemas lookup by @type
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, true)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 }
 
@@ -1306,7 +1310,7 @@ components:
 	}
 
 	// rawSchemas empty, localSchema=true — local miss, falls back to fetching the @context
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, nil, true)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, nil, true)
 	assert.NoError(t, err)
 }
 
@@ -1348,7 +1352,7 @@ components:
 		Data:    map[string]interface{}{"field1": "value1"},
 	}
 
-	err := cache.validateReferencedObject(ctx, obj, 1*time.Hour, 30*time.Second, allowedDomains, false)
+	err := cache.validateReferencedObject(ctx, obj, "", 1*time.Hour, 30*time.Second, allowedDomains, false)
 	assert.NoError(t, err, "valid http URL with allowlisted host should pass")
 }
 
@@ -1438,7 +1442,7 @@ func TestValidateReferencedObject_PackStyleKeepsAtType(t *testing.T) {
 		},
 	}
 
-	err := cache.validateReferencedObject(context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+	err := cache.validateReferencedObject(context.Background(), obj, "", 1*time.Hour, 30*time.Second, nil, false)
 	assert.NoError(t, err)
 }
 
@@ -1579,7 +1583,7 @@ func TestValidateReferencedObject_AcceptsAndChecksATypeList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			obj := theObjectIn(t, resourceBody(ctxURL, tt.atType, "OnDemand"))
 			err := newSchemaCache(10).validateReferencedObject(
-				context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+				context.Background(), obj, "", 1*time.Hour, 30*time.Second, nil, false)
 
 			if !tt.wantErr {
 				assert.NoError(t, err)
@@ -1668,7 +1672,7 @@ func TestFindReferencedObjects_TypeShapes(t *testing.T) {
 
 				// and it must actually reject when validated
 				err := newSchemaCache(10).validateReferencedObject(
-					context.Background(), obj, 1*time.Hour, 30*time.Second, nil, false)
+					context.Background(), obj, "", 1*time.Hour, 30*time.Second, nil, false)
 				assert.Error(t, err)
 				return
 			}
@@ -1858,7 +1862,7 @@ func TestValidateReferencedObject_RefusesARefThatWouldReadTheDisk(t *testing.T) 
 				Data:    map[string]interface{}{"field1": "value1"},
 			}
 
-			err = cache.validateReferencedObject(context.Background(), obj,
+			err = cache.validateReferencedObject(context.Background(), obj, "",
 				1*time.Hour, 30*time.Second, []string{host.Host}, false)
 
 			// The entry document is allowlisted and https, so nothing before
@@ -1907,7 +1911,7 @@ func TestValidateReferencedObject_RefusesARefToAHostOutsideTheAllowlist(t *testi
 	}
 
 	// Only the entry host is allowlisted. The $ref host is not.
-	err = cache.validateReferencedObject(context.Background(), obj,
+	err = cache.validateReferencedObject(context.Background(), obj, "",
 		1*time.Hour, 30*time.Second, []string{entryHost.Host}, false)
 	if err == nil {
 		t.Fatal("the cross-host $ref was fetched; a payload can point this process at any http host")
@@ -1940,7 +1944,7 @@ func TestValidateReferencedObject_AllowsARefWhenBothHostsAreAllowlisted(t *testi
 		Data:    map[string]interface{}{"field1": "value1"},
 	}
 
-	if err := cache.validateReferencedObject(context.Background(), obj,
+	if err := cache.validateReferencedObject(context.Background(), obj, "",
 		1*time.Hour, 30*time.Second, []string{entryHost.Host, borrowedHost.Host}, false); err != nil {
 		t.Fatalf("both hosts allowlisted, so the chain must load: %v", err)
 	}
@@ -1984,6 +1988,67 @@ func TestPayloadDirectedReader(t *testing.T) {
 			}
 			assert.NoError(t, err)
 			assert.Contains(t, string(data), "Borrowed")
+		})
+	}
+}
+
+func TestSchemaForAction(t *testing.T) {
+	doc := &openapi3.T{Components: &openapi3.Components{Schemas: openapi3.Schemas{
+		"GrievanceStatus": openapi3.NewSchemaRef("", openapi3.NewObjectSchema()),
+		"GrievanceInit":   openapi3.NewSchemaRef("", openapi3.NewObjectSchema()),
+	}}}
+	nominating := func(byAction map[string]interface{}) *openapi3.SchemaRef {
+		schema := openapi3.NewObjectSchema()
+		schema.Title = "openagrinet:Grievance"
+		schema.Extensions = map[string]interface{}{"x-oan-schema-by-action": byAction}
+		return openapi3.NewSchemaRef("", schema)
+	}
+	served := map[string]interface{}{"init": "GrievanceInit", "status": "GrievanceStatus"}
+
+	tests := []struct {
+		name     string
+		schema   *openapi3.SchemaRef
+		action   string
+		wantName string
+		wantErr  string
+	}{{
+		name: "a pack nominating nothing resolves by @type as before", action: "status",
+		schema: openapi3.NewSchemaRef("", openapi3.NewObjectSchema()),
+	}, {
+		name: "the call names its schema", action: "status",
+		schema: nominating(served), wantName: "GrievanceStatus",
+	}, {
+		// The key narrows and never restricts: an entity travels on more calls
+		// than a pack names, and which calls exist is the base spec's to say.
+		name: "a call the pack does not name falls back to the whole type", action: "confirm",
+		schema: nominating(served),
+	}, {
+		name: "nominating a schema the document lacks is the pack's mistake", action: "status",
+		schema:  nominating(map[string]interface{}{"status": "Absent"}),
+		wantErr: `the schema nominates "Absent" for action "status" and the document does not define it`,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nominated, name, err := schemaForAction(doc, tt.schema, tt.action)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if name != tt.wantName {
+				t.Errorf("name = %q, want %q", name, tt.wantName)
+			}
+			if tt.wantName == "" && nominated != nil {
+				t.Errorf("nominated = %v, want nil", nominated)
+			}
+			if tt.wantName != "" && nominated != doc.Components.Schemas[tt.wantName] {
+				t.Errorf("nominated is not the document's %s", tt.wantName)
+			}
 		})
 	}
 }

@@ -3,10 +3,12 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -22,7 +24,7 @@ import (
 // recognises its own work, so adding a provider is one config entry rather than
 // a routing-table change.
 func (s *Step) Run(ctx *model.StepContext) error {
-	binding, err := BindingFrom(s.paths, ctx.Body)
+	binding, err := s.bindingFor(ctx.Body)
 	if errors.Is(err, errNoBinding) {
 		return nil
 	}
@@ -80,6 +82,65 @@ func (s *Step) resolve(ctx context.Context, bindingKey string, beckn any) (map[s
 // cheaper than a map and config order survives into New's startup log.
 func (s *Step) serves(key string) bool {
 	return slices.Contains(s.config.BindingKeys, key)
+}
+
+// bindingFor derives the binding this step should answer for, trying the
+// configured path pairs in the order they were written.
+//
+// A pair that resolves a binding some other step serves does not end the
+// search. Several steps share one pipeline, and a later pair may read a
+// container holding more than one step's entry, so this step keeps looking for
+// its own work. When none of the pairs names it, the first binding found is
+// what comes back, so the pass-through log says what the payload was asking for.
+func (s *Step) bindingFor(body []byte) (Binding, error) {
+	payload, err := decodePayload(body)
+	if err != nil {
+		return Binding{}, err
+	}
+	var first Binding
+	found := false
+	for i, paths := range s.paths {
+		binding, err := bindingIn(paths, payload)
+		switch {
+		case errors.Is(err, errNoBinding):
+			continue
+		case err != nil:
+			// The first pair is this step's own, so its refusal always stands.
+			// A later pair reads a shared container, such as the support
+			// channels, where another step's entry can make the payload name
+			// several bindings without it being this caller's fault.
+			if i > 0 && !s.namesServed(paths, payload) {
+				continue
+			}
+			return Binding{}, err
+		}
+		if s.serves(binding.Key()) {
+			return binding, nil
+		}
+		if !found {
+			first, found = binding, true
+		}
+	}
+	if found {
+		return first, nil
+	}
+	return Binding{}, errNoBinding
+}
+
+// namesServed reports whether the payload names a binding this step serves.
+//
+// Takes the decoded payload rather than the body: it is reached only after
+// bindingIn has already refused one, and re-reading the bytes to say which
+// binding was named would parse the same document twice.
+func (s *Step) namesServed(paths Paths, payload any) bool {
+	for _, provider := range ValuesAt(payload, paths.ProviderID) {
+		for _, capability := range ValuesAt(payload, paths.CapabilityCode) {
+			if s.serves(Binding{ParticipantID: provider, CapabilityCode: capability}.Key()) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // serve runs the exchange this step exists for: resolve, map out, call, map back.
@@ -145,6 +206,15 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	if err != nil {
 		return err
 	}
+	// The provider body is not logged: it can carry the farmer's details.
+	// Its message is, so it is stripped of both our credentials and whatever
+	// of the request it quoted back -- a refusal naming the mobile it could
+	// not find is the ordinary shape of one.
+	if cause, err := refusalIn(becknResponse); err != nil {
+		log.Warnf(ctx, "%s refused the request: %v (provider said: %q)",
+			plan.BindingKey, err, s.redactString(redactSent(cause, upstreamRequest)))
+		return err
+	}
 	if len(becknResponse) == 0 {
 		// No response half, or its transform matched nothing. Either way there
 		// is no Beckn response, and returning the provider's own shape would
@@ -172,10 +242,53 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 	if err != nil {
 		return nil, err
 	}
+	if _, err := refusalIn(mapped); err != nil {
+		return nil, err
+	}
 	if len(mapped) == 0 {
 		log.Debugf(ctx, "the request half of %s produced nothing; sending an empty request", call.Mappings)
 	}
 	return mapped, nil
+}
+
+// refusalIn returns the error a mapping asks for under the reserved _error
+// field {status, code, message, path, cause}, or nil if there is none. Status
+// 0 or 400 is a 400 with details.path. cause is the provider's own wording,
+// returned for the log and never sent to the caller.
+func refusalIn(mapped []byte) (string, error) {
+	// Cheap text check first: almost no answer carries the field.
+	if !bytes.Contains(mapped, []byte(`"_error"`)) {
+		return "", nil
+	}
+	// Only _error is held raw. Decoding the whole document into
+	// map[string]json.RawMessage would copy every other top-level value's
+	// bytes, and an answer carrying a case or an application is most of them.
+	var document struct {
+		Error json.RawMessage `json:"_error"`
+	}
+	if json.Unmarshal(mapped, &document) != nil || len(document.Error) == 0 ||
+		string(document.Error) == "null" {
+		return "", nil
+	}
+	// Decoded separately so a malformed _error is told apart from an absent
+	// one: a single pass would fail whole and read as "no refusal here".
+	var r struct {
+		Status  int    `json:"status"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Path    string `json:"path"`
+		Cause   string `json:"cause"`
+	}
+	if json.Unmarshal(document.Error, &r) != nil || r.Message == "" {
+		return "", errors.New("a mapping refused the call with an unreadable _error; it needs status, code and message")
+	}
+	switch r.Status {
+	case 0, http.StatusBadRequest:
+		// CodedErr drops details, so the path needs SchemaValidationErr.
+		return r.Cause, &model.SchemaValidationErr{Errors: []model.Error{*model.NewCodedErrorWithCause(r.Code, r.Message, r.Path, nil)}}
+	default:
+		return r.Cause, model.NewCodedErr(r.Status, r.Code, errors.New(r.Message))
+	}
 }
 
 // extractAction reads the Beckn action a request is for.
