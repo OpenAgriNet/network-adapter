@@ -7,16 +7,8 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-// TestErrorBranches_KinOpenAPIShapes pins the one assumption errorBranches
-// makes about kin-openapi internals: that a composite's branch errors are
-// stored in something whose underlying kind is a slice.
-//
-// openapi3.MultiError is exported, but the multiErrorForOneOf and
-// multiErrorForAllOf that a failed composite actually carries are not, so
-// errorBranches reaches them by reflection. If an upgrade turns either into a
-// struct, nothing stops compiling and no existing test fails on a type error
-// -- the walk just stops finding causes and NACK messages quietly get worse.
-// This test fails loudly instead.
+// Pins the one assumption errorBranches makes: that a composite's branch
+// errors sit in something whose underlying kind is a slice.
 func TestErrorBranches_KinOpenAPIShapes(t *testing.T) {
 	t.Run("exported MultiError", func(t *testing.T) {
 		branches, ok := errorBranches(openapi3.MultiError{errors.New("first"), errors.New("second")})
@@ -47,22 +39,18 @@ func TestErrorBranches_KinOpenAPIShapes(t *testing.T) {
 
 		leaves := schemaErrorLeaves(err)
 		if len(leaves) == 0 {
-			t.Fatal("the walk reached no leaves: kin-openapi's oneOf multierror is " +
-				"no longer a slice, so errorBranches can no longer read it")
+			t.Fatal("no leaves reached: kin-openapi's oneOf multierror is no longer " +
+				"a slice, so errorBranches can no longer read it")
 		}
 		for _, leaf := range leaves {
 			if leaf.SchemaField != "required" {
-				t.Errorf("leaf SchemaField = %q, want the branches' own \"required\" failures",
-					leaf.SchemaField)
+				t.Errorf("leaf SchemaField = %q, want \"required\"", leaf.SchemaField)
 			}
 		}
 	})
 }
 
-// TestNearest_KeepsOnlyTheClosestAlternative covers the rule that decides what
-// a caller is told when every branch of a oneOf failed: the branch that failed
-// for fewest reasons is the one they came closest to sending, so the extra
-// demands of the others are not reported.
+// When every branch of a oneOf failed, only the closest is reported.
 func TestNearest_KeepsOnlyTheClosestAlternative(t *testing.T) {
 	leaf := func(field, pointer string) *openapi3.SchemaError {
 		return &openapi3.SchemaError{SchemaField: field, Reason: pointer, Value: pointer}
@@ -82,7 +70,6 @@ func TestNearest_KeepsOnlyTheClosestAlternative(t *testing.T) {
 	}
 }
 
-// TestStrictSubset covers the two edges the containment check turns on.
 func TestStrictSubset(t *testing.T) {
 	tests := []struct {
 		name string
@@ -104,10 +91,7 @@ func TestStrictSubset(t *testing.T) {
 	}
 }
 
-// TestRankSchemaLeaves_OrdersByActionability checks the order the wire-level
-// code is taken from: a real constraint failure, then a discriminator saying
-// "not this branch", then a closed branch calling a field it does not declare
-// unsupported.
+// The order the wire-level code is taken from.
 func TestRankSchemaLeaves_OrdersByActionability(t *testing.T) {
 	unsupported := &openapi3.SchemaError{SchemaField: "properties"}
 	discriminator := &openapi3.SchemaError{SchemaField: "const"}
