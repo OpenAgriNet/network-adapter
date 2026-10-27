@@ -61,7 +61,7 @@ const pkSupportRequest = `{
   "message": {
     "support": {
       "channels": [{
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/schema/Grievance/v0.1/context.jsonld",
         "@type": "openagrinet:Grievance",
         "provider": { "id": "pmkisan", "descriptor": { "name": "PM-KISAN Grievance Portal" } },
         "informationMode": "OnDemand",
@@ -95,7 +95,7 @@ const pkStatusRequest = `{
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/schema/Grievance/v0.1/context.jsonld",
         "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
@@ -125,7 +125,7 @@ const pkInitRequest = `{
       },
       "resources": [{ "id": "res:pmkisan:grievance", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/schema/Grievance/v0.1/context.jsonld",
         "@type": "openagrinet:Grievance",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },

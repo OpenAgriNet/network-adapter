@@ -232,8 +232,10 @@ modules:
             # one-line change.
             extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
 
-            # Fetch api-schemas/ from the branch until the published URL serves it (ADR-0003).
-            extendedSchema_contextRewrite: "https://openagrinet.github.io/network-specs/api-schemas/|https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/"
+            # Fetch the two unpublished packs from the branch until the published URL
+            # serves them (ADR-0003). Named one by one, not as a schema/ prefix: the
+            # other eight packs are published and must keep resolving from the site.
+            extendedSchema_contextRewrite: "https://openagrinet.github.io/network-specs/schema/Grievance/|https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/schema/Grievance/,https://openagrinet.github.io/network-specs/schema/SchemeApplication/|https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/schema/SchemeApplication/"
 
             extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"

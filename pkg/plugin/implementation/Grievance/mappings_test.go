@@ -282,7 +282,7 @@ func assertPackShape(t *testing.T, attributes map[string]any) {
 	}
 }
 
-const packContext = "https://openagrinet.github.io/network-specs/api-schemas/Grievance/v0.1/context.jsonld"
+const packContext = "https://openagrinet.github.io/network-specs/schema/Grievance/v0.1/context.jsonld"
 
 // scheme is what every PMFBY payload names.
 var scheme = map[string]any{"code": "PMFBY", "name": "Pradhan Mantri Fasal Bima Yojana"}
