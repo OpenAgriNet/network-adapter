@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	testNetworkID  = "mahavistara.oan.local"
-	testNetworkURL = "https://mahavistara.oan.local/network/discover"
+	testNetworkID  = "net-a.oan.local"
+	testNetworkURL = "https://net-a.oan.local/network/discover"
 	testPackURL    = "https://openagrinet.github.io/network-specs/schema/WeatherObservation/v0.1/attributes.yaml"
 )
 
@@ -262,11 +262,11 @@ func TestTheRecordShapeTheRegistryReturnsIsRead(t *testing.T) {
 	  "osid": "1-19087a97-f886-4fe4-bf14-3875437dc6f8",
 	  "osCreatedAt": "2026-10-13T08:08:24.648Z",
 	  "osUpdatedAt": "2026-10-13T08:08:24.648Z",
-	  "participantId": "mahavistara.oan.local",
+	  "participantId": "net-a.oan.local",
 	  "name": "Maha Vistara",
 	  "type": "node",
 	  "status": "active",
-	  "baseUrl": "https://mahavistara.oan.local/network",
+	  "baseUrl": "https://net-a.oan.local/network",
 	  "role": ["network"],
 	  "projectionTtl": 3600,
 	  "keys": [{"osid": "1-dd305f4d", "alg": "ed25519",

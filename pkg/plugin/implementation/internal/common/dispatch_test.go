@@ -22,7 +22,7 @@ const dispatchMappingRef = "https://m.example.com/mausamgram/weather-observation
 // Kept minimal on purpose: this test is about which step claims a request, not
 // about what any of them would do with it.
 const dispatchRequest = `{
-  "context": { "version": "2.0.0", "action": "select", "receiverId": "bharatvistar.oan.local" },
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "net-b.oan.local" },
   "message": { "contract": { "commitments": [ {
     "resources": [ { "resourceAttributes": { "@type": "openagrinet:WeatherObservation" } } ],
     "offer": { "provider": { "id": "mausamgram" } }
@@ -124,7 +124,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 // work, and the support entry is this one's. Both are ordinary on a payload
 // that rides through a pipeline of several provider steps.
 const sharedContainerRequest = `{
-  "context": { "version": "2.0.0", "action": "select", "receiverId": "bharatvistar.oan.local" },
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "net-b.oan.local" },
   "message": { "contract": {
     "commitments": [ {
       "resources": [ { "resourceAttributes": { "@type": "openagrinet:MarketPrice" } } ],

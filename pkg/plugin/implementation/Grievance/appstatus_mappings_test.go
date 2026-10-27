@@ -36,7 +36,7 @@ const (
 
 const asInitRequest = `{
   "context": {
-    "version": "2.0.0", "action": "init", "networkId": "openagrinet",
+    "version": "2.0.0", "action": "init", "senderId": "app.oan.local", "receiverId": "oan.local", "networkId": "openagrinet",
     "transactionId": "4c810000-0000-4000-8000-000000000001",
     "messageId": "9e270000-0000-4000-8000-000000000002",
     "timestamp": "2026-10-07T10:58:00Z"
@@ -64,7 +64,7 @@ const asInitRequest = `{
 
 const asStatusRequest = `{
   "context": {
-    "version": "2.0.0", "action": "status", "networkId": "openagrinet",
+    "version": "2.0.0", "action": "status", "senderId": "app.oan.local", "receiverId": "oan.local", "networkId": "openagrinet",
     "transactionId": "4c810000-0000-4000-8000-000000000001",
     "messageId": "b5300000-0000-4000-8000-000000000003",
     "timestamp": "2026-10-07T11:02:00Z"
@@ -237,7 +237,7 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 	}
 	t.Cleanup(func() { _ = closeStep() })
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(request)}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.local", Body: []byte(request)}
 	if err := step.Run(stepCtx); err != nil {
 		return nil, err
 	}

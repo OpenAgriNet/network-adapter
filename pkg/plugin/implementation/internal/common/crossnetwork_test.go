@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	us   = "bharatvistar.oan.local"
-	them = "mahavistara.oan.local"
+	us   = "net-b.oan.local"
+	them = "net-a.oan.local"
 
 	// Both networks front the same upstream, so they hold the SAME binding key.
-	sharedBinding = "agmarknet.bharatvistar|openagrinet:MandiPrice"
+	sharedBinding = "agmarknet.net-b|openagrinet:MandiPrice"
 )
 
 // crossRequest names a receiver, an address and an action -- the three fields
@@ -35,7 +35,7 @@ func crossRequest(receiver, bppURI, action string) []byte {
   "context": { "version": "2.0.0"%s%s%s },
   "message": { "contract": { "commitments": [ {
     "resources": [ { "resourceAttributes": { "@type": "openagrinet:MandiPrice" } } ],
-    "offer": { "provider": { "id": "agmarknet.bharatvistar" } }
+    "offer": { "provider": { "id": "agmarknet.net-b" } }
   } ] } }
 }`, field("action", action), field("receiverId", receiver), field("bppUri", bppURI)))
 }
@@ -97,7 +97,7 @@ func crossStepWith(t *testing.T, upstreamURL string, registry definition.Provide
 		&common.Config{
 			BindingKeys: []string{sharedBinding},
 			AuthByProvider: map[string]*common.AuthProfile{
-				"agmarknet.bharatvistar": {Scheme: util.AuthSchemeNone},
+				"agmarknet.net-b": {Scheme: util.AuthSchemeNone},
 			},
 		})
 	if err != nil {

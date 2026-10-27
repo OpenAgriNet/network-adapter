@@ -24,8 +24,8 @@ const weatherPack = "https://openagrinet.github.io/network-specs/schema/WeatherO
 
 func targetNetwork() model.AdmittedNetwork {
 	return model.AdmittedNetwork{
-		ID:           "mahavistara.oan.local",
-		DiscoveryURL: "https://mahavistara.oan.local/network",
+		ID:           "net-a.oan.local",
+		DiscoveryURL: "https://net-a.oan.local/network",
 		Agreement:    model.Agreement{Source: &model.FederationDirection{SchemaPacks: []string{weatherPack}}},
 	}
 }

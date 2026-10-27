@@ -53,7 +53,7 @@ const (
 
 const pkSupportRequest = `{
   "context": {
-    "version": "2.0.0", "action": "support", "networkId": "openagrinet",
+    "version": "2.0.0", "action": "support", "senderId": "app.oan.local", "receiverId": "oan.local", "networkId": "openagrinet",
     "transactionId": "7f3a0000-0000-4000-8000-000000000001",
     "messageId": "4a1e0000-0000-4000-8000-000000000002",
     "timestamp": "2026-09-28T11:04:00Z"
@@ -79,7 +79,7 @@ const pkSupportRequest = `{
 
 const pkStatusRequest = `{
   "context": {
-    "version": "2.0.0", "action": "status", "networkId": "openagrinet",
+    "version": "2.0.0", "action": "status", "senderId": "app.oan.local", "receiverId": "oan.local", "networkId": "openagrinet",
     "transactionId": "c04b0000-0000-4000-8000-000000000003",
     "messageId": "e91f0000-0000-4000-8000-000000000004",
     "timestamp": "2026-10-02T09:10:44Z"
@@ -109,7 +109,7 @@ const pkStatusRequest = `{
 
 const pkInitRequest = `{
   "context": {
-    "version": "2.0.0", "action": "init", "networkId": "openagrinet",
+    "version": "2.0.0", "action": "init", "senderId": "app.oan.local", "receiverId": "oan.local", "networkId": "openagrinet",
     "transactionId": "7f3a0000-0000-4000-8000-000000000005",
     "messageId": "1b850000-0000-4000-8000-000000000006",
     "timestamp": "2026-09-28T10:58:00Z"
@@ -404,7 +404,7 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 	}
 	t.Cleanup(func() { _ = closeStep() })
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(request)}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.local", Body: []byte(request)}
 	if err := step.Run(stepCtx); err != nil {
 		return nil, err
 	}
