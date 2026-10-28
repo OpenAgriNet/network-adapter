@@ -141,16 +141,34 @@ func newNetworkCaller(ctx context.Context, cfg networkCallerConfig, log *slog.Lo
 	}, nil
 }
 
+// appliedPage is the page a network says it applied. Counted in resources,
+// which one catalog may hold several of.
+type appliedPage struct {
+	Limit  int `json:"limit"`
+	Offset int `json:"offset"`
+	Total  int `json:"total"`
+}
+
+// after is where the walk goes next, and whether the network has no more.
+// A network that reports no page is walked the old way, on a short page.
+func (p appliedPage) after(offset, asked, returned int) (next int, done bool) {
+	if p.Limit <= 0 {
+		return offset + asked, returned < asked
+	}
+	next = p.Offset + p.Limit
+	return next, next >= p.Total
+}
+
 // discover hands every catalog a network shares to each, a page at a time.
-// No total comes back, so the walk ends on a short page.
+// The walk ends where the network says its results do.
 func (c *networkCaller) discover(ctx context.Context, network model.AdmittedNetwork, intent string,
 	each func(page []json.RawMessage) error) error {
 	// The config resolves the default; a second one here would quietly outlive it.
 	size := c.cfg.pageSize
 
-	total := 0
-	for offset := 0; ; offset += size {
-		page, err := c.discoverPage(ctx, network, intent, offset, size)
+	catalogs := 0
+	for offset := 0; ; {
+		page, applied, err := c.discoverPage(ctx, network, intent, offset, size)
 		if err != nil {
 			return err
 		}
@@ -158,18 +176,28 @@ func (c *networkCaller) discover(ctx context.Context, network model.AdmittedNetw
 			if err := each(page); err != nil {
 				return err
 			}
-			total += len(page)
+			catalogs += len(page)
 		}
-		if len(page) < size {
+
+		next, done := applied.after(offset, size, len(page))
+		if done {
 			c.log.InfoContext(ctx, "catalogcrawler: a network shared everything it has",
-				"networkId", network.ID, "catalogs", total)
+				"networkId", network.ID, "catalogs", catalogs, "resources", applied.Total)
 			return nil
 		}
+		// A network that answers the same page forever would otherwise be
+		// walked forever.
+		if next <= offset {
+			c.log.ErrorContext(ctx, "catalogcrawler: a network is not moving through its pages, crawl stopped",
+				"networkId", network.ID, "offset", offset, "catalogs", catalogs)
+			return nil
+		}
+		offset = next
 	}
 }
 
 func (c *networkCaller) discoverPage(ctx context.Context, network model.AdmittedNetwork, intent string,
-	offset, size int) ([]json.RawMessage, error) {
+	offset, size int) ([]json.RawMessage, appliedPage, error) {
 	start := time.Now()
 
 	// Recorded even though nothing left the process: a network we never managed
@@ -179,7 +207,7 @@ func (c *networkCaller) discoverPage(ctx context.Context, network model.Admitted
 		c.log.ErrorContext(ctx, "catalogcrawler: a network could not be asked",
 			"networkId", network.ID, "error", err)
 		recordCrawl(ctx, start, operationNetworkAsk, outcomeNotSent)
-		return nil, err
+		return nil, appliedPage{}, err
 	}
 	endpoint := req.URL.String()
 
@@ -190,40 +218,43 @@ func (c *networkCaller) discoverPage(ctx context.Context, network model.Admitted
 		c.log.ErrorContext(ctx, "catalogcrawler: a network could not be reached",
 			"networkId", network.ID, "url", endpoint, "error", err)
 		recordCrawl(ctx, start, operationNetworkAsk, outcomeUnreachable)
-		return nil, fmt.Errorf("catalogcrawler: asking %s: %w", network.ID, err)
+		return nil, appliedPage{}, fmt.Errorf("catalogcrawler: asking %s: %w", network.ID, err)
 	}
 	defer res.Body.Close()
 
 	return c.readPage(ctx, network, res, start, offset)
 }
 
-// readPage turns one answer into catalogs. Each way of failing is counted
-// apart, so a refusal is never read as a network with nothing to share.
+// readPage turns one answer into catalogs and the page it applied. Each way of
+// failing is counted apart, so a refusal is never read as a network with nothing
+// to share.
 func (c *networkCaller) readPage(ctx context.Context, network model.AdmittedNetwork,
-	res *http.Response, start time.Time, offset int) ([]json.RawMessage, error) {
+	res *http.Response, start time.Time, offset int) ([]json.RawMessage, appliedPage, error) {
 	if res.StatusCode != http.StatusOK {
 		c.log.ErrorContext(ctx, "catalogcrawler: a network refused the crawl",
 			"networkId", network.ID, "status", res.Status)
 		recordCrawl(ctx, start, operationNetworkAsk, outcomeRefused)
-		return nil, fmt.Errorf("catalogcrawler: %s answered %s", network.ID, res.Status)
+		return nil, appliedPage{}, fmt.Errorf("catalogcrawler: %s answered %s", network.ID, res.Status)
 	}
 
 	var answer struct {
 		Message struct {
-			Catalogs []json.RawMessage `json:"catalogs"`
+			Catalogs   []json.RawMessage `json:"catalogs"`
+			Pagination appliedPage       `json:"pagination"`
 		} `json:"message"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&answer); err != nil {
 		c.log.ErrorContext(ctx, "catalogcrawler: a network answered something unreadable",
 			"networkId", network.ID, "error", err)
 		recordCrawl(ctx, start, operationNetworkAsk, outcomeUnreadable)
-		return nil, fmt.Errorf("catalogcrawler: %s answered something unreadable: %w", network.ID, err)
+		return nil, appliedPage{}, fmt.Errorf("catalogcrawler: %s answered something unreadable: %w", network.ID, err)
 	}
 
 	c.log.InfoContext(ctx, "catalogcrawler: a network answered",
-		"networkId", network.ID, "offset", offset, "catalogs", len(answer.Message.Catalogs))
+		"networkId", network.ID, "offset", offset, "catalogs", len(answer.Message.Catalogs),
+		"appliedLimit", answer.Message.Pagination.Limit, "resources", answer.Message.Pagination.Total)
 	recordCrawl(ctx, start, operationNetworkAsk, outcomeOK)
-	return answer.Message.Catalogs, nil
+	return answer.Message.Catalogs, answer.Message.Pagination, nil
 }
 
 // buildRequest builds one page's signed discover. limit and offset are set

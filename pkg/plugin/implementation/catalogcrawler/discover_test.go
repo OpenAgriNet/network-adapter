@@ -341,10 +341,13 @@ func TestNewNetworkCallerNeedsAnIdentity(t *testing.T) {
 // pagedNetwork answers like discovery: a slice chosen by limit and offset, and
 // it records every page it was asked for.
 type pagedNetwork struct {
-	total int
-	mu    sync.Mutex
-	asked []string
-	fail  int // the 1-based page to refuse; 0 refuses none
+	total      int // resources, which is what discovery pages by
+	perCatalog int // resources per catalog; 0 reads as one each
+	mu         sync.Mutex
+	asked      []string
+	fail       int  // the 1-based page to refuse; 0 refuses none
+	noPage     bool // answer without a pagination block, as 0.1.0 does
+	stuck      bool // always report offset 0, as a network ignoring the page would
 }
 
 func (n *pagedNetwork) handler() http.HandlerFunc {
@@ -361,12 +364,30 @@ func (n *pagedNetwork) handler() http.HandlerFunc {
 			return
 		}
 
+		per := n.perCatalog
+		if per <= 0 {
+			per = 1
+		}
+		seen := map[int]bool{}
 		var ids []string
 		for i := offset; i < offset+limit && i < n.total; i++ {
-			ids = append(ids, fmt.Sprintf(`{"id":"catalog-%d"}`, i))
+			if c := i / per; !seen[c] {
+				seen[c] = true
+				ids = append(ids, fmt.Sprintf(`{"id":"catalog-%d"}`, c))
+			}
 		}
-		fmt.Fprintf(w, `{"context":{"action":"on_discover"},"message":{"catalogs":[%s]}}`,
-			strings.Join(ids, ","))
+		if n.noPage {
+			fmt.Fprintf(w, `{"context":{"action":"on_discover"},"message":{"catalogs":[%s]}}`,
+				strings.Join(ids, ","))
+			return
+		}
+		echoed := offset
+		if n.stuck {
+			echoed = 0
+		}
+		fmt.Fprintf(w, `{"context":{"action":"on_discover"},"message":{"catalogs":[%s],`+
+			`"pagination":{"limit":%d,"offset":%d,"total":%d}}}`,
+			strings.Join(ids, ","), limit, echoed, n.total)
 	}
 }
 
@@ -456,7 +477,7 @@ func TestAShortFirstPageEndsTheWalk(t *testing.T) {
 	}
 }
 
-func TestAnExactlyFullPageIsFollowedByOneMore(t *testing.T) {
+func TestAnExactlyFullLastPageIsNotFollowedByAnEmptyOne(t *testing.T) {
 	network := &pagedNetwork{total: 20}
 	got, err := fetchAll(t, network, 10)
 	if err != nil {
@@ -465,8 +486,8 @@ func TestAnExactlyFullPageIsFollowedByOneMore(t *testing.T) {
 	if got != 20 {
 		t.Errorf("collected %d, want 20", got)
 	}
-	if len(network.asked) != 3 {
-		t.Errorf("asked %d times, want 3 -- two full pages and one empty", len(network.asked))
+	if len(network.asked) != 2 {
+		t.Errorf("asked %d times, want 2 -- the total says the second page is the last", len(network.asked))
 	}
 }
 
@@ -638,5 +659,47 @@ func TestThePageIsNotInTheQueryString(t *testing.T) {
 	}
 	if asked != "" {
 		t.Errorf("query string = %q, want none -- a signature does not cover it", asked)
+	}
+}
+
+func TestTheWalkFollowsTheTotalNotTheCatalogCount(t *testing.T) {
+	t.Parallel()
+
+	n := &pagedNetwork{total: 10, perCatalog: 5}
+	got, err := fetchAll(t, n, 5)
+	if err != nil {
+		t.Fatalf("discover() returned an unexpected error: %v", err)
+	}
+	if got != 2 {
+		t.Errorf("collected %d catalogs, want 2 -- the walk stopped on a page holding fewer catalogs than the limit", got)
+	}
+	if len(n.asked) != 2 {
+		t.Errorf("asked for %v, want both pages", n.asked)
+	}
+}
+
+func TestANetworkThatReportsNoPageIsStillWalked(t *testing.T) {
+	t.Parallel()
+
+	n := &pagedNetwork{total: 25, noPage: true}
+	got, err := fetchAll(t, n, 10)
+	if err != nil {
+		t.Fatalf("discover() returned an unexpected error: %v", err)
+	}
+	if got != 25 {
+		t.Errorf("collected %d, want 25", got)
+	}
+}
+
+func TestANetworkStuckOnOnePageIsNotWalkedForever(t *testing.T) {
+	t.Parallel()
+
+	n := &pagedNetwork{total: 100, stuck: true}
+	if _, err := fetchAll(t, n, 10); err != nil {
+		t.Fatalf("discover() returned an unexpected error: %v", err)
+	}
+	// Two: the second page is what shows the offset did not move.
+	if len(n.asked) != 2 {
+		t.Errorf("asked %d times, want 2 -- a network that never advances must not be walked forever", len(n.asked))
 	}
 }
