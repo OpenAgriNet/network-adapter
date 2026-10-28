@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -245,14 +246,13 @@ func TestNetworkCallSignsAsUs(t *testing.T) {
 		t.Fatalf("discover() returned an unexpected error: %v", err)
 	}
 
-	for _, want := range []string{
-		`keyId="` + ourNetwork + `|key-1|ed25519"`,
-		`algorithm="ed25519"`,
-		"signature=",
-	} {
-		if !strings.Contains(auth, want) {
-			t.Errorf("Authorization header is missing %s, got %q", want, auth)
-		}
+	// The whole line, not pieces of it: the far end rejects a header that drifts
+	// in any part, and says nothing we can see.
+	want := regexp.MustCompile(`^Signature keyId="` + regexp.QuoteMeta(ourNetwork) +
+		`\|key-1\|ed25519",algorithm="ed25519",created="\d+",expires="\d+",` +
+		`headers="\(created\) \(expires\) digest",signature="[^"]+"$`)
+	if !want.MatchString(auth) {
+		t.Errorf("Authorization header = %q, want %s", auth, want)
 	}
 }
 
