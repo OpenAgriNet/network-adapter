@@ -92,10 +92,9 @@ func schemaContexts(packs []string) []string {
 	return contexts
 }
 
-// discoverURL is the address a network published, called as it stands.
-// services.discovery names the discover endpoint itself, not a mount to append
-// to, so a network is free to serve it from any path.
-func discoverURL(base string) (string, error) {
+// checkDiscoverURL refuses an address a discover cannot be sent to. It builds
+// nothing: services.discovery names the endpoint itself, so any path is fine.
+func checkDiscoverURL(base string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(base))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("catalogcrawler: %q is not an address a discover can be sent to", base)
@@ -263,7 +262,7 @@ func (c *networkCaller) readPage(ctx context.Context, network model.AdmittedNetw
 // here alone, so they can move to the body when discovery moves them.
 func (c *networkCaller) buildRequest(ctx context.Context, network model.AdmittedNetwork, intent string,
 	offset, size int) (*http.Request, error) {
-	endpoint, err := discoverURL(network.DiscoveryURL)
+	endpoint, err := checkDiscoverURL(network.DiscoveryURL)
 	if err != nil {
 		return nil, err
 	}

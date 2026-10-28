@@ -134,7 +134,7 @@ func TestDiscoverBodyRefusesAnUnreadableIntent(t *testing.T) {
 	}
 }
 
-func TestDiscoverURLIsTheAddressAsPublished(t *testing.T) {
+func TestCheckDiscoverURLKeepsTheAddressAsPublished(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct{ base, want string }{
@@ -144,22 +144,22 @@ func TestDiscoverURLIsTheAddressAsPublished(t *testing.T) {
 		"root":         {"https://network.oan.local", "https://network.oan.local"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, err := discoverURL(tc.base)
+			got, err := checkDiscoverURL(tc.base)
 			if err != nil {
-				t.Fatalf("discoverURL() returned an unexpected error: %v", err)
+				t.Fatalf("checkDiscoverURL() returned an unexpected error: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("discoverURL(%q) = %q, want %q", tc.base, got, tc.want)
+				t.Errorf("checkDiscoverURL(%q) = %q, want %q", tc.base, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestDiscoverURLRefusesWhatCannotBeCalled(t *testing.T) {
+func TestCheckDiscoverURLRefusesWhatCannotBeCalled(t *testing.T) {
 	t.Parallel()
 
 	for _, base := range []string{"", "   ", "not a url", "/network"} {
-		if _, err := discoverURL(base); err == nil {
+		if _, err := checkDiscoverURL(base); err == nil {
 			t.Errorf("expected %q to be refused, got none", base)
 		}
 	}
