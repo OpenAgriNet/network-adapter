@@ -12,14 +12,14 @@ import (
 // askedRequester records what the step passed on, so a test can assert the
 // step read the body rather than that the registry refused.
 type askedRequester struct {
-	caller       string
-	action       string
-	capabilities []string
-	refuse       error
+	caller         string
+	action         string
+	schemaContexts []string
+	refuse         error
 }
 
-func (r *askedRequester) CheckCrossNetworkRequester(_ context.Context, caller, action string, capabilities []string) error {
-	r.caller, r.action, r.capabilities = caller, action, capabilities
+func (r *askedRequester) CheckCrossNetworkRequester(_ context.Context, caller, action string, schemaContexts []string) error {
+	r.caller, r.action, r.schemaContexts = caller, action, schemaContexts
 	return r.refuse
 }
 
@@ -69,8 +69,8 @@ func TestTheCallerAndWhatTheyAskedForComeFromTheBody(t *testing.T) {
 	if registry.action != "discover" {
 		t.Errorf("action: got %q, want discover", registry.action)
 	}
-	if len(registry.capabilities) != 1 || registry.capabilities[0] != "https://x/Mandi/context.jsonld" {
-		t.Errorf("capabilities: got %v, want the body's schemaContext", registry.capabilities)
+	if len(registry.schemaContexts) != 1 || registry.schemaContexts[0] != "https://x/Mandi/context.jsonld" {
+		t.Errorf("schemaContexts: got %v, want the body's schemaContext", registry.schemaContexts)
 	}
 }
 

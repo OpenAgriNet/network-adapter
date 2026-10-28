@@ -11,7 +11,7 @@ import (
 // crossNetworkRequester is the half of the registry this step needs. Narrowed
 // so a plugin that only distributes keys fails at startup, not per request.
 type crossNetworkRequester interface {
-	CheckCrossNetworkRequester(ctx context.Context, caller, action string, capabilities []string) error
+	CheckCrossNetworkRequester(ctx context.Context, caller, action string, schemaContexts []string) error
 }
 
 // crossNetworkRequesterStep refuses a caller we did not agree to answer. List
@@ -46,14 +46,14 @@ func (s *crossNetworkRequesterStep) Run(ctx *model.StepContext) error {
 	return s.registry.CheckCrossNetworkRequester(ctx, caller, action, schemaContextOf(becknContext))
 }
 
-// schemaContextOf reads the capabilities a discover names.
+// schemaContextOf reads the schema contexts a discover names.
 func schemaContextOf(becknContext map[string]any) []string {
 	listed, _ := becknContext["schemaContext"].([]any)
-	capabilities := make([]string, 0, len(listed))
+	schemaContexts := make([]string, 0, len(listed))
 	for _, entry := range listed {
 		if name, ok := entry.(string); ok && name != "" {
-			capabilities = append(capabilities, name)
+			schemaContexts = append(schemaContexts, name)
 		}
 	}
-	return capabilities
+	return schemaContexts
 }

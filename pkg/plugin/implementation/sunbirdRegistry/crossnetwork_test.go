@@ -96,15 +96,15 @@ func TestACallerWeNeverAdmittedIsLeftAlone(t *testing.T) {
 	}
 }
 
-func TestADiscoverNamingNoCapabilityIsRefused(t *testing.T) {
+func TestADiscoverNamingNoSchemaContextIsRefused(t *testing.T) {
 	t.Parallel()
 
 	client := admittingClient(t, federationRole{Requester: agreedPacks()})
 	err := discoverFor(t, client)
 	if err == nil {
-		t.Fatal("naming no capability asks for everything, which no agreement covers")
+		t.Fatal("naming no schema context asks for everything, which no agreement covers")
 	}
-	if !strings.Contains(err.Error(), "named no capability") {
+	if !strings.Contains(err.Error(), "named no schema context") {
 		t.Errorf("the refusal must say what was missing: %v", err)
 	}
 }

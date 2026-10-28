@@ -752,18 +752,18 @@ func (c *Client) emitMetrics(ctx context.Context, start time.Time, operation, ou
 	}
 }
 
-// discoverAction is the only action that names capabilities, and so the only
+// discoverAction is the only action that names schema contexts, and so the only
 // one the agreed subset can be checked against.
 const discoverAction = "discover"
 
 // codeUnauthorizedAction is the Beckn code for a caller who may not do this.
 const codeUnauthorizedAction = "AUT_UNAUTHORIZED_ACTION"
 
-// servedRequest is who is asking, what for, and which capabilities they named.
+// servedRequest is who is asking, what for, and which schema contexts they named.
 type servedRequest struct {
-	caller       string
-	action       string
-	capabilities []string
+	caller         string
+	action         string
+	schemaContexts []string
 }
 
 // refused classifies an agreement refusal. 400, not 500: the caller's side to
@@ -775,7 +775,7 @@ func refused(err error) error {
 // CheckCrossNetworkRequester refuses a caller we never agreed to answer, and on
 // a discover one asking beyond the agreement. Reads our own records, not a key
 // lookup, so it holds whether or not the request was signed.
-func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action string, capabilities []string) error {
+func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action string, schemaContexts []string) error {
 	if strings.TrimSpace(caller) == "" {
 		return nil
 	}
@@ -797,13 +797,13 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 			caller, agreed.Directions())
 		return refused(fmt.Errorf("%s is not a network we agreed to give to", caller))
 	}
-	// Only a discover names capabilities. Every other action is governed by the
+	// Only a discover names schema contexts. Every other action is governed by the
 	// direction alone, which we just checked.
 	if action != discoverAction {
 		log.Infof(ctx, "OAN registry %s may call us for %q", caller, action)
 		return nil
 	}
-	return agreedToGiveThese(ctx, servedRequest{caller: caller, action: action, capabilities: capabilities},
+	return agreedToGiveThese(ctx, servedRequest{caller: caller, action: action, schemaContexts: schemaContexts},
 		agreed.RequesterContexts())
 }
 
@@ -811,15 +811,15 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 // The refusal names nothing: listing what we hold but will not share would tell
 // a caller the shape of our catalogue.
 func agreedToGiveThese(ctx context.Context, asked servedRequest, agreed []string) error {
-	if len(asked.capabilities) == 0 {
-		log.Infof(ctx, "OAN registry refusing %s: named no capability, which asks for everything", asked.caller)
-		return refused(fmt.Errorf("%s named no capability", asked.caller))
+	if len(asked.schemaContexts) == 0 {
+		log.Infof(ctx, "OAN registry refusing %s: named no schema context, which asks for everything", asked.caller)
+		return refused(fmt.Errorf("%s named no schema context", asked.caller))
 	}
-	for _, want := range asked.capabilities {
+	for _, want := range asked.schemaContexts {
 		if !slices.Contains(agreed, want) {
 			log.Infof(ctx, "OAN registry refusing %s: asked for %s, which we did not agree to give",
 				asked.caller, want)
-			return refused(fmt.Errorf("%s asked for a capability we did not agree to give", asked.caller))
+			return refused(fmt.Errorf("%s asked for a schema context we did not agree to give", asked.caller))
 		}
 	}
 	log.Infof(ctx, "OAN registry %s may call us, and asked only within what we agreed", asked.caller)
