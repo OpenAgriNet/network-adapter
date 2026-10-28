@@ -282,9 +282,9 @@ func fakeUpstreamEnv(baseURL string) func(string) (string, bool) {
 		switch name {
 		case "MANDI_API_URI":
 			return baseURL, true
-		case "MANDI_TOKEN_USER":
+		case "AGMARKNET_ACCESS_NAME":
 			return "test-user", true
-		case "MANDI_TOKEN_SECRET":
+		case "AGMARKNET_PASSWORD":
 			return "test-secret", true
 		case "CATALOG_PUBLISH_URL":
 			return "http://publish.invalid", true
