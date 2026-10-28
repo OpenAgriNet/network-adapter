@@ -1,6 +1,8 @@
 package catalogcrawler
 
 // federationconfig.go — what a deployment must say before it may crawl networks.
+//
+// Signing: docs/adr/0002-the-crawl-signs-with-its-own-key.md
 
 import (
 	"fmt"

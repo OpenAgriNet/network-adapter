@@ -2,6 +2,8 @@ package catalogcrawler
 
 // discover.go — building a discover for another network and sending it, a
 // page at a time, until that network has shared everything it has.
+//
+// Paging: docs/adr/0003-paging-a-crawl.md
 
 import (
 	"bytes"

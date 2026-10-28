@@ -2,6 +2,8 @@ package catalogcrawler
 
 // networkcrawl.go — one pass over the networks we read from: pick them from
 // the registry, ask each, and publish what came back to our own discovery.
+//
+// Catalog type: docs/adr/0001-crawled-catalogs-are-published-as-regular.md
 
 import (
 	"context"
