@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -51,12 +52,15 @@ func TestDiscoverBodyNamesBothEnds(t *testing.T) {
 		"action":     "discover",
 		"senderId":   ourNetwork,
 		"receiverId": targetNetwork().ID,
-		"networkId":  ourNetwork,
 		"version":    protocolVersion,
 	} {
 		if got, _ := beckn[field].(string); got != want {
 			t.Errorf("context.%s = %q, want %q", field, got, want)
 		}
+	}
+
+	if got := beckn["networkId"]; !reflect.DeepEqual(got, []any{ourNetwork, "*"}) {
+		t.Errorf("context.networkId = %#v, want ours and the public wildcard", got)
 	}
 	if beckn["domain"] != nil {
 		t.Error("no domain is sent; the network does not route on it")

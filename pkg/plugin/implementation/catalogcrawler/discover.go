@@ -25,6 +25,9 @@ const (
 	protocolVersion = "2.0.0"
 	discoverAction  = "discover"
 
+	// publicNetworks is context.networkId's wildcard: a catalog anyone may see.
+	publicNetworks = "*"
+
 	packFile    = "attributes.yaml"
 	contextFile = "context.jsonld"
 
@@ -38,11 +41,13 @@ const (
 func discoverBody(network model.AdmittedNetwork, ourNetworkID, intent string,
 	offset, size int) ([]byte, error) {
 	beckn := map[string]any{
-		"action":        discoverAction,
-		"version":       protocolVersion,
-		"senderId":      ourNetworkID,
-		"receiverId":    network.ID,
-		"networkId":     ourNetworkID,
+		"action":     discoverAction,
+		"version":    protocolVersion,
+		"senderId":   ourNetworkID,
+		"receiverId": network.ID,
+		// Ours and the public wildcard: a network answers exactly what the array
+		// names, so without "*" we would miss everything it publishes publicly.
+		"networkId":     []string{ourNetworkID, publicNetworks},
 		"messageId":     uuid.NewString(),
 		"transactionId": uuid.NewString(),
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
