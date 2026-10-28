@@ -363,6 +363,7 @@ func forBinding[T any](byKey map[string]T, bindingKey string) T {
 
 // routeElsewhere sends a request addressed to another network to that network.
 // Before the binding check: a binding key names the upstream, not the network.
+// See docs/adr/0004-sending-a-request-to-another-network.md
 func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 	becknContext, err := becknContextOf(ctx.Body)
 	if err != nil {

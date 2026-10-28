@@ -16,6 +16,7 @@ type crossNetworkRequester interface {
 
 // crossNetworkRequesterStep refuses a caller we did not agree to answer. List
 // it after validateSign: alone, it judges a senderId nobody proved.
+// See docs/adr/0004-sending-a-request-to-another-network.md
 type crossNetworkRequesterStep struct {
 	registry crossNetworkRequester
 }
