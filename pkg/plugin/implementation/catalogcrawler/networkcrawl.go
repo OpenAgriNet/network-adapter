@@ -75,7 +75,7 @@ func (c *networkCrawl) run(ctx context.Context) error {
 			continue
 		}
 		err := c.asker.discover(ctx, network, c.intent, func(page []json.RawMessage) error {
-			c.publishAll(ctx, network, fetchedAt, page)
+			c.publishPage(ctx, network, fetchedAt, page)
 			return nil
 		})
 		if err != nil {
@@ -87,9 +87,9 @@ func (c *networkCrawl) run(ctx context.Context) error {
 	return nil
 }
 
-// publishAll sends one page on to our own discovery, each copy stamped with
+// publishPage sends one page on to our own discovery, each copy stamped with
 // when it stops being served.
-func (c *networkCrawl) publishAll(ctx context.Context, network model.AdmittedNetwork,
+func (c *networkCrawl) publishPage(ctx context.Context, network model.AdmittedNetwork,
 	fetchedAt time.Time, catalogs []json.RawMessage) {
 	expires := fetchedAt.Add(network.ProjectionTtl)
 	published := 0
@@ -107,7 +107,7 @@ func (c *networkCrawl) publishAll(ctx context.Context, network model.AdmittedNet
 				"networkId", network.ID, "catalogId", id, "error", err)
 			continue
 		}
-		if c.send(ctx, network, id, stamped) {
+		if c.publishOne(ctx, network, id, stamped) {
 			published++
 		}
 	}
@@ -116,9 +116,9 @@ func (c *networkCrawl) publishAll(ctx context.Context, network model.AdmittedNet
 		"servedUntil", expires)
 }
 
-// send publishes one copy and reports whether discovery took it. Ours alone:
+// publishOne publishes one copy and reports whether discovery took it. Ours alone:
 // nobody else may take our copy of another network's catalog out of us.
-func (c *networkCrawl) send(ctx context.Context, network model.AdmittedNetwork,
+func (c *networkCrawl) publishOne(ctx context.Context, network model.AdmittedNetwork,
 	id string, document json.RawMessage) bool {
 	at := time.Now()
 	outcome, err := c.sink.Send(ctx, catalog.CatalogEntry{
@@ -155,7 +155,7 @@ func catalogIDOf(document json.RawMessage) string {
 // newNetworkCrawlFrom builds the pass. A registry that cannot list networks is
 // refused here, rather than crawling nobody in silence.
 func newNetworkCrawlFrom(ctx context.Context, cfg federationConfig, registry definition.RegistryLookup,
-	out catalogSink, log *slog.Logger) (*networkCrawl, error) {
+	sink catalogSink, log *slog.Logger) (*networkCrawl, error) {
 	networks, ok := registry.(networkRegistry)
 	if !ok {
 		return nil, fmt.Errorf("catalogcrawler: %q is true but the registry plugin cannot list networks", cfgFederationEnabled)
@@ -174,7 +174,7 @@ func newNetworkCrawlFrom(ctx context.Context, cfg federationConfig, registry def
 
 	return &networkCrawl{
 		asker:        caller,
-		sink:         out,
+		sink:         sink,
 		registry:     networks,
 		ourNetworkID: cfg.networkID,
 		intent:       cfg.intent,
