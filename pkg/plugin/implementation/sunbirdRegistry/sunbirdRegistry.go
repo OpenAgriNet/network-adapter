@@ -603,10 +603,8 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		Subscriber: model.Subscriber{
 			SubscriberID: p.ParticipantID,
 			URL:          p.BaseURL,
-			// role is the layer this participant serves -- consumer, provider
-			// or network. type is the registry's own discriminator (node or
-			// upstream) and means something else, so it is not a subscriber's
-			// Type.
+			// role is the layer this participant serves; type is the registry's
+			// own discriminator and means something else.
 			Type: p.Role.primary(),
 		},
 		KeyID:            k.OSID,
