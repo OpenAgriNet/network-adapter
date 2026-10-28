@@ -496,6 +496,22 @@ func TestANetworkThatPermitsNoCopyIsNotCrawled(t *testing.T) {
 	}
 }
 
+func TestANetworkWeAgreedNoSchemaPacksWithIsNotCrawled(t *testing.T) {
+	nothing := network(theirNetwork, asSource)
+	nothing.Source = &model.FederationDirection{}
+	out := &stubSink{}
+	crawl := newCrawl(stubAsker{byNetwork: map[string][]json.RawMessage{
+		theirNetwork: {catalogJSON("catalog-a")},
+	}}, out, nothing)
+
+	if err := crawl.run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(out.items) != 0 {
+		t.Errorf("published %v from a network whose agreement covers nothing", out.ids())
+	}
+}
+
 func TestACatalogThatIsNotJSONIsSkipped(t *testing.T) {
 	out := &stubSink{}
 	crawl := newCrawl(stubAsker{byNetwork: map[string][]json.RawMessage{

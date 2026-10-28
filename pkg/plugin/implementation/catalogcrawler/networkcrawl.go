@@ -64,6 +64,11 @@ func (c *networkCrawl) run(ctx context.Context) error {
 				"networkId", network.ID)
 			continue
 		}
+		if len(schemaContexts(network.SourcePacks())) == 0 {
+			c.log.ErrorContext(ctx, "catalogcrawler: a network's source agreement names no schema pack, not crawled",
+				"networkId", network.ID)
+			continue
+		}
 		err := c.asker.discover(ctx, network, c.intent, func(page []json.RawMessage) error {
 			c.publishAll(ctx, network, fetchedAt, page)
 			return nil
