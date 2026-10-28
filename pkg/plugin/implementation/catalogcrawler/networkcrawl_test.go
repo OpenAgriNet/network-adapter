@@ -276,7 +276,7 @@ func network(id, agreed string) model.AdmittedNetwork {
 	n := model.AdmittedNetwork{
 		ID:            id,
 		DiscoveryURL:  "https://" + id + "/network",
-		ProjectionTtl: time.Hour,
+		ProjectionTTL: time.Hour,
 	}
 	packs := &model.FederationDirection{SchemaPacks: []string{weatherPack}}
 	if agreed == asSource || agreed == asBoth {
@@ -420,7 +420,7 @@ func countedErrors(rm metricdata.ResourceMetrics) bool {
 
 func licensed(id string, ttl time.Duration) model.AdmittedNetwork {
 	p := network(id, asSource)
-	p.ProjectionTtl = ttl
+	p.ProjectionTTL = ttl
 	return p
 }
 
@@ -500,7 +500,7 @@ func TestACatalogDiscoveryRefusesDoesNotStopTheRest(t *testing.T) {
 
 func TestANetworkThatPermitsNoCopyIsNotCrawled(t *testing.T) {
 	forbids := network(theirNetwork, asSource)
-	forbids.ProjectionTtl = 0
+	forbids.ProjectionTTL = 0
 	out := &stubSink{}
 	crawl := newCrawl(stubAsker{byNetwork: map[string][]json.RawMessage{
 		theirNetwork: {catalogJSON("catalog-a")},

@@ -106,7 +106,7 @@ func admittedFrom(record participant) (model.AdmittedNetwork, bool) {
 	network := model.AdmittedNetwork{
 		ID:            record.ParticipantID,
 		DiscoveryURL:  strings.TrimSpace(record.BaseURL),
-		ProjectionTtl: time.Duration(record.ProjectionTtl) * time.Second,
+		ProjectionTTL: time.Duration(record.ProjectionTTL) * time.Second,
 		Source:        record.FederationRole.Source.agreed(),
 		Requester:     record.FederationRole.Requester.agreed(),
 	}

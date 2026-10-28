@@ -9,7 +9,7 @@ type AdmittedNetwork struct {
 	DiscoveryURL string
 
 	// How long this network lets us keep what we crawled. Zero forbids caching.
-	ProjectionTtl time.Duration
+	ProjectionTTL time.Duration
 
 	// A direction is agreed when it is present. Our own entry, and every
 	// provider and upstream, carries neither.

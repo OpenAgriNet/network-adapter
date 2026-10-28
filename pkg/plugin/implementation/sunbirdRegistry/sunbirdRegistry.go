@@ -197,7 +197,7 @@ type participant struct {
 
 	// Set only on a network we admitted.
 	FederationRole federationRole `json:"federationRole"`
-	ProjectionTtl  int            `json:"projectionTtl"` // seconds; 0 forbids caching
+	ProjectionTTL  int            `json:"projectionTtl"` // seconds; 0 forbids caching
 }
 
 // roleList is the layers a participant serves. An older row carries a single

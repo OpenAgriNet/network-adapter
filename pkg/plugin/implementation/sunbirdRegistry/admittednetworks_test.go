@@ -30,7 +30,7 @@ func networkRecord(tweak ...func(*participant)) participant {
 		Status:         "active",
 		BaseURL:        testNetworkURL,
 		FederationRole: federationRole{Source: &federationDirection{SchemaPacks: []string{testPackURL}}},
-		ProjectionTtl:  3600,
+		ProjectionTTL:  3600,
 		Keys:           []key{signingKey()},
 	}
 	for _, apply := range tweak {
@@ -69,8 +69,8 @@ func TestAdmittedNetworksReadsTheRecord(t *testing.T) {
 	if !got.IsSource() || got.IsRequester() {
 		t.Errorf("agreed %v, want source alone", got.Directions())
 	}
-	if got.ProjectionTtl != time.Hour {
-		t.Errorf("ProjectionTtl = %v, want %v -- seconds are converted once, here", got.ProjectionTtl, time.Hour)
+	if got.ProjectionTTL != time.Hour {
+		t.Errorf("ProjectionTTL = %v, want %v -- seconds are converted once, here", got.ProjectionTTL, time.Hour)
 	}
 	if packs := got.SourcePacks(); len(packs) != 1 || packs[0] != testPackURL {
 		t.Errorf("SourcePacks() = %v, want [%s]", packs, testPackURL)
@@ -340,7 +340,7 @@ func TestTheRecordShapeTheRegistryReturnsIsRead(t *testing.T) {
 	if packs := got.SourcePacks(); len(packs) != 1 || packs[0] != "https://x/MandiPrice/v0.1/attributes.yaml" {
 		t.Errorf("SourcePacks() = %v, want the one pack the agreement names", packs)
 	}
-	if got.ProjectionTtl != time.Hour {
-		t.Errorf("ProjectionTtl = %v, want an hour", got.ProjectionTtl)
+	if got.ProjectionTTL != time.Hour {
+		t.Errorf("ProjectionTTL = %v, want an hour", got.ProjectionTTL)
 	}
 }

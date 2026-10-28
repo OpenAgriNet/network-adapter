@@ -64,7 +64,7 @@ func (c *networkCrawl) run(ctx context.Context) error {
 
 	for _, network := range networks {
 		fetchedAt := time.Now()
-		if network.ProjectionTtl <= 0 {
+		if network.ProjectionTTL <= 0 {
 			c.log.ErrorContext(ctx, "catalogcrawler: a network permits no copy to be kept, not crawled",
 				"networkId", network.ID)
 			continue
@@ -91,7 +91,7 @@ func (c *networkCrawl) run(ctx context.Context) error {
 // when it stops being served.
 func (c *networkCrawl) publishPage(ctx context.Context, network model.AdmittedNetwork,
 	fetchedAt time.Time, catalogs []json.RawMessage) {
-	expires := fetchedAt.Add(network.ProjectionTtl)
+	expires := fetchedAt.Add(network.ProjectionTTL)
 	published := 0
 
 	for _, document := range catalogs {
@@ -249,7 +249,7 @@ func crawlableNetworks(ctx context.Context, registry networkRegistry, ourNetwork
 		default:
 			log.InfoContext(ctx, "catalogcrawler: network to crawl",
 				"networkId", network.ID, "packs", network.SourcePacks(),
-				"discoveryUrl", network.DiscoveryURL, "projectionTtl", network.ProjectionTtl)
+				"discoveryUrl", network.DiscoveryURL, "projectionTtl", network.ProjectionTTL)
 			networks = append(networks, network)
 		}
 	}
@@ -262,9 +262,9 @@ func crawlableNetworks(ctx context.Context, registry networkRegistry, ourNetwork
 // crawl that would renew it, so its catalogs come and go rather than stay.
 func warnIfRefreshOutpacesTtl(networks []model.AdmittedNetwork, refresh time.Duration, log *slog.Logger) {
 	for _, network := range networks {
-		if network.ProjectionTtl > 0 && refresh >= network.ProjectionTtl {
+		if network.ProjectionTTL > 0 && refresh >= network.ProjectionTTL {
 			log.Warn("catalogcrawler: a network is asked no more often than it lets us keep a copy",
-				"networkId", network.ID, "refresh", refresh, "projectionTtl", network.ProjectionTtl)
+				"networkId", network.ID, "refresh", refresh, "projectionTtl", network.ProjectionTTL)
 		}
 	}
 }
