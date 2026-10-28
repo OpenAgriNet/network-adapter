@@ -183,14 +183,14 @@ func (c *networkCaller) discoverPage(ctx context.Context, network model.Admitted
 		recordCrawl(ctx, start, operationNetworkAsk, outcomeNotSent)
 		return nil, err
 	}
-	url := req.URL.String()
+	endpoint := req.URL.String()
 
 	c.log.InfoContext(ctx, "catalogcrawler: asking a network",
-		"networkId", network.ID, "url", url, "offset", offset, "limit", size)
+		"networkId", network.ID, "url", endpoint, "offset", offset, "limit", size)
 	res, err := c.client.Do(req)
 	if err != nil {
 		c.log.ErrorContext(ctx, "catalogcrawler: a network could not be reached",
-			"networkId", network.ID, "url", url, "error", err)
+			"networkId", network.ID, "url", endpoint, "error", err)
 		recordCrawl(ctx, start, operationNetworkAsk, outcomeUnreachable)
 		return nil, fmt.Errorf("catalogcrawler: asking %s: %w", network.ID, err)
 	}
@@ -232,7 +232,7 @@ func (c *networkCaller) readPage(ctx context.Context, network model.AdmittedNetw
 // here alone, so they can move to the body when discovery moves them.
 func (c *networkCaller) buildRequest(ctx context.Context, network model.AdmittedNetwork, intent string,
 	offset, size int) (*http.Request, error) {
-	url, err := discoverURL(network.DiscoveryURL)
+	endpoint, err := discoverURL(network.DiscoveryURL)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +241,7 @@ func (c *networkCaller) buildRequest(ctx context.Context, network model.Admitted
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("catalogcrawler: building the discover for %s: %w", network.ID, err)
 	}
