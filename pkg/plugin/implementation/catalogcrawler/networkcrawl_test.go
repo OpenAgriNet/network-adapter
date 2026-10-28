@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,6 +67,23 @@ func (a stubAsker) discover(_ context.Context, network model.AdmittedNetwork, _ 
 		return nil
 	}
 	return each(page)
+}
+
+// blockingAsker holds a crawl inside discover until release is closed, and
+// counts how many crawls got that far.
+type blockingAsker struct {
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (a *blockingAsker) discover(_ context.Context, _ model.AdmittedNetwork, _ string,
+	_ func([]json.RawMessage) error) error {
+	if a.calls.Add(1) == 1 {
+		close(a.started)
+	}
+	<-a.release
+	return nil
 }
 
 func catalogJSON(id string) json.RawMessage {
@@ -560,4 +578,35 @@ func TestATickReportsAFailedPassWithoutPanicking(t *testing.T) {
 	}
 
 	crawl.tick(context.Background())
+}
+
+func TestASecondTickStandsDownWhileACrawlIsRunning(t *testing.T) {
+	asker := &blockingAsker{started: make(chan struct{}), release: make(chan struct{})}
+	crawl := newCrawl(asker, &stubSink{}, network(theirNetwork, asSource))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		crawl.tick(context.Background())
+	}()
+	<-asker.started
+
+	second := make(chan struct{})
+	go func() {
+		defer close(second)
+		crawl.tick(context.Background())
+	}()
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Error("a second tick did not stand down while a crawl was running")
+	}
+
+	close(asker.release)
+	<-done
+	<-second
+
+	if got := asker.calls.Load(); got != 1 {
+		t.Errorf("asked %d times, want 1 -- a second tick ran on top of the first", got)
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -43,6 +44,11 @@ type networkCrawl struct {
 	schedule     *dueEvery
 	refresh      time.Duration
 	log          *slog.Logger
+
+	// inFlight keeps one pass at a time. A pass can outlast the tick that
+	// starts it, and it is what makes the schedule visible to the next tick.
+	inFlight sync.Mutex
+	running  bool
 }
 
 // run asks every network we read from and publishes what came back. A network that
@@ -182,12 +188,39 @@ func newNetworkCrawlFrom(ctx context.Context, cfg federationConfig, registry def
 // tick runs a pass when one is due. Errors are logged rather than returned:
 // the scheduler has nowhere to report them, and the next tick tries again.
 func (c *networkCrawl) tick(ctx context.Context) {
-	if c.schedule != nil && !c.schedule.due() {
+	mine, busy := c.claim()
+	if !mine {
+		if busy {
+			c.log.InfoContext(ctx, "catalogcrawler: a network crawl is still running, skipping this tick")
+		}
 		return
 	}
+	defer c.release()
+
 	if err := c.run(ctx); err != nil {
 		c.log.ErrorContext(ctx, "catalogcrawler: network crawl failed", "error", err)
 	}
+}
+
+// claim reports whether this tick may run, and whether a pass already in flight
+// is what turned it away. The schedule is read here so only one tick touches it.
+func (c *networkCrawl) claim() (mine, busy bool) {
+	c.inFlight.Lock()
+	defer c.inFlight.Unlock()
+	if c.running {
+		return false, true
+	}
+	if c.schedule != nil && !c.schedule.due() {
+		return false, false
+	}
+	c.running = true
+	return true, false
+}
+
+func (c *networkCrawl) release() {
+	c.inFlight.Lock()
+	c.running = false
+	c.inFlight.Unlock()
 }
 
 // networkRegistry is what we need from a registry plugin here.
