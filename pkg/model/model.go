@@ -390,10 +390,14 @@ type Keyset struct {
 // StepContext holds context information for a request processing step.
 type StepContext struct {
 	context.Context
-	Request              *http.Request
-	Body                 []byte
-	Route                *Route
-	SubID                string
+	Request *http.Request
+	Body    []byte
+	Route   *Route
+	SubID   string
+
+	// OwnSubscriberID is who THIS module is, from its own config. SubID comes
+	// from the body, so on a cross-network request SubID is THEM.
+	OwnSubscriberID      string
 	Role                 Role
 	RespHeader           http.Header
 	ProtocolVersion      string // Protocol version parsed from context.version (e.g. "2.0.0")

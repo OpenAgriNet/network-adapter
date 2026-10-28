@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,6 +102,7 @@ const (
 	outcomeInactive       = "inactive"
 	outcomeKeyInactive    = "key_inactive"
 	outcomeNoKey          = "no_key"
+	outcomeRefused        = "not_a_requester"
 	outcomeTimeout        = "timeout"
 	outcomeRegistryError  = "registry_error"
 	outcomeDecodeError    = "decode_error"
@@ -134,7 +136,6 @@ const (
 	operationLookup           = "lookup"
 	operationProviderRecord   = "provider_record"
 	operationAdmittedNetworks = "admitted_networks"
-	operationAdmittedNetwork  = "admitted_network"
 )
 
 // Config holds configuration parameters for the registry client.
@@ -253,6 +254,15 @@ func (d *federationDirection) agreed() *model.FederationDirection {
 		return nil
 	}
 	return &model.FederationDirection{SchemaPacks: d.SchemaPacks}
+}
+
+// agreed is what this record says we agreed, in the shape the rest of the
+// adapter reads it in.
+func (f federationRole) agreed() model.Agreement {
+	return model.Agreement{
+		Source:    f.Source.agreed(),
+		Requester: f.Requester.agreed(),
+	}
 }
 
 // key is one published key. A participant publishes several -- separate signing
@@ -740,4 +750,78 @@ func (c *Client) emitMetrics(ctx context.Context, start time.Time, operation, ou
 	if !successOutcomes[outcome] {
 		m.PluginErrorsTotal.Add(ctx, 1, attrs)
 	}
+}
+
+// discoverAction is the only action that names schema contexts, and so the only
+// one the agreed subset can be checked against.
+const discoverAction = "discover"
+
+// codeUnauthorizedAction is the Beckn code for a caller who may not do this.
+const codeUnauthorizedAction = "AUT_UNAUTHORIZED_ACTION"
+
+// servedRequest is who is asking, what for, and which schema contexts they named.
+type servedRequest struct {
+	caller         string
+	action         string
+	schemaContexts []string
+}
+
+// refused classifies an agreement refusal. 400, not 500: the caller's side to
+// fix. Not 401 either -- no credential changes the answer.
+func refused(err error) error {
+	return model.NewBadReqErr(codeUnauthorizedAction, err)
+}
+
+// CheckCrossNetworkRequester refuses a caller we never agreed to answer, and on
+// a discover one asking beyond the agreement. Reads our own records, not a key
+// lookup, so it holds whether or not the request was signed.
+func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action string, schemaContexts []string) error {
+	if strings.TrimSpace(caller) == "" {
+		return nil
+	}
+
+	agreed, err := c.agreementWith(ctx, caller)
+	if err != nil {
+		// A registry we could not ask is not an agreement we can honour.
+		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
+	}
+	// No agreement is an ordinary participant -- a provider, our own deployment,
+	// or a caller signature validation will reject anyway. No federation rule
+	// applies to them.
+	if !agreed.Agreed() {
+		return nil
+	}
+
+	if !agreed.IsRequester() {
+		log.Infof(ctx, "OAN registry refusing %s: we agreed %v, which is not giving to them",
+			caller, agreed.Directions())
+		return refused(fmt.Errorf("%s is not a network we agreed to give to", caller))
+	}
+	// Only a discover names schema contexts. Every other action is governed by the
+	// direction alone, which we just checked.
+	if action != discoverAction {
+		log.Infof(ctx, "OAN registry %s may call us for %q", caller, action)
+		return nil
+	}
+	return agreedToGiveThese(ctx, servedRequest{caller: caller, action: action, schemaContexts: schemaContexts},
+		agreed.RequesterContexts())
+}
+
+// agreedToGiveThese refuses a caller asking beyond what the agreement covers.
+// The refusal names nothing: listing what we hold but will not share would tell
+// a caller the shape of our catalogue.
+func agreedToGiveThese(ctx context.Context, asked servedRequest, agreed []string) error {
+	if len(asked.schemaContexts) == 0 {
+		log.Infof(ctx, "OAN registry refusing %s: named no schema context, which asks for everything", asked.caller)
+		return refused(fmt.Errorf("%s named no schema context", asked.caller))
+	}
+	for _, want := range asked.schemaContexts {
+		if !slices.Contains(agreed, want) {
+			log.Infof(ctx, "OAN registry refusing %s: asked for %s, which we did not agree to give",
+				asked.caller, want)
+			return refused(fmt.Errorf("%s asked for a schema context we did not agree to give", asked.caller))
+		}
+	}
+	log.Infof(ctx, "OAN registry %s may call us, and asked only within what we agreed", asked.caller)
+	return nil
 }

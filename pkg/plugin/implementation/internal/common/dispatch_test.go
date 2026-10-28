@@ -22,7 +22,7 @@ const dispatchMappingRef = "https://m.example.com/mausamgram/weather-observation
 // Kept minimal on purpose: this test is about which step claims a request, not
 // about what any of them would do with it.
 const dispatchRequest = `{
-  "context": { "version": "2.0.0", "action": "select" },
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "net-b.oan.local" },
   "message": { "contract": { "commitments": [ {
     "resources": [ { "resourceAttributes": { "@type": "openagrinet:WeatherObservation" } } ],
     "offer": { "provider": { "id": "mausamgram" } }
@@ -102,7 +102,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 
 	// A request for the FIRST capability, run through both steps in order, as a
 	// pipeline would.
-	ctx := &model.StepContext{Context: t.Context(), Body: []byte(dispatchRequest)}
+	ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: us, Body: []byte(dispatchRequest)}
 	for i, step := range steps {
 		if err := step.Run(ctx); err != nil {
 			t.Fatalf("step %d: %v", i, err)
@@ -124,7 +124,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 // work, and the support entry is this one's. Both are ordinary on a payload
 // that rides through a pipeline of several provider steps.
 const sharedContainerRequest = `{
-  "context": { "version": "2.0.0", "action": "select" },
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "net-b.oan.local" },
   "message": { "contract": {
     "commitments": [ {
       "resources": [ { "resourceAttributes": { "@type": "openagrinet:MarketPrice" } } ],
@@ -175,7 +175,7 @@ func TestLaterPathPairFindsThisStepsOwnBinding(t *testing.T) {
 	}
 	defer func() { _ = closer() }()
 
-	ctx := &model.StepContext{Context: t.Context(), Body: []byte(sharedContainerRequest)}
+	ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: us, Body: []byte(sharedContainerRequest)}
 	if err := step.Run(ctx); err != nil {
 		t.Fatalf("Run() = %v", err)
 	}

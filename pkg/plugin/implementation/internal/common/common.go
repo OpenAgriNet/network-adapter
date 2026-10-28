@@ -114,12 +114,19 @@ type Step struct {
 	paths         []Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
+	networks      admittedLookup
 	mapper        definition.Mapper
 	httpClient    *http.Client
 
 	// One per provider, built at startup so a request only looks one up. Each
 	// holds its own token, so two oauth2 providers cannot share one.
 	auth map[string]*authenticator
+}
+
+// admittedLookup lists the networks this one admitted. Narrowed from the
+// registry, so a plugin needs no dependency only the federated path uses.
+type admittedLookup interface {
+	AdmittedNetworks(ctx context.Context) ([]model.AdmittedNetwork, error)
 }
 
 // New creates the step.
@@ -153,6 +160,12 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		httpClient: &http.Client{CheckRedirect: util.RefuseOffHostRedirect},
 		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
 	}
+	// Absent is a deployment that federates with nobody. Only a request
+	// addressed elsewhere needs it, and that path refuses rather than guessing.
+	if networks, ok := registry.(admittedLookup); ok {
+		step.networks = networks
+	}
+
 	for provider, profile := range cfg.AuthByProvider {
 		step.auth[provider] = &authenticator{cfg: *profile}
 	}

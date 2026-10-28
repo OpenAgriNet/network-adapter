@@ -249,8 +249,8 @@ func TestNewNetworkCrawlBuildsFromConfig(t *testing.T) {
 }
 
 const (
-	ourNetwork   = "bharatvistar.oan.local"
-	theirNetwork = "mahavistara.oan.local"
+	ourNetwork   = "net-b.oan.local"
+	theirNetwork = "net-a.oan.local"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

@@ -47,7 +47,7 @@ const shippedMapping = "weather-observation.select.yaml"
 
 // selectRequest is the verbatim /select captured from the network.
 const selectRequest = `{
-  "context": { "version": "2.0.0", "action": "select",
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "oan.test",
     "networkId": "da.gov.in/vistaar",
     "bapId": "seeker-network-vistaar.da.gov.in",
     "bapUri": "https://seeker-network-vistaar.da.gov.in/beckn",
@@ -159,7 +159,7 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 	}
 	defer closeStep()
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(selectRequest)}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "provider-network-vistaar.da.gov.in", Body: []byte(selectRequest)}
 	if err := step.Run(stepCtx); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}

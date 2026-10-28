@@ -24,13 +24,8 @@ import (
 const (
 	protocolVersion = "2.0.0"
 	discoverAction  = "discover"
-
 	// publicNetworks is context.networkId's wildcard: a catalog anyone may see.
 	publicNetworks = "*"
-
-	packFile    = "attributes.yaml"
-	contextFile = "context.jsonld"
-
 	// How long a crawl's signature stays valid. The network rejects anything
 	// outside it, so a slow pass fails rather than replaying.
 	signatureWindow = 5 * time.Minute
@@ -52,7 +47,7 @@ func discoverBody(network model.AdmittedNetwork, ourNetworkID, intent string,
 		"transactionId": uuid.NewString(),
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 	}
-	if contexts := schemaContexts(network.SourcePacks()); len(contexts) > 0 {
+	if contexts := network.SourceContexts(); len(contexts) > 0 {
 		beckn["schemaContext"] = contexts
 	}
 
@@ -83,18 +78,6 @@ func parseIntent(intent string) (map[string]any, error) {
 		return nil, fmt.Errorf("catalogcrawler: the configured intent is not JSON: %w", err)
 	}
 	return asked, nil
-}
-
-// schemaContexts turns the packs we take into the context documents a discover
-// filters on. Discovery matches any of them, so three asked for is three back.
-func schemaContexts(packs []string) []string {
-	contexts := make([]string, 0, len(packs))
-	for _, pack := range packs {
-		if trimmed := strings.TrimSpace(pack); trimmed != "" {
-			contexts = append(contexts, strings.TrimSuffix(trimmed, packFile)+contextFile)
-		}
-	}
-	return contexts
 }
 
 // checkDiscoverURL refuses an address a discover cannot be sent to. It builds

@@ -215,7 +215,7 @@ func band(of map[string]any, name string) map[string]any {
 // send runs body through the step. A nil answer means the step passed it on.
 func (h *harness) send(t *testing.T, body []byte) (*answer, error) {
 	t.Helper()
-	stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.local", Body: body}
 	if err := h.step.Run(stepCtx); err != nil {
 		return nil, err
 	}
@@ -291,7 +291,8 @@ var scheme = map[string]any{"code": "PMFBY", "name": "Pradhan Mantri Fasal Bima 
 var provider = map[string]any{"id": "pmfby", "descriptor": map[string]any{"name": "PMFBY Grievance Portal"}}
 
 func becknContext(action string) map[string]any {
-	return map[string]any{"version": "2.0.0", "action": action, "transactionId": "txn-1", "messageId": "msg-1"}
+	return map[string]any{"version": "2.0.0", "action": action, "transactionId": "txn-1", "messageId": "msg-1",
+		"senderId": "app.oan.local", "receiverId": "oan.local"}
 }
 
 // request builds a status payload whose one commitment carries attributes.

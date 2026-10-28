@@ -49,7 +49,7 @@ const shippedBindingKey = "agmarknet|" + shippedCapability
 const selectRequest = `{
   "context": {
     "version": "2.0.0",
-    "action": "select",
+    "action": "select", "receiverId": "oan.test",
     "networkId": "oan-dev",
     "transactionId": "9f2c1a8e-4b70-4d31-9c55-6f2e0b1d7a44",
     "messageId": "7d41b9e0-52a6-4c18-8b73-1e9f0a4c6d22",
@@ -207,7 +207,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map
 	}
 	defer closeStep()
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(request)}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(request)}
 	if err := step.Run(stepCtx); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 			}
 			defer closeStep()
 
-			stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+			stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: body}
 			if err := step.Run(stepCtx); err == nil {
 				t.Fatal("expected an unserviceable payload to be refused")
 			} else if !strings.Contains(err.Error(), tc.expect) {
@@ -784,7 +784,7 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			}
 			defer closeStep()
 
-			stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+			stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: body}
 			if err := step.Run(stepCtx); err == nil {
 				t.Fatal("expected a payload this upstream cannot answer to be refused")
 			} else if !strings.Contains(err.Error(), tc.expect) {
