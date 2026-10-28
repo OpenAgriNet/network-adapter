@@ -93,6 +93,15 @@ func newDueEvery(interval time.Duration, now func() time.Time) *dueEvery {
 	return &dueEvery{interval: interval, clock: now}
 }
 
+// every is the interval this was built with. Nil when the crawl rides no
+// schedule of its own, which reads as no interval rather than a panic.
+func (d *dueEvery) every() time.Duration {
+	if d == nil {
+		return 0
+	}
+	return d.interval
+}
+
 func (d *dueEvery) due() bool {
 	at := d.clock()
 	if !d.last.IsZero() && at.Sub(d.last) < d.interval {

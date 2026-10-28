@@ -42,7 +42,6 @@ type networkCrawl struct {
 	ourNetworkID string
 	intent       string
 	schedule     *dueEvery
-	refresh      time.Duration
 	log          *slog.Logger
 
 	// inFlight keeps one pass at a time. A pass can outlast the tick that
@@ -61,7 +60,7 @@ func (c *networkCrawl) run(ctx context.Context) error {
 		return err
 	}
 
-	warnIfRefreshOutpacesTtl(networks, c.refresh, c.log)
+	warnIfRefreshOutpacesTtl(networks, c.schedule.every(), c.log)
 
 	for _, network := range networks {
 		fetchedAt := time.Now()
@@ -180,7 +179,6 @@ func newNetworkCrawlFrom(ctx context.Context, cfg federationConfig, registry def
 		ourNetworkID: cfg.networkID,
 		intent:       cfg.intent,
 		schedule:     newDueEvery(cfg.refresh, time.Now),
-		refresh:      cfg.refresh,
 		log:          log,
 	}, nil
 }
