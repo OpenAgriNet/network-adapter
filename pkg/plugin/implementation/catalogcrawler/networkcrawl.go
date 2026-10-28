@@ -20,9 +20,26 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// catalogTypeRegular is what a crawled catalog is published as. MASTER is for
-// a catalog that defines others, which a network never shares.
-const catalogTypeRegular = "REGULAR"
+const (
+	// What a crawled catalog is published as. MASTER is for a catalog that
+	// defines others, which a network never shares.
+	catalogTypeRegular = "REGULAR"
+
+	pluginID   = "catalogcrawler"
+	pluginType = "crawler"
+
+	operationNetworkAsk   = "network_ask"   // one discover to one network
+	operationNetworkCrawl = "network_crawl" // a pass over every network
+	operationCrawlPublish = "crawl_publish" // publishing what a network returned
+
+	outcomeOK          = "ok"
+	outcomeUnreachable = "unreachable"  // the network could not be reached
+	outcomeRefused     = "refused"      // the network answered, but not with catalogs
+	outcomeUnreadable  = "unreadable"   // the network answered something we cannot parse
+	outcomeNotSent     = "not_sent"     // we never managed to ask
+	outcomeRegistryErr = "registry_err" // we could not find out who to crawl
+	outcomePublishErr  = "publish_err"
+)
 
 type networkAsker interface {
 	discover(ctx context.Context, network model.AdmittedNetwork, intent string,
@@ -268,25 +285,6 @@ func warnIfRefreshOutpacesTtl(networks []model.AdmittedNetwork, refresh time.Dur
 		}
 	}
 }
-
-const (
-	pluginID   = "catalogcrawler"
-	pluginType = "crawler"
-
-	operationNetworkAsk   = "network_ask"   // one discover to one network
-	operationNetworkCrawl = "network_crawl" // a pass over every network
-	operationCrawlPublish = "crawl_publish" // publishing what a network returned
-)
-
-const (
-	outcomeOK          = "ok"
-	outcomeUnreachable = "unreachable"  // the network could not be reached
-	outcomeRefused     = "refused"      // the network answered, but not with catalogs
-	outcomeUnreadable  = "unreadable"   // the network answered something we cannot parse
-	outcomeNotSent     = "not_sent"     // we never managed to ask
-	outcomeRegistryErr = "registry_err" // we could not find out who to crawl
-	outcomePublishErr  = "publish_err"
-)
 
 // recordCrawl emits the shared duration and error counters. Anything but
 // outcomeOK counts as a failure, so a new outcome cannot pass as healthy.

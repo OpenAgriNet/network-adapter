@@ -25,6 +25,10 @@ const (
 
 	packFile    = "attributes.yaml"
 	contextFile = "context.jsonld"
+
+	// How long a crawl's signature stays valid. The network rejects anything
+	// outside it, so a slow pass fails rather than replaying.
+	signatureWindow = 5 * time.Minute
 )
 
 // discoverBody builds the discover we send to one network. We name both ends; the
@@ -96,10 +100,6 @@ func discoverURL(base string) (string, error) {
 	}
 	return parsed.String(), nil
 }
-
-// signatureWindow is how long a crawl's signature stays valid. The network rejects
-// anything outside it, so a slow pass fails rather than replaying.
-const signatureWindow = 5 * time.Minute
 
 type networkCallerConfig struct {
 	networkID  string
