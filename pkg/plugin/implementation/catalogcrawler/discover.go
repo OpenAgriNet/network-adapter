@@ -145,10 +145,8 @@ func newNetworkCaller(ctx context.Context, cfg networkCallerConfig, log *slog.Lo
 // No total comes back, so the walk ends on a short page.
 func (c *networkCaller) discover(ctx context.Context, network model.AdmittedNetwork, intent string,
 	each func(page []json.RawMessage) error) error {
+	// The config resolves the default; a second one here would quietly outlive it.
 	size := c.cfg.pageSize
-	if size <= 0 {
-		size = DefaultFederationPageSize
-	}
 
 	total := 0
 	for offset := 0; ; offset += size {

@@ -288,10 +288,8 @@ const (
 	outcomePublishErr  = "publish_err"
 )
 
-var successOutcomes = map[string]bool{outcomeOK: true}
-
-// recordCrawl emits the shared duration and error counters. An outcome not
-// listed as a success counts as a failure, so a new one cannot pass as healthy.
+// recordCrawl emits the shared duration and error counters. Anything but
+// outcomeOK counts as a failure, so a new outcome cannot pass as healthy.
 func recordCrawl(ctx context.Context, start time.Time, operation, outcome string) {
 	m, err := telemetry.GetMetrics(ctx)
 	if err != nil {
@@ -306,7 +304,7 @@ func recordCrawl(ctx context.Context, start time.Time, operation, outcome string
 	)
 
 	m.PluginExecutionDuration.Record(ctx, time.Since(start).Seconds(), attrs)
-	if !successOutcomes[outcome] {
+	if outcome != outcomeOK {
 		m.PluginErrorsTotal.Add(ctx, 1, attrs)
 	}
 }

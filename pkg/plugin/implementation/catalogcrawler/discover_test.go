@@ -195,6 +195,7 @@ func testCaller(t *testing.T, handler http.HandlerFunc) (*networkCaller, string)
 		signingKey: testKey(t),
 		keyID:      "key-1",
 		timeout:    2 * time.Second,
+		pageSize:   DefaultFederationPageSize,
 	}, quietLog())
 	if err != nil {
 		t.Fatalf("newNetworkCaller() returned an unexpected error: %v", err)
