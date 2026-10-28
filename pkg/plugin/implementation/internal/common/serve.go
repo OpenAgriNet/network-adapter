@@ -364,7 +364,7 @@ func forBinding[T any](byKey map[string]T, bindingKey string) T {
 // routeElsewhere sends a request addressed to another network to that network.
 // Before the binding check: a binding key names the upstream, not the network.
 func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
-	becknContext, err := contextOf(ctx.Body)
+	becknContext, err := becknContextOf(ctx.Body)
 	if err != nil {
 		return false, err
 	}
@@ -467,9 +467,9 @@ func destinationOf(becknContext map[string]any, receiver, us string) (*url.URL, 
 	return target, nil
 }
 
-// contextOf reads the request's Beckn context. An unreadable body is reported
+// becknContextOf reads the request's Beckn context. An unreadable body is reported
 // as that, not as "names no receiver" -- this is the first step to see it.
-func contextOf(body []byte) (map[string]any, error) {
+func becknContextOf(body []byte) (map[string]any, error) {
 	var payload struct {
 		Context map[string]any `json:"context"`
 	}

@@ -65,25 +65,25 @@ func (a Agreement) Directions() []string {
 }
 
 // SourceContexts is what we take, as the context documents a discover names.
-func (a Agreement) SourceContexts() []string { return contextsOf(a.SourcePacks()) }
+func (a Agreement) SourceContexts() []string { return schemaContextsOf(a.SourcePacks()) }
 
 // RequesterContexts is what this network may ask us for, named the same way.
-func (a Agreement) RequesterContexts() []string { return contextsOf(a.RequesterPacks()) }
+func (a Agreement) RequesterContexts() []string { return schemaContextsOf(a.RequesterPacks()) }
 
-func contextsOf(packs []string) []string {
+func schemaContextsOf(packs []string) []string {
 	contexts := make([]string, 0, len(packs))
 	for _, pack := range packs {
 		if trimmed := strings.TrimSpace(pack); trimmed != "" {
-			contexts = append(contexts, contextOf(trimmed))
+			contexts = append(contexts, schemaContext(trimmed))
 		}
 	}
 	return contexts
 }
 
-// contextOf is the context document beside a pack. A pack URL names the
+// schemaContext is the context document beside a pack. A pack URL names the
 // attributes document, but an agreement recorded with the context document
 // already is taken as it stands rather than having a second one appended.
-func contextOf(pack string) string {
+func schemaContext(pack string) string {
 	if strings.HasSuffix(pack, contextFile) {
 		return pack
 	}
