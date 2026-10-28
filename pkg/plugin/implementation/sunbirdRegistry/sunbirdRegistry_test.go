@@ -1679,3 +1679,24 @@ func TestValidateRejectsAMalformedURL(t *testing.T) {
 		}
 	}
 }
+
+func TestRoleDecodesFromAStringAndFromAList(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"string": `{"participantId":"n1","role":"network"}`,
+		"list":   `{"participantId":"n1","role":["network","provider"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var p participant
+			if err := json.Unmarshal([]byte(body), &p); err != nil {
+				t.Fatalf("decoding a %s role: %v", name, err)
+			}
+			if !p.Role.has("network") {
+				t.Errorf("Role = %v, want it to carry network", p.Role)
+			}
+		})
+	}
+}

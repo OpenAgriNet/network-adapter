@@ -200,9 +200,23 @@ type participant struct {
 	ProjectionTtl  int            `json:"projectionTtl"` // seconds; 0 forbids caching
 }
 
-// roleList is the layers a participant serves. The registry stores it as an
-// array, so a participant serving several carries them all.
+// roleList is the layers a participant serves. An older row carries a single
+// string where a newer one carries an array, and both decode here.
 type roleList []string
+
+func (r *roleList) UnmarshalJSON(raw []byte) error {
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		*r = roleList{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err != nil {
+		return err
+	}
+	*r = many
+	return nil
+}
 
 func (r roleList) has(role string) bool {
 	for _, carried := range r {
