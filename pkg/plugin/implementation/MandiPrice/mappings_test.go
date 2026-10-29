@@ -683,9 +683,11 @@ func TestShippedMappingStatesWhatItKnowsRatherThanEchoing(t *testing.T) {
 		}
 
 		market, _ := ra["market"].(map[string]any)
-		// The upstream reports no market code, so the answer must not claim one.
-		if code, present := market["marketCode"]; present {
-			t.Errorf("market.marketCode = %#v; this upstream reports no code, so asserting one is unfounded", code)
+		// The upstream reports no market code, but the select requires one and
+		// the query is scoped to it, so every row is that market's. The code
+		// sits where the catalog advertised it: market.marketCode.
+		if market["marketCode"] != "2056" {
+			t.Errorf("market.marketCode = %#v, want the requested \"2056\"", market["marketCode"])
 		}
 		// And what is there comes from the record.
 		if market["marketName"] != "Kasdol APMC" || market["state"] != "Chattisgarh" {
@@ -721,6 +723,23 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 				}
 			},
 			expect: "codes in market",
+		},
+		{
+			// Without a market code the upstream widens the query to the whole
+			// district, and the answer can no longer say which market it is for.
+			name: "no market code",
+			mutate: func(ra map[string]any) {
+				delete(ra["market"].(map[string]any), "marketCode")
+			},
+			expect: "market code",
+		},
+		{
+			// Present but empty names no market either.
+			name: "an empty market code",
+			mutate: func(ra map[string]any) {
+				ra["market"].(map[string]any)["marketCode"] = ""
+			},
+			expect: "market code",
 		},
 		{
 			// Everything downstream reads supportedCommodities[0], so this
