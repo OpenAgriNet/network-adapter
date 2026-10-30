@@ -138,10 +138,10 @@ inputs:
     flag: publish-url
     env: CATALOG_PUBLISH_URL
   tokenUser:
-    env: MANDI_TOKEN_USER
+    env: AGMARKNET_ACCESS_NAME
     secret: true
   tokenSecret:
-    env: MANDI_TOKEN_SECRET
+    env: AGMARKNET_PASSWORD
     secret: true
 
 # ---------------------------------------------------------------------------
