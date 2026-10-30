@@ -4,6 +4,7 @@ package common
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,10 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
+	"github.com/beckn-one/beckn-onix/pkg/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // call makes the upstream request the plan describes, retrying within util.Budget.
@@ -32,14 +37,17 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 	attempts := retries + 1
 
 	var lastErr error
+	var made int
+	// final is set when the provider's answer ended the loop: that answer is
+	// the result, even if the caller left at the same moment.
+	var final bool
 	for attempt := 1; attempt <= attempts; attempt++ {
-		// Checked before the call, so a cancelled request costs nothing.
-		if err := ctx.Err(); err != nil {
-			if lastErr == nil {
-				lastErr = err
-			}
+		// Checked before the call, so a cancelled request costs nothing -- and
+		// before counting it, so an attempt that never ran is not reported.
+		if ctx.Err() != nil {
 			break
 		}
+		made = attempt
 
 		body, err := s.attempt(ctx, auth, call, endpoint, mapped, timeout)
 		if err == nil {
@@ -53,6 +61,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 		// case is the worst: it reports a missing environment variable as the
 		// provider being down.
 		if util.IsPermanent(err) {
+			final = true
 			break
 		}
 		if attempt < attempts {
@@ -61,8 +70,24 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 			}
 		}
 	}
+	word := "attempts"
+	if made == 1 {
+		word = "attempt"
+	}
+	// The request ended (a caller that left, or a deadline) before the retries
+	// were done. That is not the provider failing, so it is not a 502, and the
+	// context's own error stays classifiable. What the provider did answer, if
+	// anything, is kept beside it.
+	if ended := ctx.Err(); ended != nil && !final {
+		if lastErr == nil || errors.Is(lastErr, context.Canceled) || errors.Is(lastErr, context.DeadlineExceeded) {
+			return nil, model.NewCodedErr(http.StatusGatewayTimeout, util.CodeUpstreamUnavailable,
+				fmt.Errorf("request ended after %d %s, before the provider answered: %w", made, word, ended))
+		}
+		return nil, model.NewCodedErr(http.StatusGatewayTimeout, util.CodeUpstreamUnavailable,
+			fmt.Errorf("request ended after %d %s: %w; the provider's last answer: %w", made, word, ended, lastErr))
+	}
 	return nil, model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable,
-		fmt.Errorf("provider did not answer after %d attempts: %w", attempts, lastErr))
+		fmt.Errorf("provider did not answer after %d %s: %w", made, word, lastErr))
 }
 
 // attempt makes one upstream request.
@@ -90,8 +115,15 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	// is the line that answers "what did we ask, and what came back".
 	requested := s.redactString(req.URL.String())
 
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	httpCtx, httpSpan := tracer.Start(attemptCtx, "http "+call.Path)
+	defer httpSpan.End()
+	req = req.WithContext(httpCtx)
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		httpSpan.RecordError(err)
+		httpSpan.SetStatus(codes.Error, "transport_error")
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -115,7 +147,8 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		// Redacted on the way to the log too: a rejected request is often
 		// quoted back, credential and all.
 		log.Warnf(ctx, "provider returned %s for %s %s: %s",
-			resp.Status, method, requested, s.redactString(util.Explain(body)))
+			resp.Status, method, requested, s.explainRedacted(body))
+		httpSpan.SetStatus(codes.Error, resp.Status)
 
 		// A held token the provider has stopped accepting is dropped, so the
 		// next call exchanges a fresh one.

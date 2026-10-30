@@ -1,0 +1,436 @@
+[
+  {
+    "slug": "MH",
+    "catalogId": "catalog:mandi-price:MH",
+    "content": {
+      "context": {
+        "action": "catalog/publish",
+        "messageId": "\u003cuuid\u003e",
+        "timestamp": "\u003ctimestamp\u003e",
+        "transactionId": "\u003cuuid\u003e",
+        "version": "2.0.0"
+      },
+      "message": {
+        "catalogs": [
+          {
+            "descriptor": {
+              "code": "MANDI_PRICE_MARKET_MH",
+              "longDesc": "One resource per market. Each carries the Agmarknet codes a select must send, that market's traded commodities, and its point location for proximity discovery.",
+              "name": "Agmarknet mandi markets — Maharashtra",
+              "shortDesc": "Markets in Maharashtra, their locations, and what each trades"
+            },
+            "id": "catalog:mandi-price:MH",
+            "isActive": true,
+            "provider": {
+              "descriptor": {
+                "code": "AGMARKNET",
+                "name": "Agmarknet Vistaar",
+                "shortDesc": "Provider of live agricultural market price information."
+              },
+              "id": "test-participant"
+            },
+            "resources": [
+              {
+                "descriptor": {
+                  "code": "MANDI_PRICE_MARKET_1649",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Newasa APMC. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Newasa APMC mandi prices",
+                  "shortDesc": "Mandi prices at Newasa APMC, Ahmednagar, Maharashtra"
+                },
+                "id": "resource:mandi-price:market:1649",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "coordinates": [
+                        74.93534498,
+                        19.54478514
+                      ],
+                      "type": "Point"
+                    },
+                    {
+                      "areaCode": "338",
+                      "areaLevel": "District",
+                      "areaName": "Ahmednagar",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "Ahmednagar",
+                    "marketCode": "1649",
+                    "marketName": "Newasa APMC",
+                    "state": "MH"
+                  },
+                  "source": {
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ]
+                }
+              },
+              {
+                "descriptor": {
+                  "code": "MANDI_PRICE_MARKET_1894",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Parner APMC. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Parner APMC mandi prices",
+                  "shortDesc": "Mandi prices at Parner APMC, Ahmednagar, Maharashtra"
+                },
+                "id": "resource:mandi-price:market:1894",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "coordinates": [
+                        74.44058799,
+                        18.99974287
+                      ],
+                      "type": "Point"
+                    },
+                    {
+                      "areaCode": "338",
+                      "areaLevel": "District",
+                      "areaName": "Ahmednagar",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "Ahmednagar",
+                    "marketCode": "1894",
+                    "marketName": "Parner APMC",
+                    "state": "MH"
+                  },
+                  "source": {
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ]
+                }
+              },
+              {
+                "descriptor": {
+                  "code": "MANDI_PRICE_MARKET_1284",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Pathardi APMC. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Pathardi APMC mandi prices",
+                  "shortDesc": "Mandi prices at Pathardi APMC, Ahmednagar, Maharashtra"
+                },
+                "id": "resource:mandi-price:market:1284",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "coordinates": [
+                        75.17606191,
+                        19.17442009
+                      ],
+                      "type": "Point"
+                    },
+                    {
+                      "areaCode": "338",
+                      "areaLevel": "District",
+                      "areaName": "Ahmednagar",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "Ahmednagar",
+                    "marketCode": "1284",
+                    "marketName": "Pathardi APMC",
+                    "state": "MH"
+                  },
+                  "source": {
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "5",
+                      "name": "Jowar(Sorghum)"
+                    },
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    },
+                    {
+                      "code": "28",
+                      "name": "Bajra(Pearl Millet/Cumbu)"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ]
+                }
+              },
+              {
+                "descriptor": {
+                  "code": "MANDI_PRICE_MARKET_1634",
+                  "longDesc": "Invoke this Resource with a commodity and applicable date to obtain minimum, maximum, and modal prices for Rahuri APMC. The result uses the same MandiPrice type in Direct information mode.",
+                  "name": "Rahuri APMC mandi prices",
+                  "shortDesc": "Mandi prices at Rahuri APMC, Ahmednagar, Maharashtra"
+                },
+                "id": "resource:mandi-price:market:1634",
+                "resourceAttributes": {
+                  "@context": "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld",
+                  "@type": "openagrinet:MandiPrice",
+                  "coverageAreas": [
+                    {
+                      "coordinates": [
+                        74.66192086448265,
+                        19.644527591487904
+                      ],
+                      "type": "Point"
+                    },
+                    {
+                      "areaCode": "338",
+                      "areaLevel": "District",
+                      "areaName": "Ahmednagar",
+                      "codeScheme": "AGMARKNET-DISTRICT"
+                    },
+                    {
+                      "areaCode": "IN-MH",
+                      "areaLevel": "State",
+                      "areaName": "Maharashtra",
+                      "codeScheme": "ISO-3166-2"
+                    }
+                  ],
+                  "informationMode": "OnDemand",
+                  "languages": [
+                    "en"
+                  ],
+                  "market": {
+                    "district": "Ahmednagar",
+                    "marketCode": "1634",
+                    "marketName": "Rahuri APMC",
+                    "state": "MH"
+                  },
+                  "source": {
+                    "sourceId": "source:agmarknet",
+                    "sourceName": "AGMARKNET",
+                    "sourceUri": "https://agmarknet.gov.in"
+                  },
+                  "subjectCategories": [
+                    "Market"
+                  ],
+                  "supportedCommodities": [
+                    {
+                      "code": "4",
+                      "name": "Maize"
+                    },
+                    {
+                      "code": "13",
+                      "name": "Soyabean"
+                    },
+                    {
+                      "code": "18",
+                      "name": "Orange"
+                    },
+                    {
+                      "code": "20",
+                      "name": "Mango"
+                    },
+                    {
+                      "code": "23",
+                      "name": "Onion"
+                    },
+                    {
+                      "code": "24",
+                      "name": "Potato"
+                    },
+                    {
+                      "code": "25",
+                      "name": "Garlic"
+                    },
+                    {
+                      "code": "28",
+                      "name": "Bajra(Pearl Millet/Cumbu)"
+                    },
+                    {
+                      "code": "31",
+                      "name": "Cauliflower"
+                    },
+                    {
+                      "code": "32",
+                      "name": "Brinjal"
+                    },
+                    {
+                      "code": "45",
+                      "name": "Arhar(Tur/Red Gram)(Whole)"
+                    },
+                    {
+                      "code": "46",
+                      "name": "Green Peas"
+                    },
+                    {
+                      "code": "59",
+                      "name": "Papaya"
+                    },
+                    {
+                      "code": "62",
+                      "name": "Guar"
+                    },
+                    {
+                      "code": "64",
+                      "name": "Mousambi(Sweet Lime)"
+                    },
+                    {
+                      "code": "65",
+                      "name": "Tomato"
+                    },
+                    {
+                      "code": "67",
+                      "name": "Bitter gourd"
+                    },
+                    {
+                      "code": "68",
+                      "name": "Bottle gourd"
+                    },
+                    {
+                      "code": "71",
+                      "name": "Bhindi(Ladies Finger)"
+                    },
+                    {
+                      "code": "73",
+                      "name": "Green Chilli"
+                    },
+                    {
+                      "code": "74",
+                      "name": "Chilly Capsicum"
+                    },
+                    {
+                      "code": "87",
+                      "name": "Ginger(Green)"
+                    },
+                    {
+                      "code": "124",
+                      "name": "Sweet Potato"
+                    },
+                    {
+                      "code": "126",
+                      "name": "Cabbage"
+                    },
+                    {
+                      "code": "131",
+                      "name": "Cucumbar(Kheera)"
+                    },
+                    {
+                      "code": "132",
+                      "name": "Ridgeguard(Tori)"
+                    },
+                    {
+                      "code": "140",
+                      "name": "Drumstick"
+                    },
+                    {
+                      "code": "145",
+                      "name": "Sweet Pumpkin"
+                    },
+                    {
+                      "code": "151",
+                      "name": "Lime"
+                    },
+                    {
+                      "code": "156",
+                      "name": "Guava"
+                    },
+                    {
+                      "code": "160",
+                      "name": "Pomegranate"
+                    },
+                    {
+                      "code": "162",
+                      "name": "Seetapal"
+                    }
+                  ],
+                  "supportedPriceFields": [
+                    "Minimum",
+                    "Maximum",
+                    "Modal"
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "publishDirectives": [
+          {
+            "catalogId": "catalog:mandi-price:MH",
+            "catalogType": "REGULAR",
+            "schemaTypes": [
+              "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
+            ],
+            "updateMode": "MERGE",
+            "visibleTo": [
+              "test-network"
+            ]
+          }
+        ]
+      }
+    }
+  }
+]

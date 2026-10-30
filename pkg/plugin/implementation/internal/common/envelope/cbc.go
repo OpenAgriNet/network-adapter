@@ -1,0 +1,180 @@
+package envelope
+
+import (
+	"bytes"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
+)
+
+// keySeparator joins the ciphertext and its key on the wire: cipher@key.
+const keySeparator = "@"
+
+// cbcCodec is AES-128-CBC with a fresh key per request, sent as cipher@key
+// (key = IV = its first 16 bytes). Obfuscation only; the token is the secret.
+type cbcCodec struct {
+	provider      string
+	tokenEnv      string
+	tokenField    string
+	requestField  string
+	responsePaths [][]string
+
+	// crypto/rand outside tests.
+	random io.Reader
+}
+
+// newCBCCodec validates the settings under prefix: "otp" (otpEnvelope) or
+// "envelope" (envelope).
+func newCBCCodec(provider, prefix string, s cbcSettings) (*cbcCodec, error) {
+	kindSetting := "envelope"
+	if prefix == "otp" {
+		kindSetting = "otpEnvelope"
+	}
+	if s.kind != envelopeAESCBCKeyInBand {
+		return nil, fmt.Errorf("%s: %s %q is not one this plugin knows; want %s",
+			provider, kindSetting, s.kind, envelopeAESCBCKeyInBand)
+	}
+	missing := missingSettings(map[string]string{
+		prefix + "RequestField":  s.requestField,
+		prefix + "ResponsePaths": s.responsePaths,
+	})
+	missing = checkToken(s.tokenEnv, s.tokenField, missing, prefix)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%s: %s %s needs %s", provider, kindSetting, envelopeAESCBCKeyInBand,
+			strings.Join(missing, ", "))
+	}
+	paths, err := parsePaths(provider, prefix+"ResponsePaths", s.responsePaths)
+	if err != nil {
+		return nil, err
+	}
+	return &cbcCodec{provider: provider, tokenEnv: s.tokenEnv, tokenField: s.tokenField,
+		requestField: s.requestField, responsePaths: paths, random: rand.Reader}, nil
+}
+
+// seal adds the token, encrypts under a fresh key, and returns its opener.
+func (c *cbcCodec) seal(ctx context.Context, mapped []byte) ([]byte, common.Opener, error) {
+	plain, err := withToken(ctx, c.provider, mapped, c.tokenEnv, c.tokenField)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyString, err := c.newKeyString()
+	if err != nil {
+		return nil, nil, fmt.Errorf("a key for %s could not be generated: %w", c.provider, err)
+	}
+	sealed, err := cbcEncrypt(keyString, plain)
+	if err != nil {
+		return nil, nil, fmt.Errorf("the %s request could not be encrypted: %w", c.provider, err)
+	}
+	body, err := json.Marshal(map[string]string{c.requestField: sealed + keySeparator + keyString})
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, func(ctx context.Context, answer []byte) ([]byte, error) {
+		return c.open(ctx, answer, keyString)
+	}, nil
+}
+
+// open decrypts an answer; failures as in gcmCodec.Open (502/500/502).
+func (c *cbcCodec) open(ctx context.Context, answer []byte, requestKey string) ([]byte, error) {
+	sealed, err := sealedIn(ctx, c.provider, answer, c.responsePaths)
+	if err != nil {
+		return nil, err
+	}
+	// base64 has no '@', so the last one, if any, starts the reply's key.
+	ciphertext, key := sealed, requestKey
+	if at := strings.LastIndex(sealed, keySeparator); at >= 0 {
+		if replyKey := sealed[at+1:]; replyKey != "" {
+			key = replyKey
+		}
+		ciphertext = sealed[:at]
+	}
+	raw, err := decodeSealed(ctx, c.provider, c.tokenEnv, ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := cbcDecrypt(key, raw)
+	if err != nil {
+		log.Errorf(ctx, err, "%s's OTP service answer will not decrypt", c.provider)
+		return nil, model.NewCodedErr(http.StatusInternalServerError, codeInternal,
+			fmt.Errorf("the answer from %s could not be decrypted", c.provider))
+	}
+	return plainJSON(ctx, c.provider, plain)
+}
+
+// newKeyString is 16 random bytes as 32 lower-case hex characters.
+func (c *cbcCodec) newKeyString() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := io.ReadFull(c.random, raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// keyMaterial is the first 16 bytes of the key string, zero-padded.
+func keyMaterial(keyString string) []byte {
+	key := make([]byte, aes.BlockSize)
+	copy(key, keyString)
+	return key
+}
+
+// cbcEncrypt is base64(AES-128-CBC(PKCS#7(plain))) under a key string.
+func cbcEncrypt(keyString string, plain []byte) (string, error) {
+	key := keyMaterial(keyString)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	padded := pkcs7Pad(plain, aes.BlockSize)
+	out := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, key).CryptBlocks(out, padded)
+	return base64.StdEncoding.EncodeToString(out), nil
+}
+
+// cbcDecrypt reverses cbcEncrypt.
+func cbcDecrypt(keyString string, raw []byte) ([]byte, error) {
+	if len(raw)%aes.BlockSize != 0 {
+		return nil, errors.New("ciphertext is not a whole number of blocks")
+	}
+	key := keyMaterial(keyString)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, len(raw))
+	cipher.NewCBCDecrypter(block, key).CryptBlocks(out, raw)
+	return pkcs7Unpad(out, aes.BlockSize)
+}
+
+func pkcs7Pad(data []byte, size int) []byte {
+	n := size - len(data)%size
+	return append(append([]byte{}, data...), bytes.Repeat([]byte{byte(n)}, n)...)
+}
+
+func pkcs7Unpad(data []byte, size int) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, errors.New("empty plaintext")
+	}
+	n := int(data[len(data)-1])
+	if n == 0 || n > size || n > len(data) {
+		return nil, errors.New("bad padding")
+	}
+	for _, b := range data[len(data)-n:] {
+		if int(b) != n {
+			return nil, errors.New("bad padding")
+		}
+	}
+	return data[:len(data)-n], nil
+}

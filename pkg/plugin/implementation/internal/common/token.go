@@ -87,7 +87,7 @@ type tokenResponse struct {
 // issuer that failed. Unclassified they would surface as 500, telling a peer
 // this adapter broke when it did not.
 func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
-	if auth.cfg.Scheme == util.AuthSchemeTokenQuery {
+	if auth.cfg.Scheme == util.AuthSchemeTokenQuery || auth.cfg.Scheme == util.AuthSchemeTokenHeader {
 		return s.exchangeQueryToken(ctx, auth)
 	}
 	return s.exchangeOAuth2Token(ctx, auth)
@@ -96,14 +96,13 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 // exchangeQueryToken POSTs a JSON body of configured field names and reads the
 // token out of a configured response field.
 //
-// The lifetime comes from config, not from the response: this endpoint says
-// nothing about how long its token lives. That is the whole reason tokenTtl is
-// required rather than defaulted -- see AuthProfile.
+// The lifetime is read from tokenExpiryField when the endpoint states one, and
+// taken from tokenTtl when it does not -- see AuthProfile.
 func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	cfg := auth.cfg
 	user, secret := os.Getenv(cfg.TokenUserEnv), os.Getenv(cfg.TokenSecretEnv)
 	if user == "" || secret == "" {
-		return "", 0, s.missingCredential(ctx, cfg.Provider, util.AuthSchemeTokenQuery,
+		return "", 0, s.missingCredential(ctx, cfg.Provider, cfg.Scheme,
 			cfg.TokenUserEnv+" and "+cfg.TokenSecretEnv)
 	}
 
@@ -123,17 +122,28 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 		return "", 0, err
 	}
 
-	// Decoded into a map because the field name is configured: a struct tag
-	// cannot be written for a key that is not known until config is read.
-	var fields map[string]any
+	// Decoded generically because the token's path is configured.
+	var fields any
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return "", 0, s.permanentTokenErr(fmt.Errorf("token response from %s is not JSON: %w",
 			cfg.TokenURL, err))
 	}
-	token, ok := fields[cfg.TokenResponseField].(string)
-	if !ok || token == "" {
+	tokens := ValuesAt(fields, cfg.TokenResponseField)
+	if len(tokens) == 0 || tokens[0] == "" {
 		return "", 0, s.permanentTokenErr(fmt.Errorf(
 			"token response from %s carries no %s", cfg.TokenURL, cfg.TokenResponseField))
+	}
+	token := tokens[0]
+
+	if cfg.TokenExpiryField != "" {
+		lifetime, ok := expiryLifetime(fields, cfg.TokenExpiryField)
+		if !ok {
+			// Not cached for a guessed period, the same rule as oauth2.
+			return "", 0, s.permanentTokenErr(fmt.Errorf(
+				"token response from %s carries no future %s, so its lifetime is unknown",
+				cfg.TokenURL, cfg.TokenExpiryField))
+		}
+		return token, lifetime, nil
 	}
 
 	// The skew is subtracted here for the same reason oauth2 subtracts it from
@@ -214,7 +224,7 @@ func (s *Step) postForToken(ctx context.Context, cfg AuthProfile, payload []byte
 		// The status, not the body: a failure body routinely quotes the
 		// request back.
 		log.Warnf(ctx, "token endpoint %s returned %s: %s",
-			cfg.TokenURL, resp.Status, s.redactString(util.Explain(body)))
+			cfg.TokenURL, resp.Status, s.explainRedacted(body))
 		err := fmt.Errorf("token endpoint returned %s", resp.Status)
 		// The same rule the provider's own status gets: 5xx and 429 ask to be
 		// tried again, and every other 4xx is a statement about the request --
@@ -244,6 +254,30 @@ func (s *Step) tokenErr(err error) error {
 // issuer will keep sending in the same shape.
 func (s *Step) permanentTokenErr(err error) error {
 	return util.DoNotRetry(s.tokenErr(err))
+}
+
+// expiryLifetime reads an expiry stated as Unix seconds or an RFC 3339 time and
+// returns how long the token may be held, false when it is absent, unreadable,
+// or already past.
+func expiryLifetime(fields any, path string) (time.Duration, bool) {
+	leaves := LeavesAt(fields, path)
+	if len(leaves) == 0 {
+		return 0, false
+	}
+	var expiry time.Time
+	switch value := leaves[0].(type) {
+	case float64:
+		expiry = time.Unix(int64(value), 0)
+	case string:
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return 0, false
+		}
+		expiry = parsed
+	default:
+		return 0, false
+	}
+	return tokenLifetime(int(time.Until(expiry)/time.Second), util.TokenRefreshSkew)
 }
 
 // tokenLifetime turns expires_in into how long the token may be held, or

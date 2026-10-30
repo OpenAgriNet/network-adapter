@@ -48,6 +48,10 @@ func TestShippedConfigParsesIntoAProfilePerProvider(t *testing.T) {
 
 	for _, step := range steps {
 		t.Run(step.ID, func(t *testing.T) {
+			if step.ID == "Grievance" {
+				// Envelope settings need the Grievance plugin's own parser.
+				t.Skip("checked by Grievance/cmd TestShippedConfig_GrievanceEntry_BuildsStep")
+			}
 			// Flattened on the way in: a plugin never sees a block, so every
 			// value here is a string. parseConfig failing would mean the
 			// nesting did not survive.

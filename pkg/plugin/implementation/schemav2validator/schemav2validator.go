@@ -30,17 +30,17 @@ type payload struct {
 type schemav2Validator struct {
 	config          *Config
 	specMutex       sync.RWMutex
-	specsLoaded     bool                            // true once at least one successful loadAllSpecs has completed
-	actionSchemas   map[string]*openapi3.SchemaRef  // merged across primary + all auxiliary specs
-	bodylessActions map[string]struct{}              // merged across primary + all auxiliary specs
-	schemaCache     *schemaCache                     // cache for extended schemas
+	specsLoaded     bool                           // true once at least one successful loadAllSpecs has completed
+	actionSchemas   map[string]*openapi3.SchemaRef // merged across primary + all auxiliary specs
+	bodylessActions map[string]struct{}            // merged across primary + all auxiliary specs
+	schemaCache     *schemaCache                   // cache for extended schemas
 }
 
 // cachedSpec holds a cached OpenAPI spec.
 type cachedSpec struct {
 	doc             *openapi3.T
 	actionSchemas   map[string]*openapi3.SchemaRef // body operations: action → schema (O(1) lookup)
-	bodylessActions map[string]struct{}             // bodyless operations: path without leading slash → exists
+	bodylessActions map[string]struct{}            // bodyless operations: path without leading slash → exists
 	loadedAt        time.Time
 }
 
@@ -201,8 +201,9 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 		openapi3.EnableFormatValidation(),
 	}
 	if err := schema.Value.VisitJSON(jsonData, opts...); err != nil {
-		log.Debugf(ctx, "Schema validation failed: %v", err)
-		return v.formatValidationError(err)
+		formatted := v.formatValidationError(err)
+		log.Debugf(ctx, "Schema validation failed: %v", formatted)
+		return formatted
 	}
 
 	log.Debugf(ctx, "base schema validation passed for action: %s", action)
@@ -210,7 +211,7 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 	// Extended Schema validation (if enabled)
 	if v.config.EnableExtendedSchema && v.schemaCache != nil {
 		log.Debugf(ctx, "Starting Extended Schema validation for action: %s", action)
-		if err := v.validateExtendedSchemas(ctx, jsonData); err != nil {
+		if err := v.validateExtendedSchemas(ctx, jsonData, action); err != nil {
 			// Extended Schema failure - return error
 			log.Debugf(ctx, "Extended Schema validation failed for action %s: %v", action, err)
 			return err
@@ -513,100 +514,6 @@ func (v *schemav2Validator) reloadAllSpecs(ctx context.Context) {
 		log.Errorf(ctx, err, "Failed to reload specs — serving stale action index until next TTL cycle")
 	} else {
 		log.Debugf(ctx, "Reloaded all specs successfully")
-	}
-}
-
-// formatValidationError converts kin-openapi validation errors to ONIX error format.
-func (v *schemav2Validator) formatValidationError(err error) error {
-	var schemaErrors []model.Error
-
-	// Check if it's a MultiError (collection of errors)
-	if multiErr, ok := err.(openapi3.MultiError); ok {
-		for _, e := range multiErr {
-			v.extractSchemaErrors(e, &schemaErrors)
-		}
-	} else {
-		v.extractSchemaErrors(err, &schemaErrors)
-	}
-
-	return &model.SchemaValidationErr{Errors: schemaErrors}
-}
-
-// schemaFieldCodes maps an openapi3.SchemaError's SchemaField (the JSON-schema
-// keyword that failed) to the corresponding Beckn v2.0.0 SCH_* code.
-var schemaFieldCodes = map[string]string{
-	"required": "SCH_REQUIRED_FIELD_MISSING",
-	// kin-openapi uses SchemaField "properties" specifically for the
-	// additionalProperties-disallowed case ("property %q is unsupported").
-	"properties": "SCH_FIELD_NOT_ALLOWED",
-	"enum":       "SCH_INVALID_ENUM",
-	// "const" is JSON Schema's own sugar for an enum with a single allowed
-	// value — there is no dedicated SCH_* code for it, so it shares enum's.
-	"const":  "SCH_INVALID_ENUM",
-	"format": "SCH_INVALID_FORMAT",
-	"type":   "SCH_TYPE_NOT_SUPPORTED",
-}
-
-// schemaFieldToCode looks up schemaFieldCodes. Composite keywords
-// (oneOf/anyOf/allOf) and any constraint without a dedicated code fall back
-// to SCH_SCHEMA_VALIDATION_FAILED, since kin-openapi doesn't attribute those
-// to one single underlying cause.
-func schemaFieldToCode(schemaField string) string {
-	if code, ok := schemaFieldCodes[schemaField]; ok {
-		return code
-	}
-	return "SCH_SCHEMA_VALIDATION_FAILED"
-}
-
-// extractSchemaErrors recursively extracts detailed error information from SchemaError.
-func (v *schemav2Validator) extractSchemaErrors(err error, schemaErrors *[]model.Error) {
-	if becknErr, ok := err.(*model.Error); ok {
-		// Already a fully-classified error (e.g. from validateReferencedObject's
-		// domain/JSON-LD checks) — pass it through as-is.
-		*schemaErrors = append(*schemaErrors, *becknErr)
-	} else if schemaErr, ok := err.(*openapi3.SchemaError); ok {
-		// Extract path from current error and message from Origin if available
-		pathParts := schemaErr.JSONPointer()
-		path := strings.Join(pathParts, "/")
-		if path == "" {
-			path = schemaErr.SchemaField
-		}
-
-		message := schemaErr.Reason
-		if schemaErr.Origin != nil {
-			originMsg := schemaErr.Origin.Error()
-			// Extract specific field error from nested message
-			if strings.Contains(originMsg, "Error at \"/") {
-				// Find last "Error at" which has the specific field error
-				parts := strings.Split(originMsg, "Error at \"")
-				if len(parts) > 1 {
-					lastPart := parts[len(parts)-1]
-					// Extract field path and update both path and message
-					if idx := strings.Index(lastPart, "\":"); idx > 0 {
-						fieldPath := lastPart[:idx]
-						fieldMsg := strings.TrimSpace(lastPart[idx+2:])
-						path = strings.TrimPrefix(fieldPath, "/")
-						message = fieldMsg
-					}
-				}
-			} else {
-				message = originMsg
-			}
-		}
-
-		errItem := model.NewCodedError(schemaFieldToCode(schemaErr.SchemaField), message)
-		if path != "" {
-			errItem.Details = &model.ErrorDetails{Path: path}
-		}
-		*schemaErrors = append(*schemaErrors, *errItem)
-	} else if multiErr, ok := err.(openapi3.MultiError); ok {
-		// Nested MultiError
-		for _, e := range multiErr {
-			v.extractSchemaErrors(e, schemaErrors)
-		}
-	} else {
-		// Generic error — no schema keyword to classify against.
-		*schemaErrors = append(*schemaErrors, *model.NewCodedError("SCH_SCHEMA_VALIDATION_FAILED", err.Error()))
 	}
 }
 

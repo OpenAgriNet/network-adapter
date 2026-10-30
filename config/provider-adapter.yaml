@@ -232,6 +232,9 @@ modules:
             # one-line change.
             extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.beckn.io,schema.nfh.global"
 
+            # Fetch api-schemas/ from the branch until the published URL serves it (ADR-0003).
+            extendedSchema_contextRewrite: "https://openagrinet.github.io/network-specs/api-schemas/|https://raw.githubusercontent.com/OpenAgriNet/network-specs/api-schema-packs-v0.1/api-schemas/"
+
             extendedSchema_cacheTTL: "86400"        # 24h
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
@@ -505,6 +508,76 @@ modules:
               # concurrency for this capability.
               searchConcurrency: 1
 
+          # ------------------------------------------------------------------
+          # Grievance -- support files a grievance, status reads it back.
+          # PM-KISAN: init (OTP), then support or status with the OTP.
+          # PM-KISAN application status: init (OTP), then status.
+          # ------------------------------------------------------------------
+          - id: Grievance
+            config:
+              bindingKeys: "pmfby|openagrinet:Grievance,pmkisan|openagrinet:Grievance,pmkisan|openagrinet:SchemeApplication"
+
+              # Paired by position, tried in order: status names the binding on
+              # its contract, support on its channel.
+              providerIdAt: "message.contract.commitments[].offer.provider.id, message.support.channels[].provider.id"
+              capabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type, message.support.channels[].@type"
+
+              # Logs in at PMFBY's NICUsersLogin and sends the token bare in
+              # Authorization, held until the login reply's validTo.
+              # tokenUrl is set per deployment.
+              pmfby:
+                authScheme: tokenHeader
+                tokenUrl: <>
+                tokenUserField: appAccessUID
+                tokenUserEnv: PMFBY_ACCESS_UID
+                tokenSecretField: appAccessPWD
+                tokenSecretEnv: PMFBY_ACCESS_PWD
+                tokenResponseField: responseDynamic.token.Token
+                tokenExpiryField: responseDynamic.token.validTo
+                headerName: Authorization
+
+              # PM-KISAN: one participant. Its capabilities use different envelopes
+              # and hosts, so their settings are blocks named by binding key.
+              pmkisan:
+                authScheme: none
+
+              # Grievance: encrypted bodies; the OTP on the SchemeApplication
+              # binding's host (ADR-0001, ADR-0002).
+              "pmkisan|openagrinet:Grievance":
+                envelope: aesGcm
+                envelopeKeyEnv: PMKISAN_GRIEVANCE_KEY
+                envelopeNonceEnv: PMKISAN_GRIEVANCE_IV
+                envelopeTokenEnv: PMKISAN_SERVICE_TOKEN
+                envelopeTokenField: TokenNo
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpEnvelope: aesCbcKeyInBand
+                otpBindingKey: "pmkisan|openagrinet:SchemeApplication"
+                otpTokenEnv: PMKISAN_OTP_TOKEN
+                otpTokenField: Token
+                otpRequestField: EncryptedRequest
+                otpResponsePaths: "d.output,output"
+                otpActions: init
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: "support,status"
+                otpVerifyTimeoutMs: "10000"
+
+              # Application status: the binding's host is the OTP service itself; OTP,
+              # the record, then a follow-up read of its blockers (ADR-0005).
+              "pmkisan|openagrinet:SchemeApplication":
+                envelope: aesCbcKeyInBand
+                envelopeTokenEnv: PMKISAN_OTP_TOKEN
+                envelopeTokenField: Token
+                envelopeRequestField: EncryptedRequest
+                envelopeResponsePaths: "d.output,output"
+                otpVerifyPath: /ChatbotOTPVerified
+                otpVerifyActions: status
+                otpVerifyTimeoutMs: "10000"
+                followUpPath: /ChatbotBeneficiaryStatus
+                followUpField: _beneficiaryStatus
+                followUpActions: status
+                followUpTimeoutMs: "10000"
+
       # Declaring a step above is not enough: THIS list is what runs. A step
       # that appears under providerSteps but not here never executes, and the
       # request falls through to the 404 above -- which looks like a registry
@@ -516,6 +589,7 @@ modules:
         - MandiPrice          # its binding key, or pass through
         - KnowledgeAdvisory   # its binding key, or pass through
         - AgricultureFacility # its binding key, or pass through
+        - Grievance           # its binding key, or pass through
         - signAck          # signs whatever the step answered with
 
 # ----------------------------------------------------------------------------

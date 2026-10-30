@@ -174,7 +174,7 @@ Results land in `benchmarks/results/<timestamp>/`. The latest committed report i
 
 ### Prerequisites
 
-- Go 1.26.8 or higher — the version `go.mod` requires, and the floor that
+- Go 1.26.10 or higher — the version `go.mod` requires, and the floor that
   clears the current Go standard-library advisories (`make security`)
 - Redis (for caching)
 - Docker (optional, for containerized deployment)

@@ -80,6 +80,10 @@ const (
 	// Inherits query's exposure -- the token reaches proxy logs and transport
 	// errors -- so it is redacted the same way. See redact.
 	AuthSchemeTokenQuery = "tokenQuery"
+
+	// tokenQuery's login exchange, but the token is sent bare (no "Bearer")
+	// in the configured header.
+	AuthSchemeTokenHeader = "tokenHeader"
 )
 
 // CodeUpstreamUnavailable: the provider could not be reached or failed. Not

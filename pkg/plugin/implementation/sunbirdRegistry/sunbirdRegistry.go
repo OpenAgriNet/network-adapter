@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,6 +102,7 @@ const (
 	outcomeInactive       = "inactive"
 	outcomeKeyInactive    = "key_inactive"
 	outcomeNoKey          = "no_key"
+	outcomeRefused        = "not_a_requester"
 	outcomeTimeout        = "timeout"
 	outcomeRegistryError  = "registry_error"
 	outcomeDecodeError    = "decode_error"
@@ -129,10 +131,11 @@ func classify(err error) string {
 }
 
 const (
-	pluginID                = "sunbirdRegistry"
-	pluginType              = "registry"
-	operationLookup         = "lookup"
-	operationProviderRecord = "provider_record"
+	pluginID                  = "sunbirdRegistry"
+	pluginType                = "registry"
+	operationLookup           = "lookup"
+	operationProviderRecord   = "provider_record"
+	operationAdmittedNetworks = "admitted_networks"
 )
 
 // Config holds configuration parameters for the registry client.
@@ -186,12 +189,80 @@ type Client struct {
 // documentation of what a provider expects; the adapter presents what its
 // operator configured.
 type participant struct {
-	ParticipantID string `json:"participantId"`
-	Type          string `json:"type"`
-	Role          string `json:"role"`
-	Status        string `json:"status"`
-	BaseURL       string `json:"baseUrl"`
-	Keys          []key  `json:"keys"`
+	ParticipantID string   `json:"participantId"`
+	Type          string   `json:"type"`
+	Role          roleList `json:"role"`
+	Status        string   `json:"status"`
+	BaseURL       string   `json:"baseUrl"`
+	Keys          []key    `json:"keys"`
+
+	// Set only on a network we admitted.
+	FederationRole federationRole `json:"federationRole"`
+	ProjectionTTL  int            `json:"projectionTtl"` // seconds; 0 forbids caching
+}
+
+// roleList is the layers a participant serves. An older row carries a single
+// string where a newer one carries an array, and both decode here.
+type roleList []string
+
+func (r *roleList) UnmarshalJSON(raw []byte) error {
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		*r = roleList{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(raw, &many); err != nil {
+		return err
+	}
+	*r = many
+	return nil
+}
+
+func (r roleList) has(role string) bool {
+	for _, carried := range r {
+		if strings.EqualFold(carried, role) {
+			return true
+		}
+	}
+	return false
+}
+
+// primary is the role to report where one value is expected.
+func (r roleList) primary() string {
+	if len(r) == 0 {
+		return ""
+	}
+	return r[0]
+}
+
+// federationRole is what we agreed with a network, keyed by direction. A
+// direction is agreed when its key is present.
+type federationRole struct {
+	Source    *federationDirection `json:"source"`
+	Requester *federationDirection `json:"requester"`
+}
+
+// federationDirection is one agreed direction. Only the packs are read here;
+// the rest of the record is for whoever admitted the network.
+type federationDirection struct {
+	SchemaPacks []string `json:"schemaPacks"`
+}
+
+func (d *federationDirection) agreed() *model.FederationDirection {
+	if d == nil {
+		return nil
+	}
+	return &model.FederationDirection{SchemaPacks: d.SchemaPacks}
+}
+
+// agreed is what this record says we agreed, in the shape the rest of the
+// adapter reads it in.
+func (f federationRole) agreed() model.Agreement {
+	return model.Agreement{
+		Source:    f.Source.agreed(),
+		Requester: f.Requester.agreed(),
+	}
 }
 
 // key is one published key. A participant publishes several -- separate signing
@@ -225,7 +296,10 @@ func (k key) isSigning() bool {
 }
 
 type eqFilter struct {
-	Eq string `json:"eq"`
+	Eq string `json:"eq,omitempty"`
+
+	// Contains matches inside a list field; eq matches no list.
+	Contains string `json:"contains,omitempty"`
 }
 
 type searchRequest struct {
@@ -289,7 +363,7 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 	// Always bounded. The sibling registry plugins apply their timeout only when
 	// one is configured, which leaves it at zero -- meaning no timeout at all --
 	// when it is not. That matters because the transport retryablehttp ships with
-	// sets no ResponseHeaderTimeout, so a peer that accepts the connection and
+	// sets no ResponseHeaderTimeout, so a network that accepts the connection and
 	// then goes quiet is otherwise bounded by nothing.
 	timeout := cfg.Timeout
 	if timeout <= 0 {
@@ -553,10 +627,9 @@ func toSubscription(p participant, k key, status string) model.Subscription {
 		Subscriber: model.Subscriber{
 			SubscriberID: p.ParticipantID,
 			URL:          p.BaseURL,
-			// role is the Beckn role -- BAP, BPP or NETWORK. type is the
-			// registry's own discriminator (node or upstream) and means
-			// something else entirely, so it is not what a subscriber's Type is.
-			Type: p.Role,
+			// role is the layer this participant serves; type is the registry's
+			// own discriminator and means something else.
+			Type: p.Role.primary(),
 		},
 		KeyID:            k.OSID,
 		SigningPublicKey: k.publicKey(),
@@ -677,4 +750,78 @@ func (c *Client) emitMetrics(ctx context.Context, start time.Time, operation, ou
 	if !successOutcomes[outcome] {
 		m.PluginErrorsTotal.Add(ctx, 1, attrs)
 	}
+}
+
+// discoverAction is the only action that names schema contexts, and so the only
+// one the agreed subset can be checked against.
+const discoverAction = "discover"
+
+// codeUnauthorizedAction is the Beckn code for a caller who may not do this.
+const codeUnauthorizedAction = "AUT_UNAUTHORIZED_ACTION"
+
+// servedRequest is who is asking, what for, and which schema contexts they named.
+type servedRequest struct {
+	caller         string
+	action         string
+	schemaContexts []string
+}
+
+// refused classifies an agreement refusal. 400, not 500: the caller's side to
+// fix. Not 401 either -- no credential changes the answer.
+func refused(err error) error {
+	return model.NewBadReqErr(codeUnauthorizedAction, err)
+}
+
+// CheckCrossNetworkRequester refuses a caller we never agreed to answer, and on
+// a discover one asking beyond the agreement. Reads our own records, not a key
+// lookup, so it holds whether or not the request was signed.
+func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action string, schemaContexts []string) error {
+	if strings.TrimSpace(caller) == "" {
+		return nil
+	}
+
+	agreed, err := c.agreementWith(ctx, caller)
+	if err != nil {
+		// A registry we could not ask is not an agreement we can honour.
+		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
+	}
+	// No agreement is an ordinary participant -- a provider, our own deployment,
+	// or a caller signature validation will reject anyway. No federation rule
+	// applies to them.
+	if !agreed.Agreed() {
+		return nil
+	}
+
+	if !agreed.IsRequester() {
+		log.Infof(ctx, "OAN registry refusing %s: we agreed %v, which is not giving to them",
+			caller, agreed.Directions())
+		return refused(fmt.Errorf("%s is not a network we agreed to give to", caller))
+	}
+	// Only a discover names schema contexts. Every other action is governed by the
+	// direction alone, which we just checked.
+	if action != discoverAction {
+		log.Infof(ctx, "OAN registry %s may call us for %q", caller, action)
+		return nil
+	}
+	return agreedToGiveThese(ctx, servedRequest{caller: caller, action: action, schemaContexts: schemaContexts},
+		agreed.RequesterContexts())
+}
+
+// agreedToGiveThese refuses a caller asking beyond what the agreement covers.
+// The refusal names nothing: listing what we hold but will not share would tell
+// a caller the shape of our catalogue.
+func agreedToGiveThese(ctx context.Context, asked servedRequest, agreed []string) error {
+	if len(asked.schemaContexts) == 0 {
+		log.Infof(ctx, "OAN registry refusing %s: named no schema context, which asks for everything", asked.caller)
+		return refused(fmt.Errorf("%s named no schema context", asked.caller))
+	}
+	for _, want := range asked.schemaContexts {
+		if !slices.Contains(agreed, want) {
+			log.Infof(ctx, "OAN registry refusing %s: asked for %s, which we did not agree to give",
+				asked.caller, want)
+			return refused(fmt.Errorf("%s asked for a schema context we did not agree to give", asked.caller))
+		}
+	}
+	log.Infof(ctx, "OAN registry %s may call us, and asked only within what we agreed", asked.caller)
+	return nil
 }
