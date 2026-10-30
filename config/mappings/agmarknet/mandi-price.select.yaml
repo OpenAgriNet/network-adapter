@@ -83,6 +83,14 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* market.marketCode, where the catalog advertises it. Absent or empty, Agmarknet
+           widens the query to the whole district. $string("") is not "" here, so compare raw. */
+        $exists($ra.market.marketCode) and $ra.market.marketCode != ""
+      )
+    message: "this capability needs a market code in market.marketCode, as the catalog lists it; without it the query widens to the whole district"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         $exists($ra.validity.startsAt) and $exists($ra.validity.endsAt)
       )
     message: "this capability needs a validity window; it reports prices over a date range"
@@ -338,18 +346,10 @@ response: |
                     "commodityGroup": $r.Group,
                     "variety":        $r.Variety,
                     "grade":          $r.Grade,
-                    /* Every member comes from the RECORD, so the answer describes what
-                       the provider reported rather than what was asked for.
-                    
-                       marketCode is absent, and that is not an omission. This upstream
-                       TAKES a market code as a query parameter and reports none back --
-                       there is no such field anywhere in its response. Restating the
-                       requested code against a returned row would assert something
-                       unverified, and district-wide there is no requested code at all
-                       while the rows come from several markets, so one code would have
-                       been wrong for most of them. The pack requires only marketName
-                       and calls marketCode "when available"; here it is not. */
+                    /* From the RECORD, except marketCode: the upstream reports none, so it is the
+                       requested one (guarded), placed where catalog-ondemand.yaml puts it. */
                     "market": {
+                      "marketCode": $ra.market.marketCode,
                       "marketName": $r.Market,
                       "district":   $r.District,
                       "state":      $r.State
