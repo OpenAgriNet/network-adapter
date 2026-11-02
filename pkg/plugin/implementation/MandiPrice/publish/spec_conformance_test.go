@@ -118,11 +118,11 @@ func TestTheRealPipelineFileLoads(t *testing.T) {
 			Env:  "CATALOG_PUBLISH_URL",
 		},
 		"tokenUser": {
-			Env:    "MANDI_TOKEN_USER",
+			Env:    "AGMARKNET_ACCESS_NAME",
 			Secret: true,
 		},
 		"tokenSecret": {
-			Env:    "MANDI_TOKEN_SECRET",
+			Env:    "AGMARKNET_PASSWORD",
 			Secret: true,
 		},
 	}
@@ -375,11 +375,11 @@ func TestResolveInputsAgainstRealSpec(t *testing.T) {
 	}
 
 	got, err := pipeline.ResolveInputs(spec, lookupFrom(map[string]string{
-		"CATALOG_PUBLISH_URL":  "http://publish.test/catalog",
-		"MANDI_TOKEN_USER":     "user",
-		"MANDI_TOKEN_SECRET":   "secret",
-		"MANDI_API_URI":        "http://upstream.test:8080",
-		"MANDI_PARTICIPANT_ID": "",
+		"CATALOG_PUBLISH_URL":   "http://publish.test/catalog",
+		"AGMARKNET_ACCESS_NAME": "user",
+		"AGMARKNET_PASSWORD":    "secret",
+		"MANDI_API_URI":         "http://upstream.test:8080",
+		"MANDI_PARTICIPANT_ID":  "",
 	}))
 	if err != nil {
 		t.Fatalf("resolveInputs against the real spec: %v", err)
