@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
@@ -346,6 +347,91 @@ func TestShippedMappingChoosesTheCorpusFromSubjectCategories(t *testing.T) {
 				t.Errorf("index_name = %v, want %q", got, tc.wantIndex)
 			}
 		})
+	}
+}
+
+// THE SEARCH IS SCOPED TO THE PROVIDER THE CALLER SELECTED.
+//
+// offer.provider.id is sent as provider_id so the provider searches only its own
+// documents. An offer naming no provider omits the key rather than sending null,
+// the same way index_name is omitted: absent means search everything held.
+//
+// Run through the mapper directly, not the step: the step resolves its binding
+// FROM the provider id, so an offer without one never reaches the mapping.
+func TestShippedMappingScopesTheSearchToTheSelectedProvider(t *testing.T) {
+	const providerLine = `"provider": { "id": "knowledge-provider" },`
+	if !strings.Contains(selectRequest, providerLine) {
+		t.Fatalf("selectRequest no longer carries %s", providerLine)
+	}
+
+	mappings := serveMappings(t)
+	defer mappings.Close()
+
+	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
+	if err != nil {
+		t.Fatalf("failed to build the mapper: %v", err)
+	}
+	defer closeMapper()
+
+	for _, tc := range []struct {
+		name         string
+		request      string
+		wantProvider string // "" means the key must be absent
+		wantIndex    string // "" means the key must be absent
+	}{
+		{"the selected provider", selectRequest, "knowledge-provider", ""},
+		{"another provider",
+			strings.Replace(selectRequest, providerLine, `"provider": { "id": "mh.provider.oan.dev" },`, 1),
+			"mh.provider.oan.dev", ""},
+		{"no provider on the offer", strings.Replace(selectRequest, providerLine, "", 1), "", ""},
+		// A blank id names no provider; sending it would scope the search to
+		// nothing. Absent is the honest request.
+		{"an empty provider id",
+			strings.Replace(selectRequest, providerLine, `"provider": { "id": "" },`, 1), "", ""},
+		{"schemes only keeps both",
+			withCategories(t, `["Scheme"]`), "knowledge-provider", "documents-index-schemes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var beckn any
+			if err := json.Unmarshal([]byte(tc.request), &beckn); err != nil {
+				t.Fatalf("failed to decode the request: %v", err)
+			}
+			got, err := mapper.Transform(context.Background(), mappings.URL+"/"+shippedMapping,
+				definition.DirectionRequest, map[string]any{"beckn": beckn})
+			if err != nil {
+				t.Fatalf("the request half returned an unexpected error: %v", err)
+			}
+			var sent map[string]any
+			if err := json.Unmarshal(got, &sent); err != nil {
+				t.Fatalf("the request half produced something that is not an object: %v", err)
+			}
+
+			if sent["query"] != "gruha jyoti scheme eligibility" {
+				t.Errorf("query = %v, want the caller's topics joined", sent["query"])
+			}
+
+			provider, present := sent["provider_id"]
+			if tc.wantProvider == "" && present {
+				t.Errorf("provider_id = %v, want the key ABSENT", provider)
+			}
+			if tc.wantProvider != "" && provider != tc.wantProvider {
+				t.Errorf("provider_id = %v, want %q", provider, tc.wantProvider)
+			}
+
+			if tc.wantIndex != "" && sent["index_name"] != tc.wantIndex {
+				t.Errorf("index_name = %v, want %q", sent["index_name"], tc.wantIndex)
+			}
+		})
+	}
+}
+
+// The same scoping, end to end: through the real step, the body the provider
+// actually received carries provider_id.
+func TestShippedMappingSendsTheProviderIDToTheUpstream(t *testing.T) {
+	sent, _ := runShipped(t, selectRequest)
+
+	if got := sent["provider_id"]; got != "knowledge-provider" {
+		t.Errorf("provider_id = %v in the upstream body, want %q", got, "knowledge-provider")
 	}
 }
 
