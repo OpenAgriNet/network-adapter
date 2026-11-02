@@ -52,7 +52,7 @@ const asInitRequest = `{
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/schema/SchemeApplication/v0.1/context.jsonld",
         "@type": "openagrinet:SchemeApplication",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
@@ -80,7 +80,7 @@ const asStatusRequest = `{
       },
       "resources": [{ "id": "res:pmkisan:application-status", "quantity": { "count": 1 } }],
       "commitmentAttributes": {
-        "@context": "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+        "@context": "https://openagrinet.github.io/network-specs/schema/SchemeApplication/v0.1/context.jsonld",
         "@type": "openagrinet:SchemeApplication",
         "informationMode": "OnDemand",
         "scheme": { "code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi" },
@@ -349,7 +349,7 @@ func TestAppStatusReadsTheRecordAndWhatIsBlockingPayment(t *testing.T) {
 
 	attributes := asAttributes(t, body)
 	want := map[string]any{
-		"@context":        "https://openagrinet.github.io/network-specs/api-schemas/SchemeApplication/v0.1/context.jsonld",
+		"@context":        "https://openagrinet.github.io/network-specs/schema/SchemeApplication/v0.1/context.jsonld",
 		"@type":           "openagrinet:SchemeApplication",
 		"informationMode": "OnDemand",
 		"scheme":          map[string]any{"code": "PM-KISAN", "name": "Pradhan Mantri Kisan Samman Nidhi"},
