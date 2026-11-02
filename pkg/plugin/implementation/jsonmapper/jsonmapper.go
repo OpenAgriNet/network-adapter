@@ -123,8 +123,8 @@ type Config struct {
 // caller's side, indistinguishable from a mapping that could not be applied.
 // Reported as one, so it lands where the fault is.
 func evaluateLocked(expr jsonata.Expression, document []byte) (result []byte, err error) {
-	evaluating.Lock()
-	defer evaluating.Unlock()
+	Evaluating.Lock()
+	defer Evaluating.Unlock()
 
 	// Registered after the unlock so it runs BEFORE it: recover, name the
 	// failure, then release.
@@ -138,21 +138,30 @@ func evaluateLocked(expr jsonata.Expression, document []byte) (result []byte, er
 	return expr.Evaluate(document, nil)
 }
 
-// evaluating serialises every Evaluate in this package, across all mappings.
+// Evaluating must be held for the duration of any JSONata Evaluate call,
+// anywhere in this process -- exported so catalogpublisher/pipeline, which
+// already imports this package (see transformer.go), takes the SAME mutex
+// rather than declaring its own.
 //
-// It has to be this wide. Evaluate mutates more than the expression it is
-// called on: the library keeps its built-in functions in a package-level frame
-// (v206's staticFrame), and applying one writes token and position onto that
-// shared *Function for error reporting. Every mapping uses built-ins, so any
-// two concurrent evaluations race -- including two DIFFERENT mappings, which a
-// per-mapping lock explicitly allowed to run in parallel. That was this code's
-// previous shape, and it was wrong.
+// It has to be this wide, and it has to be one mutex, not one per package.
+// Applying a built-in writes onto that built-in's own shared *Function value
+// (token, position, for error reporting -- v206/jsonata.go's applyFunction),
+// which is not per-instance and not per-expression: two goroutines, each with
+// its own jsonata.OpenLatest() instance and its own compiled expression,
+// still write the same *Function the moment either evaluation calls a
+// built-in the OTHER ALSO calls. So two DIFFERENT mappings evaluating
+// concurrently race just as surely as one mapping evaluated twice at once --
+// and two DIFFERENT PACKAGES race the same way, which is why this can't be
+// jsonmapper's own private lock.
 //
-// Measured, not reasoned about: eight goroutines, each with its own
-// jsonata.OpenLatest() instance and its own compiled expression, evaluating an
-// expression shaped like the shipped mappings, produce race reports under
-// -race. Separate instances are not separate state, so nothing narrower than
-// package scope is sufficient.
+// MEASURED, not reasoned about -- and the shape matters. A top-level builtin
+// call racing another top-level call of the SAME builtin does not trip
+// -race (two instances calling $count(x) concurrently: clean). A builtin
+// called from INSIDE a lambda -- `( $f := function($x){ $count($x) };
+// f(items) )` -- racing a top-level call to that same builtin --
+// `$count(c)` -- does: -race reports a write/write race in applyFunction
+// every run. See catalogpublisher/pipeline/expressions_test.go for both
+// cases, reproduced and then closed by this lock.
 //
 // The cost is real and bounded: mapping evaluation no longer overlaps, at ~22us
 // a call, while the upstream HTTP request each mapped call goes on to make is
@@ -161,9 +170,9 @@ func evaluateLocked(expr jsonata.Expression, document []byte) (result []byte, er
 // the call rather than the function -- not a narrower lock here.
 //
 // reqmapper and schemaversionmediator evaluate JSONata too and have the same
-// exposure. Not addressed here: they are separate plugins with their own
-// owners, and this lock cannot reach across a .so boundary anyway.
-var evaluating sync.Mutex
+// exposure, and still hold their own separate mutex rather than this one --
+// not fixed here, their own owners' call.
+var Evaluating sync.Mutex
 
 // cacheEntry is one compiled mapping, or the failure that stopped it compiling.
 // Failures are cached too, which is the whole point of the negative TTL.

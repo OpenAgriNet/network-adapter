@@ -3,9 +3,11 @@ package common
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
@@ -41,6 +43,15 @@ type redactedErr struct {
 func (e redactedErr) Error() string { return e.text }
 
 func (e redactedErr) Unwrap() error { return e.err }
+
+// explainRedacted renders a failed body for a human, credential removed.
+//
+// Redacted BEFORE Explain truncates, not after: a secret that straddles
+// Explain's cut point would otherwise survive as a partial, unmatched prefix
+// no substring replacement can find once the rest of it is gone.
+func (s *Step) explainRedacted(body []byte) string {
+	return util.Explain([]byte(s.redactString(string(body))))
+}
 
 // redactString removes every configured credential from text about to be logged
 // or returned -- an error, a response body, or a requested URL.
@@ -129,11 +140,13 @@ func (a *authenticator) secretForms() []string {
 			forms = append(forms, encoded)
 		}
 		return forms
-	case util.AuthSchemeTokenQuery:
-		// oauth2's two halves, with query's escaping: the secret goes to the
-		// token endpoint, and the token it returns travels in a QUERY STRING --
-		// which is the exposed placement, so its escaped form has to be
-		// covered too or a token containing "+" or "=" survives redaction.
+	case util.AuthSchemeTokenQuery, util.AuthSchemeTokenHeader:
+		// oauth2's two halves: the secret goes to the token endpoint, and the
+		// token it returns travels in a query string under tokenQuery or a
+		// header under tokenHeader. Both forms are covered for both schemes --
+		// the escaped one matters in a query string, where a token containing
+		// "+" or "=" would otherwise survive redaction, and covering it on
+		// tokenHeader as well costs nothing and cannot miss.
 		var forms []string
 		if secret := os.Getenv(a.cfg.TokenSecretEnv); secret != "" {
 			forms = append(forms, secret)
@@ -157,4 +170,72 @@ func (a *authenticator) secretForms() []string {
 func longestFirst(forms []string) []string {
 	sort.Slice(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
 	return forms
+}
+
+// minSentValue is the shortest sent value worth masking. A provider's message
+// is read by a person, and masking every short code -- a category "1", a
+// season "2" -- would shred the sentence around the data it was meant to
+// protect. Everything the packs mark no-log is far longer: a mobile is ten
+// digits, an enrolment id twenty-one, a complaint a sentence.
+const minSentValue = 4
+
+// redactSent masks, in text a provider sent back, every value this adapter
+// sent it.
+//
+// A provider quoting the request it refused is the ordinary shape of a
+// rejection, and what we send carries the farmer's mobile, enrolment id and
+// complaint -- fields the capability packs mark no-log, no-trace. redactString
+// covers credentials, which are configured; this covers the request's own
+// data, which is different on every call and so cannot be.
+//
+// Only what was actually SENT, not the whole Beckn payload: masking every
+// string in the envelope would eat the capability name, the provider id and
+// the action, leaving a log line that protects nothing and explains nothing.
+// Nothing is lost by masking it -- it is what we sent, so it is already known.
+func redactSent(text string, sent []byte) string {
+	if text == "" || len(sent) == 0 {
+		return text
+	}
+	var payload any
+	if json.Unmarshal(sent, &payload) != nil {
+		return text
+	}
+	// Longest first, so a value containing another is replaced before its
+	// substring -- the same reason secretForms sorts.
+	for _, value := range longestFirst(sentValues(payload, nil)) {
+		text = strings.ReplaceAll(text, value, util.RedactedMarker)
+	}
+	return text
+}
+
+// sentValues collects every scalar in a sent request, as the text a provider
+// would quote it back as. Numbers included: an id mapped as a number echoes as
+// digits, and digits are what identify a farmer.
+func sentValues(node any, found []string) []string {
+	switch value := node.(type) {
+	case map[string]any:
+		for _, child := range value {
+			found = sentValues(child, found)
+		}
+	case []any:
+		for _, child := range value {
+			found = sentValues(child, found)
+		}
+	case string:
+		if len(value) >= minSentValue {
+			found = append(found, value)
+		}
+	case json.Number:
+		if text := value.String(); len(text) >= minSentValue {
+			found = append(found, text)
+		}
+	case float64:
+		// encoding/json's default for every number. %v gives 9.876543210e+09
+		// for a mobile, which is not how a provider would quote it, so the
+		// integral case is formatted as the digits it was sent as.
+		if text := strconv.FormatFloat(value, 'f', -1, 64); len(text) >= minSentValue {
+			found = append(found, text)
+		}
+	}
+	return found
 }

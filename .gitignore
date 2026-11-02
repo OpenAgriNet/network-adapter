@@ -178,5 +178,13 @@ test_request.json
 
 # catalogPublish handler's local output root (config/local-beckn-one-bap.yaml)
 /catalog/
-/docs/
 /dev_docs/
+
+# Working notes that stay on this machine; docs/adr is committed.
+/docs/*.md
+
+# Deployment configs carry real key material and must never be committed.
+# config/local-*.yaml use shared sample keys and are safe; anything else is not.
+config/network.yaml
+config/*-secrets.yaml
+.playwright-mcp/

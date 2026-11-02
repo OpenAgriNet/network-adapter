@@ -22,7 +22,7 @@ const dispatchMappingRef = "https://m.example.com/mausamgram/weather-observation
 // Kept minimal on purpose: this test is about which step claims a request, not
 // about what any of them would do with it.
 const dispatchRequest = `{
-  "context": { "version": "2.0.0", "action": "select" },
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "net-b.oan.local" },
   "message": { "contract": { "commitments": [ {
     "resources": [ { "resourceAttributes": { "@type": "openagrinet:WeatherObservation" } } ],
     "offer": { "provider": { "id": "mausamgram" } }
@@ -102,7 +102,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 
 	// A request for the FIRST capability, run through both steps in order, as a
 	// pipeline would.
-	ctx := &model.StepContext{Context: t.Context(), Body: []byte(dispatchRequest)}
+	ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: us, Body: []byte(dispatchRequest)}
 	for i, step := range steps {
 		if err := step.Run(ctx); err != nil {
 			t.Fatalf("step %d: %v", i, err)
@@ -117,5 +117,72 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 	}
 	if got := string(ctx.ResponseBody); !strings.Contains(got, `"A"`) {
 		t.Errorf("answer = %s, want A's -- a later step overwrote it", got)
+	}
+}
+
+// sharedContainerRequest names two bindings: the commitment is another step's
+// work, and the support entry is this one's. Both are ordinary on a payload
+// that rides through a pipeline of several provider steps.
+const sharedContainerRequest = `{
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "net-b.oan.local" },
+  "message": { "contract": {
+    "commitments": [ {
+      "resources": [ { "resourceAttributes": { "@type": "openagrinet:MarketPrice" } } ],
+      "offer": { "provider": { "id": "agmarknet" } }
+    } ],
+    "support": [ {
+      "provider": { "id": "mausamgram" },
+      "resourceAttributes": { "@type": "openagrinet:WeatherObservation" }
+    } ]
+  } }
+}`
+
+// A step configured with several path pairs must keep looking after a pair
+// resolves a binding that belongs to some other step. Stopping at the first
+// pair that resolved anything would make this step pass the request through,
+// and nothing downstream would answer it -- a silent miss, not an error.
+func TestLaterPathPairFindsThisStepsOwnBinding(t *testing.T) {
+	var called bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		fmt.Fprint(w, `{"from":"upstream"}`)
+	}))
+	defer upstream.Close()
+
+	const bindingKey = "mausamgram|openagrinet:WeatherObservation"
+	step, closer, err := common.New(context.Background(),
+		&stubRegistry{plan: &model.ProviderRecord{
+			BindingKey: bindingKey,
+			BaseURL:    upstream.URL,
+			Actions: map[string]model.ActionPlan{
+				"select": {Method: http.MethodGet, Path: "/x", Mappings: dispatchMappingRef, RetryMax: 1},
+			},
+		}},
+		fixedMapper{answer: `{"served":"weather"}`},
+		nil,
+		&common.Config{
+			BindingKeys: []string{bindingKey},
+			ProviderIDAt: "message.contract.commitments[].offer.provider.id," +
+				"message.contract.support[].provider.id",
+			CapabilityCodeAt: "message.contract.commitments[].resources[].resourceAttributes.@type," +
+				"message.contract.support[].resourceAttributes.@type",
+			AuthByProvider: map[string]*common.AuthProfile{
+				"mausamgram": {Scheme: util.AuthSchemeNone},
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer() }()
+
+	ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: us, Body: []byte(sharedContainerRequest)}
+	if err := step.Run(ctx); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if !called {
+		t.Error("the step passed through a payload naming its own binding on a later path pair")
+	}
+	if got := string(ctx.ResponseBody); !strings.Contains(got, `"weather"`) {
+		t.Errorf("answer = %s, want the step's own", got)
 	}
 }

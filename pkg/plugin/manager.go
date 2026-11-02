@@ -762,6 +762,12 @@ func unzip(src, dest string) error {
 	for _, f := range r.File {
 
 		fpath := filepath.Join(dest, f.Name)
+		// Reject a zip entry whose name climbs out of dest (zip slip):
+		// f.Name is attacker-controlled, and filepath.Join alone does not
+		// stop "../" segments from resolving above dest.
+		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
+			return fmt.Errorf("illegal file path in zip: %s", f.Name)
+		}
 		// Ensure directory exists
 		log.Debugf(context.Background(), "Pain : fpath: %s,filepath.Dir(fpath): %s", fpath, filepath.Dir(fpath))
 		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {

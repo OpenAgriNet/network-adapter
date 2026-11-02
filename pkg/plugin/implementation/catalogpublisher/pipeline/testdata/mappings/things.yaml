@@ -1,0 +1,19 @@
+# A fixture mapping for the frame's own tests: enough to exercise the request
+# and response halves without borrowing a capability's real mapping.
+request: |
+  {
+    "kind": _local.kind,
+    "token": _local.token
+  }
+
+# Wrapped in [...] for the same reason every real mapping is: JSONata collapses
+# a one-element sequence to a bare value, so a one-row upstream would return an
+# object where every other count returns a list.
+response: |
+  [$map(response, function($thing) {
+    {
+      "id": $thing.thing_id,
+      "group": $thing.group_code,
+      "size": $thing.size
+    }
+  })]

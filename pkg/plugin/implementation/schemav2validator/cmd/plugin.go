@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -103,6 +104,19 @@ func (vp schemav2ValidatorProvider) New(ctx context.Context, config map[string]s
 		}
 		if v, ok := config["extendedSchema_localSchemaPath"]; ok && v != "" {
 			cfg.ExtendedSchemaConfig.LocalSchemaPath = v
+		}
+		// "from|to" pairs, comma-separated: fetch an @context starting with
+		// from from to instead. "|" cannot appear unescaped in a URL.
+		if v, ok := config["extendedSchema_contextRewrite"]; ok && strings.TrimSpace(v) != "" {
+			for _, pair := range strings.Split(v, ",") {
+				from, to, found := strings.Cut(strings.TrimSpace(pair), "|")
+				from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+				if !found || from == "" || to == "" {
+					return nil, nil, fmt.Errorf("extendedSchema_contextRewrite: %q is not a from|to pair", pair)
+				}
+				cfg.ExtendedSchemaConfig.ContextRewrites = append(cfg.ExtendedSchemaConfig.ContextRewrites,
+					schemav2validator.ContextRewrite{From: from, To: to})
+			}
 		}
 
 	}

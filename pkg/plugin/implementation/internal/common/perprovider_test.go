@@ -18,7 +18,8 @@ import (
 // two binding keys can be sent a request for either.
 func bodyFor(provider, capability string) string {
 	return fmt.Sprintf(`{
-	  "context": { "version": "2.0.0", "action": "select", "transactionId": "txn-1" },
+	  "context": { "version": "2.0.0", "action": "select", "transactionId": "txn-1",
+	               "receiverId": "oan.test" },
 	  "message": { "contract": { "commitments": [{
 	    "resources": [{ "resourceAttributes": { "@type": %q } }],
 	    "offer": { "provider": { "id": %q } }

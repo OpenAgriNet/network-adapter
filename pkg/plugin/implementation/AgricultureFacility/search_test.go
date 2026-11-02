@@ -77,7 +77,7 @@ func runSearchTimed(t *testing.T, types []string, cfg *AgricultureFacility.Confi
 		t.Fatalf("could not rebuild the payload: %v", err)
 	}
 
-	return step.Run(&model.StepContext{Context: t.Context(), Body: body})
+	return step.Run(&model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: body})
 }
 
 // A search's calls are sequential unless the deployment raised the limit.

@@ -1,0 +1,98 @@
+# PM-KISAN grievance status -> /GrievanceStatusCheck, matched on case.filedOn.
+
+request: |
+  {
+    "Type":       "Reg_No_Status",
+    "IdentityNo": beckn.message.contract.commitments[0].commitmentAttributes.enrolmentId
+  }
+
+# "False": 502; no record on filedOn: 400. Only allow-listed fields are returned.
+response: |
+  $exists(_status)
+  ? {}
+  : (
+    /* PM-KISAN's yes/no flag, lower-cased: the first of Rsponce, Responce, Status,
+       status that is present. Same rule as pmkisanSaidYes() in Grievance/otp.go;
+       copied verbatim into every PM-KISAN mapping. */
+    $statusText := function($r) {
+      $exists($r.Rsponce) ? $lowercase($string($r.Rsponce))
+      : $exists($r.Responce) ? $lowercase($string($r.Responce))
+      : $exists($r.Status) ? $lowercase($string($r.Status))
+      : $exists($r.status) ? $lowercase($string($r.status))
+    };
+    $refused := $statusText(response) = "false";
+
+    $c  := beckn.message.contract.commitments[0];
+    $ca := $c.commitmentAttributes;
+    $records := $type(response) = "array" ? response
+              : $type(response.details) = "array" ? response.details
+              : $exists(response.details) ? [response.details]
+              : [];
+
+    /* ISO or dd/MM/yyyy (or dd-MM-yyyy) to ISO; time dropped. */
+    $iso := function($d) {
+      (
+        $day := $type($d) = "string" ? $split($trim($d), /[ T]/)[0];
+        $exists($match($day, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)[0]) ? $day
+        : $exists($match($day, /^[0-9]{2}[\/-][0-9]{2}[\/-][0-9]{4}$/)[0])
+          ? $substring($day, 6, 4) & "-" & $substring($day, 3, 2) & "-" & $substring($day, 0, 2)
+      )
+    };
+    /* Non-empty trimmed string, else absent. */
+    $text := function($v) {
+      $type($v) = "string" and $length($trim($v)) > 0 ? $trim($v)
+    };
+    /* CaseStatusCode by lowercased, letters-only phrase. */
+    $codes := {
+      "registered": "Registered", "underreview": "UnderReview",
+      "awaitingapplicant": "AwaitingApplicant", "replied": "Replied",
+      "disposed": "Replied",
+      "resolved": "Resolved", "rejected": "Rejected", "closed": "Closed"
+    };
+
+    $record := $filter($records, function($r) { $iso($r.GrievanceDate) = $ca.case.filedOn })[0];
+    $phrase := $text($record.GrievanceStatus);
+    $remark := $text($record.OfficerReply);
+    $complaint := $text($record.GrievanceDescription);
+
+    $refused
+    ? { "_error": { "status": 502, "code": "NET_DOWNSTREAM_UNAVAILABLE",
+                    "message": "PM-KISAN could not read the grievance" } }
+    : $not($exists($record))
+    ? { "_error": { "status": 400, "code": "BIZ_GENERIC_ERROR",
+                    "message": "No grievance matches this registration number and filing date.",
+                    "path": "$.message.contract.commitments[0].commitmentAttributes.case.filedOn" } }
+    : {
+      "context": $merge([beckn.context, { "action": "on_status", "timestamp": $now() }]),
+      "message": {
+        "contract": {
+          "id": beckn.message.contract.id,
+          "commitments": [{
+            "status": { "descriptor": { "code": "ACTIVE" } },
+            "offer":     $c.offer,
+            "resources": $c.resources,
+            "commitmentAttributes": {
+              "@context":        $ca.`@context`,
+              "@type":           $ca.`@type`,
+              "informationMode": "OnDemand",
+              "scheme":          $ca.scheme,
+              "grievance":       $complaint ? { "description": $complaint },
+              "case": {
+                "status": {
+                  "code": $phrase
+                    ? (
+                      $known := $lookup($codes, $lowercase($replace($phrase, /[^A-Za-z]/, "")));
+                      $exists($known) ? $known : "UnderReview"
+                    )
+                    : ($remark ? "Replied" : "UnderReview")
+                },
+                "filedOn":    $iso($record.GrievanceDate),
+                "reply":     $remark,
+                "repliedOn": $remark ? $iso($record.OfficeReplyDate)
+              }
+            }
+          }]
+        }
+      }
+    }
+  )

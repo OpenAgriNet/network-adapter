@@ -78,7 +78,7 @@ const declaredContext = "https://raw.githubusercontent.com/OpenAgriNet/network-s
 const callerMessageID = "a1b2c3d4-e5f6-4789-abcd-ef1234567890"
 
 const selectRequest = `{
-  "context": { "version": "2.0.0", "action": "select",
+  "context": { "version": "2.0.0", "action": "select", "receiverId": "oan.test",
     "networkId": "oan-dev",
     "transactionId": "f9e8d7c6-b5a4-4321-9876-543210fedcba",
     "messageId": "a1b2c3d4-e5f6-4789-abcd-ef1234567890",
@@ -268,7 +268,7 @@ func runSelect(t *testing.T, request string) (sent map[string]any, answer map[st
 	}
 	defer closeStep()
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(request)}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(request)}
 	runErr = step.Run(stepCtx)
 	if runErr != nil {
 		return sent, nil, runErr
@@ -922,7 +922,7 @@ func runAgainst(t *testing.T, request, providerBody string) map[string]any {
 	}
 	defer closeStep()
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: []byte(request)}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(request)}
 	if err := step.Run(stepCtx); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}
@@ -1405,7 +1405,7 @@ func runSplitSearch(t *testing.T, types []string, byCode map[string]string) (map
 		t.Fatalf("could not rebuild the payload: %v", err)
 	}
 
-	stepCtx := &model.StepContext{Context: t.Context(), Body: body}
+	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: body}
 	if err := step.Run(stepCtx); err != nil {
 		t.Fatalf("Run() returned an unexpected error: %v", err)
 	}

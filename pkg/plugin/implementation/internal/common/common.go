@@ -19,9 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
@@ -34,6 +36,24 @@ import (
 // do it. What a function returns reaches the mapping as _local, so the mapping
 // still decides what the provider is asked for. Most capabilities need none.
 type Prerequisites map[string]func(context.Context, any) (map[string]any, error)
+
+// Envelope seals a provider's request once, before the retry loop, and
+// returns the opener for its answer (ADR-0001).
+type Envelope interface {
+	Seal(ctx context.Context, exchange Exchange, mapped []byte) (sealed []byte, open Opener, err error)
+}
+
+// Opener decrypts the answer to one sealed request.
+type Opener func(ctx context.Context, answer []byte) ([]byte, error)
+
+// Exchange is the call an envelope wraps: action, Beckn payload and call plan,
+// and the registry, for an envelope that calls another participant too.
+type Exchange struct {
+	Action   string
+	Beckn    any
+	Plan     *model.ProviderRecord
+	Registry definition.ProviderRecordLookup
+}
 
 // Config holds configuration parameters for the step.
 type Config struct {
@@ -52,8 +72,20 @@ type Config struct {
 	// A network convention, not a preference: every participant must agree or
 	// requests silently fail to match. Configurable only so a spec change can
 	// be tracked without waiting for a release. Both or neither.
+	//
+	// Either may list several comma-separated paths, paired by position and
+	// tried in order until one finds a binding.
 	ProviderIDAt     string `yaml:"providerIdAt" json:"providerIdAt"`
 	CapabilityCodeAt string `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
+
+	// Envelopes, keyed by binding key, or by participant id for all of that
+	// provider's bindings. Unlisted bindings get plain JSON. Built by the
+	// domain package.
+	Envelopes map[string]Envelope `yaml:"-" json:"-"`
+
+	// HostedElsewhere: binding key or participant id -> action -> binding key
+	// whose host serves it (ADR-0002).
+	HostedElsewhere map[string]map[string]string `yaml:"-" json:"-"`
 
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
@@ -79,15 +111,22 @@ type Config struct {
 // safe for concurrent use.
 type Step struct {
 	config        *Config
-	paths         Paths
+	paths         []Paths
 	prerequisites Prerequisites
 	registry      definition.ProviderRecordLookup
+	networks      admittedLookup
 	mapper        definition.Mapper
 	httpClient    *http.Client
 
 	// One per provider, built at startup so a request only looks one up. Each
 	// holds its own token, so two oauth2 providers cannot share one.
 	auth map[string]*authenticator
+}
+
+// admittedLookup lists the networks this one admitted. Narrowed from the
+// registry, so a plugin needs no dependency only the federated path uses.
+type admittedLookup interface {
+	AdmittedNetworks(ctx context.Context) ([]model.AdmittedNetwork, error)
 }
 
 // New creates the step.
@@ -106,21 +145,27 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		return nil, nil, err
 	}
 
-	paths, err := BindingPaths(cfg)
+	pathList, err := bindingPathList(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	step := &Step{
 		config:        cfg,
-		paths:         paths,
+		paths:         pathList,
 		prerequisites: prerequisites,
 		registry:      registry,
 		mapper:        mapper,
 		// The timeout is per request, from the registry's budget.
-		httpClient: &http.Client{},
+		httpClient: &http.Client{CheckRedirect: util.RefuseOffHostRedirect},
 		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
 	}
+	// Absent is a deployment that federates with nobody. Only a request
+	// addressed elsewhere needs it, and that path refuses rather than guessing.
+	if networks, ok := registry.(admittedLookup); ok {
+		step.networks = networks
+	}
+
 	for provider, profile := range cfg.AuthByProvider {
 		step.auth[provider] = &authenticator{cfg: *profile}
 	}
@@ -135,6 +180,53 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 	return step, closer, nil
 }
 
+// ParseStepConfig reads the flat map a deployment writes into a typed Config.
+// Defaults and validation stay in the domain package's New, which is the one
+// place that knows what the capability needs.
+//
+// EXPORTED for the cmd package that builds a plugin. Every provider step reads
+// the same four settings the same way, and a copy per plugin is one more place
+// for a key name to be misspelled with nothing to catch it.
+func ParseStepConfig(config map[string]string) (*Config, error) {
+	cfg := &Config{
+		BindingKeys:      splitList(config["bindingKeys"]),
+		ProviderIDAt:     config["providerIdAt"],
+		CapabilityCodeAt: config["capabilityCodeAt"],
+	}
+
+	if raw := config["maxResponseBytes"]; raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid maxResponseBytes value '%s': %w", raw, err)
+		}
+		if value <= 0 {
+			return nil, fmt.Errorf("maxResponseBytes must be positive, got %d", value)
+		}
+		cfg.MaxResponseBytes = value
+	}
+
+	// One credential profile per provider.
+	auth, err := ParseProviderAuth(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AuthByProvider = auth
+
+	return cfg, nil
+}
+
+// splitList reads a comma-separated config value, trimming spaces and dropping
+// blanks.
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 // BindingPaths resolves where this step reads a binding key from.
 //
 // Both halves or neither: one overridden and one defaulted would match nothing,
@@ -144,21 +236,45 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 // same way this step does -- AgricultureFacility, whose search.go fans one
 // request out over several capability types. The alternative is reading the
 // same two config fields a second time, which is how the two drift apart.
+//
+// A path list is refused: such a caller reads only one pair.
 func BindingPaths(cfg *Config) (Paths, error) {
-	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
-		return BecknV2, nil
-	}
-	if cfg.ProviderIDAt == "" {
-		return Paths{}, errors.New("capabilityCodeAt is set without providerIdAt")
-	}
-	if cfg.CapabilityCodeAt == "" {
-		return Paths{}, errors.New("providerIdAt is set without capabilityCodeAt")
-	}
-	paths := Paths{ProviderID: cfg.ProviderIDAt, CapabilityCode: cfg.CapabilityCodeAt}
-	if err := paths.Validate(); err != nil {
+	pathList, err := bindingPathList(cfg)
+	if err != nil {
 		return Paths{}, err
 	}
-	return paths, nil
+	if len(pathList) > 1 {
+		return Paths{}, errors.New("providerIdAt and capabilityCodeAt list several paths, which only the step itself reads")
+	}
+	return pathList[0], nil
+}
+
+// bindingPathList returns the path pairs to try, in order: the comma-separated
+// halves paired by position.
+func bindingPathList(cfg *Config) ([]Paths, error) {
+	if cfg.ProviderIDAt == "" && cfg.CapabilityCodeAt == "" {
+		return []Paths{BecknV2}, nil
+	}
+	if cfg.ProviderIDAt == "" {
+		return nil, errors.New("capabilityCodeAt is set without providerIdAt")
+	}
+	if cfg.CapabilityCodeAt == "" {
+		return nil, errors.New("providerIdAt is set without capabilityCodeAt")
+	}
+	providers := strings.Split(cfg.ProviderIDAt, ",")
+	capabilities := strings.Split(cfg.CapabilityCodeAt, ",")
+	if len(providers) != len(capabilities) {
+		return nil, fmt.Errorf("providerIdAt lists %d paths and capabilityCodeAt %d; they pair by position",
+			len(providers), len(capabilities))
+	}
+	pairs := make([]Paths, len(providers))
+	for i := range providers {
+		pairs[i] = Paths{ProviderID: strings.TrimSpace(providers[i]), CapabilityCode: strings.TrimSpace(capabilities[i])}
+		if err := pairs[i].Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return pairs, nil
 }
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.
@@ -205,6 +321,25 @@ func applyDefaults(cfg *Config) error {
 		profile.Provider = provider
 		if err := profile.validate(); err != nil {
 			return err
+		}
+	}
+
+	// An envelope or host for an unserved provider or binding is a typo.
+	for _, key := range cfg.BindingKeys {
+		served[key] = true
+	}
+	for key := range cfg.Envelopes {
+		if !served[key] {
+			return fmt.Errorf(
+				"an envelope is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				key, strings.Join(cfg.BindingKeys, ", "))
+		}
+	}
+	for key := range cfg.HostedElsewhere {
+		if !served[key] {
+			return fmt.Errorf(
+				"an action host is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				key, strings.Join(cfg.BindingKeys, ", "))
 		}
 	}
 	return nil

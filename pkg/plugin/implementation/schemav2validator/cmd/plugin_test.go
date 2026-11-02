@@ -180,9 +180,9 @@ func TestProvider_AuxiliaryConfig(t *testing.T) {
 		{
 			name: "auxiliary collides with primary",
 			config: map[string]string{
-				"type":              "url",
-				"location":          primary.URL,
-				"auxiliaryTypes":    "url",
+				"type":               "url",
+				"location":           primary.URL,
+				"auxiliaryTypes":     "url",
 				"auxiliaryLocations": aux.URL,
 			},
 			// aux and primary serve the same spec — collision on "test" action.
@@ -295,4 +295,37 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestProvider_ContextRewriteConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(testSpec))
+	}))
+	defer server.Close()
+
+	for name, tc := range map[string]struct {
+		rewrite string
+		wantErr bool
+	}{
+		"one pair":            {"https://published.example/|https://raw.example/branch/", false},
+		"two pairs, spaced":   {" https://a.example/ | https://b.example/ , https://c.example/|https://d.example/ ", false},
+		"empty is no rewrite": {"", false},
+		"no separator":        {"https://published.example/", true},
+		"an empty side":       {"https://published.example/|", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := Provider.New(context.Background(), map[string]string{
+				"type":                          "url",
+				"location":                      server.URL,
+				"extendedSchema_enabled":        "true",
+				"extendedSchema_contextRewrite": tc.rewrite,
+			})
+			if (err != nil) != tc.wantErr {
+				t.Errorf("New() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && !contains(err.Error(), "extendedSchema_contextRewrite") {
+				t.Errorf("error %q does not name the setting", err)
+			}
+		})
+	}
 }

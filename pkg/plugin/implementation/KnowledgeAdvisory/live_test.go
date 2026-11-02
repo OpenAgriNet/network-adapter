@@ -120,7 +120,7 @@ func TestLiveEndToEnd(t *testing.T) {
 
 	// Two requests: the second must reuse the token rather than exchange again.
 	for i := 1; i <= 2; i++ {
-		ctx := &model.StepContext{Context: t.Context(), Body: []byte(selectRequest)}
+		ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(selectRequest)}
 		if err := step.Run(ctx); err != nil {
 			t.Fatalf("request %d: %v", i, err)
 		}

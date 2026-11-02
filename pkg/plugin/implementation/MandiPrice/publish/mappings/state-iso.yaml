@@ -1,0 +1,75 @@
+# Agmarknet state code -> ISO 3166-2:IN, as data.
+#
+# Kept in its own file so the catalog mapping does not carry it and so it is
+# maintained in one place. The pipeline runs it over the state list (one record
+# per Agmarknet state) and joins the result onto every market and price record
+# as `isoStateCode`; catalog-ondemand.yaml and catalog-direct.yaml turn that into the resource's state area.
+#
+# Agmarknet's codes are its own, and a default of "IN-" & code is WRONG for 10
+# of its 36 states (BI is IN-BR, GO is IN-GA, JR is IN-JH, NG is IN-NL, OR is
+# IN-OD, PC is IN-PY, TL is IN-TS, UC is IN-UK, and DN and DD have no ISO code
+# of their own). Consumers trust the codeScheme, so a wrong area is worse than
+# none. The table is therefore complete and explicit.
+#
+# Built on 2026-10-06 from Agmarknet's live master state list (option 4, 36
+# states) matched by name to the ISO 3166-2:IN list as the Debian iso-codes
+# project carries it (data/iso_3166-2.json). Notes:
+#   - DN and DD (Dadra and Nagar Haveli, Daman and Diu) are separate in
+#     Agmarknet but one ISO subdivision since 2020, IN-DH.
+#   - KA is not an Agmarknet code (Karnataka is KK); the row is kept for the
+#     test fixtures only.
+# A state Agmarknet adds later is not listed: its record carries no
+# `isoStateCode` and so no ISO area. Re-derive the table the same way if the
+# master list changes.
+#
+# WRAPPED IN [...]: JSONata collapses a one-element sequence to a bare value.
+response: |
+  (
+    $isoByAgmarknet := {
+      "AN": "IN-AN",
+      "AP": "IN-AP",
+      "AR": "IN-AR",
+      "AS": "IN-AS",
+      "BI": "IN-BR",
+      "CG": "IN-CG",
+      "CH": "IN-CH",
+      "DD": "IN-DH",
+      "DL": "IN-DL",
+      "DN": "IN-DH",
+      "GJ": "IN-GJ",
+      "GO": "IN-GA",
+      "HP": "IN-HP",
+      "HR": "IN-HR",
+      "JK": "IN-JK",
+      "JR": "IN-JH",
+      "KA": "IN-KA",
+      "KK": "IN-KA",
+      "KL": "IN-KL",
+      "LD": "IN-LD",
+      "MG": "IN-ML",
+      "MH": "IN-MH",
+      "MN": "IN-MN",
+      "MP": "IN-MP",
+      "MZ": "IN-MZ",
+      "NG": "IN-NL",
+      "OR": "IN-OD",
+      "PB": "IN-PB",
+      "PC": "IN-PY",
+      "RJ": "IN-RJ",
+      "SK": "IN-SK",
+      "TL": "IN-TS",
+      "TN": "IN-TN",
+      "TR": "IN-TR",
+      "UC": "IN-UK",
+      "UP": "IN-UP",
+      "WB": "IN-WB"
+    };
+    [$map(response, function($state) {
+      /* A state the table does not know yields no isoStateCode key at all
+         (an undefined value drops the key), not an empty string. */
+      {
+        "stateCode":    $state.code,
+        "isoStateCode": $lookup($isoByAgmarknet, $state.code)
+      }
+    })]
+  )

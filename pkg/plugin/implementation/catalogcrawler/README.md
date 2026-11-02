@@ -1,8 +1,8 @@
 # Catalog Crawler
 
-`catalogcrawler` discovers Beckn catalog indexes (via a registry plugin's network-scoped query, or a fixed static list), polls them on a schedule, fetches and self-signature-verifies changed catalog entries and files, and pushes the resulting catalogs onward to a Discovery service. Progress and retry state are persisted in Postgres, so a restart resumes rather than re-crawling everything.
+`catalogcrawler` discovers Beckn catalog indexes (via a registry plugin's network-scoped query, or a fixed static list), polls them on a schedule, fetches and self-signature-verifies changed catalog entries and files, and publishes the resulting catalogs through the provider adapter's `/publish`, which signs and forwards them to discovery. The same sink publishes the scheduled publish pipelines' catalogs (see `publishsweep.go`). Progress and retry state are persisted in Postgres, so a restart resumes rather than re-crawling everything.
 
-The core fetch/verify/decode and catalog-resolve/orchestration logic lives in [github.com/beckn/catalog-core](https://github.com/beckn/catalog-core) (`pkg/catalog`, `pkg/catalog/crawler`, `pkg/catalog/crawlmanager`) — this plugin is deployment-specific wiring on top of it: config parsing, the Postgres-backed store, the registry-backed/static discovery sources, the Discovery-push sink, and the ticker-driven scheduler.
+The core fetch/verify/decode and catalog-resolve/orchestration logic lives in [github.com/beckn/catalog-core](https://github.com/beckn/catalog-core) (`pkg/catalog`, `pkg/catalog/crawler`, `pkg/catalog/crawlmanager`) — this plugin is deployment-specific wiring on top of it: config parsing, the Postgres-backed store, the registry-backed/static discovery sources, the `/publish` sink, and the ticker-driven scheduler.
 
 ## Requirements
 
@@ -20,9 +20,9 @@ catalogCrawler:
   config:
     dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
     networks: "example.network.production"
-    discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
-    participantId: "bpp.example.org"
-    bppUri: "https://bpp.example.org"
+    discoveryPushUrl: "http://provider-adapter:9200/publish"
+    participantId: "provider.example.org"
+    receiverId: "discovery.example.org"
     indexIntervalSeconds: "300"
     catalogIntervalSeconds: "30"
     fetchTimeoutSeconds: "30"
@@ -38,14 +38,18 @@ catalogCrawler:
 Supported config keys:
 
 - `dbDsn`: required. Postgres connection string for the crawl queue/cursor store.
-- `discoveryPushUrl`: required. Where crawled catalogs are pushed.
+- `discoveryPushUrl`: required. The provider adapter's `/publish` endpoint (e.g. `http://<host>:<port>/publish`). Every catalog the crawler sends goes here as `catalog/publish` (updateMode MERGE; `/publish` rejects FULL): crawled catalogs, and the scheduled publish pipelines, which are handed its base (the URL without `/publish`). A batch counts as sent only on HTTP 200 **and** an `ACCEPTED` verdict -- a `PARTIAL` indexed with resources missing -- and an unreadable 200 answer is not a success. A value ending in `/push` (the old discovery address) is refused at startup.
+  - **MERGE consequence:** a resource a source stops listing stays indexed until its catalog is deactivated; a crawl no longer removes it.
+  - **Split catalogs:** a catalog over `maxPushBytes` is sent as several MERGE requests under one catalogId. Discovery's handling of a partial resource set per MERGE is not verified; keep catalogs under the cap.
+- `participantId`: who this deployment publishes AS, stamped onto every published catalog -- crawled ones and those the scheduled publish pipelines build -- as `context.senderId`.
+- `receiverId`: optional, who it publishes TO (the discovery service's id), stamped as `context.receiverId`.
+- `bppUri`: retired, and refused at startup. The publish context names a sender and a receiver and has no URI field for either.
 - `networks`: comma-separated networkIds to discover indexes for via the configured `RegistryMetadataLookup` plugin (e.g. `dediregistry`'s `QueryByNetwork`). Drives both discovery and scope filtering — a catalog entry naming a network not in this list is skipped.
 - `staticIndexUrls`: comma-separated, optional fixed index URLs, unioned with any registry-discovered ones.
-- `participantId`, `bppUri`: this deployment's own bppId/bppUri, stamped onto pushed catalogs.
 - `fetchTimeoutSeconds`: optional, default `30`. Whole-attempt HTTP timeout for index/catalog fetches.
 - `maxFetchBytes`: optional, default `10485760` (10 MiB). Cap on a fetched artifact's at-rest size.
 - `maxDecompressedBytes`: optional, default `20971520` (20 MiB). Cap on a decompressed catalog file's size.
-- `maxPushBytes`: optional, default `10485760` (10 MiB). Cap on a single push request to Discovery.
+- `maxPushBytes`: optional, default `10485760` (10 MiB). Cap on a single publish request; a larger catalog is split.
 - `indexIntervalSeconds`: optional, default `300` (5 min). How often index sources are re-discovered and polled.
 - `catalogIntervalSeconds`: optional, default `30`. How often the sync queue is drained.
 - `maxAttempts`: optional, default `0` (unlimited). Transient-failure retries before a queue item is parked; a fresh publish of the same catalog re-arms it regardless.
@@ -53,6 +57,56 @@ Supported config keys:
 - `parkSweepIntervalSeconds`: optional, default `900` (15 min). How often the revive-or-abandon sweep runs — see "Parked and abandoned catalogs" below. Independent of `indexIntervalSeconds`/`catalogIntervalSeconds`.
 - `parkOlderThanSeconds`: optional, default `0`. How long a catalog must have been sitting parked before a sweep acts on it. `0` means no extra grace period — each sweep acts on anything currently parked.
 - `maxParkCount`: optional, default `0`, meaning derived from `parkSweepIntervalSeconds` and a 12-hour total retry budget (e.g. the default 15-minute sweep interval yields 48). How many times a parked catalog is revived before being abandoned instead.
+- `publishPipelines`: optional, default `false`. `"true"` sweeps the registry each tick for bindings serving a `publish` action and runs the pipeline each one names. The action's `mappings` is the pipeline file's **https URL**, fetched every run, exactly like a select mapping. Requires a registry plugin that can list and resolve provider bindings (e.g. `sunbirdRegistry`).
+- `publishEnabled`: optional, default `false`. `"true"` lets a due pipeline run post to `discoveryPushUrl`. Off, runs still build their catalogs (observable and reversible), but nothing reaches the network.
+- `publishTickIntervalSeconds`: retired, and refused at startup. The sweep has no ticker of its own: it checks whether each pipeline is due on every catalog-sync tick (`catalogIntervalSeconds`, default 30 s), in its own goroutine so a long run never holds up the sync. Each pipeline's own `schedule.cron` still decides when it actually runs; the sync interval only bounds how late that can start.
+- `publishCatalogOutputDir`: optional, default empty (a temporary directory each run removes). Keeps built catalogs for inspection, one subdirectory per pipeline.
+- `publish.<pipeline>.<input>`: optional, one line per value. Overrides that pipeline input without a rebuild (`<pipeline>` is the file's `metadata.name`, e.g. `publish.mandi-price.participantId: "agmarknet"`). Precedence: plugin config > environment > the file's default. The value is still held to the input's declared type and enum (`publish.mandi-price.fromDate: "yesterday"` works). A key naming no input is refused at every tick. **Secret inputs (credentials) cannot be set here**; they come from the environment only.
+- `publish.<pipeline>.schedule`: optional. Replaces the file's `schedule.cron` (five-field cron, resolved against the file's `schedule.utcOffset`). A schedule change is then a config edit, not a rebuild.
+- `publishBindingKeys`: retired. The registry now decides which capabilities publish; a config still setting it is refused at startup.
+
+### Hosting a publish pipeline
+
+A pipeline is a hosted file, like a select mapping. The registry record's
+`publish` action names it by **https URL** in `mappings`, and every run
+fetches it. Its own mapping references (`mapping: mappings/catalog.yaml`)
+resolve **relative to that URL**, so the pipeline file and its `mappings/`
+folder are hosted side by side. In this repo they live in
+`pkg/plugin/implementation/<Capability>/publish/`: one `<provider>.yaml`
+per provider (Mandi: `MandiPrice/publish/agmarknet.yaml`), next to
+`mappings/`.
+
+- **Only https** (plain http only on loopback, for local runs). A repo path
+  in the record is refused with a message asking for the URL.
+- **Credentials:** a pipeline file cannot choose where they go.
+  `upstream.baseUrl` must be `${inputs.baseUrl}` (env or plugin config), and
+  every call path must start with `/`.
+- **Availability:** if the host is unreachable at a firing, the run uses the
+  last copy of that URL that loaded and validated (logged as a WARN). A
+  process that never loaded it fails the run, and the next tick retries.
+- **Changes take effect at the next run:** no rebuild and no restart, the
+  same as select mappings. The run log is keyed by the URL, so moving a file
+  to a new URL starts a fresh schedule for it.
+
+**On deploy:** the Mandi record's `publish` `mappings` must name the hosted
+URL of `MandiPrice/publish/agmarknet.yaml`.
+
+**Pin the URL to a commit, not a branch.** A raw URL at a commit SHA
+(`https://raw.githubusercontent.com/<org>/<repo>/<sha>/.../publish/agmarknet.yaml`)
+never changes and never disappears; a branch URL changes on every push and
+404s the moment the file moves. Pinning is also what makes a pipeline change a
+deliberate registry edit rather than a side effect of a merge.
+
+**Moving or renaming a hosted pipeline,** in this order:
+
+1. Pin the record to the CURRENT file at a commit SHA (skip if already pinned).
+   The old URL now keeps serving whatever happens to the branch.
+2. Move the file in the repo and push.
+3. Repoint the record's `publish` `mappings` to the new path at the new commit
+   SHA, for every affected binding.
+
+The run log is keyed by URL, so step 3 starts a fresh schedule: the pipeline
+is due on the next tick.
 
 ## Signature verification
 
@@ -98,7 +152,7 @@ plugins:
     id: catalogcrawler
     config:
       dbDsn: "postgres://user:pass@localhost:5432/catalogcrawler"
-      discoveryPushUrl: "https://discovery.example.org/beckn/catalog/push"
+      discoveryPushUrl: "http://provider-adapter:9200/publish"
       # ... see Config above
 
 modules:
