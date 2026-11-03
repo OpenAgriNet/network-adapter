@@ -20,21 +20,142 @@ type activeProviderLister interface {
 	ActiveProviderIDs(ctx context.Context, participantType, role string) ([]string, error)
 }
 
+// Config is the step's plugin config. BuildConfig fills the defaults, which
+// reproduce the step's original fixed behaviour.
+type Config struct {
+	// PublishEndpoint is the last request path segment that is gated. A body
+	// sent there must carry it, or "catalog/" + it, as context.action.
+	PublishEndpoint string
+	// DiscoverEndpoint is the last request path segment whose filter is
+	// narrowed. A body sent there must carry it as context.action.
+	DiscoverEndpoint string
+	// ProviderField is the dotted path to the provider id inside each catalog.
+	ProviderField string
+	// ParticipantType and ParticipantRole restrict which active participants
+	// count as providers; empty means any.
+	ParticipantType string
+	ParticipantRole string
+}
+
+// The config keys, and the defaults that keep today's behaviour.
+const (
+	keyPublishEndpoint  = "publishEndpoint"
+	keyDiscoverEndpoint = "discoverEndpoint"
+	keyProviderField    = "providerField"
+	keyParticipantType  = "participantType"
+	keyParticipantRole  = "participantRole"
+
+	defaultPublishEndpoint  = "publish"
+	defaultDiscoverEndpoint = "discover"
+	defaultProviderField    = "provider.id"
+)
+
+var (
+	endpointPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	// providerFieldPattern is strict because the field is spliced into a
+	// jsonpath: plain dotted names cannot carry a quote, bracket or operator.
+	providerFieldPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$`)
+	// The registry's Participant schema enums.
+	participantTypes = []string{"node", "upstream"}
+	participantRoles = []string{"consumer", "provider", "network"}
+)
+
+// BuildConfig reads the plugin config. Every key is optional; an unknown key
+// is an error, so a typo cannot silently fall back to a default on a check
+// that gates publishes.
+func BuildConfig(config map[string]string) (Config, error) {
+	cfg := Config{
+		PublishEndpoint:  defaultPublishEndpoint,
+		DiscoverEndpoint: defaultDiscoverEndpoint,
+		ProviderField:    defaultProviderField,
+	}
+	for key, value := range config {
+		switch key {
+		case keyPublishEndpoint:
+			cfg.PublishEndpoint = value
+		case keyDiscoverEndpoint:
+			cfg.DiscoverEndpoint = value
+		case keyProviderField:
+			cfg.ProviderField = value
+		case keyParticipantType:
+			cfg.ParticipantType = value
+		case keyParticipantRole:
+			cfg.ParticipantRole = value
+		default:
+			return Config{}, fmt.Errorf("invalid config: providerstatus has no key %q", key)
+		}
+	}
+	if err := cfg.validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func (c Config) validate() error {
+	for key, value := range map[string]string{
+		keyPublishEndpoint:  c.PublishEndpoint,
+		keyDiscoverEndpoint: c.DiscoverEndpoint,
+	} {
+		if !endpointPattern.MatchString(value) {
+			return fmt.Errorf("invalid config: providerstatus %s %q must match %s", key, value, endpointPattern)
+		}
+	}
+	if c.PublishEndpoint == c.DiscoverEndpoint {
+		return fmt.Errorf("invalid config: providerstatus %s and %s are both %q",
+			keyPublishEndpoint, keyDiscoverEndpoint, c.PublishEndpoint)
+	}
+	if !providerFieldPattern.MatchString(c.ProviderField) {
+		return fmt.Errorf("invalid config: providerstatus %s %q must match %s",
+			keyProviderField, c.ProviderField, providerFieldPattern)
+	}
+	if c.ParticipantType != "" && !slices.Contains(participantTypes, c.ParticipantType) {
+		return fmt.Errorf("invalid config: providerstatus %s %q must be one of %q",
+			keyParticipantType, c.ParticipantType, participantTypes)
+	}
+	if c.ParticipantRole != "" && !slices.Contains(participantRoles, c.ParticipantRole) {
+		return fmt.Errorf("invalid config: providerstatus %s %q must be one of %q",
+			keyParticipantRole, c.ParticipantRole, participantRoles)
+	}
+	return nil
+}
+
 // step keeps providers the registry does not mark active out of publish and
 // discover.
 type step struct {
 	registry activeProviderLister
+	cfg      Config
+	// actions maps each gated path segment to the context.action values a body
+	// sent there may carry.
+	actions map[string][]string
+	// field is cfg.ProviderField split into its keys.
+	field []string
+	// keys are the JSON keys this step reads, anywhere it reads them.
+	keys []string
 }
 
 // New fails when the registry cannot list providers: the gate would otherwise
-// wave every publish through.
-func New(registry definition.RegistryLookup) (definition.Step, error) {
+// wave every publish through. It validates cfg itself, so a Config built
+// without BuildConfig cannot skip the checks.
+func New(registry definition.RegistryLookup, cfg Config) (definition.Step, error) {
 	lister, ok := registry.(activeProviderLister)
 	if !ok {
 		return nil, fmt.Errorf("invalid config: the Registry plugin cannot list active providers, " +
 			"so providerstatus would let every provider through")
 	}
-	return &step{registry: lister}, nil
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	field := strings.Split(cfg.ProviderField, ".")
+	return &step{
+		registry: lister,
+		cfg:      cfg,
+		actions: map[string][]string{
+			cfg.PublishEndpoint:  {"catalog/" + cfg.PublishEndpoint, cfg.PublishEndpoint},
+			cfg.DiscoverEndpoint: {cfg.DiscoverEndpoint},
+		},
+		field: field,
+		keys:  append(slices.Clone(fixedKeys), field...),
+	}, nil
 }
 
 func (s *step) Run(ctx *model.StepContext) error {
@@ -50,15 +171,15 @@ func (s *step) Run(ctx *model.StepContext) error {
 		return fmt.Errorf("providerstatus: the step has no request, so its path cannot be read")
 	}
 	endpoint := strings.ToLower(path.Base(ctx.Request.URL.Path))
-	allowed, gated := actionsForEndpoint[endpoint]
+	allowed, gated := s.actions[endpoint]
 	if !gated {
 		return nil
 	}
 
-	if err := refuseLookalikeKeys(root, "the request body"); err != nil {
+	if err := refuseLookalikeKeys(root, s.keys, "the request body"); err != nil {
 		return model.NewBadReqErr("", err)
 	}
-	if err := refuseLookalikeKeys(becknContext, "context"); err != nil {
+	if err := refuseLookalikeKeys(becknContext, s.keys, "context"); err != nil {
 		return model.NewBadReqErr("", err)
 	}
 	action, _ := becknContext["action"].(string)
@@ -67,28 +188,19 @@ func (s *step) Run(ctx *model.StepContext) error {
 			"context.action %q does not match the request path %q: want one of %q",
 			action, ctx.Request.URL.Path, allowed))
 	}
-	if endpoint == "publish" {
+	if endpoint == s.cfg.PublishEndpoint {
 		return s.checkPublish(ctx)
 	}
 	return s.narrowDiscover(ctx)
 }
 
-// actionsForEndpoint maps the last segment of the request path to the
-// context.action values a body sent there may carry. The segment is the
-// router's endpoint under either module base path (`/` or
-// `/_internal/network/`). Paths not listed pass through untouched.
-var actionsForEndpoint = map[string][]string{
-	"publish":  {"catalog/publish", "publish"},
-	"discover": {"discover"},
-}
-
 func (s *step) checkPublish(ctx *model.StepContext) error {
-	named, err := providerIDsOf(ctx.Body)
+	named, err := providerIDsOf(ctx.Body, s.field, s.keys)
 	if err != nil {
 		return model.NewBadReqErr("", err)
 	}
 
-	active, err := s.registry.ActiveProviderIDs(ctx, "", "")
+	active, err := s.registry.ActiveProviderIDs(ctx, s.cfg.ParticipantType, s.cfg.ParticipantRole)
 	if err != nil {
 		// Not a verdict on the provider: the registry could not be asked, and an
 		// unanswered question must never read as "active".
@@ -107,11 +219,11 @@ func (s *step) checkPublish(ctx *model.StepContext) error {
 }
 
 func (s *step) narrowDiscover(ctx *model.StepContext) error {
-	active, err := s.registry.ActiveProviderIDs(ctx, "", "")
+	active, err := s.registry.ActiveProviderIDs(ctx, s.cfg.ParticipantType, s.cfg.ParticipantRole)
 	if err != nil {
 		return fmt.Errorf("could not check provider status: %w", err)
 	}
-	narrowed, err := narrowFilter(ctx.Body, active)
+	narrowed, err := narrowFilter(s.field, ctx.Body, active)
 	if err != nil {
 		return err
 	}
@@ -126,11 +238,14 @@ var providerIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{2,252}$`)
 // catalogsRoot is how the discovery service requires every filter to begin.
 var catalogsRoot = regexp.MustCompile(`^\$\.catalogs\[\*\]\s*\?\s*\(`)
 
-// narrowFilter restricts a discover to the given provider ids by AND-ing an
-// allowlist onto message.intent.filters. It refuses what it cannot place
-// safely rather than guessing a rewrite.
-func narrowFilter(body []byte, ids []string) ([]byte, error) {
-	allow := `@.provider.id == ""` // provider ids are never empty: matches nothing
+// narrowFilter restricts a discover to the given provider ids, read at field
+// inside each catalog, by AND-ing an allowlist onto message.intent.filters. It
+// refuses what it cannot place safely rather than guessing a rewrite.
+func narrowFilter(field []string, body []byte, ids []string) ([]byte, error) {
+	// Safe to splice: New only accepts plain dotted names.
+	idPath := "@." + strings.Join(field, ".")
+	keys := append(slices.Clone(fixedKeys), field...)
+	allow := idPath + ` == ""` // provider ids are never empty: matches nothing
 	if len(ids) > 0 {
 		tests := make([]string, len(ids))
 		for i, id := range ids {
@@ -139,7 +254,7 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 				return nil, fmt.Errorf(
 					"provider id %q from the registry is not a valid id, so the discover cannot be narrowed", id)
 			}
-			tests[i] = `@.provider.id == "` + id + `"`
+			tests[i] = idPath + ` == "` + id + `"`
 		}
 		allow = strings.Join(tests, " || ")
 	}
@@ -151,11 +266,11 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 		return nil, model.NewBadReqErr("", fmt.Errorf("could not read the discover body: %w", err))
 	}
 
-	message, err := objectAt(doc, "message", "message")
+	message, err := objectAt(doc, "message", "message", keys)
 	if err != nil {
 		return nil, err
 	}
-	intent, err := objectAt(message, "intent", "message.intent")
+	intent, err := objectAt(message, "intent", "message.intent", keys)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +283,7 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 		if !ok {
 			return nil, model.NewBadReqErr("", fmt.Errorf("message.intent.filters must be an object"))
 		}
-		if err := refuseLookalikeKeys(filters, "message.intent.filters"); err != nil {
+		if err := refuseLookalikeKeys(filters, keys, "message.intent.filters"); err != nil {
 			return nil, model.NewBadReqErr("", err)
 		}
 		// Discovery reads an empty type as jsonpath and ignores case and padding.
@@ -202,8 +317,8 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 }
 
 // objectAt returns parent[key] as an object, creating it when absent. where
-// names it in errors. Its keys are checked by refuseLookalikeKeys.
-func objectAt(parent map[string]any, key, where string) (map[string]any, error) {
+// names it in errors. Its keys are checked by refuseLookalikeKeys against read.
+func objectAt(parent map[string]any, key, where string, read []string) (map[string]any, error) {
 	raw, present := parent[key]
 	if !present || raw == nil {
 		child := map[string]any{}
@@ -214,7 +329,7 @@ func objectAt(parent map[string]any, key, where string) (map[string]any, error) 
 	if !ok {
 		return nil, model.NewBadReqErr("", fmt.Errorf("%s must be an object", where))
 	}
-	if err := refuseLookalikeKeys(child, where); err != nil {
+	if err := refuseLookalikeKeys(child, read, where); err != nil {
 		return nil, model.NewBadReqErr("", err)
 	}
 	return child, nil
@@ -266,20 +381,21 @@ func predicateOf(expr string) (string, error) {
 	return "", fmt.Errorf("message.intent.filters.expression has unbalanced parentheses or an unterminated string")
 }
 
-// readKeys are the JSON keys this step reads, anywhere it reads them.
-var readKeys = []string{
-	"message", "intent", "filters", "catalogs", "provider", "id",
+// fixedKeys are the JSON keys this step reads whatever its config. The keys of
+// the configured provider field are added to them.
+var fixedKeys = []string{
+	"message", "intent", "filters", "catalogs",
 	"type", "expression", "context", "action",
 }
 
 // refuseLookalikeKeys refuses an object holding a key that differs from one
-// this step reads only by case or Unicode folding ("ID", "Filters",
+// in read (the keys this step reads) only by case or Unicode folding ("ID", "Filters",
 // "catalog\u017f"). Go's struct decoding would match such a key, other readers
 // would not, so the step and the service behind it could read different
 // fields. A key spelled exactly is fine; so is any key nobody here reads.
-func refuseLookalikeKeys(obj map[string]any, where string) error {
+func refuseLookalikeKeys(obj map[string]any, read []string, where string) error {
 	for key := range obj {
-		for _, name := range readKeys {
+		for _, name := range read {
 			if key != name && strings.EqualFold(key, name) {
 				return fmt.Errorf("%s holds the key %q, which differs from %q only by case or Unicode folding: "+
 					"spell it %q or remove it", where, key, name, name)
@@ -335,13 +451,14 @@ func refuseDuplicateKeys(body []byte) error {
 	return walk()
 }
 
-// providerIDsOf returns the provider of every catalog in a publish. A catalog
-// that names none is an error rather than a skip: an unnamed provider cannot be
-// checked, so it must not slip through.
+// providerIDsOf returns the provider id, read at field, of every catalog in a
+// publish. A catalog that names none is an error rather than a skip: an
+// unnamed provider cannot be checked, so it must not slip through.
 //
 // Keys are read exactly, never through a struct: a struct would also match
-// "ID" or a folded "catalogs", and the body is forwarded as is.
-func providerIDsOf(body []byte) ([]string, error) {
+// "ID" or a folded "catalogs", and the body is forwarded as is. Every object
+// along field is checked against read.
+func providerIDsOf(body []byte, field, read []string) ([]string, error) {
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("could not read the publish body: %w", err)
@@ -353,29 +470,36 @@ func providerIDsOf(body []byte) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("the publish carries no message object: set message.catalogs")
 	}
-	if err := refuseLookalikeKeys(message, "message"); err != nil {
+	if err := refuseLookalikeKeys(message, read, "message"); err != nil {
 		return nil, err
 	}
 	catalogs, _ := message["catalogs"].([]any)
 	if len(catalogs) == 0 {
 		return nil, fmt.Errorf("the publish carries no catalogs: set message.catalogs")
 	}
+	dotted := strings.Join(field, ".")
 	ids := make([]string, 0, len(catalogs))
 	for i, raw := range catalogs {
-		catalog, ok := raw.(map[string]any)
+		obj, ok := raw.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("message.catalogs[%d] must be an object", i)
 		}
-		if err := refuseLookalikeKeys(catalog, fmt.Sprintf("message.catalogs[%d]", i)); err != nil {
+		where := fmt.Sprintf("message.catalogs[%d]", i)
+		if err := refuseLookalikeKeys(obj, read, where); err != nil {
 			return nil, err
 		}
-		provider, _ := catalog["provider"].(map[string]any)
-		if err := refuseLookalikeKeys(provider, fmt.Sprintf("message.catalogs[%d].provider", i)); err != nil {
-			return nil, err
+		// Walk to the object holding the id. A missing or non-object step
+		// leaves obj nil, which yields no id below.
+		for _, key := range field[:len(field)-1] {
+			obj, _ = obj[key].(map[string]any)
+			where += "." + key
+			if err := refuseLookalikeKeys(obj, read, where); err != nil {
+				return nil, err
+			}
 		}
-		id, _ := provider["id"].(string)
+		id, _ := obj[field[len(field)-1]].(string)
 		if id == "" {
-			return nil, fmt.Errorf("catalog %d names no provider: set message.catalogs[%d].provider.id", i, i)
+			return nil, fmt.Errorf("catalog %d names no provider: set message.catalogs[%d].%s", i, i, dotted)
 		}
 		ids = append(ids, id)
 	}

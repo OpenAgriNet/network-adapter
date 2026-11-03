@@ -10,7 +10,11 @@ import (
 type provider struct{}
 
 func (p provider) New(ctx context.Context, registry definition.RegistryLookup, config map[string]string) (definition.Step, func() error, error) {
-	step, err := providerstatus.New(registry)
+	cfg, err := providerstatus.BuildConfig(config)
+	if err != nil {
+		return nil, nil, err
+	}
+	step, err := providerstatus.New(registry, cfg)
 	return step, nil, err
 }
 

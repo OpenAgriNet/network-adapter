@@ -44,7 +44,17 @@ type listingRegistry struct {
 
 func newStep(t *testing.T, l *fakeLister) definition.Step {
 	t.Helper()
-	s, err := New(listingRegistry{fakeLister: l})
+	return newStepWith(t, l, nil)
+}
+
+// newStepWith builds the step from plugin config, as cmd/plugin.go does.
+func newStepWith(t *testing.T, l *fakeLister, config map[string]string) definition.Step {
+	t.Helper()
+	cfg, err := BuildConfig(config)
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	s, err := New(listingRegistry{fakeLister: l}, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -79,7 +89,11 @@ func run(s definition.Step, path string, body []byte) error {
 }
 
 func TestNewRefusesARegistryThatCannotListProviders(t *testing.T) {
-	if _, err := New(bareRegistry{}); err == nil {
+	cfg, err := BuildConfig(nil)
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	if _, err := New(bareRegistry{}, cfg); err == nil {
 		t.Fatal("expected an error for a registry that cannot list providers")
 	}
 }
@@ -227,7 +241,7 @@ func TestNarrowFilterRewrites(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := narrowFilter(discoverBody(tc.filters), tc.ids)
+			out, err := narrowFilter(defaultField, discoverBody(tc.filters), tc.ids)
 			if err != nil {
 				t.Fatalf("narrowFilter: %v", err)
 			}
@@ -257,7 +271,7 @@ func TestNarrowFilterRefuses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := narrowFilter(tc.body, tc.ids)
+			out, err := narrowFilter(defaultField, tc.body, tc.ids)
 			var coded *model.CodedErr
 			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
 				t.Fatalf("want a bad-request error, got %v (out %s)", err, out)
@@ -268,7 +282,7 @@ func TestNarrowFilterRefuses(t *testing.T) {
 
 func TestNarrowFilterKeepsOtherNumbersUnchanged(t *testing.T) {
 	body := []byte(`{"context":{"action":"discover"},"message":{"big":12345678901234567890,"f":1.50,"intent":{}}}`)
-	out, err := narrowFilter(body, []string{"prov-a"})
+	out, err := narrowFilter(defaultField, body, []string{"prov-a"})
 	if err != nil {
 		t.Fatalf("narrowFilter: %v", err)
 	}
@@ -316,7 +330,7 @@ func TestNarrowFilterAcceptsTheJSONPathTypeLikeDiscoveryDoes(t *testing.T) {
 		"padded":      fmt.Sprintf(`{"type":" jsonpath ","expression":%q}`, expr),
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(discoverBody(filters), []string{"prov-a"})
+			out, err := narrowFilter(defaultField, discoverBody(filters), []string{"prov-a"})
 			if err != nil {
 				t.Fatalf("narrowFilter: %v", err)
 			}
@@ -335,7 +349,7 @@ func TestNarrowFilterRefusesCommentsAndSingleQuotesOutsideStrings(t *testing.T) 
 		"comment hiding quote": `$.catalogs[*] ? (@.a == 1 /* " */ || @.b == 2 )`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := narrowFilter(discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
+			_, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
 			var coded *model.CodedErr
 			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
 				t.Fatalf("want a bad-request error, got %v", err)
@@ -350,7 +364,7 @@ func TestNarrowFilterAcceptsCommentsAndSingleQuotesInsideStrings(t *testing.T) {
 		"comment":      `@.note == "a /* b"`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
+			out, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
 			if err != nil {
 				t.Fatalf("narrowFilter: %v", err)
 			}
@@ -471,7 +485,7 @@ func TestNarrowFilterRefusesABackslashOutsideStrings(t *testing.T) {
 		"lone backslash":         `$.catalogs[*] ? (@.a\x == 1)`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
+			out, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
 			var coded *model.CodedErr
 			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
 				t.Fatalf("want a bad-request error, got %v (out %s)", err, out)
@@ -482,7 +496,7 @@ func TestNarrowFilterRefusesABackslashOutsideStrings(t *testing.T) {
 
 func TestNarrowFilterAcceptsABackslashInsideAString(t *testing.T) {
 	pred := `@.name == "a\"b"`
-	out, err := narrowFilter(discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
+	out, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
 	if err != nil {
 		t.Fatalf("narrowFilter: %v", err)
 	}
@@ -593,7 +607,7 @@ func TestNarrowFilterFailsPlainlyOnABadRegistryID(t *testing.T) {
 		"one bad of two":  {"prov-a", "x"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(discoverBody(""), ids)
+			out, err := narrowFilter(defaultField, discoverBody(""), ids)
 			if err == nil {
 				t.Fatalf("expected an error, got %s", out)
 			}
@@ -602,5 +616,309 @@ func TestNarrowFilterFailsPlainlyOnABadRegistryID(t *testing.T) {
 				t.Fatalf("a bad registry id is not a bad request, got %v", err)
 			}
 		})
+	}
+}
+
+// defaultField is the provider id path the step reads when not configured.
+var defaultField = []string{"provider", "id"}
+
+func TestBuildConfigDefaultsReproduceTheFixedBehaviour(t *testing.T) {
+	want := Config{
+		PublishEndpoint:  "publish",
+		DiscoverEndpoint: "discover",
+		ProviderField:    "provider.id",
+	}
+	for name, config := range map[string]map[string]string{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			got, err := BuildConfig(config)
+			if err != nil {
+				t.Fatalf("BuildConfig: %v", err)
+			}
+			if got != want {
+				t.Fatalf("config = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestBuildConfigReadsEveryKey(t *testing.T) {
+	got, err := BuildConfig(map[string]string{
+		"publishEndpoint":  "submit",
+		"discoverEndpoint": "search",
+		"providerField":    "bpp.provider.id",
+		"participantType":  "node",
+		"participantRole":  "provider",
+	})
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	want := Config{"submit", "search", "bpp.provider.id", "node", "provider"}
+	if got != want {
+		t.Fatalf("config = %+v, want %+v", got, want)
+	}
+}
+
+// A bad value fails the plugin at startup. A typo must never fall back to a
+// default on a security check, and providerField is spliced into a jsonpath.
+func TestBuildConfigRefuses(t *testing.T) {
+	for name, config := range map[string]map[string]string{
+		"unknown key":                {"providerfield": "provider.id"},
+		"typo of a key":              {"participantRoles": "provider"},
+		"empty publish endpoint":     {"publishEndpoint": ""},
+		"upper-case publish":         {"publishEndpoint": "Publish"},
+		"publish with a slash":       {"publishEndpoint": "catalog/publish"},
+		"publish starting digit":     {"publishEndpoint": "1publish"},
+		"discover with a space":      {"discoverEndpoint": "dis cover"},
+		"discover with a dash":       {"discoverEndpoint": "dis-cover"},
+		"same endpoints":             {"publishEndpoint": "x", "discoverEndpoint": "x"},
+		"publish equals the default": {"publishEndpoint": "discover"},
+		"empty provider field":       {"providerField": ""},
+		"provider field quote":       {"providerField": `provider.id" || true || "`},
+		"provider field space":       {"providerField": "provider id"},
+		"provider field leading dot": {"providerField": ".provider.id"},
+		"provider field double dot":  {"providerField": "provider..id"},
+		"provider field trailing":    {"providerField": "provider.id."},
+		"provider field digit first": {"providerField": "provider.1id"},
+		"provider field wildcard":    {"providerField": "provider[*].id"},
+		"provider field dollar":      {"providerField": "$.provider.id"},
+		"provider field non-ascii":   {"providerField": "provider.\u0131d"},
+		"unknown participant type":   {"participantType": "bpp"},
+		"upper-case type":            {"participantType": "Node"},
+		"unknown participant role":   {"participantRole": "admin"},
+		"padded role":                {"participantRole": " provider"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if cfg, err := BuildConfig(config); err == nil {
+				t.Fatalf("BuildConfig(%v) = %+v, want an error", config, cfg)
+			}
+		})
+	}
+}
+
+func TestBuildConfigAcceptsEveryAllowedTypeAndRole(t *testing.T) {
+	for _, typ := range []string{"", "node", "upstream"} {
+		for _, role := range []string{"", "consumer", "provider", "network"} {
+			if _, err := BuildConfig(map[string]string{"participantType": typ, "participantRole": role}); err != nil {
+				t.Errorf("BuildConfig(type %q, role %q): %v", typ, role, err)
+			}
+		}
+	}
+}
+
+// New checks the config itself, so a Config built by hand cannot skip the
+// validation that keeps providerField out of the jsonpath grammar.
+func TestNewRefusesAnInvalidConfig(t *testing.T) {
+	cfg, err := BuildConfig(nil)
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"zero config":    func(c *Config) { *c = Config{} },
+		"bad field":      func(c *Config) { c.ProviderField = `id" || true` },
+		"bad endpoint":   func(c *Config) { c.PublishEndpoint = "a/b" },
+		"same endpoints": func(c *Config) { c.DiscoverEndpoint = c.PublishEndpoint },
+		"bad role":       func(c *Config) { c.ParticipantRole = "admin" },
+		"bad type":       func(c *Config) { c.ParticipantType = "bpp" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := cfg
+			mutate(&bad)
+			if _, err := New(listingRegistry{fakeLister: &fakeLister{}}, bad); err == nil {
+				t.Fatalf("New(%+v) succeeded, want an error", bad)
+			}
+		})
+	}
+}
+
+func TestConfiguredPublishEndpointIsGated(t *testing.T) {
+	config := map[string]string{"publishEndpoint": "submit"}
+	for _, path := range []string{"/submit", "/_internal/network/submit"} {
+		for _, action := range []string{"submit", "catalog/submit", " Catalog/Submit "} {
+			t.Run(path+" "+action, func(t *testing.T) {
+				l := &fakeLister{ids: []string{"p1"}}
+				s := newStepWith(t, l, config)
+				if err := run(s, path, publishBody(action, "p1")); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				err := run(s, path, publishBody(action, "ghost"))
+				wantBadRequest(t, err)
+				if !strings.Contains(err.Error(), "ghost") {
+					t.Fatalf("error %q does not name the provider", err)
+				}
+			})
+		}
+	}
+}
+
+func TestConfiguredPublishEndpointRefusesTheOldActions(t *testing.T) {
+	for _, action := range []string{"publish", "catalog/publish", "", "<absent>"} {
+		t.Run(action, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"p1"}}
+			s := newStepWith(t, l, map[string]string{"publishEndpoint": "submit"})
+			wantBadRequest(t, run(s, "/submit", bodyWithAction(action, `{"catalogs":[{"provider":{"id":"p1"}}]}`)))
+		})
+	}
+}
+
+func TestConfiguredEndpointsLeaveTheDefaultPathsUntouched(t *testing.T) {
+	config := map[string]string{"publishEndpoint": "submit", "discoverEndpoint": "search"}
+	for path, action := range map[string]string{"/publish": "publish", "/discover": "discover"} {
+		t.Run(path, func(t *testing.T) {
+			l := &fakeLister{err: errors.New("registry down")}
+			body := bodyWithAction(action, `{"catalogs":[{"provider":{"id":"ghost"}}]}`)
+			ctx := stepCtx(path, body)
+			if err := newStepWith(t, l, config).Run(ctx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if l.calls != 0 || string(ctx.Body) != string(body) {
+				t.Fatalf("lister calls = %d, body %s; want untouched", l.calls, ctx.Body)
+			}
+		})
+	}
+}
+
+func TestConfiguredDiscoverEndpointIsNarrowed(t *testing.T) {
+	config := map[string]string{"discoverEndpoint": "search"}
+	for _, path := range []string{"/search", "/_internal/network/search"} {
+		t.Run(path, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"prov-a"}}
+			ctx := stepCtx(path, bodyWithAction("Search", `{"intent":{}}`))
+			if err := newStepWith(t, l, config).Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			want := `$.catalogs[*] ? (@.provider.id == "prov-a")`
+			if got := filtersOf(t, ctx.Body)["expression"]; got != want {
+				t.Fatalf("expression = %v, want %q", got, want)
+			}
+		})
+	}
+	for _, action := range []string{"discover", "catalog/search", ""} {
+		t.Run("refuses "+action, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"prov-a"}}
+			wantBadRequest(t, run(newStepWith(t, l, config), "/search", bodyWithAction(action, `{"intent":{}}`)))
+		})
+	}
+}
+
+// bppPublish is a publish whose one catalog carries the given JSON under the
+// catalog itself.
+func bppPublish(catalog string) []byte {
+	return []byte(`{"context":{"action":"publish"},"message":{"catalogs":[` + catalog + `]}}`)
+}
+
+func TestConfiguredProviderFieldOnPublish(t *testing.T) {
+	config := map[string]string{"providerField": "bpp.provider.id"}
+	l := &fakeLister{ids: []string{"p1"}}
+	s := newStepWith(t, l, config)
+	if err := run(s, "/publish", bppPublish(`{"bpp":{"provider":{"id":"p1"}}}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	err := run(s, "/publish", bppPublish(`{"bpp":{"provider":{"id":"ghost"}},"provider":{"id":"p1"}}`))
+	wantBadRequest(t, err)
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Fatalf("error %q does not name the provider", err)
+	}
+	for name, catalog := range map[string]string{
+		"only the old field":  `{"provider":{"id":"p1"}}`,
+		"bpp not an object":   `{"bpp":"p1"}`,
+		"provider not object": `{"bpp":{"provider":"p1"}}`,
+		"id not a string":     `{"bpp":{"provider":{"id":5}}}`,
+		"empty id":            `{"bpp":{"provider":{"id":""}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wantBadRequest(t, run(s, "/publish", bppPublish(catalog)))
+		})
+	}
+}
+
+// The exact-key rule holds on every object along a configured path, not only
+// on the names the step used to hard-code.
+func TestConfiguredProviderFieldRefusesLookalikeKeys(t *testing.T) {
+	config := map[string]string{"providerField": "bpp.provider.id"}
+	for name, catalog := range map[string]string{
+		"capital Bpp beside":      `{"bpp":{"provider":{"id":"p1"}},"Bpp":{"provider":{"id":"evil"}}}`,
+		"only a capital BPP":      `{"BPP":{"provider":{"id":"p1"}}}`,
+		"capital Provider inside": `{"bpp":{"provider":{"id":"p1"},"Provider":{"id":"evil"}}}`,
+		"upper-case PROVIDER":     `{"bpp":{"provider":{"id":"p1"},"PROVIDER":{"id":"evil"}}}`,
+		"capital ID innermost":    `{"bpp":{"provider":{"id":"p1","ID":"evil"}}}`,
+		"duplicate id innermost":  `{"bpp":{"provider":{"id":"evil","id":"p1"}}}`,
+		"duplicate bpp":           `{"bpp":{"provider":{"id":"evil"}},"bpp":{"provider":{"id":"p1"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"p1"}}
+			wantBadRequest(t, run(newStepWith(t, l, config), "/publish", bppPublish(catalog)))
+		})
+	}
+}
+
+// longS folds to "s", so a configured segment holding an "s" has a Unicode
+// lookalike, refused like the fixed keys' ones.
+func TestConfiguredProviderFieldRefusesUnicodeFoldedKeys(t *testing.T) {
+	config := map[string]string{"providerField": "seller.ids"}
+	for name, catalog := range map[string]string{
+		"folded outer": `{"seller":{"ids":"p1"},"` + longS + `eller":{"ids":"evil"}}`,
+		"folded inner": `{"seller":{"ids":"p1","id` + longS + `":"evil"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"p1"}}
+			wantBadRequest(t, run(newStepWith(t, l, config), "/publish", bppPublish(catalog)))
+		})
+	}
+	l := &fakeLister{ids: []string{"p1"}}
+	if err := run(newStepWith(t, l, config), "/publish", bppPublish(`{"seller":{"ids":"p1"}}`)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConfiguredProviderFieldOnDiscover(t *testing.T) {
+	config := map[string]string{"providerField": "bpp.provider.id"}
+	for _, tc := range []struct {
+		name, filters string
+		ids           []string
+		want          string
+	}{
+		{"no filter", "", []string{"prov-a", "prov-b"},
+			`$.catalogs[*] ? (@.bpp.provider.id == "prov-a" || @.bpp.provider.id == "prov-b")`},
+		{"with a filter", jsonpathFilter(`$.catalogs[*] ? (@.a == 1)`), []string{"prov-a"},
+			`$.catalogs[*] ? ( (@.a == 1) && (@.bpp.provider.id == "prov-a") )`},
+		{"no ids", "", nil, `$.catalogs[*] ? (@.bpp.provider.id == "")`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := stepCtx("/discover", discoverBody(tc.filters))
+			if err := newStepWith(t, &fakeLister{ids: tc.ids}, config).Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := filtersOf(t, ctx.Body)["expression"]; got != tc.want {
+				t.Fatalf("expression = %v, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfiguredTypeAndRoleReachTheLister(t *testing.T) {
+	for _, tc := range []struct {
+		config    map[string]string
+		typ, role string
+	}{
+		{nil, "", ""},
+		{map[string]string{"participantType": "node", "participantRole": "provider"}, "node", "provider"},
+		{map[string]string{"participantType": "upstream"}, "upstream", ""},
+		{map[string]string{"participantRole": "network"}, "", "network"},
+	} {
+		for path, body := range map[string][]byte{
+			"/publish":  publishBody("publish", "prov-1"),
+			"/discover": discoverBody(""),
+		} {
+			t.Run(fmt.Sprint(tc.config, path), func(t *testing.T) {
+				l := &fakeLister{ids: []string{"prov-1"}}
+				if err := run(newStepWith(t, l, tc.config), path, body); err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+				if l.calls != 1 || l.participantType != tc.typ || l.role != tc.role {
+					t.Fatalf("calls = %d, type %q, role %q; want 1, %q, %q",
+						l.calls, l.participantType, l.role, tc.typ, tc.role)
+				}
+			})
+		}
 	}
 }
