@@ -151,19 +151,13 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 		return nil, model.NewBadReqErr("", fmt.Errorf("could not read the discover body: %w", err))
 	}
 
-	message, err := objectAt(doc, "message")
+	message, err := objectAt(doc, "message", "message")
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseLookalikeKeys(message, "message"); err != nil {
-		return nil, model.NewBadReqErr("", err)
-	}
-	intent, err := objectAt(message, "intent")
+	intent, err := objectAt(message, "intent", "message.intent")
 	if err != nil {
 		return nil, err
-	}
-	if err := refuseLookalikeKeys(intent, "message.intent"); err != nil {
-		return nil, model.NewBadReqErr("", err)
 	}
 
 	var expression string
@@ -207,8 +201,9 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 	return bytes.TrimRight(out.Bytes(), "\n"), nil
 }
 
-// objectAt returns parent[key] as an object, creating it when absent.
-func objectAt(parent map[string]any, key string) (map[string]any, error) {
+// objectAt returns parent[key] as an object, creating it when absent. where
+// names it in errors. Its keys are checked by refuseLookalikeKeys.
+func objectAt(parent map[string]any, key, where string) (map[string]any, error) {
 	raw, present := parent[key]
 	if !present || raw == nil {
 		child := map[string]any{}
@@ -217,7 +212,10 @@ func objectAt(parent map[string]any, key string) (map[string]any, error) {
 	}
 	child, ok := raw.(map[string]any)
 	if !ok {
-		return nil, model.NewBadReqErr("", fmt.Errorf("%s must be an object", key))
+		return nil, model.NewBadReqErr("", fmt.Errorf("%s must be an object", where))
+	}
+	if err := refuseLookalikeKeys(child, where); err != nil {
+		return nil, model.NewBadReqErr("", err)
 	}
 	return child, nil
 }
