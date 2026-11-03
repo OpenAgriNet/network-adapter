@@ -1,10 +1,13 @@
 package providerstatus
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -86,10 +89,131 @@ func (s *step) narrowDiscover(ctx *model.StepContext) error {
 	return nil
 }
 
-// narrowFilter restricts a discover to the given provider ids. Left for the
-// discover change; the body passes through unchanged until then.
+// providerIDPattern is the registry's own provider id pattern. Ids that match
+// it hold no quote or backslash, so they go into a path expression unescaped.
+var providerIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{2,252}$`)
+
+// catalogsRoot is how the discovery service requires every filter to begin.
+var catalogsRoot = regexp.MustCompile(`^\$\.catalogs\[\*\]\s*\?\s*\(`)
+
+// narrowFilter restricts a discover to the given provider ids by AND-ing an
+// allowlist onto message.intent.filters. It refuses what it cannot place
+// safely rather than guessing a rewrite.
 func narrowFilter(body []byte, ids []string) ([]byte, error) {
-	return body, nil
+	allow := `@.provider.id == ""` // provider ids are never empty: matches nothing
+	if len(ids) > 0 {
+		tests := make([]string, len(ids))
+		for i, id := range ids {
+			if !providerIDPattern.MatchString(id) {
+				return nil, model.NewBadReqErr("", fmt.Errorf(
+					"provider id %q from the registry is not a valid id, so the discover cannot be narrowed", id))
+			}
+			tests[i] = `@.provider.id == "` + id + `"`
+		}
+		allow = strings.Join(tests, " || ")
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return nil, model.NewBadReqErr("", fmt.Errorf("could not read the discover body: %w", err))
+	}
+
+	message, err := objectAt(doc, "message")
+	if err != nil {
+		return nil, err
+	}
+	intent, err := objectAt(message, "intent")
+	if err != nil {
+		return nil, err
+	}
+
+	var expression string
+	if raw, present := intent["filters"]; !present || raw == nil {
+		expression = "$.catalogs[*] ? (" + allow + ")"
+	} else {
+		filters, ok := raw.(map[string]any)
+		if !ok {
+			return nil, model.NewBadReqErr("", fmt.Errorf("message.intent.filters must be an object"))
+		}
+		if filters["type"] != "jsonpath" {
+			return nil, model.NewBadReqErr("", fmt.Errorf(
+				"message.intent.filters.type must be %q to be narrowed to active providers", "jsonpath"))
+		}
+		original, ok := filters["expression"].(string)
+		if !ok {
+			return nil, model.NewBadReqErr("", fmt.Errorf("message.intent.filters.expression must be a string"))
+		}
+		predicate, err := predicateOf(original)
+		if err != nil {
+			return nil, model.NewBadReqErr("", err)
+		}
+		expression = "$.catalogs[*] ? ( (" + predicate + ") && (" + allow + ") )"
+	}
+	intent["filters"] = map[string]any{"type": "jsonpath", "expression": expression}
+
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc); err != nil {
+		return nil, fmt.Errorf("could not write the discover body: %w", err)
+	}
+	return bytes.TrimRight(out.Bytes(), "\n"), nil
+}
+
+// objectAt returns parent[key] as an object, creating it when absent.
+func objectAt(parent map[string]any, key string) (map[string]any, error) {
+	raw, present := parent[key]
+	if !present || raw == nil {
+		child := map[string]any{}
+		parent[key] = child
+		return child, nil
+	}
+	child, ok := raw.(map[string]any)
+	if !ok {
+		return nil, model.NewBadReqErr("", fmt.Errorf("%s must be an object", key))
+	}
+	return child, nil
+}
+
+// predicateOf returns the text inside the outer parentheses of an expression of
+// the form `$.catalogs[*] ? ( ... )`. Parentheses inside double-quoted string
+// literals are skipped. Anything after the closing parenthesis, or an
+// unbalanced expression, is refused.
+func predicateOf(expr string) (string, error) {
+	expr = strings.TrimSpace(expr)
+	loc := catalogsRoot.FindStringIndex(expr)
+	if loc == nil {
+		return "", fmt.Errorf("message.intent.filters.expression must have the form " +
+			`$.catalogs[*] ? ( ... )`)
+	}
+	start := loc[1] // just past the opening parenthesis
+	depth, inString := 1, false
+	for i := start; i < len(expr); i++ {
+		c := expr[i]
+		switch {
+		case inString:
+			if c == '\\' {
+				i++ // skip the escaped character
+			} else if c == '"' {
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				if strings.TrimSpace(expr[i+1:]) != "" {
+					return "", fmt.Errorf("message.intent.filters.expression has text after the closing parenthesis of $.catalogs[*] ? ( ... )")
+				}
+				return expr[start:i], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("message.intent.filters.expression has unbalanced parentheses or an unterminated string")
 }
 
 // publishRequest is the part of a publish this step reads.
