@@ -35,12 +35,9 @@ type RedisClient interface {
 type Config struct {
 	Addr   string
 	UseTLS bool
-	// Optional lets New succeed when Redis does not answer, so a deployment that
-	// uses the cache only to go faster still starts without it. Every call then
-	// misses fast until Redis is reachable; the client reconnects on its own.
+	// Optional lets New start without Redis; calls miss until it answers.
 	Optional bool
-	// Prefix is put in front of every key, so deployments sharing one Redis do
-	// not read each other's entries. Empty keeps keys as they were.
+	// Prefix namespaces keys in a shared Redis.
 	Prefix string
 }
 
@@ -85,13 +82,7 @@ var RedisClientFunc = func(cfg *Config) RedisClient {
 		DB:       0,
 	}
 	if cfg.Optional {
-		// Short timeouts and no retries, only where Redis is optional: there
-		// every caller has a source to fall back to, and a cache that answers
-		// slowly costs more than none. The go-redis defaults (5s dial, 3s
-		// read/write, 3 command retries, 5 dial retries 100ms apart) put seconds
-		// on every request while Redis is down. A required Redis -- a payload
-		// store has nothing to fall back to -- keeps them. DialerRetries cannot
-		// be 0: go-redis reads 0 as "default", which is 5.
+		// Fail fast when Redis is down. DialerRetries 0 means the default (5).
 		opts.DialTimeout = 250 * time.Millisecond
 		opts.ReadTimeout = 200 * time.Millisecond
 		opts.WriteTimeout = 200 * time.Millisecond

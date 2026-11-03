@@ -66,9 +66,7 @@ func (c *Client) searchNetworks(ctx context.Context, tracer trace.Tracer, extra 
 // agreementWith returns what we agreed with a participant, from federationRole
 // alone. Not AdmittedNetwork: that answers whether we can CALL them, which a
 // half-filled record fails without meaning we may answer it.
-//
-// useCache false skips the cached answer but still stores the fresh one.
-// fromCache reports which it was, so a caller can refuse only on fresh data.
+// useCache false skips the cached answer; fromCache reports whether it was used.
 func (c *Client) agreementWith(ctx context.Context, participantID string, useCache bool) (agreed model.Agreement, fromCache bool, err error) {
 	if strings.TrimSpace(participantID) == "" {
 		return model.Agreement{}, false, nil
@@ -85,7 +83,6 @@ func (c *Client) agreementWith(ctx context.Context, participantID string, useCac
 		fieldParticipantID: {Eq: participantID},
 	})
 	if err != nil {
-		// Never cached: an outage remembered as "no agreement" would outlive it.
 		return model.Agreement{}, false, err
 	}
 	for _, record := range records {
@@ -94,27 +91,17 @@ func (c *Client) agreementWith(ctx context.Context, participantID string, useCac
 			break
 		}
 	}
-	// "No agreement" is cached too: it is the answer for every local caller, so
-	// it is most of the traffic. Like a key lookup, a withdrawn agreement takes
-	// up to cacheTTL to be seen; a widened one does not, since a caller refusing
-	// on a cached answer asks again with useCache false. A caller the registry
-	// does not know is not cached: the caller is not yet authenticated here, so
-	// caching every name sent would let anyone fill Redis.
+	// Unknown callers are not cached, so unsigned requests cannot fill Redis.
 	if len(records) > 0 {
 		c.cacheAgreement(ctx, key, agreed)
 	}
 	return agreed, false, nil
 }
 
-// agreementCacheKey names the registry asked, because the answer is what that
-// registry's network agreed: deployments sharing one Redis without a prefix
-// must not read each other's, and a cached "{}" lets the caller through.
 func agreementCacheKey(searchURL, participantID string) string {
 	return "registry_agreement_" + searchURL + "_" + participantID
 }
 
-// cachedAgreement reads a stored agreement. An empty one is stored as "{}", so
-// "nothing agreed" never reads as a miss.
 func (c *Client) cachedAgreement(ctx context.Context, key string) (model.Agreement, bool) {
 	if !c.cachingEnabled() {
 		return model.Agreement{}, false

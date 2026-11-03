@@ -79,33 +79,13 @@ modules:
       subscriberId: <>
 
       plugins:
-        # ------------------------------------------------------------------
-        # cache -- Redis, where the registry client below keeps what it
-        # resolved for cacheTTL, so a signature check or a call plan is not a
-        # registry round trip on every request.
-        # ------------------------------------------------------------------
+        # cache -- Redis for registry lookups (see cacheTTL below).
         cache:
           id: cache
           config:
-            # A placeholder, for the same reason as the registry url: the
-            # working value is per-deployment, and has to be a hostname the
-            # ADAPTER resolves.
-            #
-            #   compose      redis:6379
-            #   kubernetes   redis.oan.svc.cluster.local:6379
-            addr: <>
-
-            # "false": with Redis down the adapter still starts and asks the
-            # registry every time, and caching resumes once Redis answers.
-            # Omit it and the adapter refuses to start without Redis.
-            required: "false"
-
-            # Put in front of every key, so deployments sharing one Redis do
-            # not read each other's entries. This adapter's own id, with a
-            # separator, is the natural choice.
-            #
-            #   dev      provider.oan.dev:
-            prefix: <>
+            addr: <>                          # e.g. redis:6379
+            required: "false"                 # start without Redis
+            prefix: <>                        # e.g. provider.oan.dev:
 
         # ------------------------------------------------------------------
         # sunbirdRegistry -- the SunbirdRC registry client.
@@ -153,15 +133,8 @@ modules:
             retry_wait_min: 100ms             # default: 100ms
             retry_wait_max: 500ms             # default: 500ms
 
-            # How long a resolved answer is reused, through the cache plugin
-            # above -- without one this caches nothing, and the plugin warns
-            # at startup. A Go duration: "30s", "5m"; a bare number refuses
-            # to start.
-            #
-            # Read the number carefully before changing it. It is exactly how
-            # long a suspended participant keeps verifying, and a withdrawn
-            # capability keeps being called. Refusals are never cached, so a
-            # reinstatement is seen on the next request whatever it is.
+            # How long registry answers are cached; also how long a
+            # suspension takes to apply. Needs the cache plugin above.
             cacheTTL: 30s                     # default: unset, meaning off
 
         keyManager:

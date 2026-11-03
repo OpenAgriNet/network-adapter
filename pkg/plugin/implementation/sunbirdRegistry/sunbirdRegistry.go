@@ -789,12 +789,8 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 	if refusal == nil || !fromCache {
 		return refusal
 	}
-	// Never refuse on a cached answer: the agreement may have been widened or
-	// reinstated since it was stored, and a refusal must not outlive that by a
-	// TTL. Ask the registry once more, which also refreshes the entry.
+	// Never refuse on a cached answer; recheck the registry first.
 	if agreed, _, err = c.agreementWith(ctx, caller, false); err != nil {
-		// The registry cannot say anything has changed, so the refusal we
-		// already have stands -- a 400 the caller can act on, not a 500.
 		log.Warnf(ctx, "OAN registry could not recheck %s before refusing, refusing on the cached agreement: %v", caller, err)
 		return refusal
 	}
