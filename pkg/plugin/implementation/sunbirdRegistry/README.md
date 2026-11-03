@@ -74,6 +74,19 @@ typically a year, which would keep a suspended participant verifying for a year.
 Misses and refusals are never cached. Caching a miss would extend an outage;
 caching a refusal would delay a reinstatement.
 
+A third answer shares the TTL: what we agreed with a caller, which
+`CheckCrossNetworkRequester` judges another network's request against. "No
+agreement" -- every local caller -- is cached like any other answer. A cached
+agreement is never trusted to refuse: before refusing on one, the registry is
+asked again and the fresh answer judged and stored. A network admitted or
+widened is served on its next request; one withdrawn or narrowed is refused
+within the TTL, the same window as a suspended key.
+
+Every entry goes through the `cache` plugin, so its `prefix` applies and an
+unreachable Redis is a miss, not a failure. Set the plugin's `required:
+"false"` and the adapter starts without Redis, asking the registry until it
+answers.
+
 ## How a lookup works
 
 ```

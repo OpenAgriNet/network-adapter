@@ -903,9 +903,24 @@ cache:
     use_tls: "true"
 ```
 
+**Or as an optional cache shared by several deployments:**
+
+```yaml
+cache:
+  id: cache
+  config:
+    addr: redis:6379
+    required: "false"
+    prefix: "provider.oan.dev:"
+```
+
 **Parameters**:
 - `addr`: Redis server address and port
 - `use_tls`: Enable TLS connection to Redis (`"true"` to enable, omit or any other value to disable). Default: disabled.
+- `required`: `"false"` lets the adapter start when Redis does not answer; every cache call then misses until it does, and the client reconnects on its own. Omit it, or any other value, to refuse to start without Redis. Default: required.
+- `prefix`: Put in front of every key, so deployments sharing one Redis do not read each other's entries. Default: none.
+
+Calls fail fast rather than waiting out the Redis client's defaults: 250ms to connect, 200ms to read or write, one connection retry and no command retries. A cache that answers slowly costs more than none, and every caller falls back to its source on an error.
 
 ---
 

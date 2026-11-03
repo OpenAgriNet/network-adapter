@@ -35,12 +35,20 @@ type RedisClient interface {
 type Config struct {
 	Addr   string
 	UseTLS bool
+	// Optional lets New succeed when Redis does not answer, so a deployment that
+	// uses the cache only to go faster still starts without it. Every call then
+	// misses fast until Redis is reachable; the client reconnects on its own.
+	Optional bool
+	// Prefix is put in front of every key, so deployments sharing one Redis do
+	// not read each other's entries. Empty keeps keys as they were.
+	Prefix string
 }
 
 // Cache wraps a Redis client to provide basic caching operations.
 type Cache struct {
 	Client  RedisClient
 	metrics *CacheMetrics
+	prefix  string
 }
 
 // Error variables to describe common failure modes.
@@ -71,10 +79,22 @@ func validate(cfg *Config) error {
 // RedisClientFunc is a function variable that creates a Redis client based on the provided configuration.
 // It can be overridden for testing purposes.
 var RedisClientFunc = func(cfg *Config) RedisClient {
+	// Short timeouts and no retries: a cache that answers slowly costs more than
+	// none, and every caller falls back to its source on an error. The go-redis
+	// defaults (5s dial, 3s read/write, 3 command retries, 5 dial retries 100ms
+	// apart) put seconds on every request while Redis is down. DialerRetries
+	// cannot be 0 -- go-redis reads 0 as "default", which is 5.
 	opts := &redis.Options{
-		Addr:     cfg.Addr,
-		Password: os.Getenv("REDIS_PASSWORD"),
-		DB:       0,
+		Addr:               cfg.Addr,
+		Password:           os.Getenv("REDIS_PASSWORD"),
+		DB:                 0,
+		DialTimeout:        250 * time.Millisecond,
+		ReadTimeout:        200 * time.Millisecond,
+		WriteTimeout:       200 * time.Millisecond,
+		PoolTimeout:        300 * time.Millisecond,
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: 50 * time.Millisecond,
 	}
 	if cfg.UseTLS {
 		opts.TLSConfig = &tls.Config{}
@@ -92,8 +112,11 @@ func New(ctx context.Context, cfg *Config) (*Cache, func() error, error) {
 	client := RedisClientFunc(cfg)
 
 	if _, err := client.Ping(ctx).Result(); err != nil {
-		log.Errorf(ctx, err, "Failed to ping Redis server")
-		return nil, nil, fmt.Errorf("%w: %v", ErrConnectionFail, err)
+		if !cfg.Optional {
+			log.Errorf(ctx, err, "Failed to ping Redis server")
+			return nil, nil, fmt.Errorf("%w: %v", ErrConnectionFail, err)
+		}
+		log.Warnf(ctx, "Redis at %s did not answer (%v); starting without it, every cache call misses until it does", cfg.Addr, err)
 	}
 
 	// Enable OpenTelemetry instrumentation for tracing and metrics
@@ -109,7 +132,7 @@ func New(ctx context.Context, cfg *Config) (*Cache, func() error, error) {
 	metrics, _ := GetCacheMetrics(ctx)
 
 	log.Infof(ctx, "Cache connection to Redis established successfully")
-	return &Cache{Client: client, metrics: metrics}, client.Close, nil
+	return &Cache{Client: client, metrics: metrics, prefix: cfg.Prefix}, client.Close, nil
 }
 
 // Get retrieves the value for the specified key from Redis.
@@ -117,7 +140,7 @@ func (c *Cache) Get(ctx context.Context, key string) (string, error) {
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	spanCtx, span := tracer.Start(ctx, "redis_get")
 	defer span.End()
-	result, err := c.Client.Get(spanCtx, key).Result()
+	result, err := c.Client.Get(spanCtx, c.prefix+key).Result()
 	if c.metrics != nil {
 		attrs := []attribute.KeyValue{
 			telemetry.AttrOperation.String("get"),
@@ -153,7 +176,7 @@ func (c *Cache) Set(ctx context.Context, key, value string, ttl time.Duration) e
 	spanCtx, span := tracer.Start(ctx, "redis_set")
 	defer span.End()
 
-	err := c.Client.Set(spanCtx, key, value, ttl).Err()
+	err := c.Client.Set(spanCtx, c.prefix+key, value, ttl).Err()
 	c.recordOperation(spanCtx, "set", err)
 	return err
 }
@@ -163,7 +186,7 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	spanCtx, span := tracer.Start(ctx, "redis_delete")
 	defer span.End()
-	err := c.Client.Del(spanCtx, key).Err()
+	err := c.Client.Del(spanCtx, c.prefix+key).Err()
 	c.recordOperation(spanCtx, "delete", err)
 	return err
 }
