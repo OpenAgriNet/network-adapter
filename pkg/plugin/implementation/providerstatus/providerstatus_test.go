@@ -293,3 +293,25 @@ func TestDiscoverFailsClosedWhenTheRegistryErrors(t *testing.T) {
 		t.Fatalf("body changed on a registry error: %s", ctx.Body)
 	}
 }
+
+func TestNarrowFilterAcceptsTheJSONPathTypeLikeDiscoveryDoes(t *testing.T) {
+	expr := `$.catalogs[*] ? (@.isActive == true)`
+	want := `$.catalogs[*] ? ( (@.isActive == true) && (@.provider.id == "prov-a") )`
+	for name, filters := range map[string]string{
+		"absent type": fmt.Sprintf(`{"expression":%q}`, expr),
+		"empty type":  fmt.Sprintf(`{"type":"","expression":%q}`, expr),
+		"upper case":  fmt.Sprintf(`{"type":"JSONPATH","expression":%q}`, expr),
+		"padded":      fmt.Sprintf(`{"type":" jsonpath ","expression":%q}`, expr),
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := narrowFilter(discoverBody(filters), []string{"prov-a"})
+			if err != nil {
+				t.Fatalf("narrowFilter: %v", err)
+			}
+			f := filtersOf(t, out)
+			if f["type"] != "jsonpath" || f["expression"] != want {
+				t.Fatalf("filters = %v, want jsonpath %q", f, want)
+			}
+		})
+	}
+}

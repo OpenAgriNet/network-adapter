@@ -137,7 +137,12 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 		if !ok {
 			return nil, model.NewBadReqErr("", fmt.Errorf("message.intent.filters must be an object"))
 		}
-		if filters["type"] != "jsonpath" {
+		// Discovery reads an empty type as jsonpath and ignores case and padding.
+		grammar, _ := filters["type"].(string)
+		if filters["type"] != nil && filters["type"] != grammar {
+			return nil, model.NewBadReqErr("", fmt.Errorf("message.intent.filters.type must be a string"))
+		}
+		if g := strings.ToLower(strings.TrimSpace(grammar)); g != "" && g != "jsonpath" {
 			return nil, model.NewBadReqErr("", fmt.Errorf(
 				"message.intent.filters.type must be %q to be narrowed to active providers", "jsonpath"))
 		}
