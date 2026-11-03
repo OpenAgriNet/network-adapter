@@ -459,3 +459,34 @@ func TestRunWithoutARequestFailsClosed(t *testing.T) {
 		t.Fatalf("a missing request is not the sender's fault, got %v", err)
 	}
 }
+
+// PostgreSQL jsonpath reads escapes in unquoted key names, so a backslash
+// outside a string can turn a quote into a different token than the scanner
+// thinks. Refused rather than modelled.
+func TestNarrowFilterRefusesABackslashOutsideStrings(t *testing.T) {
+	for name, expr := range map[string]string{
+		"escaped quote in a key": `$.catalogs[*] ? (@.k\" == 1) || 1 == 1 || (@.b == "zz\"ww")`,
+		"escaped paren in a key": `$.catalogs[*] ? (@.k\( == 1) || 1 == 1 || (@.b == 2))`,
+		"lone backslash":         `$.catalogs[*] ? (@.a\x == 1)`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := narrowFilter(discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
+			var coded *model.CodedErr
+			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
+				t.Fatalf("want a bad-request error, got %v (out %s)", err, out)
+			}
+		})
+	}
+}
+
+func TestNarrowFilterAcceptsABackslashInsideAString(t *testing.T) {
+	pred := `@.name == "a\"b"`
+	out, err := narrowFilter(discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
+	if err != nil {
+		t.Fatalf("narrowFilter: %v", err)
+	}
+	want := `$.catalogs[*] ? ( (` + pred + `) && (@.provider.id == "prov-a") )`
+	if got := filtersOf(t, out)["expression"]; got != want {
+		t.Fatalf("expression = %v, want %q", got, want)
+	}
+}
