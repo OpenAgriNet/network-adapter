@@ -249,9 +249,6 @@ func TestNarrowFilterRefuses(t *testing.T) {
 		{"unbalanced open", discoverBody(jsonpathFilter(`$.catalogs[*] ? ((@.a == 1)`)), good},
 		{"unbalanced close", discoverBody(jsonpathFilter(`$.catalogs[*] ? (@.a == 1))`)), good},
 		{"unterminated string", discoverBody(jsonpathFilter(`$.catalogs[*] ? (@.a == "x)`)), good},
-		{"id with a quote", discoverBody(""), []string{`a"b`}},
-		{"id too short", discoverBody(""), []string{"ab"}},
-		{"empty id", discoverBody(""), []string{""}},
 		{"expression not a string", discoverBody(`{"type":"jsonpath","expression":5}`), good},
 	}
 	for _, tc := range cases {
@@ -577,6 +574,28 @@ func TestDiscoverKeepsSiblingsAndHandlesAbsentParts(t *testing.T) {
 				if !strings.Contains(string(ctx.Body), k) {
 					t.Fatalf("%s lost from %s", k, ctx.Body)
 				}
+			}
+		})
+	}
+}
+
+// A bad id in the registry is the registry's fault, not the sender's: a plain
+// error (500), never a 400.
+func TestNarrowFilterFailsPlainlyOnABadRegistryID(t *testing.T) {
+	for name, ids := range map[string][]string{
+		"id with a quote": {`a"b`},
+		"id too short":    {"ab"},
+		"empty id":        {""},
+		"one bad of two":  {"prov-a", "x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := narrowFilter(discoverBody(""), ids)
+			if err == nil {
+				t.Fatalf("expected an error, got %s", out)
+			}
+			var coded *model.CodedErr
+			if errors.As(err, &coded) {
+				t.Fatalf("a bad registry id is not a bad request, got %v", err)
 			}
 		})
 	}

@@ -135,8 +135,9 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 		tests := make([]string, len(ids))
 		for i, id := range ids {
 			if !providerIDPattern.MatchString(id) {
-				return nil, model.NewBadReqErr("", fmt.Errorf(
-					"provider id %q from the registry is not a valid id, so the discover cannot be narrowed", id))
+				// The registry's fault, not the sender's: a plain error (500).
+				return nil, fmt.Errorf(
+					"provider id %q from the registry is not a valid id, so the discover cannot be narrowed", id)
 			}
 			tests[i] = `@.provider.id == "` + id + `"`
 		}
