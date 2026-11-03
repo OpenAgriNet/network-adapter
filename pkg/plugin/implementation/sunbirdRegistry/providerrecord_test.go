@@ -828,16 +828,9 @@ func TestActiveProviderIDsRefusesAnOversizedAnswer(t *testing.T) {
 	}
 }
 
-// activeRows is a search answer of n active participants.
-func activeRows(n int) string {
-	rows := make([]string, n)
-	for i := range rows {
-		rows[i] = fmt.Sprintf(`{"participantId":"p%05d","status":"active"}`, i)
-	}
-	return "[" + strings.Join(rows, ",") + "]"
-}
-
-func TestActiveProviderIDsAsksForAnExplicitPage(t *testing.T) {
+// The registry's own default page size applies: the search body carries the
+// filters and nothing else, like every other search this plugin sends.
+func TestActiveProviderIDsSendsOnlyFilters(t *testing.T) {
 	t.Parallel()
 
 	var got map[string]any
@@ -845,47 +838,14 @@ func TestActiveProviderIDsAsksForAnExplicitPage(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Errorf("search body did not decode: %v", err)
 		}
-		fmt.Fprint(w, activeRows(2))
+		fmt.Fprint(w, envelopeJSON[participant](t))
 	}))
 	defer srv.Close()
 
 	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background()); err != nil {
 		t.Fatalf("ActiveProviderIDs() error = %v", err)
 	}
-	if got["limit"] != float64(activeProviderSearchLimit) {
-		t.Errorf("limit = %v, want %d", got["limit"], activeProviderSearchLimit)
-	}
-	if offset, present := got["offset"]; !present || offset != float64(0) {
-		t.Errorf("offset = %v (present %v), want 0", offset, present)
-	}
-}
-
-// A full page cannot be told from a truncated one, and a missing id reads as
-// "inactive", so a full page fails closed.
-func TestActiveProviderIDsRefusesAFullPage(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct {
-		rows    int
-		wantErr bool
-	}{{activeProviderSearchLimit, true}, {activeProviderSearchLimit - 1, false}} {
-		t.Run(fmt.Sprint(tc.rows), func(t *testing.T) {
-			t.Parallel()
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				fmt.Fprint(w, activeRows(tc.rows))
-			}))
-			defer srv.Close()
-
-			ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background())
-			if tc.wantErr {
-				if err == nil || ids != nil {
-					t.Fatalf("ids = %d, err = %v; want an error and no list", len(ids), err)
-				}
-				return
-			}
-			if err != nil || len(ids) != tc.rows {
-				t.Fatalf("ids = %d, err = %v; want %d ids", len(ids), err, tc.rows)
-			}
-		})
+	if _, present := got["filters"]; !present || len(got) != 1 {
+		t.Errorf("search body = %v, want only filters", got)
 	}
 }

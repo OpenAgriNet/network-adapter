@@ -316,13 +316,6 @@ func (c *Client) activeUpstream(ctx context.Context, tracer trace.Tracer, partic
 // fieldStatus is the participant status the active-provider search filters on.
 const fieldStatus = "status"
 
-// activeProviderSearchLimit is the page size the active-provider search asks
-// for. Sunbird RC applies its own default limit when none is sent, which would
-// drop rows silently. 1000 rows is far past today's provider count and about
-// what fits in DefaultMaxResponseBytes. A page this full cannot be told from a
-// truncated one, so it is refused: raise this before the network gets there.
-const activeProviderSearchLimit = 1000
-
 // ActiveProviderIDs lists the participantId of every participant whose status
 // is active, once each.
 //
@@ -330,24 +323,22 @@ const activeProviderSearchLimit = 1000
 // again here, as activeUpstream does. An error means the registry could not be
 // consulted; a partial list is never returned, because a caller treats absence
 // from the list as a refusal.
+//
+// The registry's default page size is not overridden, as no other search here
+// overrides it. A registry that caps its pages would silently shorten the list:
+// providers past the cap would read as inactive. That is an availability risk,
+// never a bypass, since a missing id is refused, not admitted.
 func (c *Client) ActiveProviderIDs(ctx context.Context) ([]string, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry active provider ids")
 	defer span.End()
 
-	participants, err := postSearch[participant](ctx, c, tracer, c.searchURL, pagedSearchRequest{
-		Filters: map[string]eqFilter{fieldStatus: {Eq: statusActive}},
-		Limit:   activeProviderSearchLimit,
-		Offset:  0,
+	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
+		fieldStatus: {Eq: statusActive},
 	})
 	if err != nil {
 		return nil, c.lookupFailed(ctx, span, start, operationProviderRecord, err)
-	}
-	if len(participants) >= activeProviderSearchLimit {
-		return nil, c.lookupFailed(ctx, span, start, operationProviderRecord, fmt.Errorf(
-			"the active-provider search returned a full page of %d rows, so the list may be truncated",
-			len(participants)))
 	}
 
 	seen := make(map[string]struct{}, len(participants))
@@ -409,25 +400,11 @@ func toProviderRecord(binding providerBinding, owner participant) *model.Provide
 	}
 }
 
-// pagedSearchRequest is a search that names its page instead of taking the
-// registry's default limit. Only the active-provider search sends one, so every
-// other search's request body is unchanged.
-type pagedSearchRequest struct {
-	Filters map[string]eqFilter `json:"filters"`
-	Limit   int                 `json:"limit"`
-	Offset  int                 `json:"offset"`
-}
-
 // searchRecords posts a filter to one registry entity and decodes the matching
 // records. It is the single transport path for both entities: they differ only
 // in URL, filter and record type.
 func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, url string, filters map[string]eqFilter) ([]T, error) {
-	return postSearch[T](ctx, c, tracer, url, searchRequest{Filters: filters})
-}
-
-// postSearch posts one search request body and decodes the matching records.
-func postSearch[T any](ctx context.Context, c *Client, tracer trace.Tracer, url string, request any) ([]T, error) {
-	body, err := json.Marshal(request)
+	body, err := json.Marshal(searchRequest{Filters: filters})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal search request: %w", err)
 	}
