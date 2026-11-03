@@ -41,6 +41,7 @@ plugins=(
     "reqpreprocessor"
     "otelsetup"
     "reqmapper"
+    "providerstatus"
     "router"
     "schemavalidator"
     "schemav2validator"
