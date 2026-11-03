@@ -313,6 +313,47 @@ func (c *Client) activeUpstream(ctx context.Context, tracer trace.Tracer, partic
 	return owner, outcomeFound, nil
 }
 
+// fieldStatus is the participant status the active-provider search filters on.
+const fieldStatus = "status"
+
+// ActiveProviderIDs lists the participantId of every participant whose status
+// is active, once each.
+//
+// The registry is asked for active participants only, and each row is checked
+// again here, as activeUpstream does. An error means the registry could not be
+// consulted; a partial list is never returned, because a caller treats absence
+// from the list as a refusal.
+func (c *Client) ActiveProviderIDs(ctx context.Context) ([]string, error) {
+	start := time.Now()
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry active provider ids")
+	defer span.End()
+
+	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
+		fieldStatus: {Eq: statusActive},
+	})
+	if err != nil {
+		return nil, c.lookupFailed(ctx, span, start, operationProviderRecord, err)
+	}
+
+	seen := make(map[string]struct{}, len(participants))
+	ids := make([]string, 0, len(participants))
+	for _, p := range participants {
+		if !isActive(p.Status) || p.ParticipantID == "" {
+			continue
+		}
+		if _, dup := seen[p.ParticipantID]; dup {
+			continue
+		}
+		seen[p.ParticipantID] = struct{}{}
+		ids = append(ids, p.ParticipantID)
+	}
+
+	span.SetAttributes(telemetry.AttrErrorType.String(outcomeFound))
+	c.emitMetrics(ctx, start, operationProviderRecord, outcomeFound)
+	return ids, nil
+}
+
 // isActive reports whether a registry status permits use.
 //
 // An allow-list, deliberately, and for the same reason resolveStatus is one: a

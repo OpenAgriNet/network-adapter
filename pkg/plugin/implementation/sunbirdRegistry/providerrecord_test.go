@@ -749,3 +749,81 @@ func TestProviderBindingKeysServingListsOnlyBindingsWithTheAction(t *testing.T) 
 		t.Errorf("keys = %v, want %v (select-only and inactive-publish bindings excluded)", keys, want)
 	}
 }
+
+// --- active providers ---------------------------------------------------------
+
+func TestActiveProviderIDsReturnsOnlyActive(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		a, off, b := upstreamRecord(), upstreamRecord(), upstreamRecord()
+		a.ParticipantID, off.ParticipantID, b.ParticipantID = "alpha", "beta", "gamma"
+		off.Status = "inactive"
+		fmt.Fprint(w, envelopeJSON(t, a, off, b))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background())
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "alpha" || ids[1] != "gamma" {
+		t.Errorf("ids = %v, want [alpha gamma]", ids)
+	}
+}
+
+func TestActiveProviderIDsSendsAStatusFilter(t *testing.T) {
+	t.Parallel()
+
+	var got searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		fmt.Fprint(w, envelopeJSON[participant](t))
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background()); err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if got.Filters["status"].Eq != "active" {
+		t.Errorf("status filter = %+v, want eq active", got.Filters["status"])
+	}
+}
+
+func TestActiveProviderIDsFailsWhenTheRegistryDoes(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background())
+	if err == nil {
+		t.Fatal("expected an error when the registry answers 500")
+	}
+	if ids != nil {
+		t.Errorf("ids = %v, want nil on failure", ids)
+	}
+}
+
+func TestActiveProviderIDsRefusesAnOversizedAnswer(t *testing.T) {
+	t.Parallel()
+
+	const limit = 512
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"participantId":"alpha","status":"active","padding":%q}]`, strings.Repeat("x", limit*4))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL, nil, func(c *Config) { c.MaxResponseBytes = limit })
+	ids, err := client.ActiveProviderIDs(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want the size limit named", err)
+	}
+	if ids != nil {
+		t.Errorf("ids = %v, want no truncated list", ids)
+	}
+}
