@@ -18,10 +18,14 @@ type fakeLister struct {
 	ids   []string
 	err   error
 	calls int
+
+	// The restriction of the last call.
+	participantType, role string
 }
 
-func (f *fakeLister) ActiveProviderIDs(ctx context.Context) ([]string, error) {
+func (f *fakeLister) ActiveProviderIDs(ctx context.Context, participantType, role string) ([]string, error) {
 	f.calls++
+	f.participantType, f.role = participantType, role
 	return f.ids, f.err
 }
 

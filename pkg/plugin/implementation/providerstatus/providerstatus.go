@@ -17,7 +17,7 @@ import (
 // activeProviderLister is the half of the registry this step needs. Narrowed so
 // a registry that cannot list providers fails at startup, not per request.
 type activeProviderLister interface {
-	ActiveProviderIDs(ctx context.Context) ([]string, error)
+	ActiveProviderIDs(ctx context.Context, participantType, role string) ([]string, error)
 }
 
 // step keeps providers the registry does not mark active out of publish and
@@ -88,7 +88,7 @@ func (s *step) checkPublish(ctx *model.StepContext) error {
 		return model.NewBadReqErr("", err)
 	}
 
-	active, err := s.registry.ActiveProviderIDs(ctx)
+	active, err := s.registry.ActiveProviderIDs(ctx, "", "")
 	if err != nil {
 		// Not a verdict on the provider: the registry could not be asked, and an
 		// unanswered question must never read as "active".
@@ -107,7 +107,7 @@ func (s *step) checkPublish(ctx *model.StepContext) error {
 }
 
 func (s *step) narrowDiscover(ctx *model.StepContext) error {
-	active, err := s.registry.ActiveProviderIDs(ctx)
+	active, err := s.registry.ActiveProviderIDs(ctx, "", "")
 	if err != nil {
 		return fmt.Errorf("could not check provider status: %w", err)
 	}

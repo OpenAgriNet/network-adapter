@@ -313,14 +313,20 @@ func (c *Client) activeUpstream(ctx context.Context, tracer trace.Tracer, partic
 	return owner, outcomeFound, nil
 }
 
-// fieldStatus is the participant status the active-provider search filters on.
-const fieldStatus = "status"
+// The participant fields the active-provider search filters on.
+const (
+	fieldStatus = "status"
+	fieldType   = "type"
+	fieldRole   = "role"
+)
 
 // ActiveProviderIDs lists the participantId of every participant whose status
-// is active, once each.
+// is active, once each. A non-empty participantType or role restricts the list
+// to participants of that type, or carrying that role; empty means any.
 //
-// The registry is asked for active participants only, and each row is checked
-// again here, as activeUpstream does. An error means the registry could not be
+// The registry is asked for matching participants only, and each row is
+// checked again here, as activeUpstream does, so a registry that ignores a
+// filter cannot widen the list. An error means the registry could not be
 // consulted; a partial list is never returned, because a caller treats absence
 // from the list as a refusal.
 //
@@ -328,15 +334,21 @@ const fieldStatus = "status"
 // overrides it. A registry that caps its pages would silently shorten the list:
 // providers past the cap would read as inactive. That is an availability risk,
 // never a bypass, since a missing id is refused, not admitted.
-func (c *Client) ActiveProviderIDs(ctx context.Context) ([]string, error) {
+func (c *Client) ActiveProviderIDs(ctx context.Context, participantType, role string) ([]string, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry active provider ids")
 	defer span.End()
 
-	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
-		fieldStatus: {Eq: statusActive},
-	})
+	filters := map[string]eqFilter{fieldStatus: {Eq: statusActive}}
+	if participantType != "" {
+		filters[fieldType] = eqFilter{Eq: participantType}
+	}
+	if role != "" {
+		// A list field, so contains, as searchNetworks asks for roleNetwork.
+		filters[fieldRole] = eqFilter{Contains: role}
+	}
+	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, filters)
 	if err != nil {
 		return nil, c.lookupFailed(ctx, span, start, operationProviderRecord, err)
 	}
@@ -345,6 +357,12 @@ func (c *Client) ActiveProviderIDs(ctx context.Context) ([]string, error) {
 	ids := make([]string, 0, len(participants))
 	for _, p := range participants {
 		if !isActive(p.Status) || p.ParticipantID == "" {
+			continue
+		}
+		if participantType != "" && !strings.EqualFold(p.Type, participantType) {
+			continue
+		}
+		if role != "" && !p.Role.has(role) {
 			continue
 		}
 		if _, dup := seen[p.ParticipantID]; dup {

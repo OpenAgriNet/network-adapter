@@ -763,7 +763,7 @@ func TestActiveProviderIDsReturnsOnlyActive(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background())
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
 	if err != nil {
 		t.Fatalf("ActiveProviderIDs() error = %v", err)
 	}
@@ -784,7 +784,7 @@ func TestActiveProviderIDsSendsAStatusFilter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background()); err != nil {
+	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", ""); err != nil {
 		t.Fatalf("ActiveProviderIDs() error = %v", err)
 	}
 	if got.Filters["status"].Eq != "active" {
@@ -800,7 +800,7 @@ func TestActiveProviderIDsFailsWhenTheRegistryDoes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background())
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
 	if err == nil {
 		t.Fatal("expected an error when the registry answers 500")
 	}
@@ -819,7 +819,7 @@ func TestActiveProviderIDsRefusesAnOversizedAnswer(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv.URL, nil, func(c *Config) { c.MaxResponseBytes = limit })
-	ids, err := client.ActiveProviderIDs(context.Background())
+	ids, err := client.ActiveProviderIDs(context.Background(), "", "")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("error = %v, want the size limit named", err)
 	}
@@ -842,10 +842,122 @@ func TestActiveProviderIDsSendsOnlyFilters(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background()); err != nil {
+	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", ""); err != nil {
 		t.Fatalf("ActiveProviderIDs() error = %v", err)
 	}
 	if _, present := got["filters"]; !present || len(got) != 1 {
 		t.Errorf("search body = %v, want only filters", got)
+	}
+}
+
+func TestActiveProviderIDsSendsNoTypeOrRoleFilterWhenUnrestricted(t *testing.T) {
+	t.Parallel()
+
+	var got searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		a := upstreamRecord()
+		a.ParticipantID, a.Type, a.Role = "alpha", "node", roleList{"consumer"}
+		fmt.Fprint(w, envelopeJSON(t, a))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if len(got.Filters) != 1 || got.Filters["status"].Eq != "active" {
+		t.Errorf("filters = %+v, want status only", got.Filters)
+	}
+	if len(ids) != 1 || ids[0] != "alpha" {
+		t.Errorf("ids = %v, want [alpha]", ids)
+	}
+}
+
+func TestActiveProviderIDsSendsTheTypeAndRoleFilters(t *testing.T) {
+	t.Parallel()
+
+	var got searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		fmt.Fprint(w, envelopeJSON[participant](t))
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "node", "provider"); err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if len(got.Filters) != 3 {
+		t.Errorf("filters = %+v, want status, type and role", got.Filters)
+	}
+	if f := got.Filters["status"]; f.Eq != "active" || f.Contains != "" {
+		t.Errorf("status filter = %+v, want eq active", f)
+	}
+	if f := got.Filters["type"]; f.Eq != "node" || f.Contains != "" {
+		t.Errorf("type filter = %+v, want eq node", f)
+	}
+	if f := got.Filters["role"]; f.Contains != "provider" || f.Eq != "" {
+		t.Errorf("role filter = %+v, want contains provider", f)
+	}
+}
+
+// A registry that ignores a filter must not widen the list: every row is
+// checked again here for the type and role asked for.
+func TestActiveProviderIDsRechecksTypeAndRole(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		row := func(id, typ string, roles ...string) participant {
+			p := upstreamRecord()
+			p.ParticipantID, p.Type, p.Role = id, typ, roles
+			return p
+		}
+		fmt.Fprint(w, envelopeJSON(t,
+			row("good", "node", "provider"),
+			row("good-many", "NODE", "consumer", "Provider"),
+			row("wrong-type", "upstream", "provider"),
+			row("wrong-role", "node", "consumer"),
+			row("no-role", "node"),
+			row("no-type", "", "provider"),
+		))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "node", "provider")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if want := []string{"good", "good-many"}; fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Errorf("ids = %v, want %v", ids, want)
+	}
+}
+
+func TestActiveProviderIDsRestrictsOnTypeOrRoleAlone(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		a, b := upstreamRecord(), upstreamRecord()
+		a.ParticipantID, a.Type, a.Role = "a", "node", roleList{"consumer"}
+		b.ParticipantID, b.Type, b.Role = "b", "upstream", roleList{"provider"}
+		fmt.Fprint(w, envelopeJSON(t, a, b))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL, nil)
+	for _, tc := range []struct{ typ, role, want string }{
+		{"node", "", "[a]"},
+		{"", "provider", "[b]"},
+	} {
+		ids, err := client.ActiveProviderIDs(context.Background(), tc.typ, tc.role)
+		if err != nil {
+			t.Fatalf("ActiveProviderIDs(%q, %q) error = %v", tc.typ, tc.role, err)
+		}
+		if fmt.Sprint(ids) != tc.want {
+			t.Errorf("ActiveProviderIDs(%q, %q) = %v, want %s", tc.typ, tc.role, ids, tc.want)
+		}
 	}
 }
