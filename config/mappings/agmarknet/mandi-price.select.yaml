@@ -83,11 +83,14 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* market.marketCode, where the catalog advertises it. Absent or empty, Agmarknet
-           widens the query to the whole district. $string("") is not "" here, so compare raw. */
-        $exists($ra.market.marketCode) and $ra.market.marketCode != ""
+        /* market.marketCode is optional. Absent, Agmarknet answers for the whole district.
+           Present, it is used, so it must be a non-empty string: an empty one would widen
+           the query silently while the caller believes it named a market. */
+        $exists($ra.market.marketCode)
+          ? ($type($ra.market.marketCode) = "string" and $ra.market.marketCode != "")
+          : true
       )
-    message: "this capability needs a market code in market.marketCode, as the catalog lists it; without it the query widens to the whole district"
+    message: "market.marketCode, when given, must be a non-empty string; omit it to search the whole district"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
@@ -359,10 +362,11 @@ response: |
                     "variety":        $r.Variety,
                     "grade":          $r.Grade,
                     /* From the RECORD, except marketCode: the upstream reports none, so it is the
-                       requested one (guarded), placed where catalog-ondemand.yaml puts it. */
+                       requested one, and only when one was requested. District-wide there is no
+                       single code, the key is omitted and each row names its own market. */
                     "market": {
                       "marketCode": $ra.market.marketCode,
-                      "marketName": $r.Market,
+                      "marketName": $trim($r.Market),
                       "district":   $r.District,
                       "state":      $r.State
                     },

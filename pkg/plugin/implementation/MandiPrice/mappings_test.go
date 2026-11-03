@@ -683,9 +683,8 @@ func TestShippedMappingStatesWhatItKnowsRatherThanEchoing(t *testing.T) {
 		}
 
 		market, _ := ra["market"].(map[string]any)
-		// The upstream reports no market code, but the select requires one and
-		// the query is scoped to it, so every row is that market's. The code
-		// sits where the catalog advertised it: market.marketCode.
+		// The upstream reports no market code, but this select named one and
+		// the query is scoped to it, so every row is that market's.
 		if market["marketCode"] != "2056" {
 			t.Errorf("market.marketCode = %#v, want the requested \"2056\"", market["marketCode"])
 		}
@@ -725,21 +724,19 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			expect: "codes in market",
 		},
 		{
-			// Without a market code the upstream widens the query to the whole
-			// district, and the answer can no longer say which market it is for.
-			name: "no market code",
-			mutate: func(ra map[string]any) {
-				delete(ra["market"].(map[string]any), "marketCode")
-			},
-			expect: "market code",
-		},
-		{
-			// Present but empty names no market either.
+			// Present but empty would widen the query silently.
 			name: "an empty market code",
 			mutate: func(ra map[string]any) {
 				ra["market"].(map[string]any)["marketCode"] = ""
 			},
-			expect: "market code",
+			expect: "market.marketCode",
+		},
+		{
+			name: "a market code that is not a string",
+			mutate: func(ra map[string]any) {
+				ra["market"].(map[string]any)["marketCode"] = 2056
+			},
+			expect: "market.marketCode",
 		},
 		{
 			// Outside the pack's Minimum/Maximum/Modal enum: no price would be
@@ -905,5 +902,37 @@ func TestShippedMappingHonoursTheRequestedPriceFields(t *testing.T) {
 				t.Errorf("prices.%s is missing, which the pack requires", required)
 			}
 		}
+	}
+}
+
+// Without a market code the query is district-wide: no marketcode goes
+// upstream, no single code is claimed, and each row names its own market.
+func TestShippedMappingSearchesTheDistrictWithoutAMarketCode(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	ra := firstCommitment(t, payload)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	delete(ra["market"].(map[string]any), "marketCode")
+	request, _ := json.Marshal(payload)
+
+	twoMarkets := strings.Replace(providerResponse, `"Market": "Kasdol APMC"`, `"Market": "Other APMC "`, 1)
+	query, answer := runShippedWith(t, string(request), twoMarkets)
+
+	if query.Has("marketcode") {
+		t.Errorf("marketcode = %q was sent; district-wide must omit it", query.Get("marketcode"))
+	}
+	names := map[string]bool{}
+	for _, r := range resourcesOf(t, answer) {
+		market := r["resourceAttributes"].(map[string]any)["market"].(map[string]any)
+		if code, present := market["marketCode"]; present {
+			t.Errorf("market.marketCode = %#v; no single code applies district-wide", code)
+		}
+		names[market["marketName"].(string)] = true
+	}
+	if !names["Other APMC"] || len(names) < 2 {
+		t.Errorf("market names = %v, want rows from more than one market, trimmed", names)
 	}
 }
