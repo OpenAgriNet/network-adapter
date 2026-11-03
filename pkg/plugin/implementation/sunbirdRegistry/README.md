@@ -76,7 +76,10 @@ caching a refusal would delay a reinstatement.
 
 A third answer shares the TTL: what we agreed with a caller, which
 `CheckCrossNetworkRequester` judges another network's request against. "No
-agreement" -- every local caller -- is cached like any other answer. A cached
+agreement" -- every local caller -- is cached like any other answer, but only
+for a caller the registry knows, so unknown names cannot fill Redis. The key
+names the registry asked, so deployments sharing one Redis never read each
+other's agreements. A cached
 agreement is never trusted to refuse: before refusing on one, the registry is
 asked again and the fresh answer judged and stored. A network admitted or
 widened is served on its next request; one withdrawn or narrowed is refused

@@ -79,22 +79,26 @@ func validate(cfg *Config) error {
 // RedisClientFunc is a function variable that creates a Redis client based on the provided configuration.
 // It can be overridden for testing purposes.
 var RedisClientFunc = func(cfg *Config) RedisClient {
-	// Short timeouts and no retries: a cache that answers slowly costs more than
-	// none, and every caller falls back to its source on an error. The go-redis
-	// defaults (5s dial, 3s read/write, 3 command retries, 5 dial retries 100ms
-	// apart) put seconds on every request while Redis is down. DialerRetries
-	// cannot be 0 -- go-redis reads 0 as "default", which is 5.
 	opts := &redis.Options{
-		Addr:               cfg.Addr,
-		Password:           os.Getenv("REDIS_PASSWORD"),
-		DB:                 0,
-		DialTimeout:        250 * time.Millisecond,
-		ReadTimeout:        200 * time.Millisecond,
-		WriteTimeout:       200 * time.Millisecond,
-		PoolTimeout:        300 * time.Millisecond,
-		MaxRetries:         -1,
-		DialerRetries:      1,
-		DialerRetryTimeout: 50 * time.Millisecond,
+		Addr:     cfg.Addr,
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       0,
+	}
+	if cfg.Optional {
+		// Short timeouts and no retries, only where Redis is optional: there
+		// every caller has a source to fall back to, and a cache that answers
+		// slowly costs more than none. The go-redis defaults (5s dial, 3s
+		// read/write, 3 command retries, 5 dial retries 100ms apart) put seconds
+		// on every request while Redis is down. A required Redis -- a payload
+		// store has nothing to fall back to -- keeps them. DialerRetries cannot
+		// be 0: go-redis reads 0 as "default", which is 5.
+		opts.DialTimeout = 250 * time.Millisecond
+		opts.ReadTimeout = 200 * time.Millisecond
+		opts.WriteTimeout = 200 * time.Millisecond
+		opts.PoolTimeout = 300 * time.Millisecond
+		opts.MaxRetries = -1
+		opts.DialerRetries = 1
+		opts.DialerRetryTimeout = 50 * time.Millisecond
 	}
 	if cfg.UseTLS {
 		opts.TLSConfig = &tls.Config{}
@@ -111,12 +115,13 @@ func New(ctx context.Context, cfg *Config) (*Cache, func() error, error) {
 
 	client := RedisClientFunc(cfg)
 
-	if _, err := client.Ping(ctx).Result(); err != nil {
+	_, pingErr := client.Ping(ctx).Result()
+	if pingErr != nil {
 		if !cfg.Optional {
-			log.Errorf(ctx, err, "Failed to ping Redis server")
-			return nil, nil, fmt.Errorf("%w: %v", ErrConnectionFail, err)
+			log.Errorf(ctx, pingErr, "Failed to ping Redis server")
+			return nil, nil, fmt.Errorf("%w: %v", ErrConnectionFail, pingErr)
 		}
-		log.Warnf(ctx, "Redis at %s did not answer (%v); starting without it, every cache call misses until it does", cfg.Addr, err)
+		log.Warnf(ctx, "Redis at %s did not answer (%v); starting without it, every cache call misses until it does", cfg.Addr, pingErr)
 	}
 
 	// Enable OpenTelemetry instrumentation for tracing and metrics
@@ -131,7 +136,9 @@ func New(ctx context.Context, cfg *Config) (*Cache, func() error, error) {
 
 	metrics, _ := GetCacheMetrics(ctx)
 
-	log.Infof(ctx, "Cache connection to Redis established successfully")
+	if pingErr == nil {
+		log.Infof(ctx, "Cache connection to Redis established successfully")
+	}
 	return &Cache{Client: client, metrics: metrics, prefix: cfg.Prefix}, client.Close, nil
 }
 

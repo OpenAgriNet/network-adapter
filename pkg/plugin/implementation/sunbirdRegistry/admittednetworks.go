@@ -73,7 +73,7 @@ func (c *Client) agreementWith(ctx context.Context, participantID string, useCac
 	if strings.TrimSpace(participantID) == "" {
 		return model.Agreement{}, false, nil
 	}
-	key := agreementCacheKey(participantID)
+	key := agreementCacheKey(c.searchURL, participantID)
 	if useCache {
 		if agreed, ok := c.cachedAgreement(ctx, key); ok {
 			log.Debugf(ctx, "OAN registry agreement cache hit for key: %s", key)
@@ -97,13 +97,20 @@ func (c *Client) agreementWith(ctx context.Context, participantID string, useCac
 	// "No agreement" is cached too: it is the answer for every local caller, so
 	// it is most of the traffic. Like a key lookup, a withdrawn agreement takes
 	// up to cacheTTL to be seen; a widened one does not, since a caller refusing
-	// on a cached answer asks again with useCache false.
-	c.cacheAgreement(ctx, key, agreed)
+	// on a cached answer asks again with useCache false. A caller the registry
+	// does not know is not cached: the caller is not yet authenticated here, so
+	// caching every name sent would let anyone fill Redis.
+	if len(records) > 0 {
+		c.cacheAgreement(ctx, key, agreed)
+	}
 	return agreed, false, nil
 }
 
-func agreementCacheKey(participantID string) string {
-	return "registry_agreement_" + participantID
+// agreementCacheKey names the registry asked, because the answer is what that
+// registry's network agreed: deployments sharing one Redis without a prefix
+// must not read each other's, and a cached "{}" lets the caller through.
+func agreementCacheKey(searchURL, participantID string) string {
+	return "registry_agreement_" + searchURL + "_" + participantID
 }
 
 // cachedAgreement reads a stored agreement. An empty one is stored as "{}", so
