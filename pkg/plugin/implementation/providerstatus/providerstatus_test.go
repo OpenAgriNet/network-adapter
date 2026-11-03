@@ -118,8 +118,23 @@ func TestPublishRejectsAnEmptyCatalogList(t *testing.T) {
 
 func TestPublishFailsClosedWhenTheRegistryErrors(t *testing.T) {
 	l := &fakeLister{err: errors.New("registry down")}
-	if err := run(newStep(t, l), publishBody("catalog/publish", "p1")); err == nil {
+	err := run(newStep(t, l), publishBody("catalog/publish", "p1"))
+	if err == nil {
 		t.Fatal("expected an error when the registry fails")
+	}
+	var coded *model.CodedErr
+	if errors.As(err, &coded) {
+		t.Fatalf("a registry outage is not a bad request, got %v", err)
+	}
+}
+
+func TestBodyWithNoContextErrorsWithoutAskingTheRegistry(t *testing.T) {
+	l := &fakeLister{ids: []string{"p1"}}
+	if err := run(newStep(t, l), []byte(`{"message":{}}`)); err == nil {
+		t.Fatal("expected an error for a body with no context")
+	}
+	if l.calls != 0 {
+		t.Fatalf("lister called %d times, want 0", l.calls)
 	}
 }
 
