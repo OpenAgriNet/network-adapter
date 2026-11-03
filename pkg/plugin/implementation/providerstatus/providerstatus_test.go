@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -59,8 +60,18 @@ func publishBody(action string, providerIDs ...string) []byte {
 		action, strings.Join(catalogs, ",")))
 }
 
-func run(s definition.Step, body []byte) error {
-	return s.Run(&model.StepContext{Context: context.Background(), Body: body})
+// stepCtx is a StepContext for a request to the given path, as the handler
+// builds it: the full URL path, module base path included.
+func stepCtx(path string, body []byte) *model.StepContext {
+	return &model.StepContext{
+		Context: context.Background(),
+		Request: httptest.NewRequest(http.MethodPost, path, nil),
+		Body:    body,
+	}
+}
+
+func run(s definition.Step, path string, body []byte) error {
+	return s.Run(stepCtx(path, body))
 }
 
 func TestNewRefusesARegistryThatCannotListProviders(t *testing.T) {
@@ -71,7 +82,7 @@ func TestNewRefusesARegistryThatCannotListProviders(t *testing.T) {
 
 func TestPublishAllowsAnActiveProvider(t *testing.T) {
 	l := &fakeLister{ids: []string{"p1"}}
-	if err := run(newStep(t, l), publishBody("catalog/publish", "p1")); err != nil {
+	if err := run(newStep(t, l), "/publish", publishBody("catalog/publish", "p1")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if l.calls != 1 {
@@ -81,7 +92,7 @@ func TestPublishAllowsAnActiveProvider(t *testing.T) {
 
 func TestPublishRejectsAnUnknownOrInactiveProvider(t *testing.T) {
 	l := &fakeLister{ids: []string{"p1"}}
-	err := run(newStep(t, l), publishBody("catalog/publish", "ghost"))
+	err := run(newStep(t, l), "/publish", publishBody("catalog/publish", "ghost"))
 	var coded *model.CodedErr
 	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
 		t.Fatalf("want a bad-request error, got %v", err)
@@ -93,7 +104,7 @@ func TestPublishRejectsAnUnknownOrInactiveProvider(t *testing.T) {
 
 func TestPublishRejectsTheWholeBatchOnOneBadProvider(t *testing.T) {
 	l := &fakeLister{ids: []string{"p1"}}
-	err := run(newStep(t, l), publishBody("catalog/publish", "p1", "ghost"))
+	err := run(newStep(t, l), "/publish", publishBody("catalog/publish", "p1", "ghost"))
 	if err == nil || !strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("want an error naming ghost, got %v", err)
 	}
@@ -104,21 +115,21 @@ func TestPublishRejectsTheWholeBatchOnOneBadProvider(t *testing.T) {
 
 func TestPublishRejectsACatalogThatNamesNoProvider(t *testing.T) {
 	l := &fakeLister{ids: []string{"p1"}}
-	if err := run(newStep(t, l), publishBody("catalog/publish", "p1", "")); err == nil {
+	if err := run(newStep(t, l), "/publish", publishBody("catalog/publish", "p1", "")); err == nil {
 		t.Fatal("expected an error for a catalog with no provider")
 	}
 }
 
 func TestPublishRejectsAnEmptyCatalogList(t *testing.T) {
 	l := &fakeLister{ids: []string{"p1"}}
-	if err := run(newStep(t, l), publishBody("catalog/publish")); err == nil {
+	if err := run(newStep(t, l), "/publish", publishBody("catalog/publish")); err == nil {
 		t.Fatal("expected an error for an empty catalogs list")
 	}
 }
 
 func TestPublishFailsClosedWhenTheRegistryErrors(t *testing.T) {
 	l := &fakeLister{err: errors.New("registry down")}
-	err := run(newStep(t, l), publishBody("catalog/publish", "p1"))
+	err := run(newStep(t, l), "/publish", publishBody("catalog/publish", "p1"))
 	if err == nil {
 		t.Fatal("expected an error when the registry fails")
 	}
@@ -130,7 +141,7 @@ func TestPublishFailsClosedWhenTheRegistryErrors(t *testing.T) {
 
 func TestBodyWithNoContextErrorsWithoutAskingTheRegistry(t *testing.T) {
 	l := &fakeLister{ids: []string{"p1"}}
-	if err := run(newStep(t, l), []byte(`{"message":{}}`)); err == nil {
+	if err := run(newStep(t, l), "/discover", []byte(`{"message":{}}`)); err == nil {
 		t.Fatal("expected an error for a body with no context")
 	}
 	if l.calls != 0 {
@@ -141,17 +152,17 @@ func TestBodyWithNoContextErrorsWithoutAskingTheRegistry(t *testing.T) {
 func TestPublishAcceptsTheBarePublishAction(t *testing.T) {
 	l := &fakeLister{ids: []string{"p1"}}
 	s := newStep(t, l)
-	if err := run(s, publishBody("publish", "p1")); err != nil {
+	if err := run(s, "/publish", publishBody("publish", "p1")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := run(s, publishBody("publish", "ghost")); err == nil {
+	if err := run(s, "/publish", publishBody("publish", "ghost")); err == nil {
 		t.Fatal("bare publish must run the gate")
 	}
 }
 
 func TestOtherActionsPassUntouched(t *testing.T) {
 	l := &fakeLister{err: errors.New("registry down")}
-	if err := run(newStep(t, l), []byte(`{"context":{"action":"select"},"message":{}}`)); err != nil {
+	if err := run(newStep(t, l), "/select", []byte(`{"context":{"action":"select"},"message":{}}`)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if l.calls != 0 {
@@ -272,7 +283,7 @@ func TestNarrowFilterKeepsOtherNumbersUnchanged(t *testing.T) {
 
 func TestDiscoverNarrowsTheBody(t *testing.T) {
 	l := &fakeLister{ids: []string{"prov-a"}}
-	ctx := &model.StepContext{Context: context.Background(), Body: discoverBody("")}
+	ctx := stepCtx("/discover", discoverBody(""))
 	if err := newStep(t, l).Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -285,7 +296,7 @@ func TestDiscoverNarrowsTheBody(t *testing.T) {
 func TestDiscoverFailsClosedWhenTheRegistryErrors(t *testing.T) {
 	l := &fakeLister{err: errors.New("registry down")}
 	orig := discoverBody("")
-	ctx := &model.StepContext{Context: context.Background(), Body: orig}
+	ctx := stepCtx("/discover", orig)
 	if err := newStep(t, l).Run(ctx); err == nil {
 		t.Fatal("expected an error when the registry fails")
 	}
@@ -347,5 +358,104 @@ func TestNarrowFilterAcceptsCommentsAndSingleQuotesInsideStrings(t *testing.T) {
 				t.Fatalf("expression = %v, want %q", got, want)
 			}
 		})
+	}
+}
+
+// wantBadRequest fails unless err is a 400.
+func wantBadRequest(t *testing.T, err error) {
+	t.Helper()
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("want a bad-request error, got %v", err)
+	}
+}
+
+func bodyWithAction(action, message string) []byte {
+	if action == "<absent>" {
+		return []byte(`{"context":{},"message":` + message + `}`)
+	}
+	return []byte(fmt.Sprintf(`{"context":{"action":%q},"message":%s}`, action, message))
+}
+
+// The router picks the target from the URL path, so the step must act on the
+// path too: a body action that disagrees with it is refused, never skipped.
+func TestDiscoverPathRefusesABodyActionThatDisagrees(t *testing.T) {
+	for _, action := range []string{"search", "select", "publish", "", "<absent>", "dis cover"} {
+		t.Run(action, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"prov-a"}}
+			err := run(newStep(t, l), "/discover", bodyWithAction(action, `{"intent":{}}`))
+			wantBadRequest(t, err)
+		})
+	}
+}
+
+func TestDiscoverPathNarrowsWhateverTheCaseOrPaddingOfTheAction(t *testing.T) {
+	for _, path := range []string{"/discover", "/_internal/network/discover"} {
+		for _, action := range []string{"discover", "Discover", " DISCOVER "} {
+			t.Run(path+" "+action, func(t *testing.T) {
+				l := &fakeLister{ids: []string{"prov-a"}}
+				ctx := stepCtx(path, bodyWithAction(action, `{"intent":{}}`))
+				if err := newStep(t, l).Run(ctx); err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+				want := `$.catalogs[*] ? (@.provider.id == "prov-a")`
+				if got := filtersOf(t, ctx.Body)["expression"]; got != want {
+					t.Fatalf("expression = %v, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestPublishPathRefusesABodyActionThatDisagrees(t *testing.T) {
+	for _, action := range []string{"discover", "on_publish", "catalog/publishx", "", "<absent>"} {
+		t.Run(action, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"p1"}}
+			err := run(newStep(t, l), "/publish", bodyWithAction(action, `{"catalogs":[{"provider":{"id":"p1"}}]}`))
+			wantBadRequest(t, err)
+		})
+	}
+}
+
+func TestPublishPathGatesWhateverTheCaseOfTheAction(t *testing.T) {
+	for _, path := range []string{"/publish", "/_internal/network/publish"} {
+		for _, action := range []string{"Publish", "catalog/Publish", " CATALOG/PUBLISH "} {
+			t.Run(path+" "+action, func(t *testing.T) {
+				l := &fakeLister{ids: []string{"p1"}}
+				err := run(newStep(t, l), path, publishBody(action, "ghost"))
+				wantBadRequest(t, err)
+				if !strings.Contains(err.Error(), "ghost") {
+					t.Fatalf("error %q does not name the provider", err)
+				}
+			})
+		}
+	}
+}
+
+func TestOtherPathsPassUntouchedWhateverTheAction(t *testing.T) {
+	for _, action := range []string{"discover", "publish", "catalog/publish"} {
+		t.Run(action, func(t *testing.T) {
+			l := &fakeLister{err: errors.New("registry down")}
+			body := bodyWithAction(action, `{"catalogs":[{"provider":{"id":"ghost"}}]}`)
+			ctx := stepCtx("/select", body)
+			if err := newStep(t, l).Run(ctx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if l.calls != 0 || string(ctx.Body) != string(body) {
+				t.Fatalf("lister calls = %d, body %s; want untouched", l.calls, ctx.Body)
+			}
+		})
+	}
+}
+
+func TestRunWithoutARequestFailsClosed(t *testing.T) {
+	l := &fakeLister{ids: []string{"p1"}}
+	err := newStep(t, l).Run(&model.StepContext{Context: context.Background(), Body: publishBody("publish", "ghost")})
+	if err == nil {
+		t.Fatal("expected an error when the request path cannot be read")
+	}
+	var coded *model.CodedErr
+	if errors.As(err, &coded) {
+		t.Fatalf("a missing request is not the sender's fault, got %v", err)
 	}
 }

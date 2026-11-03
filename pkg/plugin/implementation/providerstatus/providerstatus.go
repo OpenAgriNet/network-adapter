@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -42,14 +43,37 @@ func (s *step) Run(ctx *model.StepContext) error {
 		return model.WrapExtractContextErr("could not read the request context", becknErr)
 	}
 
-	action, _ := becknContext["action"].(string)
-	switch action {
-	case "catalog/publish", "publish":
-		return s.checkPublish(ctx)
-	case "discover":
-		return s.narrowDiscover(ctx)
+	// The router picks the target from the URL path, not from context.action,
+	// so the path decides what runs here too. Deciding from the body would let a
+	// request to /discover or /publish with any other action skip the step.
+	if ctx.Request == nil || ctx.Request.URL == nil {
+		return fmt.Errorf("providerstatus: the step has no request, so its path cannot be read")
 	}
-	return nil
+	endpoint := strings.ToLower(path.Base(ctx.Request.URL.Path))
+	allowed, gated := actionsForEndpoint[endpoint]
+	if !gated {
+		return nil
+	}
+
+	action, _ := becknContext["action"].(string)
+	if !slices.Contains(allowed, strings.ToLower(strings.TrimSpace(action))) {
+		return model.NewBadReqErr("", fmt.Errorf(
+			"context.action %q does not match the request path %q: want one of %q",
+			action, ctx.Request.URL.Path, allowed))
+	}
+	if endpoint == "publish" {
+		return s.checkPublish(ctx)
+	}
+	return s.narrowDiscover(ctx)
+}
+
+// actionsForEndpoint maps the last segment of the request path to the
+// context.action values a body sent there may carry. The segment is the
+// router's endpoint under either module base path (`/` or
+// `/_internal/network/`). Paths not listed pass through untouched.
+var actionsForEndpoint = map[string][]string{
+	"publish":  {"catalog/publish", "publish"},
+	"discover": {"discover"},
 }
 
 func (s *step) checkPublish(ctx *model.StepContext) error {
