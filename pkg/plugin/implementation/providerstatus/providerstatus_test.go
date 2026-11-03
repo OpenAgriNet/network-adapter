@@ -315,3 +315,37 @@ func TestNarrowFilterAcceptsTheJSONPathTypeLikeDiscoveryDoes(t *testing.T) {
 		})
 	}
 }
+
+func TestNarrowFilterRefusesCommentsAndSingleQuotesOutsideStrings(t *testing.T) {
+	for name, expr := range map[string]string{
+		"comment":              `$.catalogs[*] ? (@.a == 1 /* c */)`,
+		"single quote":         `$.catalogs[*] ? (@.a == 'x')`,
+		"comment hiding quote": `$.catalogs[*] ? (@.a == 1 /* " */ || @.b == 2 )`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := narrowFilter(discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
+			var coded *model.CodedErr
+			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
+				t.Fatalf("want a bad-request error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNarrowFilterAcceptsCommentsAndSingleQuotesInsideStrings(t *testing.T) {
+	for name, pred := range map[string]string{
+		"single quote": `@.name == "O'Brien"`,
+		"comment":      `@.note == "a /* b"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := narrowFilter(discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
+			if err != nil {
+				t.Fatalf("narrowFilter: %v", err)
+			}
+			want := `$.catalogs[*] ? ( (` + pred + `) && (@.provider.id == "prov-a") )`
+			if got := filtersOf(t, out)["expression"]; got != want {
+				t.Fatalf("expression = %v, want %q", got, want)
+			}
+		})
+	}
+}

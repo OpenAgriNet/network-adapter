@@ -206,6 +206,11 @@ func predicateOf(expr string) (string, error) {
 			}
 		case c == '"':
 			inString = true
+		case c == '\'' || (c == '/' && i+1 < len(expr) && expr[i+1] == '*'):
+			// PostgreSQL jsonpath has comments and no single-quoted strings; this
+			// scanner does not model them, so refuse rather than mis-match.
+			return "", fmt.Errorf("message.intent.filters.expression must not use single quotes " +
+				"or /* comments */ outside double-quoted strings")
 		case c == '(':
 			depth++
 		case c == ')':
