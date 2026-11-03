@@ -231,10 +231,18 @@ response: |
       }
     };
 
+    /* The caller's filters. The provider always answers with every parameter and
+       every day, so they are applied here. ABSENT means no filter; an empty list
+       cannot arrive because the schema's minItems rejects it. [...] turns a bare
+       string into a list and an absent field into []. */
+    $requested := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+    $wantedParameters := [$requested.supportedParameters];
+    $wantedTypes := [$requested.supportedObservationTypes];
+
     /* Every parameter this provider reports, for one day. Read off the
        `abbreviation` dictionary the provider ships alongside the days, so the
        units below are its own declared units rather than a guess. */
-    $paramsFor := function($day) {
+    $readingsFor := function($day) {
       [
         $reading("Rainfall", "mm",
           $present({ "sum": $day.rain })),
@@ -265,6 +273,16 @@ response: |
       ]
     };
 
+    /* Only the parameters the caller asked for. Wrapped in [] because JSONata
+       collapses a one-element result to a bare object, and `parameters` must stay
+       a list. A requested parameter this provider does not report (SoilMoisture)
+       simply yields nothing, so such a day drops out of $kept below. */
+    $paramsFor := function($day) {
+      [$filter($readingsFor($day), function($reading) {
+        $count($wantedParameters) = 0 or $reading.parameter in $wantedParameters
+      })]
+    };
+
     /* Days that yielded at least one reading. The pack sets minItems:1 on
        parameters, so a day the provider sent as a placeholder -- a date and
        nothing measured -- cannot become a resource: it would be a signed
@@ -275,8 +293,14 @@ response: |
        the pack refuses.
 
        Filtered BEFORE the ids are minted, so offer.resourceIds and the resources
-       it points at are derived from the same list and cannot disagree. */
-    $kept := $filter($days, function($day) { $count($paramsFor($day)) > 0 });
+       it points at are derived from the same list and cannot disagree.
+
+       This provider only forecasts, so a caller naming observation types that
+       exclude Forecast gets no resources: an empty answer, not an error. */
+    $forecastWanted := $count($wantedTypes) = 0 or "Forecast" in $wantedTypes;
+    $kept := $forecastWanted
+      ? $filter($days, function($day) { $count($paramsFor($day)) > 0 })
+      : [];
 
     $selected := beckn.message.contract.commitments[0];
 
