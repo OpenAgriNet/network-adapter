@@ -104,9 +104,26 @@ func (c Config) validate() error {
 		return fmt.Errorf("invalid config: providerstatus %s and %s are both %q",
 			keyPublishEndpoint, keyDiscoverEndpoint, c.PublishEndpoint)
 	}
+	// Crossed, the router's real publish would only have its filter narrowed,
+	// never gated.
+	if c.PublishEndpoint == defaultDiscoverEndpoint || c.DiscoverEndpoint == defaultPublishEndpoint {
+		return fmt.Errorf("invalid config: providerstatus %s may not be %q nor %s %q",
+			keyPublishEndpoint, defaultDiscoverEndpoint, keyDiscoverEndpoint, defaultPublishEndpoint)
+	}
 	if !providerFieldPattern.MatchString(c.ProviderField) {
 		return fmt.Errorf("invalid config: providerstatus %s %q must match %s",
 			keyProviderField, c.ProviderField, providerFieldPattern)
+	}
+	// A segment folding onto another read key would make every body hold a
+	// lookalike key, so every request would be a 400.
+	field := strings.Split(c.ProviderField, ".")
+	for _, segment := range field {
+		for _, name := range append(slices.Clone(fixedKeys), field...) {
+			if segment != name && strings.EqualFold(segment, name) {
+				return fmt.Errorf("invalid config: providerstatus %s segment %q differs from the read key %q only by case",
+					keyProviderField, segment, name)
+			}
+		}
 	}
 	if c.ParticipantType != "" && !slices.Contains(participantTypes, c.ParticipantType) {
 		return fmt.Errorf("invalid config: providerstatus %s %q must be one of %q",
@@ -223,7 +240,7 @@ func (s *step) narrowDiscover(ctx *model.StepContext) error {
 	if err != nil {
 		return fmt.Errorf("could not check provider status: %w", err)
 	}
-	narrowed, err := narrowFilter(s.field, ctx.Body, active)
+	narrowed, err := narrowFilter(s.field, s.keys, ctx.Body, active)
 	if err != nil {
 		return err
 	}
@@ -239,12 +256,12 @@ var providerIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{2,252}$`)
 var catalogsRoot = regexp.MustCompile(`^\$\.catalogs\[\*\]\s*\?\s*\(`)
 
 // narrowFilter restricts a discover to the given provider ids, read at field
-// inside each catalog, by AND-ing an allowlist onto message.intent.filters. It
-// refuses what it cannot place safely rather than guessing a rewrite.
-func narrowFilter(field []string, body []byte, ids []string) ([]byte, error) {
+// inside each catalog, by AND-ing an allowlist onto message.intent.filters.
+// keys are the step's read keys. It refuses what it cannot place safely rather
+// than guessing a rewrite.
+func narrowFilter(field, keys []string, body []byte, ids []string) ([]byte, error) {
 	// Safe to splice: New only accepts plain dotted names.
 	idPath := "@." + strings.Join(field, ".")
-	keys := append(slices.Clone(fixedKeys), field...)
 	allow := idPath + ` == ""` // provider ids are never empty: matches nothing
 	if len(ids) > 0 {
 		tests := make([]string, len(ids))

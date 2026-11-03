@@ -107,6 +107,15 @@ Every config key is optional:
 | `participantType` | empty (any) | `node`, `upstream` |
 | `participantRole` | empty (any) | `consumer`, `provider`, `network` |
 
+A blank value for an endpoint or `providerField` is refused at startup, not
+read as the default. So are crossed endpoints (`publishEndpoint: discover` or
+`discoverEndpoint: publish`) and a `providerField` segment that differs from
+another key the step reads only by case (`Message.id`, `Type`, `ID.id`).
+
+The plugin cannot know the router's endpoint names, so a wrong endpoint value
+(a typo, say) silently leaves the real endpoint ungated. The two endpoint
+values must match the router's endpoint names exactly.
+
 ```yaml
 plugins:
   registrySteps:

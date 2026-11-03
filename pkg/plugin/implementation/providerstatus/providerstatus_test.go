@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -241,7 +242,7 @@ func TestNarrowFilterRewrites(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := narrowFilter(defaultField, discoverBody(tc.filters), tc.ids)
+			out, err := narrowFilter(defaultField, defaultKeys, discoverBody(tc.filters), tc.ids)
 			if err != nil {
 				t.Fatalf("narrowFilter: %v", err)
 			}
@@ -271,7 +272,7 @@ func TestNarrowFilterRefuses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := narrowFilter(defaultField, tc.body, tc.ids)
+			out, err := narrowFilter(defaultField, defaultKeys, tc.body, tc.ids)
 			var coded *model.CodedErr
 			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
 				t.Fatalf("want a bad-request error, got %v (out %s)", err, out)
@@ -282,7 +283,7 @@ func TestNarrowFilterRefuses(t *testing.T) {
 
 func TestNarrowFilterKeepsOtherNumbersUnchanged(t *testing.T) {
 	body := []byte(`{"context":{"action":"discover"},"message":{"big":12345678901234567890,"f":1.50,"intent":{}}}`)
-	out, err := narrowFilter(defaultField, body, []string{"prov-a"})
+	out, err := narrowFilter(defaultField, defaultKeys, body, []string{"prov-a"})
 	if err != nil {
 		t.Fatalf("narrowFilter: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestNarrowFilterAcceptsTheJSONPathTypeLikeDiscoveryDoes(t *testing.T) {
 		"padded":      fmt.Sprintf(`{"type":" jsonpath ","expression":%q}`, expr),
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(defaultField, discoverBody(filters), []string{"prov-a"})
+			out, err := narrowFilter(defaultField, defaultKeys, discoverBody(filters), []string{"prov-a"})
 			if err != nil {
 				t.Fatalf("narrowFilter: %v", err)
 			}
@@ -349,7 +350,7 @@ func TestNarrowFilterRefusesCommentsAndSingleQuotesOutsideStrings(t *testing.T) 
 		"comment hiding quote": `$.catalogs[*] ? (@.a == 1 /* " */ || @.b == 2 )`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
+			_, err := narrowFilter(defaultField, defaultKeys, discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
 			var coded *model.CodedErr
 			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
 				t.Fatalf("want a bad-request error, got %v", err)
@@ -364,7 +365,7 @@ func TestNarrowFilterAcceptsCommentsAndSingleQuotesInsideStrings(t *testing.T) {
 		"comment":      `@.note == "a /* b"`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
+			out, err := narrowFilter(defaultField, defaultKeys, discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
 			if err != nil {
 				t.Fatalf("narrowFilter: %v", err)
 			}
@@ -485,7 +486,7 @@ func TestNarrowFilterRefusesABackslashOutsideStrings(t *testing.T) {
 		"lone backslash":         `$.catalogs[*] ? (@.a\x == 1)`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
+			out, err := narrowFilter(defaultField, defaultKeys, discoverBody(jsonpathFilter(expr)), []string{"prov-a"})
 			var coded *model.CodedErr
 			if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
 				t.Fatalf("want a bad-request error, got %v (out %s)", err, out)
@@ -496,7 +497,7 @@ func TestNarrowFilterRefusesABackslashOutsideStrings(t *testing.T) {
 
 func TestNarrowFilterAcceptsABackslashInsideAString(t *testing.T) {
 	pred := `@.name == "a\"b"`
-	out, err := narrowFilter(defaultField, discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
+	out, err := narrowFilter(defaultField, defaultKeys, discoverBody(jsonpathFilter(`$.catalogs[*] ? (`+pred+`)`)), []string{"prov-a"})
 	if err != nil {
 		t.Fatalf("narrowFilter: %v", err)
 	}
@@ -607,7 +608,7 @@ func TestNarrowFilterFailsPlainlyOnABadRegistryID(t *testing.T) {
 		"one bad of two":  {"prov-a", "x"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := narrowFilter(defaultField, discoverBody(""), ids)
+			out, err := narrowFilter(defaultField, defaultKeys, discoverBody(""), ids)
 			if err == nil {
 				t.Fatalf("expected an error, got %s", out)
 			}
@@ -621,6 +622,9 @@ func TestNarrowFilterFailsPlainlyOnABadRegistryID(t *testing.T) {
 
 // defaultField is the provider id path the step reads when not configured.
 var defaultField = []string{"provider", "id"}
+
+// defaultKeys are the keys the step reads when not configured.
+var defaultKeys = append(slices.Clone(fixedKeys), defaultField...)
 
 func TestBuildConfigDefaultsReproduceTheFixedBehaviour(t *testing.T) {
 	want := Config{
@@ -920,5 +924,40 @@ func TestConfiguredTypeAndRoleReachTheLister(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Crossed endpoints would gate the router's discover and leave its publish
+// open, so the router's real names may not be swapped.
+func TestBuildConfigRefusesCrossedEndpoints(t *testing.T) {
+	for name, config := range map[string]map[string]string{
+		"swapped":             {"publishEndpoint": "discover", "discoverEndpoint": "publish"},
+		"discover on publish": {"discoverEndpoint": "publish", "publishEndpoint": "submit"},
+		"publish on discover": {"publishEndpoint": "discover", "discoverEndpoint": "search"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if cfg, err := BuildConfig(config); err == nil {
+				t.Fatalf("BuildConfig(%v) = %+v, want an error", config, cfg)
+			}
+		})
+	}
+}
+
+// A field segment that folds onto another read key, without being it, would
+// make every request a 400; it is refused at startup instead.
+func TestBuildConfigRefusesFoldedFieldSegments(t *testing.T) {
+	for _, field := range []string{"Message.id", "Type", "ID.id", "bpp.Catalogs.id", "a.Action"} {
+		t.Run(field, func(t *testing.T) {
+			if cfg, err := BuildConfig(map[string]string{"providerField": field}); err == nil {
+				t.Fatalf("BuildConfig(providerField %q) = %+v, want an error", field, cfg)
+			}
+		})
+	}
+	for _, field := range []string{"provider.id", "bpp.provider.id", "message.id", "provider.provider"} {
+		t.Run("accepts "+field, func(t *testing.T) {
+			if _, err := BuildConfig(map[string]string{"providerField": field}); err != nil {
+				t.Fatalf("BuildConfig(providerField %q): %v", field, err)
+			}
+		})
 	}
 }
