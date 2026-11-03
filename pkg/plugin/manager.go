@@ -741,6 +741,27 @@ func (m *Manager) ProviderStep(ctx context.Context, registry definition.Provider
 	return step, nil
 }
 
+// RegistryStep returns a Step instance based on the provided configuration,
+// handing it the registry it needs.
+func (m *Manager) RegistryStep(ctx context.Context, registry definition.RegistryLookup, cfg *Config) (definition.Step, error) {
+	rp, err := provider[definition.RegistryStepProvider](m.plugins, cfg.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load provider for %s: %w", cfg.ID, err)
+	}
+	step, closer, err := rp.New(ctx, registry, cfg.Config)
+	if err != nil {
+		return nil, err
+	}
+	if closer != nil {
+		m.closers = append(m.closers, func() {
+			if err := closer(); err != nil {
+				log.Errorf(context.Background(), err, "Failed to close registry step plugin %s", cfg.ID)
+			}
+		})
+	}
+	return step, nil
+}
+
 // Validator implements handler.PluginManager.
 func (m *Manager) Validator(ctx context.Context, cfg *Config) (definition.SchemaValidator, error) {
 	panic("unimplemented")

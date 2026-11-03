@@ -631,3 +631,8 @@ func TestCatalogPublishHandler_DecodeErrorWithoutStatusDefaultsTo400(t *testing.
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
+
+// RegistryStep returns a mock implementation of the registry Step interface.
+func (m *catalogPublishTestManager) RegistryStep(ctx context.Context, registry definition.RegistryLookup, cfg *plugin.Config) (definition.Step, error) {
+	return nil, nil
+}

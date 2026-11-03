@@ -282,3 +282,8 @@ func TestRegisterFailure(t *testing.T) {
 		})
 	}
 }
+
+// RegistryStep returns a mock implementation of the registry Step interface.
+func (m *mockPluginManager) RegistryStep(ctx context.Context, registry definition.RegistryLookup, cfg *plugin.Config) (definition.Step, error) {
+	return nil, nil
+}
