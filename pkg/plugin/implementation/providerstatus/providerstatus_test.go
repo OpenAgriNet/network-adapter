@@ -490,3 +490,94 @@ func TestNarrowFilterAcceptsABackslashInsideAString(t *testing.T) {
 		t.Fatalf("expression = %v, want %q", got, want)
 	}
 }
+
+// Go's struct decoding matches keys by case and Unicode fold, last key wins,
+// while other readers match exactly. A body holding two spellings of a field
+// this step reads is refused, so every reader downstream sees the same field.
+// longS is LATIN SMALL LETTER LONG S, which Go's decoder folds to "s". (The
+// Kelvin sign folds to "k", but no key this step reads contains a "k".)
+var longS = string(rune(0x17F))
+
+func TestPublishRefusesKeysThatDifferOnlyByFold(t *testing.T) {
+	cases := map[string]string{
+		"upper-case id beside id":      `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"evil","ID":"p1"}}]}}`,
+		"folded catalogs beside":       `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"evil"}}],"catalog` + longS + `":[{"provider":{"id":"p1"}}]}}`,
+		"capital Catalogs beside":      `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"evil"}}],"Catalogs":[{"provider":{"id":"p1"}}]}}`,
+		"only a capital Catalogs":      `{"context":{"action":"publish"},"message":{"Catalogs":[{"provider":{"id":"p1"}}]}}`,
+		"capital Provider":             `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"p1"},"Provider":{"id":"evil"}}]}}`,
+		"capital iD in a catalog":      `{"context":{"action":"publish"},"message":{"catalogs":[{"id":"c","iD":"d","provider":{"id":"p1"}}]}}`,
+		"capital Message at the root":  `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"p1"}}]},"Message":{}}`,
+		"folded message at the root":   `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"p1"}}]},"me` + longS + longS + `age":{}}`,
+		"capital Context at the root":  `{"context":{"action":"publish"},"Context":{"action":"x"},"message":{"catalogs":[{"provider":{"id":"p1"}}]}}`,
+		"capital Action in context":    `{"context":{"action":"publish","Action":"x"},"message":{"catalogs":[{"provider":{"id":"p1"}}]}}`,
+		"exact duplicate provider id":  `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"evil","id":"p1"}}]}}`,
+		"exact duplicate catalogs key": `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"evil"}}],"catalogs":[{"provider":{"id":"p1"}}]}}`,
+		"exact duplicate deep down":    `{"context":{"action":"publish"},"message":{"catalogs":[{"provider":{"id":"p1"},"items":[{"price":1,"price":2}]}]}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"p1"}}
+			wantBadRequest(t, run(newStep(t, l), "/publish", []byte(body)))
+		})
+	}
+}
+
+func TestPublishStillAcceptsAPlainBody(t *testing.T) {
+	l := &fakeLister{ids: []string{"p1"}}
+	body := `{"context":{"action":"publish"},"message":{"catalogs":[{"id":"c1","descriptor":{"name":"x"},"provider":{"id":"p1","descriptor":{"name":"y"}}}]}}`
+	if err := run(newStep(t, l), "/publish", []byte(body)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDiscoverRefusesKeysThatDifferOnlyByFold(t *testing.T) {
+	expr := `"$.catalogs[*] ? (@.a == 1)"`
+	cases := map[string]string{
+		"folded filters beside":  `{"context":{"action":"discover"},"message":{"intent":{"filters":{"type":"jsonpath","expression":` + expr + `},"filter` + longS + `":{"type":"jsonpath","expression":"$.catalogs[*]"}}}}`,
+		"only a capital Filters": `{"context":{"action":"discover"},"message":{"intent":{"Filters":{"type":"jsonpath","expression":"$.catalogs[*]"}}}}`,
+		"capital Intent":         `{"context":{"action":"discover"},"message":{"intent":{},"Intent":{"filters":null}}}`,
+		"capital Message":        `{"context":{"action":"discover"},"MESSAGE":{"intent":{}}}`,
+		"capital Expression":     `{"context":{"action":"discover"},"message":{"intent":{"filters":{"type":"jsonpath","expression":` + expr + `,"Expression":"$.catalogs[*]"}}}}`,
+		"capital Type":           `{"context":{"action":"discover"},"message":{"intent":{"filters":{"type":"jsonpath","TYPE":"jmespath","expression":` + expr + `}}}}`,
+		"capital Action":         `{"context":{"action":"discover","ACTION":"search"},"message":{"intent":{}}}`,
+		"folded expression":      `{"context":{"action":"discover"},"message":{"intent":{"filters":{"type":"jsonpath","expression":` + expr + `,"expre` + longS + `sion":"$.catalogs[*]"}}}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			l := &fakeLister{ids: []string{"prov-a"}}
+			wantBadRequest(t, run(newStep(t, l), "/discover", []byte(body)))
+		})
+	}
+}
+
+func TestDiscoverKeepsSiblingsAndHandlesAbsentParts(t *testing.T) {
+	allow := `@.provider.id == "prov-a"`
+	cases := []struct {
+		name, body, want string
+		keep             []string
+	}{
+		{"siblings survive",
+			`{"context":{"action":"discover"},"message":{"intent":{"descriptor":{"name":"rice"},"spatial":[{"op":"s_dwithin"}],"textSearch":"rice","schemaContext":["a"],"filters":{"type":"jsonpath","expression":"$.catalogs[*] ? (@.a == 1)"}}}}`,
+			`$.catalogs[*] ? ( (@.a == 1) && (` + allow + `) )`,
+			[]string{`"descriptor":{"name":"rice"}`, `"spatial":[{"op":"s_dwithin"}]`, `"textSearch":"rice"`, `"schemaContext":["a"]`}},
+		{"message absent", `{"context":{"action":"discover"}}`, `$.catalogs[*] ? (` + allow + `)`, nil},
+		{"intent absent", `{"context":{"action":"discover"},"message":{}}`, `$.catalogs[*] ? (` + allow + `)`, nil},
+		{"filters null", `{"context":{"action":"discover"},"message":{"intent":{"filters":null}}}`, `$.catalogs[*] ? (` + allow + `)`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := stepCtx("/discover", []byte(tc.body))
+			if err := newStep(t, &fakeLister{ids: []string{"prov-a"}}).Run(ctx); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := filtersOf(t, ctx.Body)["expression"]; got != tc.want {
+				t.Fatalf("expression = %v, want %q", got, tc.want)
+			}
+			for _, k := range tc.keep {
+				if !strings.Contains(string(ctx.Body), k) {
+					t.Fatalf("%s lost from %s", k, ctx.Body)
+				}
+			}
+		})
+	}
+}

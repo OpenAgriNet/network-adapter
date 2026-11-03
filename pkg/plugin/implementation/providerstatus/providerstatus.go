@@ -38,7 +38,7 @@ func New(registry definition.RegistryLookup) (definition.Step, error) {
 }
 
 func (s *step) Run(ctx *model.StepContext) error {
-	_, becknContext, becknErr := model.ExtractContext(ctx.Body)
+	root, becknContext, becknErr := model.ExtractContext(ctx.Body)
 	if becknErr != nil {
 		return model.WrapExtractContextErr("could not read the request context", becknErr)
 	}
@@ -55,6 +55,12 @@ func (s *step) Run(ctx *model.StepContext) error {
 		return nil
 	}
 
+	if err := refuseLookalikeKeys(root, "the request body"); err != nil {
+		return model.NewBadReqErr("", err)
+	}
+	if err := refuseLookalikeKeys(becknContext, "context"); err != nil {
+		return model.NewBadReqErr("", err)
+	}
 	action, _ := becknContext["action"].(string)
 	if !slices.Contains(allowed, strings.ToLower(strings.TrimSpace(action))) {
 		return model.NewBadReqErr("", fmt.Errorf(
@@ -148,9 +154,15 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := refuseLookalikeKeys(message, "message"); err != nil {
+		return nil, model.NewBadReqErr("", err)
+	}
 	intent, err := objectAt(message, "intent")
 	if err != nil {
 		return nil, err
+	}
+	if err := refuseLookalikeKeys(intent, "message.intent"); err != nil {
+		return nil, model.NewBadReqErr("", err)
 	}
 
 	var expression string
@@ -160,6 +172,9 @@ func narrowFilter(body []byte, ids []string) ([]byte, error) {
 		filters, ok := raw.(map[string]any)
 		if !ok {
 			return nil, model.NewBadReqErr("", fmt.Errorf("message.intent.filters must be an object"))
+		}
+		if err := refuseLookalikeKeys(filters, "message.intent.filters"); err != nil {
+			return nil, model.NewBadReqErr("", err)
 		}
 		// Discovery reads an empty type as jsonpath and ignores case and padding.
 		grammar, _ := filters["type"].(string)
@@ -252,34 +267,118 @@ func predicateOf(expr string) (string, error) {
 	return "", fmt.Errorf("message.intent.filters.expression has unbalanced parentheses or an unterminated string")
 }
 
-// publishRequest is the part of a publish this step reads.
-type publishRequest struct {
-	Message struct {
-		Catalogs []struct {
-			Provider struct {
-				ID string `json:"id"`
-			} `json:"provider"`
-		} `json:"catalogs"`
-	} `json:"message"`
+// readKeys are the JSON keys this step reads, anywhere it reads them.
+var readKeys = []string{
+	"message", "intent", "filters", "catalogs", "provider", "id",
+	"type", "expression", "context", "action",
+}
+
+// refuseLookalikeKeys refuses an object holding a key that differs from one
+// this step reads only by case or Unicode folding ("ID", "Filters",
+// "catalog\u017f"). Go's struct decoding would match such a key, other readers
+// would not, so the step and the service behind it could read different
+// fields. A key spelled exactly is fine; so is any key nobody here reads.
+func refuseLookalikeKeys(obj map[string]any, where string) error {
+	for key := range obj {
+		for _, name := range readKeys {
+			if key != name && strings.EqualFold(key, name) {
+				return fmt.Errorf("%s holds the key %q, which differs from %q only by case or Unicode folding: "+
+					"spell it %q or remove it", where, key, name, name)
+			}
+		}
+	}
+	return nil
+}
+
+// refuseDuplicateKeys refuses a JSON document in which any object holds the
+// same key twice. Go keeps the last value, other decoders keep the first, so a
+// forwarded body with a duplicate could name one provider here and another
+// downstream. The body must already be known to be valid JSON.
+func refuseDuplicateKeys(body []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	var walk func() error
+	walk = func() error {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := tok.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delim {
+		case '{':
+			seen := map[string]struct{}{}
+			for dec.More() {
+				keyTok, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				key, _ := keyTok.(string)
+				if _, dup := seen[key]; dup {
+					return fmt.Errorf("the key %q appears twice in one object", key)
+				}
+				seen[key] = struct{}{}
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for dec.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		}
+		_, err = dec.Token() // the closing delimiter
+		return err
+	}
+	return walk()
 }
 
 // providerIDsOf returns the provider of every catalog in a publish. A catalog
 // that names none is an error rather than a skip: an unnamed provider cannot be
 // checked, so it must not slip through.
+//
+// Keys are read exactly, never through a struct: a struct would also match
+// "ID" or a folded "catalogs", and the body is forwarded as is.
 func providerIDsOf(body []byte) ([]string, error) {
-	var req publishRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("could not read the publish body: %w", err)
 	}
-	if len(req.Message.Catalogs) == 0 {
+	if err := refuseDuplicateKeys(body); err != nil {
+		return nil, fmt.Errorf("could not read the publish body: %w", err)
+	}
+	message, ok := doc["message"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("the publish carries no message object: set message.catalogs")
+	}
+	if err := refuseLookalikeKeys(message, "message"); err != nil {
+		return nil, err
+	}
+	catalogs, _ := message["catalogs"].([]any)
+	if len(catalogs) == 0 {
 		return nil, fmt.Errorf("the publish carries no catalogs: set message.catalogs")
 	}
-	ids := make([]string, 0, len(req.Message.Catalogs))
-	for i, c := range req.Message.Catalogs {
-		if c.Provider.ID == "" {
+	ids := make([]string, 0, len(catalogs))
+	for i, raw := range catalogs {
+		catalog, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("message.catalogs[%d] must be an object", i)
+		}
+		if err := refuseLookalikeKeys(catalog, fmt.Sprintf("message.catalogs[%d]", i)); err != nil {
+			return nil, err
+		}
+		provider, _ := catalog["provider"].(map[string]any)
+		if err := refuseLookalikeKeys(provider, fmt.Sprintf("message.catalogs[%d].provider", i)); err != nil {
+			return nil, err
+		}
+		id, _ := provider["id"].(string)
+		if id == "" {
 			return nil, fmt.Errorf("catalog %d names no provider: set message.catalogs[%d].provider.id", i, i)
 		}
-		ids = append(ids, c.Provider.ID)
+		ids = append(ids, id)
 	}
 	return ids, nil
 }
