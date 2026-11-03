@@ -1,3 +1,84 @@
+// Package providerstatus is a registry step that keeps providers the registry
+// does not list as active out of publish and discover, so the discovery
+// service needs neither registry access nor a schema change.
+//
+// It asks the registry one question per request: which provider ids are active
+// right now? "Active" and "exists" are the same check, so a deactivated and a
+// never-registered provider are treated alike. participantType and
+// participantRole narrow which active participants count.
+//
+// # Path, not action
+//
+// The router picks the target from the URL path, so the path decides here too:
+// the last path segment, under either module base path (`/` multi-adapter,
+// `/_internal/network/` single-adapter), is compared with publishEndpoint and
+// discoverEndpoint. Every other path passes untouched. On a gated path the
+// body's context.action, ignoring case and surrounding spaces, must agree, or
+// the request is a 400: the endpoint or "catalog/" + it on publish, the
+// endpoint on discover. A missing action is a disagreement. A body without a
+// JSON context object is a 400 on every path.
+//
+// Publish: every catalog's provider id, at providerField inside the catalog,
+// must be active. One bad or missing id rejects the whole batch with a 400, so
+// a sender never guesses which catalogs landed; no catalogs is a 400 too.
+//
+// Discover: message.intent.filters is AND-ed with an allowlist of the active
+// ids, or set to one when absent. Nothing is deleted, so a reactivated
+// provider's catalogs reappear without a republish. The filter must be jsonpath
+// (an empty type counts) of the form `$.catalogs[*] ? ( ... )`; single quotes,
+// backslashes and /* comments */ outside double-quoted strings are refused
+// rather than risk misreading them.
+//
+// On both paths an object the step reads (root, context, message, intent,
+// filters, each catalog and every object along providerField) is a 400 if it
+// holds a key that differs from one the step reads only by case or Unicode
+// folding, and a publish holding a key twice in one object is a 400. JSON
+// readers resolve such keys differently, so the step and the service behind it
+// could otherwise read different fields.
+//
+// # Fails closed
+//
+// A registry that cannot be asked, or answers with an invalid provider id, is
+// a plain error (500), never "everyone is active" and never a 400: the sender
+// did nothing wrong. No active provider means discover returns nothing. The
+// registry's default search page size is not overridden, so a registry that
+// caps its pages would shorten the list: an availability risk (providers read
+// as inactive), never a bypass. The plugin refuses to start when the registry
+// cannot list active providers (only sunbirdRegistry can) or the config is
+// invalid; an unknown key is invalid, so a typo never falls back to a default.
+//
+// # Cost
+//
+// One extra, uncached registry call per publish and per discover. If that
+// matters, cache on the registry side, not here.
+//
+// # Configuration
+//
+// List the step under the network module's registrySteps and in steps, after
+// validateSign and before addRoute. Both are needed: a step listed under
+// registrySteps but missing from steps loads and does nothing. Add it to the
+// network module of each deployment (path `/` multi-adapter,
+// `/_internal/network/` single-adapter). Every config key is optional; the
+// values shown are the defaults, except the participant filters, which default
+// to empty (any):
+//
+//	plugins:
+//	  registrySteps:
+//	    - id: providerstatus
+//	      config:
+//	        publishEndpoint: publish     # ^[a-z][a-z0-9_]*$
+//	        discoverEndpoint: discover   # same pattern, differs from publish
+//	        providerField: provider.id   # dotted names, spliced into the jsonpath
+//	        participantType: node        # node | upstream
+//	        participantRole: provider    # consumer | provider | network
+//	steps:
+//	  - validateSign
+//	  - providerstatus
+//	  - addRoute
+//
+// The plugin is built by install/build-plugins.sh and listed for the combined
+// deployment in config/onix/plugin.yaml. Deployed configs live in the
+// helmcharts repo; nothing is gated until they list the step.
 package providerstatus
 
 import (
