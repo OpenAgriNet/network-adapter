@@ -753,7 +753,7 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			mutate: func(ra map[string]any) {
 				delete(ra["market"].(map[string]any), "state")
 			},
-			expect: "short alphabetic state",
+			expect: "market.state",
 		},
 		{
 			name: "no district",
@@ -769,7 +769,7 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			mutate: func(ra map[string]any) {
 				delete(ra["market"].(map[string]any), "marketCode")
 			},
-			expect: "marketName alone is not enough",
+			expect: "marketName alone is insufficient",
 		},
 		{
 			// Everything downstream reads supportedCommodities[0], so this

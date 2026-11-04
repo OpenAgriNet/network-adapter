@@ -75,11 +75,10 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Mandatory, and a code: a short alphabetic state (CG), not a name. */
+        /* Mandatory: Agmarknet refuses a call without statecode. */
         $exists($ra.market.state)
-          and $count($match($ra.market.state, /^[A-Za-z]{2,4}$/)) > 0
       )
-    message: "this capability needs Agmarknet's codes in market: a short alphabetic state, not a name"
+    message: "this capability needs market.state, Agmarknet's state code"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
@@ -87,7 +86,7 @@ required:
            district. Refused: send the code, or neither for a district search. */
         $not($exists($ra.market.marketName) and $not($exists($ra.market.marketCode)))
       )
-    message: "market.marketName alone is not enough: send market.marketCode for that market, or omit marketName to search the whole district"
+    message: "market.marketName alone is insufficient; provide market.marketCode or omit market.marketName for district-wide search."
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
@@ -125,7 +124,6 @@ request: |
       "commoditycode": $ra.supportedCommodities[0].code,
       "from_date":     $ddmmyyyy($ra.validity.startsAt),
       "to_date":       $ddmmyyyy($ra.validity.endsAt),
-      /* Dropped when absent: JSONata omits a key whose value is undefined. */
       "marketcode":    $ra.market.marketCode
     }
   )
