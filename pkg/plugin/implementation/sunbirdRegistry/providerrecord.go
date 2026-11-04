@@ -320,20 +320,11 @@ const (
 	fieldRole   = "role"
 )
 
-// ActiveProviderIDs lists the participantId of every participant whose status
-// is active, once each. A non-empty participantType or role restricts the list
-// to participants of that type, or carrying that role; empty means any.
-//
-// The registry is asked for matching participants only, and each row is
-// checked again here, as activeUpstream does, so a registry that ignores a
-// filter cannot widen the list. An error means the registry could not be
-// consulted; a partial list is never returned, because a caller treats absence
-// from the list as a refusal.
-//
-// The registry's default page size is not overridden, as no other search here
-// overrides it. A registry that caps its pages would silently shorten the list:
-// providers past the cap would read as inactive. That is an availability risk,
-// never a bypass, since a missing id is refused, not admitted.
+// ActiveProviderIDs lists each active participant's id once, optionally only
+// those of one type or role (empty means any). Rows are re-checked here, so a
+// registry that ignores a filter cannot widen the list. An error never comes
+// with a partial list, since absence reads as a refusal. The registry's page
+// size is not overridden: a capped page would hide providers, never admit one.
 func (c *Client) ActiveProviderIDs(ctx context.Context, participantType, role string) ([]string, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
