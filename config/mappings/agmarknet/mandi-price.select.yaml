@@ -49,6 +49,9 @@
 #
 # Refusing here names what is missing. Sending it anyway earns a 400 from
 # Agmarknet, or worse an empty result that reads as "no prices".
+# Not repeated here, the pack's validator already refuses them: an unknown or empty
+# supportedPriceFields, an empty or non-string marketCode, a validity that is not
+# a date-time, and no supportedCommodities or code.
 required:
   - check: |
       (
@@ -60,8 +63,7 @@ required:
            what it asked -- the same failure capabilitybinding refuses at the
            commitment level, where guessing would silently serve part of a
            request. */
-        $exists($ra.supportedCommodities[0].code)
-          and $count($ra.supportedCommodities) = 1
+        $count($ra.supportedCommodities) = 1
       )
     message: "this capability needs exactly one commodity code in supportedCommodities; send several requests rather than have all but the first dropped"
   - check: |
@@ -84,16 +86,6 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Optional; absent means the whole district. When given it must be a
-           non-empty string, or the query widens silently. */
-        $exists($ra.market.marketCode)
-          ? ($type($ra.market.marketCode) = "string" and $ra.market.marketCode != "")
-          : true
-      )
-    message: "market.marketCode, when given, must be a non-empty string; omit it to search the whole district"
-  - check: |
-      (
-        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         /* Agmarknet takes no market name, so a name alone would return the whole
            district. Refused: send the code, or neither for a district search. */
         $not($exists($ra.market.marketName) and $not($exists($ra.market.marketCode)))
@@ -102,31 +94,9 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Only the pack's Minimum, Maximum, Modal. Absent (or empty) means all
-           three; anything else would return rows with no price. */
-        $exists($ra.supportedPriceFields)
-          ? $count($ra.supportedPriceFields[$ in ["Minimum", "Maximum", "Modal"]])
-              = $count($ra.supportedPriceFields)
-          : true
-      )
-    message: "supportedPriceFields must list only Minimum, Maximum or Modal"
-  - check: |
-      (
-        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         $exists($ra.validity.startsAt) and $exists($ra.validity.endsAt)
       )
     message: "this capability needs a validity window; it reports prices over a date range"
-  - check: |
-      (
-        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Sent as from_date and to_date, so both must be dates (a date-time is
-           fine). Empty or free text used to go upstream as "--" or crash. */
-        $type($ra.validity.startsAt) = "string"
-          and $type($ra.validity.endsAt) = "string"
-          and $contains($ra.validity.startsAt, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/)
-          and $contains($ra.validity.endsAt, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/)
-      )
-    message: "validity.startsAt and validity.endsAt must be dates (yyyy-MM-dd); the upstream takes them as from_date and to_date"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;

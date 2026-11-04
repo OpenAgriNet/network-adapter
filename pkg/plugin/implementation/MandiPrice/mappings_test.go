@@ -740,22 +740,6 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			expect: "validity window",
 		},
 		{
-			// Reordered into "--" and sent upstream before this was refused.
-			name: "an empty validity start",
-			mutate: func(ra map[string]any) {
-				ra["validity"].(map[string]any)["startsAt"] = ""
-			},
-			expect: "must be dates",
-		},
-		{
-			// Crashed the date reorder rather than being refused.
-			name: "validity that is not a date",
-			mutate: func(ra map[string]any) {
-				ra["validity"] = map[string]any{"startsAt": "abc", "endsAt": "xyz"}
-			},
-			expect: "must be dates",
-		},
-		{
 			name: "validity that ends before it starts",
 			mutate: func(ra map[string]any) {
 				ra["validity"] = map[string]any{"startsAt": "2025-08-21", "endsAt": "2025-08-20"}
@@ -786,30 +770,6 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 				delete(ra["market"].(map[string]any), "marketCode")
 			},
 			expect: "marketName alone is not enough",
-		},
-		{
-			// Present but empty would widen the query silently.
-			name: "an empty market code",
-			mutate: func(ra map[string]any) {
-				ra["market"].(map[string]any)["marketCode"] = ""
-			},
-			expect: "market.marketCode",
-		},
-		{
-			name: "a market code that is not a string",
-			mutate: func(ra map[string]any) {
-				ra["market"].(map[string]any)["marketCode"] = 2056
-			},
-			expect: "market.marketCode",
-		},
-		{
-			// Outside the pack's Minimum/Maximum/Modal enum: no price would be
-			// selected, so the row would carry no price.
-			name: "a price field the pack does not define",
-			mutate: func(ra map[string]any) {
-				ra["supportedPriceFields"] = []any{"Average"}
-			},
-			expect: "supportedPriceFields",
 		},
 		{
 			// Everything downstream reads supportedCommodities[0], so this
