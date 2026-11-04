@@ -27,6 +27,7 @@ const keySeparator = "@"
 // (key = IV = its first 16 bytes). Obfuscation only; the token is the secret.
 type cbcCodec struct {
 	provider      string
+	secrets       common.Secrets
 	tokenEnv      string
 	tokenField    string
 	requestField  string
@@ -66,7 +67,7 @@ func newCBCCodec(provider, prefix string, s cbcSettings) (*cbcCodec, error) {
 
 // seal adds the token, encrypts under a fresh key, and returns its opener.
 func (c *cbcCodec) seal(ctx context.Context, mapped []byte) ([]byte, common.Opener, error) {
-	plain, err := withToken(ctx, c.provider, mapped, c.tokenEnv, c.tokenField)
+	plain, err := withToken(ctx, c.provider, mapped, c.tokenEnv, c.tokenField, c.secrets)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -101,7 +102,7 @@ func (c *cbcCodec) open(ctx context.Context, answer []byte, requestKey string) (
 		}
 		ciphertext = sealed[:at]
 	}
-	raw, err := decodeSealed(ctx, c.provider, c.tokenEnv, ciphertext)
+	raw, err := decodeSealed(ctx, c.provider, c.tokenEnv, ciphertext, c.secrets)
 	if err != nil {
 		return nil, err
 	}

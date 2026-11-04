@@ -13,8 +13,8 @@ import (
 )
 
 // EncryptionFromRow builds a binding's envelope from its row's encryption block,
-// with the actions that envelope sends to another binding's host.
-type EncryptionFromRow func(bindingKey string, encryption map[string]any) (Envelope, map[string]string, error)
+// reading keys from secrets, with the actions it sends to another binding's host.
+type EncryptionFromRow func(bindingKey string, encryption map[string]any, secrets Secrets) (Envelope, map[string]string, error)
 
 // rowEnvelopes holds one envelope per binding whose row carries encryption,
 // rebuilt only when that block changes.
@@ -41,10 +41,11 @@ func (s *Step) envelopeFor(ctx context.Context, plan *model.ProviderRecord) (Env
 		log.Errorf(ctx, err, "Refusing %s", plan.BindingKey)
 		return nil, nil, err
 	}
-	return s.rowEnvelopes.forRow(ctx, plan, s.config.EncryptionFromRow)
+	return s.rowEnvelopes.forRow(ctx, plan, s.config.EncryptionFromRow, s.config.SecretStore)
 }
 
-func (r *rowEnvelopes) forRow(ctx context.Context, plan *model.ProviderRecord, build EncryptionFromRow) (Envelope, map[string]string, error) {
+func (r *rowEnvelopes) forRow(ctx context.Context, plan *model.ProviderRecord, build EncryptionFromRow,
+	store SecretStore) (Envelope, map[string]string, error) {
 	fingerprint, err := json.Marshal(plan.Encryption)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: its registry row's encryption block cannot be read: %w", plan.BindingKey, err)
@@ -57,7 +58,7 @@ func (r *rowEnvelopes) forRow(ctx context.Context, plan *model.ProviderRecord, b
 		return held.envelope, held.hosted, nil
 	}
 
-	envelope, hosted, err := build(plan.BindingKey, plan.Encryption)
+	envelope, hosted, err := build(plan.BindingKey, plan.Encryption, rowSecrets(ctx, plan, store))
 	if err != nil {
 		log.Errorf(ctx, err, "Refusing %s: the encryption block in its registry row is not usable", plan.BindingKey)
 		return nil, nil, fmt.Errorf("%s: the encryption block in its registry row is not usable: %w", plan.BindingKey, err)

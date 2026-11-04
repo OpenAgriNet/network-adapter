@@ -21,6 +21,9 @@ type Hooks struct {
 	// Succeeded reports whether an opened answer says yes. It must fail
 	// closed: anything it cannot read is a no.
 	Succeeded func(plain []byte) bool
+
+	// Secrets is where the codecs read keys and tokens. Nil: the environment.
+	Secrets common.Secrets
 }
 
 // verify checks the caller's challenge before the guarded call. The challenge

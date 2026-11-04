@@ -17,18 +17,20 @@ type SecretStore interface {
 	Held(entry, key string) (string, bool)
 }
 
-// secretSource gives an authenticator its credential values by name.
-type secretSource interface {
-	// value is "" when the secret is unset or cannot be read; the reason is logged.
-	value(ctx context.Context, name string) string
-	held(name string) string
+// Secrets gives credential values by name: the environment for a config
+// profile, the provider's secret store entry for a registry row.
+type Secrets interface {
+	// Value is "" when the secret is unset or cannot be read; the reason is logged.
+	Value(ctx context.Context, name string) string
+	// Held is a value already in memory, without fetching: for redaction.
+	Held(name string) string
 }
 
 // envSecrets reads the environment, as config profiles always have.
 type envSecrets struct{}
 
-func (envSecrets) value(_ context.Context, name string) string { return os.Getenv(name) }
-func (envSecrets) held(name string) string                     { return os.Getenv(name) }
+func (envSecrets) Value(_ context.Context, name string) string { return os.Getenv(name) }
+func (envSecrets) Held(name string) string                     { return os.Getenv(name) }
 
 // storeSecrets reads one provider's entry in the secret store.
 type storeSecrets struct {
@@ -36,7 +38,7 @@ type storeSecrets struct {
 	entry string
 }
 
-func (s storeSecrets) value(ctx context.Context, name string) string {
+func (s storeSecrets) Value(ctx context.Context, name string) string {
 	value, err := s.store.Value(ctx, s.entry, name)
 	if err != nil {
 		log.Errorf(ctx, err, "Secret %s for %s could not be read from the secret store", name, s.entry)
@@ -45,7 +47,7 @@ func (s storeSecrets) value(ctx context.Context, name string) string {
 	return value
 }
 
-func (s storeSecrets) held(name string) string {
+func (s storeSecrets) Held(name string) string {
 	value, _ := s.store.Held(s.entry, name)
 	return value
 }
@@ -56,7 +58,7 @@ func (a *authenticator) secret(ctx context.Context, name string) string {
 	if a.secrets == nil {
 		return os.Getenv(name)
 	}
-	return a.secrets.value(ctx, name)
+	return a.secrets.Value(ctx, name)
 }
 
 // heldSecret is a credential value already in memory, for redaction only.
@@ -64,5 +66,5 @@ func (a *authenticator) heldSecret(name string) string {
 	if a.secrets == nil {
 		return os.Getenv(name)
 	}
-	return a.secrets.held(name)
+	return a.secrets.Held(name)
 }

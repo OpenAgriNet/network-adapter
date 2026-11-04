@@ -1,9 +1,12 @@
 package Grievance
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 )
 
 const (
@@ -142,7 +145,7 @@ func TestEncryptionKeysRefuseWhatTheyDoNotKnow(t *testing.T) {
 func TestEncryptionFromRowBuildsTheGrievanceEnvelopeAndItsOTPHost(t *testing.T) {
 	t.Parallel()
 
-	envelope, hosted, err := EncryptionFromRow(grievanceKey, grievanceRow())
+	envelope, hosted, err := EncryptionFromRow(grievanceKey, grievanceRow(), nil)
 	if err != nil {
 		t.Fatalf("EncryptionFromRow() = %v", err)
 	}
@@ -157,7 +160,7 @@ func TestEncryptionFromRowBuildsTheGrievanceEnvelopeAndItsOTPHost(t *testing.T) 
 func TestEncryptionFromRowBuildsTheApplicationEnvelopeWithItsFollowUp(t *testing.T) {
 	t.Parallel()
 
-	envelope, hosted, err := EncryptionFromRow(applicationKey, applicationRow())
+	envelope, hosted, err := EncryptionFromRow(applicationKey, applicationRow(), nil)
 	if err != nil {
 		t.Fatalf("EncryptionFromRow() = %v", err)
 	}
@@ -174,7 +177,36 @@ func TestEncryptionFromRowRefusesWhatTheParserRefuses(t *testing.T) {
 
 	row := grievanceRow()
 	delete(row, "aesGcm")
-	if _, _, err := EncryptionFromRow(grievanceKey, row); err == nil {
+	if _, _, err := EncryptionFromRow(grievanceKey, row, nil); err == nil {
 		t.Error("EncryptionFromRow() accepted an aesGcm row with no aesGcm block")
+	}
+}
+
+// rowSecrets stands in for the provider's secret store entry.
+type rowSecrets struct {
+	values map[string]string
+	asked  []string
+}
+
+func (r *rowSecrets) Value(_ context.Context, name string) string {
+	r.asked = append(r.asked, name)
+	return r.values[name]
+}
+func (r *rowSecrets) Held(name string) string { return r.values[name] }
+
+func TestEncryptionFromRowSealsTheOTPCallWithTheSecretsGiven(t *testing.T) {
+	t.Setenv("PMKISAN_OTP_TOKEN", "")
+	secrets := &rowSecrets{values: map[string]string{"PMKISAN_OTP_TOKEN": "otp-from-store"}}
+	envelope, _, err := EncryptionFromRow(grievanceKey, grievanceRow(), secrets)
+	if err != nil {
+		t.Fatalf("EncryptionFromRow() = %v", err)
+	}
+
+	_, _, err = envelope.Seal(context.Background(), common.Exchange{Action: "init"}, []byte(`{"Types":"Mobile","Values":"9999999999"}`))
+	if err != nil {
+		t.Fatalf("Seal() = %v", err)
+	}
+	if len(secrets.asked) == 0 || secrets.asked[0] != "PMKISAN_OTP_TOKEN" {
+		t.Errorf("asked for %v, want PMKISAN_OTP_TOKEN from the given secrets", secrets.asked)
 	}
 }

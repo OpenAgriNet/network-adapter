@@ -82,7 +82,7 @@ type authenticator struct {
 	cfg AuthProfile
 
 	// Where credential values are read; nil is the environment. See secrets.go.
-	secrets secretSource
+	secrets Secrets
 
 	// Two mechanisms, two jobs. tokenMu serialises the EXCHANGE so a cold
 	// start sends one request to the issuer. token is atomic so READERS never

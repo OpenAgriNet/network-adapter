@@ -20,11 +20,12 @@ type rowEncryptionHook struct {
 	calls      int
 	bindingKey string
 	encryption map[string]any
+	secrets    Secrets
 }
 
-func (h *rowEncryptionHook) build(bindingKey string, encryption map[string]any) (Envelope, map[string]string, error) {
+func (h *rowEncryptionHook) build(bindingKey string, encryption map[string]any, secrets Secrets) (Envelope, map[string]string, error) {
 	h.calls++
-	h.bindingKey, h.encryption = bindingKey, encryption
+	h.bindingKey, h.encryption, h.secrets = bindingKey, encryption, secrets
 	return h.envelope, h.hosted, h.err
 }
 
@@ -159,5 +160,36 @@ func TestEnvelopeForUsesTheConfigWhenTheRowHasNone(t *testing.T) {
 	}
 	if hook.calls != 0 {
 		t.Errorf("hook called %d times for a row without encryption", hook.calls)
+	}
+}
+
+func TestRowEnvelopeIsGivenTheProvidersStoreEntry(t *testing.T) {
+	t.Parallel()
+
+	hook := &rowEncryptionHook{envelope: &reversingEnvelope{}}
+	store := &fakeSecretStore{entries: map[string]map[string]string{testProvider: {"PMKISAN_OTP_TOKEN": "from-store"}}}
+	step := newStep(t, &stubRegistry{}, &stubMapper{}, func(c *Config) {
+		c.EncryptionFromRow = hook.build
+		c.SecretStore = store
+	})
+
+	if _, _, err := step.envelopeFor(context.Background(), encryptedPlan("http://unused", map[string]any{"type": "aesGcm"})); err != nil {
+		t.Fatalf("envelopeFor() = %v", err)
+	}
+	if got := hook.secrets.Value(context.Background(), "PMKISAN_OTP_TOKEN"); got != "from-store" {
+		t.Errorf("the builder's secrets read %q, want the provider's store entry", got)
+	}
+}
+
+func TestRowEnvelopeReadsTheEnvironmentWithoutAStore(t *testing.T) {
+	t.Setenv("PMKISAN_OTP_TOKEN", "from-env")
+	hook := &rowEncryptionHook{envelope: &reversingEnvelope{}}
+	step := newStep(t, &stubRegistry{}, &stubMapper{}, func(c *Config) { c.EncryptionFromRow = hook.build })
+
+	if _, _, err := step.envelopeFor(context.Background(), encryptedPlan("http://unused", map[string]any{"type": "aesGcm"})); err != nil {
+		t.Fatalf("envelopeFor() = %v", err)
+	}
+	if got := hook.secrets.Value(context.Background(), "PMKISAN_OTP_TOKEN"); got != "from-env" {
+		t.Errorf("the builder's secrets read %q, want the environment's", got)
 	}
 }

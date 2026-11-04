@@ -186,7 +186,7 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 		otpActions: listSet(s.otpActions)}
 
 	var err error
-	if e.base, err = parseBaseCodec(provider, s); err != nil {
+	if e.base, err = parseBaseCodec(provider, s, hooks.Secrets); err != nil {
 		return nil, err
 	}
 	otp, err := parseOTPCodec(provider, s, e.otpBindingKey, e.otpActions)
@@ -194,6 +194,7 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 		return nil, err
 	}
 	if otp != nil {
+		otp.secrets = hooks.Secrets
 		e.otp = otp
 	}
 	if e.verify, err = parseVerify(provider, s, hooks, otp, e.base, e.otpBindingKey); err != nil {
@@ -208,7 +209,7 @@ func newProviderEnvelope(provider string, s envelopeSettings, hooks Hooks) (*pro
 
 // parseBaseCodec reads the envelope* block: the codec for the provider's own
 // calls, or nil for plain JSON.
-func parseBaseCodec(provider string, s envelopeSettings) (codec, error) {
+func parseBaseCodec(provider string, s envelopeSettings, secrets common.Secrets) (codec, error) {
 	switch s.kind {
 	case "":
 		// Without the kind the body would go out unsealed.
@@ -222,10 +223,20 @@ func parseBaseCodec(provider string, s envelopeSettings) (codec, error) {
 			return nil, fmt.Errorf("%s: envelope %s carries its key in band; drop envelopeKeyEnv and envelopeNonceEnv",
 				provider, envelopeAESCBCKeyInBand)
 		}
-		return newCBCCodec(provider, "envelope", cbcSettings{kind: s.kind, tokenEnv: s.tokenEnv,
+		c, err := newCBCCodec(provider, "envelope", cbcSettings{kind: s.kind, tokenEnv: s.tokenEnv,
 			tokenField: s.tokenField, requestField: s.requestField, responsePaths: s.responsePaths})
+		if err != nil {
+			return nil, err
+		}
+		c.secrets = secrets
+		return c, nil
 	default:
-		return newGCMCodec(provider, s)
+		c, err := newGCMCodec(provider, s)
+		if err != nil {
+			return nil, err
+		}
+		c.secrets = secrets
+		return c, nil
 	}
 }
 
@@ -284,7 +295,8 @@ func parseVerify(provider string, s envelopeSettings, hooks Hooks, otp *cbcCodec
 
 // withToken adds the service token to the plaintext. It is added here, not in
 // the mapping, because mapping files are public.
-func withToken(ctx context.Context, provider string, mapped []byte, tokenEnv, tokenField string) ([]byte, error) {
+func withToken(ctx context.Context, provider string, mapped []byte, tokenEnv, tokenField string,
+	secrets common.Secrets) ([]byte, error) {
 	fields := map[string]any{}
 	if len(mapped) > 0 {
 		if err := json.Unmarshal(mapped, &fields); err != nil {
@@ -292,7 +304,7 @@ func withToken(ctx context.Context, provider string, mapped []byte, tokenEnv, to
 		}
 	}
 	if tokenField != "" {
-		token := os.Getenv(tokenEnv)
+		token := secretValue(ctx, secrets, tokenEnv)
 		if token == "" {
 			return nil, unconfigured(ctx, provider, tokenEnv+" is not set")
 		}
@@ -365,11 +377,11 @@ func sealedIn(ctx context.Context, provider string, answer []byte, paths [][]str
 
 // decodeSealed base64-decodes a sealed string. Plain text there is the
 // provider's rejection: logged redacted, never returned (502).
-func decodeSealed(ctx context.Context, provider, tokenEnv, sealed string) ([]byte, error) {
+func decodeSealed(ctx context.Context, provider, tokenEnv, sealed string, secrets common.Secrets) ([]byte, error) {
 	raw, err := base64.StdEncoding.DecodeString(sealed)
 	if err != nil || len(raw) == 0 {
 		log.Warnf(ctx, "%s answered with plain text where its envelope belongs: %s",
-			provider, redactToken(util.Explain([]byte(sealed)), tokenEnv))
+			provider, redactToken(util.Explain([]byte(sealed)), tokenEnv, secrets))
 		return nil, refused(fmt.Errorf("%s rejected the request", provider))
 	}
 	return raw, nil
@@ -392,15 +404,28 @@ func unconfigured(ctx context.Context, provider, detail string) error {
 	return model.NewCodedErr(http.StatusInternalServerError, codeInternal, err)
 }
 
-// redactToken removes a service token from text about to be logged.
-func redactToken(text, tokenEnv string) string {
+// redactToken removes a service token from text about to be logged, using only
+// a value already held so logging never fetches a secret.
+func redactToken(text, tokenEnv string, secrets common.Secrets) string {
 	if tokenEnv == "" {
 		return text
 	}
-	if token := os.Getenv(tokenEnv); token != "" {
+	token := os.Getenv(tokenEnv)
+	if secrets != nil {
+		token = secrets.Held(tokenEnv)
+	}
+	if token != "" {
 		text = strings.ReplaceAll(text, token, util.RedactedMarker)
 	}
 	return text
+}
+
+// secretValue reads name from secrets, or from the environment when there are none.
+func secretValue(ctx context.Context, secrets common.Secrets, name string) string {
+	if secrets == nil {
+		return os.Getenv(name)
+	}
+	return secrets.Value(ctx, name)
 }
 
 // refused is a 502: the provider's answer is unusable.

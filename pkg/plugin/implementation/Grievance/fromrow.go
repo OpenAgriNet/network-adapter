@@ -38,13 +38,15 @@ var rowSettings = map[string]map[string]string{
 var cipherBlocks = map[string]bool{"aesGcm": true, "aesCbcKeyInBand": true}
 
 // EncryptionFromRow builds one binding's envelope from its registry row, through
-// the same parser as the plugin config, with the actions it sends elsewhere.
-func EncryptionFromRow(bindingKey string, encryption map[string]any) (common.Envelope, map[string]string, error) {
+// the same parser as the plugin config, reading its keys from secrets.
+func EncryptionFromRow(bindingKey string, encryption map[string]any, secrets common.Secrets) (common.Envelope, map[string]string, error) {
 	keys, err := encryptionKeys(bindingKey, encryption)
 	if err != nil {
 		return nil, nil, err
 	}
-	parsed, _, err := ParseEnvelopes(keys)
+	hooks := pmkisanHooks
+	hooks.Secrets = secrets
+	parsed, _, err := parseEnvelopes(keys, hooks)
 	if err != nil {
 		return nil, nil, err
 	}

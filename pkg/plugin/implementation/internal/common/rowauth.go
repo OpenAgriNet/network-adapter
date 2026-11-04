@@ -80,7 +80,7 @@ func (r *rowAuthenticators) forRow(ctx context.Context, plan *model.ProviderReco
 
 // rowSecrets is where a row's credentials are read: the provider's own entry in
 // the secret store, or the environment when no store is configured.
-func rowSecrets(ctx context.Context, plan *model.ProviderRecord, store SecretStore) secretSource {
+func rowSecrets(ctx context.Context, plan *model.ProviderRecord, store SecretStore) Secrets {
 	if store == nil {
 		log.Infof(ctx, "%s: no secret store is configured, so its credentials are read from the environment", plan.BindingKey)
 		return envSecrets{}

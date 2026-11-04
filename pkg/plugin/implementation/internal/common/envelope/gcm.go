@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -25,6 +24,7 @@ const minNonceSize = 12
 // A fixed nonce breaks GCM; TLS is the only protection (ADR-0001).
 type gcmCodec struct {
 	provider                   string
+	secrets                    common.Secrets
 	keyEnv, nonceEnv, tokenEnv string
 	tokenField                 string
 	requestField               string
@@ -66,7 +66,7 @@ func (c *gcmCodec) seal(ctx context.Context, mapped []byte) ([]byte, common.Open
 
 // Seal adds the service token to the mapped request and encrypts it.
 func (c *gcmCodec) Seal(ctx context.Context, mapped []byte) ([]byte, error) {
-	plain, err := withToken(ctx, c.provider, mapped, c.tokenEnv, c.tokenField)
+	plain, err := withToken(ctx, c.provider, mapped, c.tokenEnv, c.tokenField, c.secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +86,7 @@ func (c *gcmCodec) Open(ctx context.Context, answer []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := decodeSealed(ctx, c.provider, c.tokenEnv, sealed)
+	raw, err := decodeSealed(ctx, c.provider, c.tokenEnv, sealed, c.secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -105,9 +105,9 @@ func (c *gcmCodec) Open(ctx context.Context, answer []byte) ([]byte, error) {
 	return plainJSON(ctx, c.provider, plain)
 }
 
-// cipher builds the AEAD from the environment.
+// cipher builds the AEAD from the key and nonce, read when used.
 func (c *gcmCodec) cipher(ctx context.Context) (cipher.AEAD, []byte, error) {
-	rawKey, rawNonce := os.Getenv(c.keyEnv), os.Getenv(c.nonceEnv)
+	rawKey, rawNonce := secretValue(ctx, c.secrets, c.keyEnv), secretValue(ctx, c.secrets, c.nonceEnv)
 	if rawKey == "" || rawNonce == "" {
 		return nil, nil, unconfigured(ctx, c.provider, c.keyEnv+" and "+c.nonceEnv+" must both be set")
 	}

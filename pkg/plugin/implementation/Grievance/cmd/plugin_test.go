@@ -87,7 +87,7 @@ func TestParseConfig_BuildsEncryptionFromRegistryRows(t *testing.T) {
 		"type": "aesCbcKeyInBand",
 		"aesCbcKeyInBand": map[string]any{"serviceTokenRef": "T", "serviceTokenField": "Token",
 			"encryptedRequestField": "EncryptedRequest", "encryptedResponsePaths": "output"},
-	})
+	}, nil)
 	if err != nil || envelope == nil {
 		t.Errorf("EncryptionFromRow() = %v, %v; want an envelope", envelope, err)
 	}

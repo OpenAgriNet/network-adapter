@@ -27,8 +27,12 @@ var pmkisanHooks = envelope.Hooks{Challenge: verifyRequest, Succeeded: pmkisanSa
 // ParseEnvelopes reads each provider's envelope and follow-up settings out of
 // the plugin config. See envelope.Parse.
 func ParseEnvelopes(config map[string]string) (envelope.Parsed, map[string]string, error) {
+	return parseEnvelopes(config, pmkisanHooks)
+}
+
+func parseEnvelopes(config map[string]string, hooks envelope.Hooks) (envelope.Parsed, map[string]string, error) {
 	followUps, config := splitFollowUps(config)
-	parsed, rest, err := envelope.Parse(config, pmkisanHooks)
+	parsed, rest, err := envelope.Parse(config, hooks)
 	if err != nil {
 		return envelope.Parsed{}, nil, err
 	}
