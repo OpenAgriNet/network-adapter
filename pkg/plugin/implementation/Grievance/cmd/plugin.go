@@ -35,6 +35,7 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 	}
 	cfg.Envelopes = envelopes.Envelopes
 	cfg.HostedElsewhere = envelopes.HostedElsewhere
+	cfg.EncryptionFromRow = Grievance.EncryptionFromRow
 	return cfg, nil
 }
 

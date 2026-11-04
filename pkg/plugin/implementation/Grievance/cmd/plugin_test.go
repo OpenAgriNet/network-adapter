@@ -57,6 +57,8 @@ func TestParseConfig_PMFBYBlock_ReadsEverySetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A func never DeepEquals; TestParseConfig_BuildsEncryptionFromRegistryRows checks it.
+	got.EncryptionFromRow = nil
 	want := &Grievance.Config{
 		BindingKeys:      []string{pmfbyBindingKey},
 		ProviderIDAt:     providerIDAt,
@@ -70,6 +72,24 @@ func TestParseConfig_PMFBYBlock_ReadsEverySetting(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseConfig() = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseConfig_BuildsEncryptionFromRegistryRows(t *testing.T) {
+	got, err := grievanceProvider{}.parseConfig(pmfbyConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EncryptionFromRow == nil {
+		t.Fatal("parseConfig() left EncryptionFromRow unset, so a row carrying encryption is refused")
+	}
+	envelope, _, err := got.EncryptionFromRow("pmkisan|openagrinet:SchemeApplication", map[string]any{
+		"type": "aesCbcKeyInBand",
+		"aesCbcKeyInBand": map[string]any{"serviceTokenRef": "T", "serviceTokenField": "Token",
+			"encryptedRequestField": "EncryptedRequest", "encryptedResponsePaths": "output"},
+	})
+	if err != nil || envelope == nil {
+		t.Errorf("EncryptionFromRow() = %v, %v; want an envelope", envelope, err)
 	}
 }
 
