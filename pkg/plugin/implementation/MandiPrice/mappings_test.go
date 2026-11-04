@@ -11,7 +11,6 @@ package MandiPrice_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -167,25 +166,6 @@ func runShipped(t *testing.T, request string) (url.Values, map[string]any) {
 func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map[string]any) {
 	t.Helper()
 
-	gotQuery, body, err := runShippedErr(t, request, providerBody)
-	if err != nil {
-		t.Fatalf("Run() returned an unexpected error: %v", err)
-	}
-	if len(body) == 0 {
-		t.Fatal("the step produced no answer")
-	}
-	var answer map[string]any
-	if err := json.Unmarshal(body, &answer); err != nil {
-		t.Fatalf("the answer is not JSON: %v\n%s", err, body)
-	}
-	return gotQuery, answer
-}
-
-// runShippedErr is runShippedWith without the failure handling, for refusals
-// that can only be decided once the provider has answered.
-func runShippedErr(t *testing.T, request, providerBody string) (url.Values, []byte, error) {
-	t.Helper()
-
 	mappings := serveMappings(t)
 	defer mappings.Close()
 
@@ -228,8 +208,17 @@ func runShippedErr(t *testing.T, request, providerBody string) (url.Values, []by
 	defer closeStep()
 
 	stepCtx := &model.StepContext{Context: t.Context(), OwnSubscriberID: "oan.test", Body: []byte(request)}
-	err = step.Run(stepCtx)
-	return gotQuery, stepCtx.ResponseBody, err
+	if err := step.Run(stepCtx); err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if len(stepCtx.ResponseBody) == 0 {
+		t.Fatal("the step produced no answer")
+	}
+	var answer map[string]any
+	if err := json.Unmarshal(stepCtx.ResponseBody, &answer); err != nil {
+		t.Fatalf("the answer is not JSON: %v\n%s", err, stepCtx.ResponseBody)
+	}
+	return gotQuery, answer
 }
 
 func TestShippedMappingServesARealSelect(t *testing.T) {
@@ -790,6 +779,15 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			expect: "numeric district",
 		},
 		{
+			// Agmarknet takes no name, so a name alone would answer for the
+			// whole district; refused before the call.
+			name: "a market name without a code",
+			mutate: func(ra map[string]any) {
+				delete(ra["market"].(map[string]any), "marketCode")
+			},
+			expect: "marketName alone is not enough",
+		},
+		{
 			// Present but empty would widen the query silently.
 			name: "an empty market code",
 			mutate: func(ra map[string]any) {
@@ -1046,71 +1044,5 @@ func TestShippedMappingPriceFieldsMinimumAloneAndDefaultAll(t *testing.T) {
 				t.Errorf("prices.%s is missing; with nothing asked for, all three are returned", field)
 			}
 		}
-	}
-}
-
-// withMarketName is the fixture with marketCode removed and marketName set.
-func withMarketName(t *testing.T, name string) string {
-	t.Helper()
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
-		t.Fatalf("the fixture is not JSON: %v", err)
-	}
-	ra := firstCommitment(t, payload)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
-	market := ra["market"].(map[string]any)
-	delete(market, "marketCode")
-	market["marketName"] = name
-	request, _ := json.Marshal(payload)
-	return string(request)
-}
-
-// A market name without a code: Agmarknet takes no name, so the district's
-// markets come back and only the named one's rows are kept -- matched trimmed
-// and case-insensitively, because Agmarknet pads its names.
-func TestShippedMappingKeepsOnlyTheNamedMarket(t *testing.T) {
-	t.Parallel()
-
-	twoMarkets := strings.Replace(providerResponse, `"Market": "Kasdol APMC"`, `"Market": "Other APMC"`, 1)
-	query, answer := runShippedWith(t, withMarketName(t, " kasdol APMC "), twoMarkets)
-
-	if query.Has("marketcode") {
-		t.Errorf("marketcode = %q was sent; only a name was given", query.Get("marketcode"))
-	}
-	rows := resourcesOf(t, answer)
-	if len(rows) == 0 {
-		t.Fatal("no rows; the named market reported one")
-	}
-	for _, r := range rows {
-		market := r["resourceAttributes"].(map[string]any)["market"].(map[string]any)
-		if market["marketName"] != "Kasdol APMC" {
-			t.Errorf("marketName = %#v; only the named market's rows should be returned", market["marketName"])
-		}
-	}
-}
-
-// A name that matches none of the markets the district reported is refused.
-// It is decided in the response half, which jsonmapper reports as a 502, but
-// the message still tells the caller the fix: send the code.
-func TestShippedMappingRefusesAMarketNameItCannotPlace(t *testing.T) {
-	t.Parallel()
-
-	_, _, err := runShippedErr(t, withMarketName(t, "Nowhere APMC"), providerResponse)
-	var coded *model.CodedErr
-	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadGateway {
-		t.Fatalf("error = %v, want the response half's 502", err)
-	}
-	if !strings.Contains(err.Error(), "send market.marketCode to proceed") {
-		t.Errorf("error = %q, want it to ask for the market code", err)
-	}
-}
-
-// A district that reported nothing at all is a genuine empty answer; the name
-// is not blamed for it.
-func TestShippedMappingAnswersEmptyWhenTheDistrictReportsNothing(t *testing.T) {
-	t.Parallel()
-
-	_, answer := runShippedWith(t, withMarketName(t, "Kasdol APMC"), "[]")
-	if rows := resourcesOf(t, answer); len(rows) != 0 {
-		t.Errorf("rows = %d, want none", len(rows))
 	}
 }

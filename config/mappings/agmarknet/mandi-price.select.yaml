@@ -67,13 +67,8 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Shape, not just presence. The pack describes district as "name or governed
-           code", so the names form is pack-legal -- and an existence-only check passed it,
-           after which it went to Agmarknet verbatim as a code. Agmarknet answered nothing,
-           and the caller got a signed, spec-valid "no prices" for a market that had prices.
-
-           Agmarknet wants a numeric district (96). The district is mandatory, with the
-           state and the commodity; only marketCode is optional. */
+        /* Mandatory, and a code: Agmarknet wants a numeric district (96). The pack
+           allows a name, which Agmarknet answers with nothing. */
         $type($ra.market.district) = "string"
           and $count($match($ra.market.district, /^[0-9]+$/)) > 0
       )
@@ -81,8 +76,7 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Same reasoning as the district: a short alphabetic state (CG), so one longer
-           than four letters is a name and is refused with the reason. */
+        /* Mandatory, and a code: a short alphabetic state (CG), not a name. */
         $type($ra.market.state) = "string"
           and $count($match($ra.market.state, /^[A-Za-z]{2,4}$/)) > 0
       )
@@ -90,9 +84,8 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* market.marketCode is optional. Absent, Agmarknet answers for the whole district.
-           Present, it is used, so it must be a non-empty string: an empty one would widen
-           the query silently while the caller believes it named a market. */
+        /* Optional; absent means the whole district. When given it must be a
+           non-empty string, or the query widens silently. */
         $exists($ra.market.marketCode)
           ? ($type($ra.market.marketCode) = "string" and $ra.market.marketCode != "")
           : true
@@ -101,9 +94,16 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* The pack's enum is Minimum, Maximum, Modal. Absent means all three, so only a
-           present value is checked: anything outside the enum would otherwise answer with
-           rows that carry no price. (An empty list reads as absent in JSONata.) */
+        /* Agmarknet takes no market name, so a name alone would return the whole
+           district. Refused: send the code, or neither for a district search. */
+        $not($exists($ra.market.marketName) and $not($exists($ra.market.marketCode)))
+      )
+    message: "market.marketName alone is not enough: send market.marketCode for that market, or omit marketName to search the whole district"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* Only the pack's Minimum, Maximum, Modal. Absent (or empty) means all
+           three; anything else would return rows with no price. */
         $exists($ra.supportedPriceFields)
           ? $count($ra.supportedPriceFields[$ in ["Minimum", "Maximum", "Modal"]])
               = $count($ra.supportedPriceFields)
@@ -119,9 +119,8 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Both ends are mandatory -- the upstream takes from_date and to_date -- so they
-           must also be dates: an empty or free-text value was reordered into "--" or crashed
-           the reorder. A date-time is accepted; its date part is what is sent. */
+        /* Sent as from_date and to_date, so both must be dates (a date-time is
+           fine). Empty or free text used to go upstream as "--" or crash. */
         $type($ra.validity.startsAt) = "string"
           and $type($ra.validity.endsAt) = "string"
           and $contains($ra.validity.startsAt, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/)
@@ -306,30 +305,7 @@ response: |
              or ("Maximum" in $fields and $exists($priced($r.`Max Price`)))
              or ("Modal" in $fields and $exists($priced($r.`Modal Price`))))
     };
-    /* A NAMED MARKET WITHOUT A CODE. Agmarknet takes no market name, so the
-       query went out district-wide and the answer is that district's markets.
-       Only the asked market's rows are kept, matched trimmed and
-       case-insensitively because Agmarknet pads names ("Karjat(Rashin) ").
-
-       No match while the district did report rows means the name could not be
-       placed -- misspelt against Agmarknet, or a market that reported nothing
-       for these dates -- so it is refused rather than answered with another
-       market's prices or a "no prices" that may be untrue. A district with no
-       rows at all is a genuine empty answer. With a code, nothing is filtered:
-       the query was already that market's.
-
-       Raised from the response half, so jsonmapper reports it as a 502; the
-       message still names the fix. */
-    $askedName := $exists($ra.market.marketCode) ? undefined : $ra.market.marketName;
-    $sameName := function($a, $b) { $lowercase($trim($a)) = $lowercase($trim($b)) };
-    $inMarket := $exists($askedName)
-               ? $filter($records, function($r) { $sameName($r.Market, $askedName) })
-               : $records;
-    $exists($askedName) and $count($records) > 0 and $count($inMarket) = 0
-      ? $error("marketName \"" & $askedName & "\" matched no market in district " & $ra.market.district
-               & " for these dates; market name alone is not enough, send market.marketCode to proceed");
-
-    $usable := $filter($inMarket, $conformant);
+    $usable := $filter($records, $conformant);
 
     {
       "context": {
@@ -409,9 +385,8 @@ response: |
                     "commodityGroup": $r.Group,
                     "variety":        $r.Variety,
                     "grade":          $r.Grade,
-                    /* From the RECORD, except marketCode: the upstream reports none, so it is the
-                       requested one, and only when one was requested. District-wide there is no
-                       single code, the key is omitted and each row names its own market. */
+                    /* From the record, except marketCode: Agmarknet reports none, so it is the
+                       requested one, and omitted district-wide. marketName is trimmed. */
                     "market": {
                       "marketCode": $ra.market.marketCode,
                       "marketName": $trim($r.Market),
