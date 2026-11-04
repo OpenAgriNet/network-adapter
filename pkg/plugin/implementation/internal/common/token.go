@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -100,7 +99,7 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 // taken from tokenTtl when it does not -- see AuthProfile.
 func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	cfg := auth.cfg
-	user, secret := os.Getenv(cfg.TokenUserEnv), os.Getenv(cfg.TokenSecretEnv)
+	user, secret := auth.secret(ctx, cfg.TokenUserEnv), auth.secret(ctx, cfg.TokenSecretEnv)
 	if user == "" || secret == "" {
 		return "", 0, s.missingCredential(ctx, cfg.Provider, cfg.Scheme,
 			cfg.TokenUserEnv+" and "+cfg.TokenSecretEnv)
@@ -155,7 +154,7 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 // exchangeOAuth2Token performs the client_credentials grant.
 func (s *Step) exchangeOAuth2Token(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	cfg := auth.cfg
-	clientID, clientSecret := os.Getenv(cfg.ClientIDEnv), os.Getenv(cfg.ClientSecretEnv)
+	clientID, clientSecret := auth.secret(ctx, cfg.ClientIDEnv), auth.secret(ctx, cfg.ClientSecretEnv)
 	if clientID == "" || clientSecret == "" {
 		return "", 0, s.missingCredential(ctx, cfg.Provider, "oauth2",
 			cfg.ClientIDEnv+" and "+cfg.ClientSecretEnv)

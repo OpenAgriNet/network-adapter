@@ -153,6 +153,15 @@ func (s *Store) Value(ctx context.Context, entry, key string) (string, error) {
 	return value, nil
 }
 
+// Held is the last value read for key, even past its cache time, without
+// calling the store: for hiding secrets in error messages.
+func (s *Store) Held(entry, key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, found := s.entries[entry].values[key]
+	return value, found
+}
+
 func (s *Store) entry(ctx context.Context, entry string) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

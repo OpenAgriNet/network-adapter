@@ -240,3 +240,25 @@ func TestNewRefusesAnIncompleteConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestHeldReturnsOnlyWhatIsAlreadyInMemory(t *testing.T) {
+	fake, url := newFake(t)
+	c := &clock{now: time.Now()}
+	store := newStore(t, url, c, appRole())
+
+	if _, held := store.Held("mausamgram", "MAUSAMGRAM_AUTH"); held {
+		t.Error("Held() reported a value before anything was read")
+	}
+	if logins, reads := fake.counts(); logins != 0 || reads != 0 {
+		t.Errorf("Held() called the store: %d logins, %d reads", logins, reads)
+	}
+
+	if _, err := store.Value(context.Background(), "mausamgram", "MAUSAMGRAM_AUTH"); err != nil {
+		t.Fatalf("Value() = %v", err)
+	}
+	c.advance(time.Hour)
+	got, held := store.Held("mausamgram", "MAUSAMGRAM_AUTH")
+	if !held || got != "tok-1" {
+		t.Errorf("Held() = %q, %v after expiry; want the last value read, kept for redaction", got, held)
+	}
+}

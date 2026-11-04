@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,7 +97,7 @@ func (s *Step) secretForms() []string {
 func (a *authenticator) secretForms() []string {
 	switch a.cfg.Scheme {
 	case util.AuthSchemeBasic:
-		username, password := os.Getenv(a.cfg.UsernameEnv), os.Getenv(a.cfg.PasswordEnv)
+		username, password := a.heldSecret(a.cfg.UsernameEnv), a.heldSecret(a.cfg.PasswordEnv)
 		if password == "" {
 			return nil
 		}
@@ -113,7 +112,7 @@ func (a *authenticator) secretForms() []string {
 		// unrelated text.
 		return forms
 	case util.AuthSchemeHeader:
-		value := os.Getenv(a.cfg.HeaderValueEnv)
+		value := a.heldSecret(a.cfg.HeaderValueEnv)
 		if value == "" {
 			return nil
 		}
@@ -122,7 +121,7 @@ func (a *authenticator) secretForms() []string {
 		// Both halves: the secret we send the issuer, and the token it gave
 		// back. The token is what reaches the provider.
 		var forms []string
-		if secret := os.Getenv(a.cfg.ClientSecretEnv); secret != "" {
+		if secret := a.heldSecret(a.cfg.ClientSecretEnv); secret != "" {
 			forms = append(forms, secret)
 		}
 		// Read without tokenMu: this is reached from inside the exchange, which
@@ -134,7 +133,7 @@ func (a *authenticator) secretForms() []string {
 		// authenticate.
 		return forms
 	case util.AuthSchemeQuery:
-		value := os.Getenv(a.cfg.QueryValueEnv)
+		value := a.heldSecret(a.cfg.QueryValueEnv)
 		if value == "" {
 			return nil
 		}
@@ -151,7 +150,7 @@ func (a *authenticator) secretForms() []string {
 		// "+" or "=" would otherwise survive redaction, and covering it on
 		// tokenHeader as well costs nothing and cannot miss.
 		var forms []string
-		if secret := os.Getenv(a.cfg.TokenSecretEnv); secret != "" {
+		if secret := a.heldSecret(a.cfg.TokenSecretEnv); secret != "" {
 			forms = append(forms, secret)
 		}
 		// Read without tokenMu: reached from inside the exchange, which holds it.

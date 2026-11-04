@@ -87,6 +87,10 @@ type Config struct {
 	// whose host serves it (ADR-0002).
 	HostedElsewhere map[string]map[string]string `yaml:"-" json:"-"`
 
+	// Where a registry row's credentials are read. Nil: the environment, as for
+	// config profiles.
+	SecretStore SecretStore `yaml:"-" json:"-"`
+
 	// Set by a domain package that has envelopes, for rows carrying encryption.
 	// Nil: such a row is refused, never sent plain.
 	EncryptionFromRow EncryptionFromRow `yaml:"-" json:"-"`

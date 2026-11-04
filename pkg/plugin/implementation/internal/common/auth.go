@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -81,6 +80,9 @@ type AuthProfile struct {
 // second, authenticating as somebody else.
 type authenticator struct {
 	cfg AuthProfile
+
+	// Where credential values are read; nil is the environment. See secrets.go.
+	secrets secretSource
 
 	// Two mechanisms, two jobs. tokenMu serialises the EXCHANGE so a cold
 	// start sends one request to the issuer. token is atomic so READERS never
@@ -291,26 +293,26 @@ func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames
 	return util.DoNotRetry(err)
 }
 
-// authenticate presents this provider's credentials, read from the environment
-// at call time so a rotated secret takes effect without a restart.
+// authenticate presents this provider's credentials, read at call time so a
+// rotated secret takes effect without a restart.
 func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 	cfg := auth.cfg
 	switch cfg.Scheme {
 	case util.AuthSchemeBasic:
-		username, password := os.Getenv(cfg.UsernameEnv), os.Getenv(cfg.PasswordEnv)
+		username, password := auth.secret(req.Context(), cfg.UsernameEnv), auth.secret(req.Context(), cfg.PasswordEnv)
 		if username == "" || password == "" {
 			return s.missingCredential(req.Context(), cfg.Provider, "basic",
 				cfg.UsernameEnv+" and "+cfg.PasswordEnv)
 		}
 		req.SetBasicAuth(username, password)
 	case util.AuthSchemeHeader:
-		value := os.Getenv(cfg.HeaderValueEnv)
+		value := auth.secret(req.Context(), cfg.HeaderValueEnv)
 		if value == "" {
 			return s.missingCredential(req.Context(), cfg.Provider, "header", cfg.HeaderValueEnv)
 		}
 		req.Header.Set(cfg.HeaderName, value)
 	case util.AuthSchemeQuery:
-		value := os.Getenv(cfg.QueryValueEnv)
+		value := auth.secret(req.Context(), cfg.QueryValueEnv)
 		if value == "" {
 			return s.missingCredential(req.Context(), cfg.Provider, "query", cfg.QueryValueEnv)
 		}

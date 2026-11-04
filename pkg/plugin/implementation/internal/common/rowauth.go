@@ -32,7 +32,7 @@ func (s *Step) authFor(ctx context.Context, plan *model.ProviderRecord) (*authen
 	if plan.Auth == nil {
 		return s.configAuth(plan)
 	}
-	return s.rowAuth.forRow(ctx, plan)
+	return s.rowAuth.forRow(ctx, plan, s.config.SecretStore)
 }
 
 func (s *Step) configAuth(plan *model.ProviderRecord) (*authenticator, error) {
@@ -45,7 +45,7 @@ func (s *Step) configAuth(plan *model.ProviderRecord) (*authenticator, error) {
 
 // forRow returns the binding's authenticator, building a new one only when the
 // row's auth block differs from the one it was built from.
-func (r *rowAuthenticators) forRow(ctx context.Context, plan *model.ProviderRecord) (*authenticator, error) {
+func (r *rowAuthenticators) forRow(ctx context.Context, plan *model.ProviderRecord, store SecretStore) (*authenticator, error) {
 	fingerprint, err := json.Marshal(plan.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("%s: its registry row's auth block cannot be read: %w", plan.BindingKey, err)
@@ -63,7 +63,7 @@ func (r *rowAuthenticators) forRow(ctx context.Context, plan *model.ProviderReco
 		log.Errorf(ctx, err, "Refusing %s: the auth block in its registry row is not usable", plan.BindingKey)
 		return nil, fmt.Errorf("%s: the auth block in its registry row is not usable: %w", plan.BindingKey, err)
 	}
-	auth := &authenticator{cfg: *profile}
+	auth := &authenticator{cfg: *profile, secrets: rowSecrets(ctx, plan, store)}
 	if r.byBinding == nil {
 		r.byBinding = map[string]rowAuthenticator{}
 	}
@@ -76,6 +76,16 @@ func (r *rowAuthenticators) forRow(ctx context.Context, plan *model.ProviderReco
 		log.Infof(ctx, "%s: auth taken from its registry row, scheme %s", plan.BindingKey, profile.Scheme)
 	}
 	return auth, nil
+}
+
+// rowSecrets is where a row's credentials are read: the provider's own entry in
+// the secret store, or the environment when no store is configured.
+func rowSecrets(ctx context.Context, plan *model.ProviderRecord, store SecretStore) secretSource {
+	if store == nil {
+		log.Infof(ctx, "%s: no secret store is configured, so its credentials are read from the environment", plan.BindingKey)
+		return envSecrets{}
+	}
+	return storeSecrets{store: store, entry: providerIDFrom(plan.BindingKey)}
 }
 
 // all lists every authenticator built so far, for redaction.
