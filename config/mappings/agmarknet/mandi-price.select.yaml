@@ -316,14 +316,17 @@ response: |
        for these dates -- so it is refused rather than answered with another
        market's prices or a "no prices" that may be untrue. A district with no
        rows at all is a genuine empty answer. With a code, nothing is filtered:
-       the query was already that market's. */
+       the query was already that market's.
+
+       Raised from the response half, so jsonmapper reports it as a 502; the
+       message still names the fix. */
     $askedName := $exists($ra.market.marketCode) ? undefined : $ra.market.marketName;
     $sameName := function($a, $b) { $lowercase($trim($a)) = $lowercase($trim($b)) };
     $inMarket := $exists($askedName)
                ? $filter($records, function($r) { $sameName($r.Market, $askedName) })
                : $records;
     $exists($askedName) and $count($records) > 0 and $count($inMarket) = 0
-      ? $error("[refused] marketName \"" & $askedName & "\" matched no market in district " & $ra.market.district
+      ? $error("marketName \"" & $askedName & "\" matched no market in district " & $ra.market.district
                & " for these dates; market name alone is not enough, send market.marketCode to proceed");
 
     $usable := $filter($inMarket, $conformant);

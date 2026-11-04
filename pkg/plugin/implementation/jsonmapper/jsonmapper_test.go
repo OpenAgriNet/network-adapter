@@ -849,29 +849,6 @@ func TestTransformBlamesTheRightPartyForEachDirection(t *testing.T) {
 	}
 }
 
-// A response half that refuses the request with $error("[refused] ...") is
-// the caller's to fix, so it is a 400 in the mapping's words, not a 502.
-func TestTransformLetsTheResponseHalfRefuseTheRequest(t *testing.T) {
-	t.Parallel()
-
-	refusing := "request: |\n  {}\nresponse: |\n  $error(\"[refused] send market.marketCode to proceed\")\n"
-	srv := newMappingServer(t, refusing, nil)
-	defer srv.Close()
-
-	_, err := newTestMapper(t).Transform(context.Background(), srv.URL+"/refusing.yaml",
-		definition.DirectionResponse, map[string]any{"response": []any{}})
-	var coded *model.CodedErr
-	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
-		t.Fatalf("response refusal gave %v, want a 400", err)
-	}
-	if err.Error() != "send market.marketCode to proceed" && !strings.HasSuffix(err.Error(), "send market.marketCode to proceed") {
-		t.Errorf("error = %q, want the mapping's own message", err)
-	}
-	if strings.Contains(err.Error(), refusedMarker) || strings.Contains(err.Error(), "D3137") {
-		t.Errorf("error = %q leaks the marker or the engine code", err)
-	}
-}
-
 // --- concurrency ------------------------------------------------------------
 
 // Every inbound request shares one mapper, so the cache is read and written

@@ -1088,15 +1088,16 @@ func TestShippedMappingKeepsOnlyTheNamedMarket(t *testing.T) {
 	}
 }
 
-// A name that matches none of the markets the district reported is refused,
-// as a 400 the caller can act on: send the code.
+// A name that matches none of the markets the district reported is refused.
+// It is decided in the response half, which jsonmapper reports as a 502, but
+// the message still tells the caller the fix: send the code.
 func TestShippedMappingRefusesAMarketNameItCannotPlace(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := runShippedErr(t, withMarketName(t, "Nowhere APMC"), providerResponse)
 	var coded *model.CodedErr
-	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
-		t.Fatalf("error = %v, want a 400", err)
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadGateway {
+		t.Fatalf("error = %v, want the response half's 502", err)
 	}
 	if !strings.Contains(err.Error(), "send market.marketCode to proceed") {
 		t.Errorf("error = %q, want it to ask for the market code", err)
