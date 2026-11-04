@@ -306,7 +306,27 @@ response: |
              or ("Maximum" in $fields and $exists($priced($r.`Max Price`)))
              or ("Modal" in $fields and $exists($priced($r.`Modal Price`))))
     };
-    $usable := $filter($records, $conformant);
+    /* A NAMED MARKET WITHOUT A CODE. Agmarknet takes no market name, so the
+       query went out district-wide and the answer is that district's markets.
+       Only the asked market's rows are kept, matched trimmed and
+       case-insensitively because Agmarknet pads names ("Karjat(Rashin) ").
+
+       No match while the district did report rows means the name could not be
+       placed -- misspelt against Agmarknet, or a market that reported nothing
+       for these dates -- so it is refused rather than answered with another
+       market's prices or a "no prices" that may be untrue. A district with no
+       rows at all is a genuine empty answer. With a code, nothing is filtered:
+       the query was already that market's. */
+    $askedName := $exists($ra.market.marketCode) ? undefined : $ra.market.marketName;
+    $sameName := function($a, $b) { $lowercase($trim($a)) = $lowercase($trim($b)) };
+    $inMarket := $exists($askedName)
+               ? $filter($records, function($r) { $sameName($r.Market, $askedName) })
+               : $records;
+    $exists($askedName) and $count($records) > 0 and $count($inMarket) = 0
+      ? $error("[refused] marketName \"" & $askedName & "\" matched no market in district " & $ra.market.district
+               & " for these dates; market name alone is not enough, send market.marketCode to proceed");
+
+    $usable := $filter($inMarket, $conformant);
 
     {
       "context": {

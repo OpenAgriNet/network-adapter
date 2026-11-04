@@ -44,6 +44,13 @@ const (
 // rather than a fault of this adapter.
 const codeAdaptationFailed = "SCH_SCHEMA_ADAPTATION_FAILED"
 
+// refusedMarker opens a $error() message by which a response half refuses the
+// REQUEST rather than failing on the provider's answer. Some refusals can only
+// be decided once the answer is in -- a market name that matches none of the
+// district's markets the upstream returned -- and they are the caller's to fix,
+// so they are reported as the preconditions are: a 400 in the mapping's words.
+const refusedMarker = "[refused] "
+
 // mappingFile is the published form of a mapping: one binding-action, both
 // directions.
 //
@@ -651,6 +658,9 @@ func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mapping
 		log.Errorf(ctx, err, "JSON mapping %s %s half failed to evaluate: %v", mappingRef, direction, err)
 		wrapped := fmt.Errorf("mapping %q %s half could not be applied: %w", mappingRef, direction, err)
 		if direction == definition.DirectionResponse {
+			if at := strings.Index(err.Error(), refusedMarker); at >= 0 {
+				return nil, model.NewBadReqErr("", errors.New(err.Error()[at+len(refusedMarker):]))
+			}
 			// The input here is the PROVIDER's answer, not the caller's
 			// request. A provider that changed shape, or a bug in the response
 			// half, is nothing the caller did -- reporting 400 sends them off
