@@ -35,17 +35,12 @@ type RedisClient interface {
 type Config struct {
 	Addr   string
 	UseTLS bool
-	// Optional lets New start without Redis; calls miss until it answers.
-	Optional bool
-	// Prefix namespaces keys in a shared Redis.
-	Prefix string
 }
 
 // Cache wraps a Redis client to provide basic caching operations.
 type Cache struct {
 	Client  RedisClient
 	metrics *CacheMetrics
-	prefix  string
 }
 
 // Error variables to describe common failure modes.
@@ -81,16 +76,6 @@ var RedisClientFunc = func(cfg *Config) RedisClient {
 		Password: os.Getenv("REDIS_PASSWORD"),
 		DB:       0,
 	}
-	if cfg.Optional {
-		// Fail fast when Redis is down. DialerRetries 0 means the default (5).
-		opts.DialTimeout = 250 * time.Millisecond
-		opts.ReadTimeout = 200 * time.Millisecond
-		opts.WriteTimeout = 200 * time.Millisecond
-		opts.PoolTimeout = 300 * time.Millisecond
-		opts.MaxRetries = -1
-		opts.DialerRetries = 1
-		opts.DialerRetryTimeout = 50 * time.Millisecond
-	}
 	if cfg.UseTLS {
 		opts.TLSConfig = &tls.Config{}
 	}
@@ -106,13 +91,9 @@ func New(ctx context.Context, cfg *Config) (*Cache, func() error, error) {
 
 	client := RedisClientFunc(cfg)
 
-	_, pingErr := client.Ping(ctx).Result()
-	if pingErr != nil {
-		if !cfg.Optional {
-			log.Errorf(ctx, pingErr, "Failed to ping Redis server")
-			return nil, nil, fmt.Errorf("%w: %v", ErrConnectionFail, pingErr)
-		}
-		log.Warnf(ctx, "Redis at %s did not answer (%v); starting without it, every cache call misses until it does", cfg.Addr, pingErr)
+	if _, err := client.Ping(ctx).Result(); err != nil {
+		log.Errorf(ctx, err, "Failed to ping Redis server")
+		return nil, nil, fmt.Errorf("%w: %v", ErrConnectionFail, err)
 	}
 
 	// Enable OpenTelemetry instrumentation for tracing and metrics
@@ -127,10 +108,8 @@ func New(ctx context.Context, cfg *Config) (*Cache, func() error, error) {
 
 	metrics, _ := GetCacheMetrics(ctx)
 
-	if pingErr == nil {
-		log.Infof(ctx, "Cache connection to Redis established successfully")
-	}
-	return &Cache{Client: client, metrics: metrics, prefix: cfg.Prefix}, client.Close, nil
+	log.Infof(ctx, "Cache connection to Redis established successfully")
+	return &Cache{Client: client, metrics: metrics}, client.Close, nil
 }
 
 // Get retrieves the value for the specified key from Redis.
@@ -138,7 +117,7 @@ func (c *Cache) Get(ctx context.Context, key string) (string, error) {
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	spanCtx, span := tracer.Start(ctx, "redis_get")
 	defer span.End()
-	result, err := c.Client.Get(spanCtx, c.prefix+key).Result()
+	result, err := c.Client.Get(spanCtx, key).Result()
 	if c.metrics != nil {
 		attrs := []attribute.KeyValue{
 			telemetry.AttrOperation.String("get"),
@@ -174,7 +153,7 @@ func (c *Cache) Set(ctx context.Context, key, value string, ttl time.Duration) e
 	spanCtx, span := tracer.Start(ctx, "redis_set")
 	defer span.End()
 
-	err := c.Client.Set(spanCtx, c.prefix+key, value, ttl).Err()
+	err := c.Client.Set(spanCtx, key, value, ttl).Err()
 	c.recordOperation(spanCtx, "set", err)
 	return err
 }
@@ -184,7 +163,7 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	spanCtx, span := tracer.Start(ctx, "redis_delete")
 	defer span.End()
-	err := c.Client.Del(spanCtx, c.prefix+key).Err()
+	err := c.Client.Del(spanCtx, key).Err()
 	c.recordOperation(spanCtx, "delete", err)
 	return err
 }

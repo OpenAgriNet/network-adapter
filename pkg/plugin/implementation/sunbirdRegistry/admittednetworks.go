@@ -71,7 +71,7 @@ func (c *Client) agreementWith(ctx context.Context, participantID string, useCac
 	if strings.TrimSpace(participantID) == "" {
 		return model.Agreement{}, false, nil
 	}
-	key := agreementCacheKey(c.searchURL, participantID)
+	key := agreementCacheKey(participantID)
 	if useCache {
 		if agreed, ok := c.cachedAgreement(ctx, key); ok {
 			log.Debugf(ctx, "OAN registry agreement cache hit for key: %s", key)
@@ -98,8 +98,8 @@ func (c *Client) agreementWith(ctx context.Context, participantID string, useCac
 	return agreed, false, nil
 }
 
-func agreementCacheKey(searchURL, participantID string) string {
-	return "registry_agreement_" + searchURL + "_" + participantID
+func agreementCacheKey(participantID string) string {
+	return "registry_agreement_" + participantID
 }
 
 func (c *Client) cachedAgreement(ctx context.Context, key string) (model.Agreement, bool) {

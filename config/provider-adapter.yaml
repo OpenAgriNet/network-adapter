@@ -84,8 +84,6 @@ modules:
           id: cache
           config:
             addr: <>                          # e.g. redis:6379
-            required: "false"                 # start without Redis
-            prefix: <>                        # e.g. provider.oan.dev:
 
         # ------------------------------------------------------------------
         # sunbirdRegistry -- the SunbirdRC registry client.
