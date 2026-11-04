@@ -961,3 +961,82 @@ func TestBuildConfigRefusesFoldedFieldSegments(t *testing.T) {
 		})
 	}
 }
+
+// The path decides before the body is read, so a bodyless or non-Beckn
+// request on a path the step does not gate passes untouched.
+func TestUngatedPathsPassWithoutAContext(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path string
+		body               []byte
+	}{
+		{"bodyless GET", http.MethodGet, "/catalog/subscription", nil},
+		{"DELETE with an empty body", http.MethodDelete, "/catalog/subscription", []byte{}},
+		{"non-JSON body", http.MethodPost, "/select", []byte("not json")},
+		{"JSON without context", http.MethodPost, "/select", []byte(`{"message":{}}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &fakeLister{err: errors.New("registry down")}
+			ctx := &model.StepContext{
+				Context: context.Background(),
+				Request: httptest.NewRequest(tc.method, tc.path, nil),
+				Body:    tc.body,
+			}
+			if err := newStep(t, l).Run(ctx); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if l.calls != 0 || string(ctx.Body) != string(tc.body) {
+				t.Fatalf("lister calls = %d, body %q; want untouched", l.calls, ctx.Body)
+			}
+		})
+	}
+}
+
+func TestGatedPathsStillRefuseABodyWithoutAContext(t *testing.T) {
+	for _, path := range []string{"/publish", "/discover", "/_internal/network/publish"} {
+		for name, body := range map[string][]byte{"no body": nil, "non-JSON": []byte("x"), "no context": []byte(`{"message":{}}`)} {
+			t.Run(path+" "+name, func(t *testing.T) {
+				l := &fakeLister{ids: []string{"p1"}}
+				wantBadRequest(t, run(newStep(t, l), path, body))
+				if l.calls != 0 {
+					t.Fatalf("lister called %d times, want 0", l.calls)
+				}
+			})
+		}
+	}
+}
+
+// Only type and expression are rewritten; any other member the consumer sent
+// in filters is kept.
+func TestNarrowFilterKeepsOtherFilterMembers(t *testing.T) {
+	body := discoverBody(`{"type":"jsonpath","expression":"$.catalogs[*] ? (@.a == 1)","extra":"x","limits":{"n":5}}`)
+	out, err := narrowFilter(defaultField, defaultKeys, body, []string{"prov-a"})
+	if err != nil {
+		t.Fatalf("narrowFilter: %v", err)
+	}
+	f := filtersOf(t, out)
+	if f["extra"] != "x" || fmt.Sprint(f["limits"]) != "map[n:5]" {
+		t.Fatalf("filters = %v, want extra and limits kept", f)
+	}
+	want := `$.catalogs[*] ? ( (@.a == 1) && (@.provider.id == "prov-a") )`
+	if f["type"] != "jsonpath" || f["expression"] != want {
+		t.Fatalf("filters = %v, want jsonpath %q", f, want)
+	}
+	// An absent type is still written out explicitly.
+	out, err = narrowFilter(defaultField, defaultKeys,
+		discoverBody(`{"expression":"$.catalogs[*] ? (@.a == 1)","extra":"x"}`), []string{"prov-a"})
+	if err != nil {
+		t.Fatalf("narrowFilter: %v", err)
+	}
+	if f := filtersOf(t, out); f["type"] != "jsonpath" || f["extra"] != "x" {
+		t.Fatalf("filters = %v, want explicit jsonpath and extra kept", f)
+	}
+}
+
+func TestPublishNamesTheFirstBadProviderInCatalogOrder(t *testing.T) {
+	l := &fakeLister{ids: []string{"p1", "p2"}}
+	err := run(newStep(t, l), "/publish", publishBody("publish", "p1", "ghost-b", "p2", "ghost-a"))
+	wantBadRequest(t, err)
+	if !strings.Contains(err.Error(), `"ghost-b"`) || strings.Contains(err.Error(), "ghost-a") {
+		t.Fatalf("error %q, want it to name ghost-b only", err)
+	}
+}

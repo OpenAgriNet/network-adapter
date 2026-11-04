@@ -176,14 +176,10 @@ func New(registry definition.RegistryLookup, cfg Config) (definition.Step, error
 }
 
 func (s *step) Run(ctx *model.StepContext) error {
-	root, becknContext, becknErr := model.ExtractContext(ctx.Body)
-	if becknErr != nil {
-		return model.WrapExtractContextErr("could not read the request context", becknErr)
-	}
-
 	// The router picks the target from the URL path, not from context.action,
 	// so the path decides what runs here too. Deciding from the body would let a
-	// request to /discover or /publish with any other action skip the step.
+	// request to /discover or /publish with any other action skip the step. The
+	// path is read first, so a bodyless GET or DELETE elsewhere passes untouched.
 	if ctx.Request == nil || ctx.Request.URL == nil {
 		return fmt.Errorf("providerstatus: the step has no request, so its path cannot be read")
 	}
@@ -191,6 +187,11 @@ func (s *step) Run(ctx *model.StepContext) error {
 	allowed, gated := s.actions[endpoint]
 	if !gated {
 		return nil
+	}
+
+	root, becknContext, becknErr := model.ExtractContext(ctx.Body)
+	if becknErr != nil {
+		return model.WrapExtractContextErr("could not read the request context", becknErr)
 	}
 
 	if err := refuseLookalikeKeys(root, s.keys, "the request body"); err != nil {
@@ -224,10 +225,15 @@ func (s *step) checkPublish(ctx *model.StepContext) error {
 		return fmt.Errorf("could not check provider status: %w", err)
 	}
 
+	// A set, so the check is linear in the catalog count the sender controls.
+	activeSet := make(map[string]struct{}, len(active))
+	for _, id := range active {
+		activeSet[id] = struct{}{}
+	}
 	// The whole batch is refused on one bad provider, so a partial publish never
 	// leaves the sender guessing which catalogs landed.
 	for _, id := range named {
-		if !slices.Contains(active, id) {
+		if _, ok := activeSet[id]; !ok {
 			return model.NewBadReqErr("", fmt.Errorf(
 				"provider %q is not an active provider in the registry", id))
 		}
@@ -322,7 +328,16 @@ func narrowFilter(field, keys []string, body []byte, ids []string) ([]byte, erro
 		}
 		expression = "$.catalogs[*] ? ( (" + predicate + ") && (" + allow + ") )"
 	}
-	intent["filters"] = map[string]any{"type": "jsonpath", "expression": expression}
+	// Only type and expression are rewritten; any other member is kept.
+	narrowedFilters := map[string]any{}
+	if consumer, ok := intent["filters"].(map[string]any); ok {
+		for key, value := range consumer {
+			narrowedFilters[key] = value
+		}
+	}
+	narrowedFilters["type"] = "jsonpath"
+	narrowedFilters["expression"] = expression
+	intent["filters"] = narrowedFilters
 
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
