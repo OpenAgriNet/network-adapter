@@ -67,19 +67,26 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Shape, not just presence. The pack describes district and state as
-           "name or governed code", so the names form is pack-legal -- and the
-           existence-only check passed it, after which it went to Agmarknet
-           verbatim as codes. Agmarknet answered nothing, and the caller got a
-           signed, spec-valid "no prices" for a market that had prices.
-        
-           Agmarknet wants a numeric district and a short alphabetic state (96,
-           CG), so a district that is not all digits or a state longer than four
-           letters is a name and is refused with the reason. */
-        $match($ra.market.district, /^[0-9]+$/)
-          and $match($ra.market.state, /^[A-Za-z]{2,4}$/)
+        /* Shape, not just presence. The pack describes district as "name or governed
+           code", so the names form is pack-legal -- and an existence-only check passed it,
+           after which it went to Agmarknet verbatim as a code. Agmarknet answered nothing,
+           and the caller got a signed, spec-valid "no prices" for a market that had prices.
+
+           Agmarknet wants a numeric district (96). The district is mandatory, with the
+           state and the commodity; only marketCode is optional. */
+        $type($ra.market.district) = "string"
+          and $count($match($ra.market.district, /^[0-9]+$/)) > 0
       )
-    message: "this capability needs Agmarknet's codes in market: a numeric district and a short alphabetic state, not their names"
+    message: "this capability needs Agmarknet's codes in market: a numeric district, not a name"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* Same reasoning as the district: a short alphabetic state (CG), so one longer
+           than four letters is a name and is refused with the reason. */
+        $type($ra.market.state) = "string"
+          and $count($match($ra.market.state, /^[A-Za-z]{2,4}$/)) > 0
+      )
+    message: "this capability needs Agmarknet's codes in market: a short alphabetic state, not a name"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
@@ -109,6 +116,24 @@ required:
         $exists($ra.validity.startsAt) and $exists($ra.validity.endsAt)
       )
     message: "this capability needs a validity window; it reports prices over a date range"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* Both ends are mandatory -- the upstream takes from_date and to_date -- so they
+           must also be dates: an empty or free-text value was reordered into "--" or crashed
+           the reorder. A date-time is accepted; its date part is what is sent. */
+        $type($ra.validity.startsAt) = "string"
+          and $type($ra.validity.endsAt) = "string"
+          and $contains($ra.validity.startsAt, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/)
+          and $contains($ra.validity.endsAt, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/)
+      )
+    message: "validity.startsAt and validity.endsAt must be dates (yyyy-MM-dd); the upstream takes them as from_date and to_date"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        $substring($ra.validity.startsAt, 0, 10) <= $substring($ra.validity.endsAt, 0, 10)
+      )
+    message: "validity.startsAt must not be after validity.endsAt"
 
 # The upstream is a GET, so this object becomes the query string. The token is
 # not here and must never be: it comes from the adapter's authScheme query,

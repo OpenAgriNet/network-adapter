@@ -724,6 +724,61 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			expect: "codes in market",
 		},
 		{
+			// The upstream takes both ends as from_date and to_date, so each is
+			// mandatory and must be a date.
+			name: "no validity start",
+			mutate: func(ra map[string]any) {
+				delete(ra["validity"].(map[string]any), "startsAt")
+			},
+			expect: "validity window",
+		},
+		{
+			name: "no validity end",
+			mutate: func(ra map[string]any) {
+				delete(ra["validity"].(map[string]any), "endsAt")
+			},
+			expect: "validity window",
+		},
+		{
+			// Reordered into "--" and sent upstream before this was refused.
+			name: "an empty validity start",
+			mutate: func(ra map[string]any) {
+				ra["validity"].(map[string]any)["startsAt"] = ""
+			},
+			expect: "must be dates",
+		},
+		{
+			// Crashed the date reorder rather than being refused.
+			name: "validity that is not a date",
+			mutate: func(ra map[string]any) {
+				ra["validity"] = map[string]any{"startsAt": "abc", "endsAt": "xyz"}
+			},
+			expect: "must be dates",
+		},
+		{
+			name: "validity that ends before it starts",
+			mutate: func(ra map[string]any) {
+				ra["validity"] = map[string]any{"startsAt": "2025-08-21", "endsAt": "2025-08-20"}
+			},
+			expect: "must not be after",
+		},
+		{
+			// State, district and commodity are each mandatory; each is refused on
+			// its own, with a message that names it.
+			name: "no state",
+			mutate: func(ra map[string]any) {
+				delete(ra["market"].(map[string]any), "state")
+			},
+			expect: "short alphabetic state",
+		},
+		{
+			name: "no district",
+			mutate: func(ra map[string]any) {
+				delete(ra["market"].(map[string]any), "district")
+			},
+			expect: "numeric district",
+		},
+		{
 			// Present but empty would widen the query silently.
 			name: "an empty market code",
 			mutate: func(ra map[string]any) {
@@ -934,5 +989,49 @@ func TestShippedMappingSearchesTheDistrictWithoutAMarketCode(t *testing.T) {
 	}
 	if !names["Other APMC"] || len(names) < 2 {
 		t.Errorf("market names = %v, want rows from more than one market, trimmed", names)
+	}
+}
+
+// Minimum alone gives the minimum alone; nothing passed gives all three.
+func TestShippedMappingPriceFieldsMinimumAloneAndDefaultAll(t *testing.T) {
+	t.Parallel()
+
+	minOnly := strings.Replace(selectRequest,
+		`"supportedPriceFields": ["Minimum", "Maximum", "Modal"]`,
+		`"supportedPriceFields": ["Minimum"]`, 1)
+	_, answer := runShippedWith(t, minOnly, providerResponse)
+	for _, r := range resourcesOf(t, answer) {
+		prices := r["resourceAttributes"].(map[string]any)["prices"].(map[string]any)
+		if _, ok := prices["minimum"]; !ok {
+			t.Error("prices.minimum is missing, and it is the field that was asked for")
+		}
+		for _, unasked := range []string{"maximum", "modal"} {
+			if _, present := prices[unasked]; present {
+				t.Errorf("prices.%s was returned though only Minimum was asked for", unasked)
+			}
+		}
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	ra := firstCommitment(t, payload)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	delete(ra, "supportedPriceFields")
+	request, _ := json.Marshal(payload)
+	// The shared fixture's second row reports no Min or Max, so price it fully.
+	allPriced := strings.Replace(providerResponse,
+		`"Price Unit": "Rs./Qtl",
+    "Modal Price": "2050",`,
+		`"Max Price": "2100", "Min Price": "1900", "Price Unit": "Rs./Qtl",
+    "Modal Price": "2050",`, 1)
+	_, answer = runShippedWith(t, string(request), allPriced)
+	for _, r := range resourcesOf(t, answer) {
+		prices := r["resourceAttributes"].(map[string]any)["prices"].(map[string]any)
+		for _, field := range []string{"minimum", "maximum", "modal"} {
+			if _, ok := prices[field]; !ok {
+				t.Errorf("prices.%s is missing; with nothing asked for, all three are returned", field)
+			}
+		}
 	}
 }
