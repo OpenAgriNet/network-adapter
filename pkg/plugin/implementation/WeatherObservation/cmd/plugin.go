@@ -52,6 +52,10 @@ func (p weatherProvider) parseConfig(config map[string]string) (*WeatherObservat
 	}
 	cfg.AuthByProvider = auth
 
+	if cfg.SecretStore, err = common.SecretStoreFrom(config); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 

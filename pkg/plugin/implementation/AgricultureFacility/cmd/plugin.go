@@ -49,6 +49,10 @@ func (p agriFacilityProvider) parseConfig(config map[string]string) (*Agricultur
 	}
 	cfg.AuthByProvider = auth
 
+	if cfg.SecretStore, err = common.SecretStoreFrom(config); err != nil {
+		return nil, err
+	}
+
 	if raw, exists := config["maxResponseBytes"]; exists && raw != "" {
 		value, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {

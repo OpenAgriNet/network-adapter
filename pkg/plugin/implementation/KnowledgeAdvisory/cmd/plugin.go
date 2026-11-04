@@ -58,6 +58,10 @@ func (p knowledgeAdvisoryProvider) parseConfig(config map[string]string) (*Knowl
 	}
 	cfg.AuthByProvider = auth
 
+	if cfg.SecretStore, err = common.SecretStoreFrom(config); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 

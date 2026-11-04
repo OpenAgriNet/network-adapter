@@ -49,6 +49,10 @@ type Config struct {
 	// schemes are defined and validated -- see common.AuthProfile.
 	AuthByProvider map[string]*common.AuthProfile `yaml:"-" json:"-"`
 
+	// SecretStore is where registry rows' credentials are read; passed to the
+	// inner step. Nil: the environment.
+	SecretStore common.SecretStore `yaml:"-" json:"-"`
+
 	// FacilityTypesAt is where the payload carries the facility types a search
 	// asks for. Absent means DefaultFacilityTypesAt, which is the Beckn v2
 	// convention and what every deployment should be using -- the override is
@@ -86,6 +90,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		CapabilityCodeAt: cfg.CapabilityCodeAt,
 		MaxResponseBytes: cfg.MaxResponseBytes,
 		AuthByProvider:   cfg.AuthByProvider,
+		SecretStore:      cfg.SecretStore,
 	}
 
 	one, closer, err := common.New(ctx, registry, mapper, prerequisites, upstreamCfg)

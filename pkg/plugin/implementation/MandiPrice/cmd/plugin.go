@@ -56,6 +56,10 @@ func (p mandiProvider) parseConfig(config map[string]string) (*MandiPrice.Config
 	}
 	cfg.AuthByProvider = auth
 
+	if cfg.SecretStore, err = common.SecretStoreFrom(config); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 

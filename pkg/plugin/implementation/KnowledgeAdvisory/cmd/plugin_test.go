@@ -376,3 +376,26 @@ func TestNew(t *testing.T) {
 		}
 	})
 }
+
+func TestParseConfig_BuildsTheSecretStore(t *testing.T) {
+	cfg, err := knowledgeAdvisoryProvider{}.parseConfig(map[string]string{
+		"bindingKeys": "p|openagrinet:KnowledgeAdvisory", "authScheme-p": "none",
+		"secretStoreUrl": "http://bao:8200", "secretStorePath": "secret/data/oan/local/providers",
+		"secretStoreLogin": "kubernetes", "secretStoreRole": "network-adapter",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig() = %v", err)
+	}
+	if cfg.SecretStore == nil {
+		t.Error("parseConfig() left SecretStore unset, so registry rows read the environment")
+	}
+}
+
+func TestParseConfig_RefusesAnIncompleteSecretStore(t *testing.T) {
+	_, err := knowledgeAdvisoryProvider{}.parseConfig(map[string]string{
+		"bindingKeys": "p|openagrinet:KnowledgeAdvisory", "authScheme-p": "none", "secretStoreUrl": "http://bao:8200",
+	})
+	if err == nil {
+		t.Error("parseConfig() accepted a secretStoreUrl with no login")
+	}
+}

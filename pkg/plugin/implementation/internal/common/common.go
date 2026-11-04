@@ -224,6 +224,9 @@ func ParseStepConfig(config map[string]string) (*Config, error) {
 	}
 	cfg.AuthByProvider = auth
 
+	if cfg.SecretStore, err = SecretStoreFrom(config); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
