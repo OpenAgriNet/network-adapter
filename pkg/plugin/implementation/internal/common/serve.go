@@ -199,19 +199,25 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
+	// The envelope and the actions it hosts elsewhere: from the row when it
+	// carries encryption, else from the step config.
+	envelope, hosted, err := s.envelopeFor(ctx, plan)
+	if err != nil {
+		return err
+	}
+
 	// The binding's host, unless another binding serves this action.
 	// auth stays the originating provider's credential, not the host's.
 	base := plan.BaseURL
-	if key := forBinding(s.config.HostedElsewhere, plan.BindingKey)[action]; key != "" {
+	if key := hosted[action]; key != "" {
 		if base, err = HostOf(ctx, s.registry, key); err != nil {
 			return err
 		}
 	}
 
-	// The provider's envelope, if any: seal once before the retry loop, open
-	// once after it.
+	// Seal once before the retry loop, open once after it.
 	var open Opener
-	if envelope := forBinding(s.config.Envelopes, plan.BindingKey); envelope != nil {
+	if envelope != nil {
 		exchange := Exchange{Action: action, Beckn: beckn, Plan: plan, Registry: s.registry}
 		if upstreamRequest, open, err = envelope.Seal(ctx, exchange, upstreamRequest); err != nil {
 			return err

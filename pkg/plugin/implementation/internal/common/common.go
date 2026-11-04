@@ -87,6 +87,10 @@ type Config struct {
 	// whose host serves it (ADR-0002).
 	HostedElsewhere map[string]map[string]string `yaml:"-" json:"-"`
 
+	// Set by a domain package that has envelopes, for rows carrying encryption.
+	// Nil: such a row is refused, never sent plain.
+	EncryptionFromRow EncryptionFromRow `yaml:"-" json:"-"`
+
 	// One credential profile per provider, keyed by participant id -- the left
 	// half of a binding key.
 	//
@@ -122,8 +126,9 @@ type Step struct {
 	// holds its own token, so two oauth2 providers cannot share one.
 	auth map[string]*authenticator
 
-	// Built from registry rows as they arrive; see rowauth.go.
-	rowAuth rowAuthenticators
+	// Built from registry rows as they arrive; see rowauth.go and rowenvelope.go.
+	rowAuth      rowAuthenticators
+	rowEnvelopes rowEnvelopes
 }
 
 // admittedLookup lists the networks this one admitted. Narrowed from the
