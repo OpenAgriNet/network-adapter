@@ -328,16 +328,8 @@ func narrowFilter(field, keys []string, body []byte, ids []string) ([]byte, erro
 		}
 		expression = "$.catalogs[*] ? ( (" + predicate + ") && (" + allow + ") )"
 	}
-	// Only type and expression are rewritten; any other member is kept.
-	narrowedFilters := map[string]any{}
-	if consumer, ok := intent["filters"].(map[string]any); ok {
-		for key, value := range consumer {
-			narrowedFilters[key] = value
-		}
-	}
-	narrowedFilters["type"] = "jsonpath"
-	narrowedFilters["expression"] = expression
-	intent["filters"] = narrowedFilters
+	// Only the two members discovery reads are forwarded; any other is dropped.
+	intent["filters"] = map[string]any{"type": "jsonpath", "expression": expression}
 
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)

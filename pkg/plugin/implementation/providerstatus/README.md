@@ -56,8 +56,8 @@ On the publish and discover endpoints, a body without a JSON `context` object
 is rejected with a 400. Every other path passes untouched before its body is
 read, so a bodyless GET or DELETE, or a non-Beckn body, is never refused.
 
-`discover` rewrites only `type` and `expression` in `message.intent.filters`;
-any other member the consumer sent is kept.
+`discover` forwards `message.intent.filters` with only `type` and `expression`,
+the two members discovery reads; any other member the consumer sent is dropped.
 
 ## Fails closed
 

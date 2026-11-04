@@ -1005,30 +1005,24 @@ func TestGatedPathsStillRefuseABodyWithoutAContext(t *testing.T) {
 	}
 }
 
-// Only type and expression are rewritten; any other member the consumer sent
-// in filters is kept.
-func TestNarrowFilterKeepsOtherFilterMembers(t *testing.T) {
-	body := discoverBody(`{"type":"jsonpath","expression":"$.catalogs[*] ? (@.a == 1)","extra":"x","limits":{"n":5}}`)
-	out, err := narrowFilter(defaultField, defaultKeys, body, []string{"prov-a"})
-	if err != nil {
-		t.Fatalf("narrowFilter: %v", err)
-	}
-	f := filtersOf(t, out)
-	if f["extra"] != "x" || fmt.Sprint(f["limits"]) != "map[n:5]" {
-		t.Fatalf("filters = %v, want extra and limits kept", f)
-	}
-	want := `$.catalogs[*] ? ( (@.a == 1) && (@.provider.id == "prov-a") )`
-	if f["type"] != "jsonpath" || f["expression"] != want {
-		t.Fatalf("filters = %v, want jsonpath %q", f, want)
-	}
-	// An absent type is still written out explicitly.
-	out, err = narrowFilter(defaultField, defaultKeys,
-		discoverBody(`{"expression":"$.catalogs[*] ? (@.a == 1)","extra":"x"}`), []string{"prov-a"})
-	if err != nil {
-		t.Fatalf("narrowFilter: %v", err)
-	}
-	if f := filtersOf(t, out); f["type"] != "jsonpath" || f["extra"] != "x" {
-		t.Fatalf("filters = %v, want explicit jsonpath and extra kept", f)
+// Discovery reads only type and expression, so the rewritten filters carry
+// those two and nothing else: any other member the consumer sent is dropped.
+func TestNarrowFilterDropsOtherFilterMembers(t *testing.T) {
+	for name, filters := range map[string]string{
+		"with type":    `{"type":"jsonpath","expression":"$.catalogs[*] ? (@.a == 1)","extra":"x","limits":{"n":5}}`,
+		"without type": `{"expression":"$.catalogs[*] ? (@.a == 1)","extra":"x"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := narrowFilter(defaultField, defaultKeys, discoverBody(filters), []string{"prov-a"})
+			if err != nil {
+				t.Fatalf("narrowFilter: %v", err)
+			}
+			f := filtersOf(t, out)
+			want := `$.catalogs[*] ? ( (@.a == 1) && (@.provider.id == "prov-a") )`
+			if len(f) != 2 || f["type"] != "jsonpath" || f["expression"] != want {
+				t.Fatalf("filters = %v, want only type jsonpath and expression %q", f, want)
+			}
+		})
 	}
 }
 
