@@ -77,6 +77,9 @@ func (s *Step) secretForms() []string {
 	for _, auth := range s.auth {
 		forms = append(forms, auth.secretForms()...)
 	}
+	for _, auth := range s.rowAuth.all() {
+		forms = append(forms, auth.secretForms()...)
+	}
 	return longestFirst(forms)
 }
 

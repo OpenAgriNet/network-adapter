@@ -121,6 +121,9 @@ type Step struct {
 	// One per provider, built at startup so a request only looks one up. Each
 	// holds its own token, so two oauth2 providers cannot share one.
 	auth map[string]*authenticator
+
+	// Built from registry rows as they arrive; see rowauth.go.
+	rowAuth rowAuthenticators
 }
 
 // admittedLookup lists the networks this one admitted. Narrowed from the

@@ -192,13 +192,11 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		return err
 	}
 
-	// Resolved from the binding key, so a step serving several providers
-	// authenticates each as itself. Startup guarantees a profile per served
-	// provider; this guards a record arriving for an undeclared key.
-	provider := providerIDFrom(plan.BindingKey)
-	auth, configured := s.auth[provider]
-	if !configured {
-		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
+	// Per binding, so a step serving several providers authenticates each as
+	// itself: from the row when it carries auth, else from the step config.
+	auth, err := s.authFor(ctx, plan)
+	if err != nil {
+		return err
 	}
 
 	// The binding's host, unless another binding serves this action.
