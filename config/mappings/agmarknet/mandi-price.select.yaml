@@ -49,9 +49,6 @@
 #
 # Refusing here names what is missing. Sending it anyway earns a 400 from
 # Agmarknet, or worse an empty result that reads as "no prices".
-# Not repeated here, the pack's validator already refuses them: an unknown or empty
-# supportedPriceFields, an empty or non-string marketCode, a validity that is not
-# a date-time, and no supportedCommodities or code.
 required:
   - check: |
       (
@@ -71,7 +68,7 @@ required:
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         /* Mandatory, and a code: Agmarknet wants a numeric district (96). The pack
            allows a name, which Agmarknet answers with nothing. */
-        $type($ra.market.district) = "string"
+        $exists($ra.market.district)
           and $count($match($ra.market.district, /^[0-9]+$/)) > 0
       )
     message: "this capability needs Agmarknet's codes in market: a numeric district, not a name"
@@ -79,7 +76,7 @@ required:
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         /* Mandatory, and a code: a short alphabetic state (CG), not a name. */
-        $type($ra.market.state) = "string"
+        $exists($ra.market.state)
           and $count($match($ra.market.state, /^[A-Za-z]{2,4}$/)) > 0
       )
     message: "this capability needs Agmarknet's codes in market: a short alphabetic state, not a name"
@@ -122,17 +119,15 @@ request: |
       $substring($iso, 8, 2) & "-" & $substring($iso, 5, 2) & "-" & $substring($iso, 0, 4)
     };
 
-    $base := {
+    {
       "statecode":     $ra.market.state,
       "districtcode":  $ra.market.district,
       "commoditycode": $ra.supportedCommodities[0].code,
       "from_date":     $ddmmyyyy($ra.validity.startsAt),
-      "to_date":       $ddmmyyyy($ra.validity.endsAt)
-    };
-
-    $exists($ra.market.marketCode)
-      ? $merge([$base, {"marketcode": $ra.market.marketCode}])
-      : $base
+      "to_date":       $ddmmyyyy($ra.validity.endsAt),
+      /* Dropped when absent: JSONata omits a key whose value is undefined. */
+      "marketcode":    $ra.market.marketCode
+    }
   )
 
 # One resource per price record, in Direct mode.
@@ -158,8 +153,8 @@ response: |
        mapping that hardcodes it has to be reissued whenever the pack URL
        moves, and it can disagree with what the request actually declared.
        Backticks because @ is an operator in JSONata. */
-    $ctx := beckn.message.contract.commitments[0].resources[0].resourceAttributes.`@context`;
     $ra := $selected.resources[0].resourceAttributes;
+    $ctx := $ra.`@context`;
 
     /* dd-MM-yyyy back to ISO, so the answer speaks the pack's date format
        rather than the upstream's. */
