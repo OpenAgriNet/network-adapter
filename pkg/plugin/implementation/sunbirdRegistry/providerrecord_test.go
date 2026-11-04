@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -167,6 +168,87 @@ func TestProviderRecordResolvesACallPlan(t *testing.T) {
 	}
 	if call.TimeoutMs != 30000 || call.RetryMax != 3 {
 		t.Errorf("select budget = timeout %d retry %d, want 30000 and 3", call.TimeoutMs, call.RetryMax)
+	}
+}
+
+// bindingWithAuthAndEncryption is a row as the registry returns it: every nested
+// block carries the bookkeeping fields the registry injects.
+func bindingWithAuthAndEncryption() providerBinding {
+	binding := bindingRecord()
+	binding.Auth = map[string]any{
+		"osid": "1-auth", "osOwner": []any{"anonymous"},
+		"scheme": "header",
+		"header": map[string]any{
+			"osid": "1-header", "osCreatedAt": "2026-11-04T00:00:00Z", "osUpdatedAt": "2026-11-04T00:00:00Z",
+			"osCreatedBy": "anonymous", "osUpdatedBy": "anonymous",
+			"headerName": "Authorization", "headerValueRef": "MAUSAMGRAM_AUTH",
+		},
+	}
+	binding.Encryption = map[string]any{
+		"osid": "1-encryption", "type": "aesGcm",
+		"otpVerify": map[string]any{"osid": "1-otp", "path": "/ChatbotOTPVerified", "actions": "support,status"},
+	}
+	return binding
+}
+
+func TestProviderRecordCarriesTheRowsAuthAndEncryption(t *testing.T) {
+	t.Parallel()
+
+	srv := newRegistryServer(t, envelopeJSON(t, bindingWithAuthAndEncryption()), envelopeJSON(t, upstreamRecord()))
+	defer srv.Close()
+
+	got, err := resolvePlan(t, newTestClient(t, srv.URL, nil))
+	if err != nil {
+		t.Fatalf("ProviderRecord() returned an unexpected error: %v", err)
+	}
+	wantAuth := map[string]any{
+		"scheme": "header",
+		"header": map[string]any{"headerName": "Authorization", "headerValueRef": "MAUSAMGRAM_AUTH"},
+	}
+	wantEncryption := map[string]any{
+		"type":      "aesGcm",
+		"otpVerify": map[string]any{"path": "/ChatbotOTPVerified", "actions": "support,status"},
+	}
+	if !reflect.DeepEqual(got.Auth, wantAuth) {
+		t.Errorf("auth = %v, want %v", got.Auth, wantAuth)
+	}
+	if !reflect.DeepEqual(got.Encryption, wantEncryption) {
+		t.Errorf("encryption = %v, want %v", got.Encryption, wantEncryption)
+	}
+}
+
+func TestProviderRecordLeavesAuthAndEncryptionNilWhenTheRowHasNone(t *testing.T) {
+	t.Parallel()
+
+	srv := newRegistryServer(t, envelopeJSON(t, bindingRecord()), envelopeJSON(t, upstreamRecord()))
+	defer srv.Close()
+
+	got, err := resolvePlan(t, newTestClient(t, srv.URL, nil))
+	if err != nil {
+		t.Fatalf("ProviderRecord() returned an unexpected error: %v", err)
+	}
+	if got.Auth != nil || got.Encryption != nil {
+		t.Errorf("auth = %v, encryption = %v, want both nil", got.Auth, got.Encryption)
+	}
+}
+
+func TestProviderRecordKeepsAuthAndEncryptionThroughTheCache(t *testing.T) {
+	t.Parallel()
+
+	srv := newRegistryServer(t, envelopeJSON(t, bindingWithAuthAndEncryption()), envelopeJSON(t, upstreamRecord()))
+	defer srv.Close()
+	client := newTestClient(t, srv.URL, newStoringCache(), func(c *Config) { c.CacheTTL = 30 * time.Second })
+
+	fresh, err := resolvePlan(t, client)
+	if err != nil {
+		t.Fatalf("first ProviderRecord() returned an unexpected error: %v", err)
+	}
+	cached, err := resolvePlan(t, client)
+	if err != nil {
+		t.Fatalf("second ProviderRecord() returned an unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(cached.Auth, fresh.Auth) || !reflect.DeepEqual(cached.Encryption, fresh.Encryption) {
+		t.Errorf("cached auth/encryption = %v / %v, want %v / %v", cached.Auth, cached.Encryption, fresh.Auth, fresh.Encryption)
 	}
 }
 

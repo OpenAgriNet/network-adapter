@@ -56,6 +56,9 @@ type providerBinding struct {
 	CapabilityCode string       `json:"capabilityCode"`
 	Actions        []actionPlan `json:"actions"`
 	Status         string       `json:"status"`
+	// Kept as published: read by the provider step, not by this plugin.
+	Auth       map[string]any `json:"auth,omitempty"`
+	Encryption map[string]any `json:"encryption,omitempty"`
 	// BaseURL, when set, is this capability's host in place of the
 	// participant's: one participant whose capabilities are served by
 	// different services.
@@ -351,7 +354,34 @@ func toProviderRecord(binding providerBinding, owner participant) *model.Provide
 		CapabilityCode: binding.CapabilityCode,
 		BaseURL:        baseURL,
 		Actions:        actions,
+		Auth:           withoutRegistryFields(binding.Auth),
+		Encryption:     withoutRegistryFields(binding.Encryption),
 	}
+}
+
+// registryFields are what the registry adds to every stored object; none of
+// them is a setting.
+var registryFields = map[string]bool{
+	"osid": true, "osOwner": true, "osCreatedAt": true,
+	"osUpdatedAt": true, "osCreatedBy": true, "osUpdatedBy": true,
+}
+
+// withoutRegistryFields copies block, dropping registryFields at every level.
+func withoutRegistryFields(block map[string]any) map[string]any {
+	if block == nil {
+		return nil
+	}
+	clean := make(map[string]any, len(block))
+	for key, value := range block {
+		if registryFields[key] {
+			continue
+		}
+		if nested, isBlock := value.(map[string]any); isBlock {
+			value = withoutRegistryFields(nested)
+		}
+		clean[key] = value
+	}
+	return clean
 }
 
 // searchRecords posts a filter to one registry entity and decodes the matching

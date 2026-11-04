@@ -92,6 +92,11 @@ type ProviderRecord struct {
 	//
 	// An action absent here is one this capability does not serve.
 	Actions map[string]ActionPlan
+
+	// Auth and Encryption are the row's own blocks, as published but without the
+	// registry's bookkeeping fields. Nil when the row has none.
+	Auth       map[string]any
+	Encryption map[string]any
 }
 
 // ServedActions lists the actions this record serves, sorted.
