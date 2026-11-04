@@ -74,6 +74,11 @@ typically a year, which would keep a suspended participant verifying for a year.
 Misses and refusals are never cached. Caching a miss would extend an outage;
 caching a refusal would delay a reinstatement.
 
+The agreement `CheckCrossNetworkRequester` judges a caller against is cached
+for the same TTL, including "no agreement" for callers the registry knows.
+Before refusing on a cached agreement, the registry is asked again, so a
+reinstated network is served on its next request.
+
 ## How a lookup works
 
 ```

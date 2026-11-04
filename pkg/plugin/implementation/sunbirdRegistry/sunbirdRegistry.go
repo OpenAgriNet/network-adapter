@@ -672,7 +672,7 @@ func (c *Client) cached(ctx context.Context, tracer trace.Tracer, key string) ([
 	defer span.End()
 
 	raw, err := c.cache.Get(cacheCtx, key)
-	if err != nil {
+	if err != nil || raw == "" {
 		return nil, false
 	}
 	var results []model.Subscription
@@ -780,11 +780,25 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 		return nil
 	}
 
-	agreed, err := c.agreementWith(ctx, caller)
+	agreed, fromCache, err := c.agreementWith(ctx, caller, true)
 	if err != nil {
 		// A registry we could not ask is not an agreement we can honour.
 		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
 	}
+	refusal := judgeRequester(ctx, caller, action, schemaContexts, agreed)
+	if refusal == nil || !fromCache {
+		return refusal
+	}
+	// Never refuse on a cached answer; recheck the registry first.
+	if agreed, _, err = c.agreementWith(ctx, caller, false); err != nil {
+		log.Warnf(ctx, "OAN registry could not recheck %s before refusing, refusing on the cached agreement: %v", caller, err)
+		return refusal
+	}
+	return judgeRequester(ctx, caller, action, schemaContexts, agreed)
+}
+
+// judgeRequester applies what we agreed with caller to one request.
+func judgeRequester(ctx context.Context, caller, action string, schemaContexts []string, agreed model.Agreement) error {
 	// No agreement is an ordinary participant -- a provider, our own deployment,
 	// or a caller signature validation will reject anyway. No federation rule
 	// applies to them.

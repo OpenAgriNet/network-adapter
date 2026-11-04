@@ -79,6 +79,12 @@ modules:
       subscriberId: <>
 
       plugins:
+        # cache -- Redis for registry lookups (see cacheTTL below).
+        cache:
+          id: cache
+          config:
+            addr: <>                          # e.g. redis:6379
+
         # ------------------------------------------------------------------
         # sunbirdRegistry -- the SunbirdRC registry client.
         #
@@ -125,18 +131,9 @@ modules:
             retry_wait_min: 100ms             # default: 100ms
             retry_wait_max: 500ms             # default: 500ms
 
-            # cacheTTL is deliberately unset. It needs a cache plugin
-            # alongside it -- this client caches nothing without one -- and
-            # this sample runs no redis, so a TTL here would look like
-            # caching while every message still made its registry calls
-            # inside signature validation's budget. The plugin logs a warning
-            # at startup if the two are not configured together.
-            #
-            # Read the number carefully before setting it. It is exactly how
-            # long a suspended participant keeps verifying, and a withdrawn
-            # capability keeps being called.
-            #
-            #   cacheTTL: 60s                 # default: unset, meaning off
+            # How long registry answers are cached; also how long a
+            # suspension takes to apply. Needs the cache plugin above.
+            cacheTTL: 30s                     # default: unset, meaning off
 
         keyManager:
           id: simplekeymanager
