@@ -1,11 +1,10 @@
-// Package nonbecknrouter routes a request by its path and method alone,
-// never reading the body, for services whose calls are not Beckn messages.
+// Package nonbecknrouter routes a request by its path alone, never reading the
+// body, for services whose calls are not Beckn messages.
 package nonbecknrouter
 
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -17,14 +16,6 @@ import (
 )
 
 const targetTypeURL = "url"
-
-// anyMethod is the key for a rule that lists no methods.
-const anyMethod = ""
-
-var knownMethods = map[string]bool{
-	http.MethodGet: true, http.MethodHead: true, http.MethodPost: true, http.MethodPut: true,
-	http.MethodPatch: true, http.MethodDelete: true, http.MethodOptions: true,
-}
 
 // Config holds the configuration for the non-Beckn router.
 type Config struct {
@@ -38,7 +29,6 @@ type routingFile struct {
 type rule struct {
 	TargetType string   `yaml:"targetType"`
 	Target     target   `yaml:"target"`
-	Methods    []string `yaml:"methods"`
 	Endpoints  []string `yaml:"endpoints"`
 }
 
@@ -47,14 +37,9 @@ type target struct {
 	ExcludeAction bool   `yaml:"excludeAction"`
 }
 
-type routeKey struct {
-	method   string
-	endpoint string
-}
-
 // Router routes a request to the target of the rule that names its path.
 type Router struct {
-	routes map[routeKey]*url.URL
+	routes map[string]*url.URL
 }
 
 // New loads the routing rules from the configured file.
@@ -92,14 +77,10 @@ func readRules(file string) ([]rule, error) {
 	return parsed.RoutingRules, nil
 }
 
-func buildRoutes(rules []rule) (map[routeKey]*url.URL, error) {
-	routes := make(map[routeKey]*url.URL)
+func buildRoutes(rules []rule) (map[string]*url.URL, error) {
+	routes := make(map[string]*url.URL)
 	for i, r := range rules {
 		base, err := parseTarget(r)
-		if err != nil {
-			return nil, fmt.Errorf("rule %d: %w", i+1, err)
-		}
-		methods, err := ruleMethods(r.Methods)
 		if err != nil {
 			return nil, fmt.Errorf("rule %d: %w", i+1, err)
 		}
@@ -111,13 +92,10 @@ func buildRoutes(rules []rule) (map[routeKey]*url.URL, error) {
 			if endpoint == "" {
 				return nil, fmt.Errorf("rule %d: an endpoint is blank", i+1)
 			}
-			for _, method := range methods {
-				key := routeKey{method: method, endpoint: endpoint}
-				if _, taken := routes[key]; taken {
-					return nil, fmt.Errorf("rule %d: endpoint %q is routed twice for %s", i+1, endpoint, methodLabel(method))
-				}
-				routes[key] = routeURL(base, endpoint, r.Target.ExcludeAction)
+			if _, taken := routes[endpoint]; taken {
+				return nil, fmt.Errorf("rule %d: endpoint %q is routed twice", i+1, endpoint)
 			}
+			routes[endpoint] = routeURL(base, endpoint, r.Target.ExcludeAction)
 		}
 	}
 	return routes, nil
@@ -141,21 +119,6 @@ func parseTarget(r rule) (*url.URL, error) {
 	return base, nil
 }
 
-func ruleMethods(listed []string) ([]string, error) {
-	if len(listed) == 0 {
-		return []string{anyMethod}, nil
-	}
-	methods := make([]string, 0, len(listed))
-	for _, name := range listed {
-		method := strings.ToUpper(strings.TrimSpace(name))
-		if !knownMethods[method] {
-			return nil, fmt.Errorf("method %q is not an HTTP method", name)
-		}
-		methods = append(methods, method)
-	}
-	return methods, nil
-}
-
 func cleanEndpoint(raw string) string {
 	return strings.TrimPrefix(strings.TrimSpace(raw), "/")
 }
@@ -168,44 +131,19 @@ func routeURL(base *url.URL, endpoint string, excludeAction bool) *url.URL {
 	return &routed
 }
 
-// Route returns the target for the request path and method. The body is never
-// read, so a request that is not a Beckn message routes like any other.
+// Route returns the target for the request path. The body is never read, so a
+// request that is not a Beckn message routes like any other.
 func (r *Router) Route(ctx context.Context, reqURL *url.URL, body []byte) (*model.Route, error) {
 	if reqURL == nil {
 		return nil, fmt.Errorf("reqURL must not be nil")
 	}
 	endpoint := cleanEndpoint(reqURL.Path)
-	method := methodOf(ctx)
-	base, found := r.lookup(method, endpoint)
+	base, found := r.routes[endpoint]
 	if !found {
-		log.Infof(ctx, "nonbecknrouter: refusing %s %q, no routing rule names it", methodLabel(method), endpoint)
-		return nil, fmt.Errorf("no routing rule for %s %q", methodLabel(method), endpoint)
+		log.Infof(ctx, "nonbecknrouter: refusing %q, no routing rule names it", endpoint)
+		return nil, fmt.Errorf("no routing rule for %q", endpoint)
 	}
 	routed := *base
 	routed.RawQuery = reqURL.RawQuery
 	return &model.Route{TargetType: targetTypeURL, URL: &routed}, nil
-}
-
-func (r *Router) lookup(method, endpoint string) (*url.URL, bool) {
-	if base, found := r.routes[routeKey{method: method, endpoint: endpoint}]; found && method != anyMethod {
-		return base, true
-	}
-	base, found := r.routes[routeKey{method: anyMethod, endpoint: endpoint}]
-	return base, found
-}
-
-// methodOf reads the method from the step the request is in. Outside a step it
-// is unknown, and only rules that list no methods can match.
-func methodOf(ctx context.Context) string {
-	if step, ok := ctx.(*model.StepContext); ok && step != nil && step.Request != nil {
-		return strings.ToUpper(step.Request.Method)
-	}
-	return anyMethod
-}
-
-func methodLabel(method string) string {
-	if method == anyMethod {
-		return "any method"
-	}
-	return method
 }

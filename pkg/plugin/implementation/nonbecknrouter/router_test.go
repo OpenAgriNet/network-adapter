@@ -2,15 +2,11 @@ package nonbecknrouter
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/beckn-one/beckn-onix/pkg/model"
 )
 
 const turnsRule = `
@@ -41,13 +37,9 @@ func newRouterFrom(t *testing.T, rules string) *Router {
 	return r
 }
 
-func requestCtx(method string) context.Context {
-	return &model.StepContext{Context: context.Background(), Request: httptest.NewRequest(method, "/x", nil)}
-}
-
-func routeTo(t *testing.T, r *Router, ctx context.Context, path, query string, body []byte) string {
+func routeTo(t *testing.T, r *Router, path, query string, body []byte) string {
 	t.Helper()
-	route, err := r.Route(ctx, &url.URL{Path: path, RawQuery: query}, body)
+	route, err := r.Route(context.Background(), &url.URL{Path: path, RawQuery: query}, body)
 	if err != nil {
 		t.Fatalf("Route(%q): %v", path, err)
 	}
@@ -66,17 +58,30 @@ func wantRoute(t *testing.T, got, want string) {
 
 func TestRouteSendsAnEndpointToItsTarget(t *testing.T) {
 	r := newRouterFrom(t, turnsRule)
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "", nil), "http://dss:8000/v1/turns")
+	wantRoute(t, routeTo(t, r, "v1/turns", "", nil), "http://dss:8000/v1/turns")
+}
+
+func TestRouteSendsEachEndpointToItsOwnTarget(t *testing.T) {
+	rules := turnsRule + `
+  - targetType: url
+    target:
+      url: http://other:9000
+    endpoints:
+      - v1/files
+`
+	r := newRouterFrom(t, rules)
+	wantRoute(t, routeTo(t, r, "v1/turns", "", nil), "http://dss:8000/v1/turns")
+	wantRoute(t, routeTo(t, r, "v1/files", "", nil), "http://other:9000/v1/files")
 }
 
 func TestRouteMatchesAPathWithALeadingSlash(t *testing.T) {
 	r := newRouterFrom(t, turnsRule)
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "/v1/turns", "", nil), "http://dss:8000/v1/turns")
+	wantRoute(t, routeTo(t, r, "/v1/turns", "", nil), "http://dss:8000/v1/turns")
 }
 
 func TestRouteKeepsThePathTheTargetAlreadyHas(t *testing.T) {
 	r := newRouterFrom(t, strings.Replace(turnsRule, "http://dss:8000", "http://dss:8000/api", 1))
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "", nil), "http://dss:8000/api/v1/turns")
+	wantRoute(t, routeTo(t, r, "v1/turns", "", nil), "http://dss:8000/api/v1/turns")
 }
 
 func TestRouteLeavesTheTargetPathAloneWhenExcludeActionIsSet(t *testing.T) {
@@ -90,22 +95,21 @@ routingRules:
       - v1/turns
 `
 	r := newRouterFrom(t, rules)
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "", nil), "http://dss:8000/api/all")
+	wantRoute(t, routeTo(t, r, "v1/turns", "", nil), "http://dss:8000/api/all")
 }
 
 func TestRouteForwardsTheQueryString(t *testing.T) {
 	r := newRouterFrom(t, turnsRule)
-	got := routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "stream=1&lang=hi", nil)
-	wantRoute(t, got, "http://dss:8000/v1/turns?stream=1&lang=hi")
+	wantRoute(t, routeTo(t, r, "v1/turns", "stream=1&lang=hi", nil), "http://dss:8000/v1/turns?stream=1&lang=hi")
 }
 
 func TestRouteDoesNotLetALaterRequestChangeAnEarlierRoute(t *testing.T) {
 	r := newRouterFrom(t, turnsRule)
-	first, err := r.Route(requestCtx(http.MethodPost), &url.URL{Path: "v1/turns", RawQuery: "a=1"}, nil)
+	first, err := r.Route(context.Background(), &url.URL{Path: "v1/turns", RawQuery: "a=1"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "b=2", nil)
+	routeTo(t, r, "v1/turns", "b=2", nil)
 	wantRoute(t, first.URL.String(), "http://dss:8000/v1/turns?a=1")
 }
 
@@ -119,93 +123,22 @@ func TestRouteIgnoresTheBody(t *testing.T) {
 	}
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {
-			wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "", body), "http://dss:8000/v1/turns")
+			wantRoute(t, routeTo(t, r, "v1/turns", "", body), "http://dss:8000/v1/turns")
 		})
 	}
 }
 
-const twoMethodRules = `
-routingRules:
-  - targetType: url
-    target:
-      url: http://reader:8000
-    methods: [GET]
-    endpoints:
-      - v1/turns
-  - targetType: url
-    target:
-      url: http://writer:8000
-    methods: [POST, PUT]
-    endpoints:
-      - v1/turns
-`
-
-func TestRouteSendsDifferentMethodsToDifferentTargets(t *testing.T) {
-	r := newRouterFrom(t, twoMethodRules)
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodGet), "v1/turns", "", nil), "http://reader:8000/v1/turns")
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "", nil), "http://writer:8000/v1/turns")
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPut), "v1/turns", "", nil), "http://writer:8000/v1/turns")
-}
-
-func TestRouteReadsMethodNamesInAnyCase(t *testing.T) {
-	r := newRouterFrom(t, strings.Replace(turnsRule, "    endpoints:", "    methods: [post]\n    endpoints:", 1))
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "", nil), "http://dss:8000/v1/turns")
-}
-
-func TestRouteSendsEveryMethodToARuleThatListsNone(t *testing.T) {
-	r := newRouterFrom(t, turnsRule)
-	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
-		wantRoute(t, routeTo(t, r, requestCtx(method), "v1/turns", "", nil), "http://dss:8000/v1/turns")
-	}
-}
-
-func TestRoutePrefersARuleForTheMethodOverOneForAnyMethod(t *testing.T) {
-	rules := `
-routingRules:
-  - targetType: url
-    target:
-      url: http://anything:8000
-    endpoints:
-      - v1/turns
-  - targetType: url
-    target:
-      url: http://reader:8000
-    methods: [GET]
-    endpoints:
-      - v1/turns
-`
-	r := newRouterFrom(t, rules)
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodGet), "v1/turns", "", nil), "http://reader:8000/v1/turns")
-	wantRoute(t, routeTo(t, r, requestCtx(http.MethodPost), "v1/turns", "", nil), "http://anything:8000/v1/turns")
-}
-
 func TestRouteRefusesAnEndpointNoRuleNames(t *testing.T) {
 	r := newRouterFrom(t, turnsRule)
-	_, err := r.Route(requestCtx(http.MethodPost), &url.URL{Path: "v1/other"}, nil)
+	_, err := r.Route(context.Background(), &url.URL{Path: "v1/other"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "v1/other") {
 		t.Errorf("expected an error naming v1/other, got %v", err)
 	}
 }
 
-func TestRouteRefusesAMethodTheRuleDoesNotList(t *testing.T) {
-	r := newRouterFrom(t, twoMethodRules)
-	_, err := r.Route(requestCtx(http.MethodDelete), &url.URL{Path: "v1/turns"}, nil)
-	if err == nil || !strings.Contains(err.Error(), http.MethodDelete) {
-		t.Errorf("expected an error naming DELETE, got %v", err)
-	}
-}
-
-func TestRouteWithNoRequestInTheContextMatchesOnlyRulesForAnyMethod(t *testing.T) {
-	plain := context.Background()
-	wantRoute(t, routeTo(t, newRouterFrom(t, turnsRule), plain, "v1/turns", "", nil), "http://dss:8000/v1/turns")
-	if _, err := newRouterFrom(t, twoMethodRules).Route(plain, &url.URL{Path: "v1/turns"}, nil); err == nil {
-		t.Error("expected a rule that lists methods not to match when the method is unknown")
-	}
-}
-
 func TestRouteRefusesANilRequestURL(t *testing.T) {
 	r := newRouterFrom(t, turnsRule)
-	if _, err := r.Route(requestCtx(http.MethodPost), nil, nil); err == nil {
+	if _, err := r.Route(context.Background(), nil, nil); err == nil {
 		t.Error("expected an error for a nil request URL")
 	}
 }
@@ -222,8 +155,8 @@ func TestNewRefusesABadRoutingFile(t *testing.T) {
 		"target without host":   strings.Replace(turnsRule, "http://dss:8000", "http://", 1),
 		"no endpoints":          strings.Replace(turnsRule, "      - v1/turns", "", 1),
 		"blank endpoint":        strings.Replace(turnsRule, "v1/turns", "\"  \"", 1),
-		"unknown method":        strings.Replace(turnsRule, "    endpoints:", "    methods: [PSOT]\n    endpoints:", 1),
-		"duplicate endpoint":    turnsRule + strings.TrimPrefix(turnsRule, "\nroutingRules:\n"),
+		"endpoint listed twice": strings.Replace(turnsRule, "      - v1/turns", "      - v1/turns\n      - /v1/turns", 1),
+		"endpoint in two rules": turnsRule + strings.TrimPrefix(turnsRule, "\nroutingRules:\n"),
 	}
 	for name, rules := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -231,13 +164,6 @@ func TestNewRefusesABadRoutingFile(t *testing.T) {
 				t.Error("expected an error")
 			}
 		})
-	}
-}
-
-func TestNewRefusesTheSameEndpointAndMethodTwice(t *testing.T) {
-	dup := strings.Replace(twoMethodRules, "methods: [POST, PUT]", "methods: [GET]", 1)
-	if _, err := tryRouterFrom(t, dup); err == nil {
-		t.Error("expected an error for GET v1/turns declared twice")
 	}
 }
 
