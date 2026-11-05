@@ -1,6 +1,6 @@
-// Package passthroughrouter routes a request by its path and method alone,
+// Package nonbecknrouter routes a request by its path and method alone,
 // never reading the body, for services whose calls are not Beckn messages.
-package passthroughrouter
+package nonbecknrouter
 
 import (
 	"context"
@@ -26,7 +26,7 @@ var knownMethods = map[string]bool{
 	http.MethodPatch: true, http.MethodDelete: true, http.MethodOptions: true,
 }
 
-// Config holds the configuration for the passthrough router.
+// Config holds the configuration for the non-Beckn router.
 type Config struct {
 	RoutingConfig string
 }
@@ -70,7 +70,7 @@ func New(ctx context.Context, config *Config) (*Router, func() error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	log.Infof(ctx, "passthroughrouter: loaded %d routes from %s", len(routes), config.RoutingConfig)
+	log.Infof(ctx, "nonbecknrouter: loaded %d routes from %s", len(routes), config.RoutingConfig)
 	return &Router{routes: routes}, nil, nil
 }
 
@@ -178,7 +178,7 @@ func (r *Router) Route(ctx context.Context, reqURL *url.URL, body []byte) (*mode
 	method := methodOf(ctx)
 	base, found := r.lookup(method, endpoint)
 	if !found {
-		log.Infof(ctx, "passthroughrouter: refusing %s %q, no routing rule names it", methodLabel(method), endpoint)
+		log.Infof(ctx, "nonbecknrouter: refusing %s %q, no routing rule names it", methodLabel(method), endpoint)
 		return nil, fmt.Errorf("no routing rule for %s %q", methodLabel(method), endpoint)
 	}
 	routed := *base

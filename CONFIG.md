@@ -1033,13 +1033,13 @@ router:
 
 ---
 
-#### 8a. Passthrough Router Plugin
+#### 8a. Non-Beckn Router Plugin
 
 **Purpose**: Route by path and HTTP method without reading the body. Use it for a service whose calls are not Beckn messages. The `router` plugin refuses those, because it needs a Beckn `context` to pick a rule.
 
 ```yaml
 router:
-  id: passthroughrouter
+  id: nonbecknrouter
   config:
     routingConfig: ./config/dss-routing.yaml
 ```
