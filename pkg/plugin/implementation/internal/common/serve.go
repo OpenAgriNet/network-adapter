@@ -397,6 +397,16 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 		return false, err
 	}
 
+	named, err := nameUsAsSender(ctx.Body, ctx.OwnSubscriberID)
+	if err != nil {
+		return false, err
+	}
+	if before := contextValue(becknContext, callerKeys...); before != ctx.OwnSubscriberID {
+		log.Infof(ctx, "the request names %q as its sender; sending it to %s as %s, who signs it",
+			before, receiver, ctx.OwnSubscriberID)
+	}
+	ctx.Body = named
+
 	// The network signs, not the participant the request names. Without this
 	// sign would look up the other network's keyset and fail.
 	ctx.SubID = ctx.OwnSubscriberID
@@ -404,6 +414,57 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 
 	log.Infof(ctx, "%s is not %s; sending it to %s", receiver, ctx.OwnSubscriberID, target)
 	return true, nil
+}
+
+// callerKeys are the context fields a receiver reads for who is calling, in the
+// order it reads them. senderId goes in when the request has none of them.
+var callerKeys = []string{"bap_id", "bapId", senderIDKey}
+
+const senderIDKey = "senderId"
+
+// nameUsAsSender puts our name wherever the request names its caller. The other
+// network holds that name against the key that signs, and we sign as ourselves.
+func nameUsAsSender(body []byte, us string) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	var becknContext map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf("payload could not be read: %w", err))
+	}
+	if err := json.Unmarshal(payload["context"], &becknContext); err != nil {
+		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf("context could not be read: %w", err))
+	}
+
+	name, err := marshalPlain(us)
+	if err != nil {
+		return nil, err
+	}
+	named := false
+	for _, key := range callerKeys {
+		if _, present := becknContext[key]; present {
+			becknContext[key] = name
+			named = true
+		}
+	}
+	if !named {
+		becknContext[senderIDKey] = name
+	}
+
+	if payload["context"], err = marshalPlain(becknContext); err != nil {
+		return nil, err
+	}
+	return marshalPlain(payload)
+}
+
+// marshalPlain is json.Marshal without rewriting <, > and & inside the body,
+// which the signature is taken over.
+func marshalPlain(value any) ([]byte, error) {
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(out.Bytes(), "\n"), nil
 }
 
 // agreedToReadFrom refuses a receiver we did not admit as a source. Without it

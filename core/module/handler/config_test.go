@@ -6,9 +6,22 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin"
 	"github.com/beckn-one/beckn-onix/pkg/telemetry"
 	"github.com/stretchr/testify/assert"
+	"gopkg.in/yaml.v3"
 )
 
 func cfg(id string) *plugin.Config { return &plugin.Config{ID: id} }
+
+func TestConfig_StreamResponsesIsReadFromYAML(t *testing.T) {
+	var c Config
+	assert.NoError(t, yaml.Unmarshal([]byte("streamResponses: true"), &c))
+	assert.True(t, c.StreamResponses)
+}
+
+func TestConfig_StreamResponsesIsOffByDefault(t *testing.T) {
+	var c Config
+	assert.NoError(t, yaml.Unmarshal([]byte("subscriberId: x"), &c))
+	assert.False(t, c.StreamResponses)
+}
 
 func TestPluginEntries_AllNil(t *testing.T) {
 	p := PluginCfg{}

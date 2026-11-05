@@ -63,6 +63,7 @@ type stdHandler struct {
 	// Such a module has no proxy behind it, which is what makes an unanswered
 	// request a dead end rather than work in flight -- see ServeHTTP.
 	hasProviderSteps bool
+	streamResponses  bool
 	SubscriberID     string
 	role             model.Role
 	basePath         string
@@ -101,12 +102,13 @@ func newHTTPClient(cfg *HttpClientConfig, wrapper definition.TransportWrapper) *
 // NewStdHandler initializes a new processor with plugins and steps.
 func NewStdHandler(ctx context.Context, mgr PluginManager, cfg *Config, moduleName string) (http.Handler, error) {
 	h := &stdHandler{
-		steps:         []definition.Step{},
-		responseSteps: []definition.ResponseStep{},
-		SubscriberID:  cfg.SubscriberID,
-		role:          cfg.Role,
-		basePath:      cfg.BasePath,
-		moduleName:    moduleName,
+		steps:           []definition.Step{},
+		responseSteps:   []definition.ResponseStep{},
+		SubscriberID:    cfg.SubscriberID,
+		role:            cfg.Role,
+		basePath:        cfg.BasePath,
+		moduleName:      moduleName,
+		streamResponses: cfg.StreamResponses,
 	}
 	// Initialize plugins.
 	if err := h.initPlugins(ctx, mgr, &cfg.Plugins); err != nil {
@@ -284,7 +286,7 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Handle routing based on the defined route type.
-		route(stepCtx, r, wrapped, h.publisher, h.httpClient, h.responseSteps, h.signNackResponse, &responseBody)
+		route(stepCtx, r, wrapped, h.publisher, h.httpClient, h.responseSteps, h.signNackResponse, h.streamResponses, &responseBody)
 	}
 }
 
@@ -361,17 +363,43 @@ var proxyFunc = func(ctx *model.StepContext, r *http.Request, w http.ResponseWri
 	proxy(ctx, r, w, httpClient, responseSteps, responseBody)
 }
 
+// proxyStreaming passes the upstream response on as it arrives. It never reads
+// the body, so a stream reaches the caller event by event.
+func proxyStreaming(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client) {
+	r.Header.Set("X-Forwarded-Host", r.Host)
+	p := &httputil.ReverseProxy{
+		Director:   forwardTo(ctx),
+		Transport:  httpClient.Transport,
+		BufferPool: reverseProxyBufferPool{},
+	}
+	p.ServeHTTP(w, r)
+}
+
+// checkStreamingFits refuses a module that streams and also has a response
+// step, because a response step needs the whole response before it can run.
+func checkStreamingFits(streaming bool, responseSteps []definition.ResponseStep) error {
+	if streaming && len(responseSteps) > 0 {
+		return fmt.Errorf("invalid config: streamResponses cannot be used with a response step such as signAck or validateAckSign")
+	}
+	return nil
+}
+
 // nackSignerFunc is the function type used to sign NACK responses before they
 // are written to the wire. On Receiver modules h.signNackResponse is passed;
 // on Caller modules (no ackSigner) the function is a no-op.
 type nackSignerFunc func(ctx *model.StepContext, err error)
 
 // route handles request forwarding or message publishing based on the routing type.
-func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client, responseSteps []definition.ResponseStep, signNack nackSignerFunc, responseBody *[]byte) {
+func route(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, pb definition.Publisher, httpClient *http.Client, responseSteps []definition.ResponseStep, signNack nackSignerFunc, streaming bool, responseBody *[]byte) {
 	log.Debugf(ctx, "Routing to ctx.Route to %#v", ctx.Route)
 	switch ctx.Route.TargetType {
 	case "url":
 		log.Infof(ctx.Context, "Forwarding request to URL: %s", ctx.Route.URL)
+		if streaming {
+			log.Infof(ctx.Context, "Streaming the response from %s as it arrives", ctx.Route.URL)
+			proxyStreaming(ctx, r, w, httpClient)
+			return
+		}
 		proxyFunc(ctx, r, w, httpClient, responseSteps, responseBody)
 		return
 	case "publisher":
@@ -433,15 +461,7 @@ func (reverseProxyBufferPool) Put(b []byte) {
 }
 
 func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpClient *http.Client, responseSteps []definition.ResponseStep, responseBody *[]byte) {
-	target := ctx.Route.URL
 	r.Header.Set("X-Forwarded-Host", r.Host)
-
-	director := func(req *http.Request) {
-		req.URL = target
-		req.Host = target.Host
-
-		log.Request(req.Context(), req, ctx.Body)
-	}
 
 	// modifyResponse pre-reads the upstream response body once, constructs a
 	// ResponseStepContext, then runs all response steps. Body restoration for
@@ -471,13 +491,24 @@ func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpC
 	}
 
 	p := &httputil.ReverseProxy{
-		Director:       director,
+		Director:       forwardTo(ctx),
 		Transport:      httpClient.Transport,
 		ModifyResponse: modifyResponse,
 		BufferPool:     reverseProxyBufferPool{},
 	}
 
 	p.ServeHTTP(w, r)
+}
+
+// forwardTo points a proxied request at the URL the route chose.
+func forwardTo(ctx *model.StepContext) func(*http.Request) {
+	target := ctx.Route.URL
+	return func(req *http.Request) {
+		req.URL = target
+		req.Host = target.Host
+
+		log.Request(req.Context(), req, ctx.Body)
+	}
 }
 
 // LoadPlugin is a generic function to load and validate plugins.
@@ -796,6 +827,9 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 			continue
 		}
 		h.steps = append(h.steps, instrumentedStep)
+	}
+	if err := checkStreamingFits(h.streamResponses, h.responseSteps); err != nil {
+		return err
 	}
 	log.Infof(ctx, "Processor steps initialized: %v", cfg.Steps)
 	return nil

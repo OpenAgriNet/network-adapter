@@ -722,6 +722,12 @@ modules:
 **Default**: `5s`  
 **Description**: Time to wait for server response headers.
 
+##### `streamResponses`
+**Type**: `boolean`  
+**Required**: No  
+**Default**: `false`  
+**Description**: Passes a routed response on as it arrives, instead of holding it until it ends. Use it for a service that streams, such as server-sent events. A plain response passes through unchanged. It cannot be combined with a response step (`signAck`, `validateAckSign`), and the adapter refuses to start if both are set. A long response also needs a larger `httpClientConfig.responseHeaderTimeout` and `http.timeout.write`, or the call is cut off.
+
 ##### `plugins`
 **Type**: `object`  
 **Required**: Yes  
@@ -1024,6 +1030,41 @@ router:
 
 **Parameters**:
 - `routingConfig` or `routingConfigPath`: Path to routing rules YAML file
+
+---
+
+#### 8a. Non-Beckn Router Plugin
+
+**Purpose**: Route by path without reading the body. Use it for a service whose calls are not Beckn messages. The `router` plugin refuses those, because it needs a Beckn `context` to pick a rule.
+
+```yaml
+router:
+  id: nonbecknrouter
+  config:
+    routingConfig: ./config/dss-routing.yaml
+```
+
+The routing file has the same shape as the `router` plugin's, without `version` and `domain`:
+
+```yaml
+routingRules:
+  - targetType: url
+    target:
+      url: http://dss:8000
+    endpoints:
+      - v1/turns
+```
+
+**Parameters**:
+- `routingConfig` *(required)*: Path to the routing rules YAML file.
+
+**Rules**:
+- `targetType` *(required)*: Only `url` is supported. `bpp`, `bap`, `receiver`, `sender` and `publisher` need a Beckn body or a queue, so they are refused at startup.
+- `target.url` *(required)*: An `http` or `https` URL. The endpoint is added to its path, so `POST /v1/turns` reaches `http://dss:8000/v1/turns`. The request's query string is forwarded.
+- `target.excludeAction` *(optional)*: When `true`, the endpoint is not added to the target path.
+- `endpoints` *(required)*: Exact paths, without the module's base path. A request no rule names is refused.
+- The same endpoint listed twice, in one rule or in two, is refused at startup.
+- The request's HTTP method is passed on to the target as the caller sent it, so rules do not name methods.
 
 ---
 

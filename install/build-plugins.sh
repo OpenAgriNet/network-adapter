@@ -42,6 +42,7 @@ plugins=(
     "otelsetup"
     "reqmapper"
     "router"
+    "nonbecknrouter"
     "schemavalidator"
     "schemav2validator"
     "signer"
