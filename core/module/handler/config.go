@@ -170,6 +170,9 @@ type Config struct {
 	Role             model.Role
 	SubscriberID     string           `yaml:"subscriberId"`
 	HttpClientConfig HttpClientConfig `yaml:"httpClientConfig"`
+	// StreamResponses passes a routed response on as it arrives instead of
+	// holding it until it ends. It cannot be combined with a response step.
+	StreamResponses bool `yaml:"streamResponses"`
 	// BasePath is the HTTP path prefix at which this module is mounted (e.g.
 	// "/bap/receiver/"). Set by the module layer from module.Config.Path; not
 	// read from YAML. Steps use it to strip the prefix before calling plugins.

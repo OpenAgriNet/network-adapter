@@ -118,6 +118,11 @@ type responseRecorder struct {
 	record     func()
 }
 
+// Unwrap lets a flush reach the real writer, which a streamed response needs.
+func (r *responseRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *responseRecorder) WriteHeader(statusCode int) {
 	if !r.written {
 		r.written = true
