@@ -338,16 +338,3 @@ func TestProviderRecordServedActionsOnAnEmptyRecord(t *testing.T) {
 		t.Errorf("ServedActions() = %v, want empty", got)
 	}
 }
-
-func TestCallerIDKeysAreTheOnesResolveCallerIDReads(t *testing.T) {
-	for _, role := range []Role{RoleBAP, RoleBPP} {
-		for _, key := range CallerIDKeys(role) {
-			if got := ResolveCallerID(map[string]interface{}{key: "someone"}, role); got != "someone" {
-				t.Errorf("role %v: ResolveCallerID ignored %q, which CallerIDKeys lists", role, key)
-			}
-		}
-	}
-	if keys := CallerIDKeys(RoleGateway); len(keys) != 0 {
-		t.Errorf("CallerIDKeys(gateway) = %v, want none", keys)
-	}
-}

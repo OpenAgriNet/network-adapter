@@ -325,26 +325,22 @@ func ResolveNetworkID(reqContext map[string]interface{}) string {
 	return ""
 }
 
-// CallerIDKeys lists the context fields that name the caller for a role, in the
-// order they are read. None for a role that is not BAP or BPP.
-func CallerIDKeys(role Role) []string {
-	switch role {
-	case RoleBAP:
-		return []string{"bpp_id", "bppId", "receiverId"}
-	case RoleBPP:
-		return []string{"bap_id", "bapId", "senderId"}
-	default:
-		return nil
-	}
-}
-
 // ResolveCallerID returns the ID of the other party in a Beckn exchange — i.e. who
 // sent the inbound message — from a parsed Beckn context map.
 // For BPP role: the caller is the BAP (bap_id / bapId / senderId).
 // For BAP role: the caller is the BPP (bpp_id / bppId / receiverId).
 // Returns "" when the role is not BAP/BPP or no matching key is found.
 func ResolveCallerID(reqContext map[string]interface{}, role Role) string {
-	for _, k := range CallerIDKeys(role) {
+	var keys []string
+	switch role {
+	case RoleBAP:
+		keys = []string{"bpp_id", "bppId", "receiverId"}
+	case RoleBPP:
+		keys = []string{"bap_id", "bapId", "senderId"}
+	default:
+		return ""
+	}
+	for _, k := range keys {
 		if v, ok := reqContext[k].(string); ok && v != "" {
 			return v
 		}

@@ -401,7 +401,7 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if before := contextValue(becknContext, model.CallerIDKeys(model.RoleBPP)...); before != ctx.OwnSubscriberID {
+	if before := contextValue(becknContext, callerKeys...); before != ctx.OwnSubscriberID {
 		log.Infof(ctx, "the request names %q as its sender; sending it to %s as %s, who signs it",
 			before, receiver, ctx.OwnSubscriberID)
 	}
@@ -416,7 +416,10 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 	return true, nil
 }
 
-// senderIDKey is where our name goes when the request names no caller at all.
+// callerKeys are the context fields a receiver reads for who is calling, in the
+// order it reads them. senderId goes in when the request has none of them.
+var callerKeys = []string{"bap_id", "bapId", senderIDKey}
+
 const senderIDKey = "senderId"
 
 // nameUsAsSender puts our name wherever the request names its caller. The other
@@ -436,7 +439,7 @@ func nameUsAsSender(body []byte, us string) ([]byte, error) {
 		return nil, err
 	}
 	named := false
-	for _, key := range model.CallerIDKeys(model.RoleBPP) {
+	for _, key := range callerKeys {
 		if _, present := becknContext[key]; present {
 			becknContext[key] = name
 			named = true
