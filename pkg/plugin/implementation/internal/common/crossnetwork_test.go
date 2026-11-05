@@ -1,10 +1,13 @@
 package common_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -25,6 +28,12 @@ const (
 // crossRequest names a receiver, an address and an action -- the three fields
 // the decision rests on. The capability half stays constant.
 func crossRequest(receiver, bppURI, action string) []byte {
+	return crossRequestFrom("", "", receiver, bppURI, action)
+}
+
+// crossRequestFrom is crossRequest with the caller's own name on it, under
+// whichever key the caller uses.
+func crossRequestFrom(senderKey, sender, receiver, bppURI, action string) []byte {
 	field := func(name, value string) string {
 		if value == "" {
 			return ""
@@ -37,7 +46,46 @@ func crossRequest(receiver, bppURI, action string) []byte {
     "resources": [ { "resourceAttributes": { "@type": "openagrinet:MandiPrice" } } ],
     "offer": { "provider": { "id": "agmarknet.net-b" } }
   } ] } }
-}`, field("action", action), field("receiverId", receiver), field("bppUri", bppURI)))
+}`, field("action", action), field("receiverId", receiver), field("bppUri", bppURI)+field(senderKey, sender)))
+}
+
+// senderAfter runs a forward and reads back the caller's name the body now carries.
+func senderAfter(t *testing.T, body []byte, key string) string {
+	t.Helper()
+	return readBack(t, forwarded(t, body), "context", key)
+}
+
+// forwarded runs the step on a request and returns the body it leaves behind.
+func forwarded(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: us, Body: body}
+	if err := crossStep(t, upstream.URL).Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return decodeKeepingNumbers(t, ctx.Body)
+}
+
+// decodeKeepingNumbers reads a body without turning large numbers into floats.
+func decodeKeepingNumbers(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var decoded map[string]any
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatal(err)
+	}
+	return decoded
+}
+
+func readBack(t *testing.T, body map[string]any, section, key string) string {
+	t.Helper()
+	got, _ := body[section].(map[string]any)[key].(string)
+	return got
 }
 
 // networkStub answers both lookups the step makes: the call plan, and the
@@ -149,6 +197,52 @@ func TestRequestForAnotherNetworkIsSentThere(t *testing.T) {
 	}
 	if ctx.SubID != us {
 		t.Errorf("SubID = %q, want %q -- the forwarded call must be signed as us", ctx.SubID, us)
+	}
+}
+
+func TestForwardedRequestNamesUsAsTheSender(t *testing.T) {
+	got := senderAfter(t, crossRequestFrom("senderId", "consumer.oan.dev", them, "https://"+them+"/provider", "select"), "senderId")
+	if got != us {
+		t.Errorf("senderId = %q, want %q -- the other network checks it against the key that signed", got, us)
+	}
+}
+
+func TestForwardedRequestWithNoSenderIsStillSentAsUs(t *testing.T) {
+	got := senderAfter(t, crossRequest(them, "https://"+them+"/provider", "select"), "senderId")
+	if got != us {
+		t.Errorf("senderId = %q, want %q", got, us)
+	}
+}
+
+func TestForwardedRequestRewritesTheOlderNamesForTheSender(t *testing.T) {
+	for _, key := range []string{"bapId", "bap_id"} {
+		t.Run(key, func(t *testing.T) {
+			got := senderAfter(t, crossRequestFrom(key, "consumer.oan.dev", them, "https://"+them+"/provider", "select"), key)
+			if got != us {
+				t.Errorf("%s = %q, want %q -- it is read before senderId", key, got, us)
+			}
+		})
+	}
+}
+
+func TestForwardingChangesNothingButTheSender(t *testing.T) {
+	body := []byte(`{"context": {"version": "2.0.0", "action": "select", "senderId": "consumer.oan.dev",
+		"receiverId": "` + them + `", "bppUri": "https://` + them + `/provider", "transactionId": "t-1"},
+		"message": {"big": 12345678901234567890, "point": [74.4, 18.4]}}`)
+	before := decodeKeepingNumbers(t, body)
+	after := forwarded(t, body)
+
+	delete(before["context"].(map[string]any), "senderId")
+	delete(after["context"].(map[string]any), "senderId")
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("forwarding changed more than the sender:\n before %v\n after  %v", before, after)
+	}
+}
+
+func TestRequestForUsKeepsItsOwnSender(t *testing.T) {
+	got := senderAfter(t, crossRequestFrom("senderId", "consumer.oan.dev", us, "https://"+them+"/provider", "select"), "senderId")
+	if got != "consumer.oan.dev" {
+		t.Errorf("senderId = %q, want it untouched -- the request was ours to answer", got)
 	}
 }
 
