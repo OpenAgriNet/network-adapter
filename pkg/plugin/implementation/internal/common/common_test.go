@@ -1426,14 +1426,14 @@ func minimalConfig() *Config {
 // package serves whatever a domain package points it at, so a default would name
 // one provider's capability and be wrong for every other domain built on it.
 // Refused at startup, where an operator is watching.
-func TestNewRequiresBindingKeys(t *testing.T) {
+func TestNewRequiresWhatItServes(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{})
 	if err == nil {
 		t.Fatal("expected a step configured for no capability to be refused")
 	}
-	if !strings.Contains(err.Error(), "bindingKeys") {
+	if !strings.Contains(err.Error(), "capabilityCodes") {
 		t.Errorf("error %q should name the setting that is missing", err)
 	}
 }

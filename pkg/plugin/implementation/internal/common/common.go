@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -65,6 +66,10 @@ type Config struct {
 	// a capability with no error anywhere. What differs per capability comes
 	// from the registry, so one step serving several needs nothing more.
 	BindingKeys []string `yaml:"bindingKeys" json:"bindingKeys"`
+
+	// CapabilityCodes are what this step answers to, for any provider: who
+	// serves them, and how, comes from each provider's registry row.
+	CapabilityCodes []string `yaml:"capabilityCodes" json:"capabilityCodes"`
 
 	// Override where the two halves of a binding key sit in a payload. Absent
 	// means the Beckn v2 convention, which every deployment should use.
@@ -188,7 +193,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		return nil
 	}
 
-	log.Infof(ctx, "Upstream step created for %s", strings.Join(cfg.BindingKeys, ", "))
+	log.Infof(ctx, "Upstream step created for %s", strings.Join(slices.Concat(cfg.CapabilityCodes, cfg.BindingKeys), ", "))
 	return step, closer, nil
 }
 
@@ -202,6 +207,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 func ParseStepConfig(config map[string]string) (*Config, error) {
 	cfg := &Config{
 		BindingKeys:      splitList(config["bindingKeys"]),
+		CapabilityCodes:  splitList(config["capabilityCodes"]),
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
 	}
@@ -294,22 +300,17 @@ func bindingPathList(cfg *Config) ([]Paths, error) {
 
 // applyDefaults fills in what was left out and rejects what cannot be defaulted.
 func applyDefaults(cfg *Config) error {
-	// No default: this package serves whatever a domain package points it at,
-	// so any default would name one provider's capability and be silently
-	// wrong for every other.
-	if len(cfg.BindingKeys) == 0 {
-		return errors.New("bindingKeys is required: it is what this step answers to")
-	}
-	for _, key := range cfg.BindingKeys {
-		if strings.TrimSpace(key) == "" {
-			return errors.New("bindingKeys carries an empty entry")
-		}
+	if err := checkWhatIsServed(cfg); err != nil {
+		return err
 	}
 	if cfg.MaxResponseBytes <= 0 {
 		cfg.MaxResponseBytes = util.DefaultMaxResponseBytes
 	}
 	if cfg.AuthByProvider == nil {
 		cfg.AuthByProvider = map[string]*AuthProfile{}
+	}
+	if len(cfg.CapabilityCodes) > 0 {
+		return checkCapabilityConfig(cfg)
 	}
 
 	// Both directions, because each catches a different silent mistake: a
@@ -358,4 +359,61 @@ func applyDefaults(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+// checkWhatIsServed refuses a step that names nothing, or both ways of naming.
+// No default: any default would name one provider's capability and be silently
+// wrong for every other.
+func checkWhatIsServed(cfg *Config) error {
+	switch {
+	case len(cfg.CapabilityCodes) > 0 && len(cfg.BindingKeys) > 0:
+		return errors.New("set capabilityCodes or bindingKeys, not both")
+	case len(cfg.CapabilityCodes) == 0 && len(cfg.BindingKeys) == 0:
+		return errors.New("capabilityCodes is required: it is what this step answers to")
+	}
+	for _, code := range cfg.CapabilityCodes {
+		if strings.TrimSpace(code) == "" {
+			return errors.New("capabilityCodes carries an empty entry")
+		}
+	}
+	for _, key := range cfg.BindingKeys {
+		if strings.TrimSpace(key) == "" {
+			return errors.New("bindingKeys carries an empty entry")
+		}
+	}
+	return nil
+}
+
+// checkCapabilityConfig checks a step that serves capabilities rather than named
+// bindings: its providers are whoever the registry lists, so a profile is checked
+// on its own and an envelope or host key only against the capabilities.
+func checkCapabilityConfig(cfg *Config) error {
+	for provider, profile := range cfg.AuthByProvider {
+		profile.Provider = provider
+		if err := profile.validate(); err != nil {
+			return err
+		}
+	}
+	for key := range cfg.Envelopes {
+		if err := checkServedKey(cfg, "an envelope", key); err != nil {
+			return err
+		}
+	}
+	for key := range cfg.HostedElsewhere {
+		if err := checkServedKey(cfg, "an action host", key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkServedKey refuses a binding key whose capability this step does not
+// serve: a typo that would apply to nothing. A bare participant id is fine.
+func checkServedKey(cfg *Config, what, key string) error {
+	_, capability, isBinding := strings.Cut(key, "|")
+	if !isBinding || slices.Contains(cfg.CapabilityCodes, capability) {
+		return nil
+	}
+	return fmt.Errorf("%s is configured for %q, whose capability is not in capabilityCodes (%s)",
+		what, key, strings.Join(cfg.CapabilityCodes, ", "))
 }

@@ -95,6 +95,10 @@ func (s *Step) resolve(ctx context.Context, bindingKey string, beckn any) (map[s
 // A slice, not a set: a step serves a handful of capabilities, so the scan is
 // cheaper than a map and config order survives into New's startup log.
 func (s *Step) serves(key string) bool {
+	if len(s.config.CapabilityCodes) > 0 {
+		_, capability, _ := strings.Cut(key, "|")
+		return slices.Contains(s.config.CapabilityCodes, capability)
+	}
 	return slices.Contains(s.config.BindingKeys, key)
 }
 

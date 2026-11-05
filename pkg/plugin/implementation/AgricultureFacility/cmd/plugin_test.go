@@ -162,16 +162,15 @@ func TestNewPropagatesAConstructionFailure(t *testing.T) {
 	}
 }
 
-// bindingKeys has no default, because a package serving a family cannot guess
-// which of them a deployment has providers for. Absent must fail at startup
-// rather than leave a step that answers nothing.
-func TestNewRequiresBindingKeys(t *testing.T) {
+// What a step serves has no default, because a package serving a family cannot
+// guess which of them a deployment has providers for.
+func TestNewRequiresWhatItServes(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := agriFacilityProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
 		map[string]string{})
-	if err == nil || !strings.Contains(err.Error(), "bindingKeys") {
-		t.Fatalf("error = %v, want it to name bindingKeys", err)
+	if err == nil || !strings.Contains(err.Error(), "capabilityCodes") {
+		t.Fatalf("error = %v, want it to name capabilityCodes", err)
 	}
 }
 
