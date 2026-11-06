@@ -1,0 +1,868 @@
+{
+  "info": {
+    "name": "OpenAgriNet - V1 on the V2 network",
+    "description": "Drive the local stack that answers a Beckn V1 request out of the V2\nnetwork, with BharatVistaar unchanged.\n\n    V1 caller --search--> V1 adapter --select--> V2 adapter --GET--> Mausamgram\n                :3001                   :3002                 :9100\n\nBoth adapters are the same beckn-onix binary with different configs. V2 is\nwhat travels between them; V1 never leaves the outer edges.\n\nBefore running anything:\n\n    cd docs/migration-design/local-stack\n    docker compose up -d\n    cd v1-adapter && ./up.sh\n\nThen run folder 0, then folder 1. Stop with ./down.sh.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "0. Is everything up",
+      "description": "Run these first if anything below misbehaves. The adapters are started by\n../v1-adapter/up.sh and the other two by docker compose, so a failure here\ntells you which of the two you forgot.",
+      "item": [
+        {
+          "name": "V1 adapter",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{v1Adapter}}/health",
+              "host": [
+                "{{v1Adapter}}/health"
+              ]
+            },
+            "description": "Started by ../v1-adapter/up.sh."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('up', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "V2 adapter",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{v2Adapter}}/health",
+              "host": [
+                "{{v2Adapter}}/health"
+              ]
+            },
+            "description": "Started by ../v1-adapter/up.sh."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('up', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock registry",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{registry}}/healthz",
+              "host": [
+                "{{registry}}/healthz"
+              ]
+            },
+            "description": "Started by ../v1-adapter/up.sh."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('up', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mock Mausamgram",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{provider}}/healthz",
+              "host": [
+                "{{provider}}/healthz"
+              ]
+            },
+            "description": "Started by docker compose."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('up', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. V1 in, V1 out",
+      "description": "A request exactly as BharatVistaar sends it today, answered in the shape\nBharatVistaar expects. Between the two, the request left as a V2 select and\nthe V2 answer was mapped back. Nothing in either payload here is V2.\n\nSend these first. They are the whole claim.",
+      "item": [
+        {
+          "name": "happy  (all five forecast days present)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"18.4\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{v1Adapter}}/mobility/search",
+              "host": [
+                "{{v1Adapter}}/mobility/search"
+              ]
+            },
+            "description": "Provider behaviour: all five forecast days present.\n\nExpected: five day groups, Today through Day_5."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// V1 is a Nest service and answers 201 on POST. The adapter is configured",
+                  "// to match, because a status code is part of the contract too.",
+                  "pm.test('201, the status V1 sends', () => pm.response.to.have.status(201));",
+                  "",
+                  "const providers = pm.response.json().message.catalog.providers;",
+                  "pm.test('a forecast came back', () => pm.expect(providers).to.not.be.empty);",
+                  "const tags = providers[0].items[0].tags;",
+                  "pm.test('the first day is labelled Today', () =>",
+                  "  pm.expect(tags[0].descriptor.code).to.eql('Today'));",
+                  "pm.test('every day carries all ten readings', () =>",
+                  "  tags.forEach(t => pm.expect(t.list).to.have.lengthOf(10)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gaps  (day 2 missing, and some readings null, zero or empty)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"1.1\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{v1Adapter}}/mobility/search",
+              "host": [
+                "{{v1Adapter}}/mobility/search"
+              ]
+            },
+            "description": "Provider behaviour: day 2 missing, and some readings null, zero or empty.\n\nExpected: four day groups numbered by slot: Today, Day_3, Day_4, Day_5."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// V1 is a Nest service and answers 201 on POST. The adapter is configured",
+                  "// to match, because a status code is part of the contract too.",
+                  "pm.test('201, the status V1 sends', () => pm.response.to.have.status(201));",
+                  "",
+                  "const providers = pm.response.json().message.catalog.providers;",
+                  "pm.test('a forecast came back', () => pm.expect(providers).to.not.be.empty);",
+                  "const tags = providers[0].items[0].tags;",
+                  "pm.test('the first day is labelled Today', () =>",
+                  "  pm.expect(tags[0].descriptor.code).to.eql('Today'));",
+                  "pm.test('every day carries all ten readings', () =>",
+                  "  tags.forEach(t => pm.expect(t.list).to.have.lengthOf(10)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "late-only  (only days 3, 4 and 5 present)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"2.2\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{v1Adapter}}/mobility/search",
+              "host": [
+                "{{v1Adapter}}/mobility/search"
+              ]
+            },
+            "description": "Provider behaviour: only days 3, 4 and 5 present.\n\nExpected: an empty catalog: V1 will not lead with Day_3."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// V1 is a Nest service and answers 201 on POST. The adapter is configured",
+                  "// to match, because a status code is part of the contract too.",
+                  "pm.test('201, the status V1 sends', () => pm.response.to.have.status(201));",
+                  "",
+                  "const providers = pm.response.json().message.catalog.providers;",
+                  "pm.test('an empty catalog, not an error', () => pm.expect(providers).to.be.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "provider-down  (HTTP 500 on every attempt)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"3.3\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{v1Adapter}}/mobility/search",
+              "host": [
+                "{{v1Adapter}}/mobility/search"
+              ]
+            },
+            "description": "Provider behaviour: HTTP 500 on every attempt.\n\nExpected: an empty catalog, because a V1 caller is never shown an error."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// V1 is a Nest service and answers 201 on POST. The adapter is configured",
+                  "// to match, because a status code is part of the contract too.",
+                  "pm.test('201, the status V1 sends', () => pm.response.to.have.status(201));",
+                  "",
+                  "const providers = pm.response.json().message.catalog.providers;",
+                  "pm.test('an empty catalog, not an error', () => pm.expect(providers).to.be.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "zero-coords  (never called, the coordinates fail the guard first)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"0\",\n              \"lon\": \"0\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{v1Adapter}}/mobility/search",
+              "host": [
+                "{{v1Adapter}}/mobility/search"
+              ]
+            },
+            "description": "Provider behaviour: never called, the coordinates fail the guard first.\n\nExpected: an empty catalog, decided before anyone is called."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// V1 is a Nest service and answers 201 on POST. The adapter is configured",
+                  "// to match, because a status code is part of the contract too.",
+                  "pm.test('201, the status V1 sends', () => pm.response.to.have.status(201));",
+                  "",
+                  "const providers = pm.response.json().message.catalog.providers;",
+                  "pm.test('an empty catalog, not an error', () => pm.expect(providers).to.be.empty);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. The same request to the legacy service",
+      "description": "The identical payload against the V1 service running in Docker, which calls\nthe provider directly and has never heard of V2. Run a request here and the\nmatching one above, and diff the two bodies: that is the measurement.\n\n../v1-adapter/run.sh does this for all five and reports every field that\ndiffers, which is faster than diffing by eye.",
+      "item": [
+        {
+          "name": "happy  (all five forecast days present)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"18.4\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{legacy}}/mobility/search",
+              "host": [
+                "{{legacy}}/mobility/search"
+              ]
+            },
+            "description": "The contract. Whatever this returns is what the adapter has to return."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gaps  (day 2 missing, and some readings null, zero or empty)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"1.1\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{legacy}}/mobility/search",
+              "host": [
+                "{{legacy}}/mobility/search"
+              ]
+            },
+            "description": "The contract. Whatever this returns is what the adapter has to return."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "late-only  (only days 3, 4 and 5 present)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"2.2\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{legacy}}/mobility/search",
+              "host": [
+                "{{legacy}}/mobility/search"
+              ]
+            },
+            "description": "The contract. Whatever this returns is what the adapter has to return."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "provider-down  (HTTP 500 on every attempt)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"3.3\",\n              \"lon\": \"74.4\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{legacy}}/mobility/search",
+              "host": [
+                "{{legacy}}/mobility/search"
+              ]
+            },
+            "description": "The contract. Whatever this returns is what the adapter has to return."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "zero-coords  (never called, the coordinates fail the guard first)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"domain\": \"schemes:vistaar\",\n    \"action\": \"search\",\n    \"version\": \"1.1.0\",\n    \"bap_id\": \"local-harness\",\n    \"bap_uri\": \"http://localhost\",\n    \"transaction_id\": \"11111111-1111-1111-1111-111111111111\",\n    \"message_id\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"1762243200\",\n    \"ttl\": \"PT10M\",\n    \"tags\": {\n      \"session_id\": \"local-session\",\n      \"question_id\": \"local-question\"\n    }\n  },\n  \"message\": {\n    \"intent\": {\n      \"category\": {\n        \"descriptor\": {\n          \"name\": \"Weather-Forecast-Mausamgram\",\n          \"code\": \"WFC\"\n        }\n      },\n      \"fulfillment\": {\n        \"stops\": [\n          {\n            \"location\": {\n              \"lat\": \"0\",\n              \"lon\": \"0\"\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{legacy}}/mobility/search",
+              "host": [
+                "{{legacy}}/mobility/search"
+              ]
+            },
+            "description": "The contract. Whatever this returns is what the adapter has to return."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Inside the hop",
+      "description": "The two legs the V1 adapter makes on your behalf, drivable on their own.\n\nThe select is what leaves the V1 adapter; the GET is what leaves the V2 one.\nRun the select and compare its answer to the V1 body above and you can see\nexactly what the V2 representation keeps and what it drops.",
+      "item": [
+        {
+          "name": "the V2 select the V1 adapter sends",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"context\": {\n    \"version\": \"2.0.0\",\n    \"action\": \"select\",\n    \"networkId\": \"openagrinet.local\",\n    \"receiverId\": \"oan.local\",\n    \"transactionId\": \"11111111-1111-1111-1111-111111111111\",\n    \"messageId\": \"22222222-2222-2222-2222-222222222222\",\n    \"timestamp\": \"2026-01-01T00:00:00Z\"\n  },\n  \"message\": {\n    \"contract\": {\n      \"commitments\": [\n        {\n          \"status\": {\n            \"descriptor\": {\n              \"code\": \"ACTIVE\",\n              \"name\": \"active\"\n            }\n          },\n          \"offer\": {\n            \"id\": \"offer:mausamgram:open-data\",\n            \"resourceIds\": [\n              \"res:mausamgram:point-forecast\"\n            ],\n            \"provider\": {\n              \"id\": \"mausamgram\",\n              \"descriptor\": {\n                \"code\": \"IMD-NWP-01\",\n                \"name\": \"IMD Mausamgram NWP\"\n              }\n            }\n          },\n          \"resources\": [\n            {\n              \"id\": \"res:mausamgram:point-forecast\",\n              \"quantity\": {\n                \"count\": 1\n              },\n              \"resourceAttributes\": {\n                \"@context\": \"https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld\",\n                \"@type\": \"openagrinet:WeatherObservation\",\n                \"informationMode\": \"OnDemand\",\n                \"subjectCategories\": [\n                  \"Weather\"\n                ],\n                \"location\": {\n                  \"geo\": {\n                    \"type\": \"Point\",\n                    \"coordinates\": [\n                      74.4,\n                      18.4\n                    ]\n                  }\n                }\n              }\n            }\n          ]\n        }\n      ]\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{v2Adapter}}/select",
+              "host": [
+                "{{v2Adapter}}/select"
+              ]
+            },
+            "description": "What the request half of the V1 mapping produces. A V2 caller sends\nexactly this; the V1 adapter is not a privileged client."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const res = pm.response.json().message.contract.commitments[0].resources;",
+                  "pm.test('one resource per forecast day', () =>",
+                  "  pm.expect(res.length).to.be.above(0));",
+                  "// Every day is a separate resource with its own validity window. The",
+                  "// day NUMBER is not on the wire: the V1 mapping recovers it from the",
+                  "// date, which works because fcstday1 is today for this provider.",
+                  "pm.test('each day carries a validity window and no day number', () =>",
+                  "  res.forEach(r => {",
+                  "    pm.expect(r.resourceAttributes.validity.startsAt).to.be.a('string');",
+                  "    pm.expect(JSON.stringify(r)).to.not.include('Day_');",
+                  "  }));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the provider GET the V2 adapter sends",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{provider}}/get-daily?lat=18.4&lon=74.4",
+              "host": [
+                "{{provider}}/get-daily?lat=18.4&lon=74.4"
+              ]
+            },
+            "description": "Mausamgram's own shape, before anything maps it. Needs the Basic\ncredential, which is set on this folder and is fake.\n\nChange lat to 1.1, 2.2 or 3.3 to pick a different scenario."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "// cloud_message is the field with nowhere to go in V2. V1 renders it",
+                  "// as Weather Condition when there is no warning; the V2 parameter",
+                  "// enum has no member that holds prose, so it is dropped and the V1",
+                  "// adapter can only say N/A. It is the one real loss in the five",
+                  "// scenarios, and you can see it originate here.",
+                  "pm.test('the provider sends a prose cloud summary', () =>",
+                  "  pm.expect(pm.response.json().fcstday1).to.have.property('cloud_message'));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "auth": {
+        "type": "basic",
+        "basic": [
+          {
+            "key": "username",
+            "value": "bv-local"
+          },
+          {
+            "key": "password",
+            "value": "local-dev-key"
+          }
+        ]
+      }
+    },
+    {
+      "name": "4. What the adapters read from the registry",
+      "description": "Every field the adapters look up, and nothing else. Useful for seeing how\nlittle a row has to carry for a capability to be reachable, and for seeing\nthat the two hops are the same mechanism one level apart.\n\nThese are POSTs with a filter body, which is the shape sunbirdRegistry sends.",
+      "item": [
+        {
+          "name": "the V2 adapter, as the V1 adapter sees it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filters\": {\n    \"participantId\": {\n      \"eq\": \"WFC\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{registry}}/api/v1/Participant/search",
+              "host": [
+                "{{registry}}/api/v1/Participant/search"
+              ]
+            },
+            "description": "The V1 adapter resolves its upstream here. baseUrl in this row is what\nmakes the V2 adapter reachable, so the hop is configuration and not code.\n\nparticipantId is WFC, the capability's own code, because a V1 payload\nnames no participant for the left half of a binding key to come from."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one row', () => pm.expect(pm.response.json()).to.have.lengthOf(1));",
+                  "pm.test('points at the V2 adapter', () =>",
+                  "  pm.expect(pm.response.json()[0].baseUrl).to.include('3002'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mausamgram, as the V2 adapter sees it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filters\": {\n    \"participantId\": {\n      \"eq\": \"mausamgram\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{registry}}/api/v1/Participant/search",
+              "host": [
+                "{{registry}}/api/v1/Participant/search"
+              ]
+            },
+            "description": "The same lookup one level down, and this one has a real participant id\nbecause a V2 payload carries one."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('points at the provider', () =>",
+                  "  pm.expect(pm.response.json()[0].baseUrl).to.include('9100'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the V1 adapter's action plan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filters\": {\n    \"bindingKey\": {\n      \"eq\": \"WFC|Weather-Forecast-Mausamgram\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{registry}}/api/v1/ProviderSchema/search",
+              "host": [
+                "{{registry}}/api/v1/ProviderSchema/search"
+              ]
+            },
+            "description": "Method, path and mapping URL for the V1 hop. Note the action is V1's own\nword, search, and the path it maps onto is /select."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const a = pm.response.json()[0].actions[0];",
+                  "pm.test('V1 search becomes a V2 select', () => {",
+                  "  pm.expect(a.action).to.eql('search');",
+                  "  pm.expect(a.path).to.eql('/select');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the Mausamgram action plan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"filters\": {\n    \"bindingKey\": {\n      \"eq\": \"mausamgram|openagrinet:WeatherObservation\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{registry}}/api/v1/ProviderSchema/search",
+              "host": [
+                "{{registry}}/api/v1/ProviderSchema/search"
+              ]
+            },
+            "description": "The second hop's plan. Changing the upstream means changing this row,\nnot the adapter."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const a = pm.response.json()[0].actions[0];",
+                  "pm.test('a select becomes a plain GET', () => {",
+                  "  pm.expect(a.method).to.eql('GET');",
+                  "  pm.expect(a.path).to.eql('/get-daily');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "legacy",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "v1Adapter",
+      "value": "http://localhost:3001"
+    },
+    {
+      "key": "v2Adapter",
+      "value": "http://localhost:3002"
+    },
+    {
+      "key": "provider",
+      "value": "http://localhost:9100"
+    },
+    {
+      "key": "registry",
+      "value": "http://localhost:9200"
+    }
+  ]
+}

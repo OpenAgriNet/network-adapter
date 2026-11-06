@@ -1,0 +1,322 @@
+# Weather-Forecast-Mausamgram, search. V1 in, V2 out, V1 back.
+#
+# This is the whole backward-compatibility claim in one file. BharatVistaar
+# sends the Beckn V1 search it has always sent; what leaves here is a Beckn V2
+# select addressed to the OpenAgriNet provider adapter, and what goes back is
+# the V1 on_search BharatVistaar has always rendered. V2 travels between the two
+# adapters and never reaches either edge.
+#
+#   V1 caller --search--> THIS mapping --select--> the V2 adapter --> Mausamgram
+#
+# The upstream here is an adapter rather than a provider, and nothing about the
+# file reflects that. It is reached the way every upstream is: a base URL off a
+# participant record, a method and path off an action plan, two halves of a
+# mapping. That is the point being tested.
+#
+# Three halves, because there are three things to say:
+#
+#   request    the V2 select to send, or a refusal when V1 would not have called
+#   response   the V1 on_search to build from the V2 on_select
+#   fallback   the V1 answer to give when there is no V2 answer to map
+#
+# WHAT V1 RENDERS THAT A V2 ANSWER CANNOT CARRY BACK. Measured, not predicted:
+#
+#   Weather Condition   V1 shows weather_warning, or cloud_message when the
+#                       warning is empty. The V2 schema pack keeps the warning
+#                       as an Alert parameter and DROPS cloud_message outright,
+#                       because the `parameter` enum has no cloud member. Every
+#                       day with no warning therefore reads "N/A" here where V1
+#                       read "Mainly clear". Not recoverable from the V2 answer
+#                       by any means; recoverable by adding CloudCover to the
+#                       pack's enum, which its own mapping already names as a
+#                       one-line change.
+#
+#   Wind Direction      V1 shows IMD's long form, "West-North Westerly". V2
+#                       carries only the bearing in degrees. Reconstructed below
+#                       from a 16-point table, which agrees with V1 on every day
+#                       the provider sent a long form and DISAGREES on the one
+#                       day it sent a bearing with no name: V1 renders "N/A"
+#                       there and the table renders the name. Nearer the truth
+#                       and still a difference, which is the finding.
+#
+#   the day number      V1 labels the days by the fcstdayN slot they arrived in,
+#                       which is why a missing fcstday2 answers Today, Day_3,
+#                       Day_4, Day_5. V2 carries dates and no slot. The label is
+#                       reconstructed below from the date, which works because
+#                       fcstday1 is TODAY for this provider -- the slot number is
+#                       a day offset wearing a different name. That also restores
+#                       V1's refusal to lead with Day_3, which no other reading
+#                       of a V2 answer could.
+
+# The V2 select to send.
+#
+# V1's own guard, first: it answers an empty catalog rather than calling the
+# provider when either coordinate is zero, and that has to happen HERE, before
+# the call, or the empty catalog becomes a request the V2 adapter refuses with a
+# 400 that V1 has no shape for. _error stops the call; the fallback half below
+# is what the caller actually receives.
+#
+# `lat === 0 || long === 0` is the legacy test, reproduced exactly. A coordinate
+# of zero is a real place in the Atlantic, so this is a bug being preserved
+# rather than a check being honoured.
+request: |
+  (
+    $at := beckn.message.intent.fulfillment.stops[0].location;
+    $lat := $number($at.lat);
+    $lon := $number($at.lon);
+
+    $lat = 0 or $lon = 0 ? {
+      "_error": {
+        "code": "40000",
+        "message": "no coordinates were given, so there is nothing to forecast for"
+      }
+    } : {
+      /* receiverId names the V2 adapter, which is the participant being asked.
+         It is payload, not configuration: Beckn has always carried who an
+         action is addressed to, and V1's omission of it is what makes the V1
+         adapter accept unaddressed requests in the first place. */
+      "context": {
+        "version": "2.0.0",
+        "action": "select",
+        "networkId": "openagrinet.local",
+        "receiverId": "oan.local",
+        "transactionId": beckn.context.transaction_id,
+        "messageId": beckn.context.message_id,
+        "timestamp": $now()
+      },
+      "message": {
+        "contract": {
+          "commitments": [
+            {
+              "status": { "descriptor": { "code": "ACTIVE", "name": "active" } },
+              /* The offer names the provider, and the provider's id is the left
+                 half of the binding key the V2 adapter dispatches on. Which is
+                 the substantive difference between the two protocols: V1 said
+                 only what it wanted, V2 says who it is asking. */
+              "offer": {
+                "id": "offer:mausamgram:open-data",
+                "resourceIds": ["res:mausamgram:point-forecast"],
+                "provider": {
+                  "id": "mausamgram",
+                  "descriptor": { "code": "IMD-NWP-01", "name": "IMD Mausamgram NWP" }
+                }
+              },
+              "resources": [
+                {
+                  "id": "res:mausamgram:point-forecast",
+                  "quantity": { "count": 1 },
+                  "resourceAttributes": {
+                    "@context": "https://schemas.openagrinet.global/schema/WeatherObservation/v0.1/context.jsonld",
+                    "@type": "openagrinet:WeatherObservation",
+                    "informationMode": "OnDemand",
+                    "subjectCategories": ["Weather"],
+                    /* GeoJSON is [lon, lat]. The other order is a valid request
+                       for the wrong hemisphere, so it fails as wrong data. */
+                    "location": {
+                      "geo": { "type": "Point", "coordinates": [$lon, $lat] }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  )
+
+# The V1 on_search, built from the V2 on_select.
+response: |
+  (
+    $query := beckn.message.intent.category.descriptor.name;
+    $at := beckn.message.intent.fulfillment.stops[0].location;
+    $lat := $number($at.lat);
+    $lon := $number($at.lon);
+
+    /* The caller's own context, with the action turned round and the clock
+       restamped. The V2 context is not read at all: it is correspondence
+       between the two adapters and means nothing to a V1 caller. */
+    $context := $merge([beckn.context, {
+      "action": "on_search",
+      "timestamp": $now()
+    }]);
+
+    /* ?? -- a value that EXISTS is used even when it is zero. Rain of 0 mm is
+       the reading that proves this matters. */
+    $reading := function($v) { $exists($v) ? $string($v) : "N/A" };
+
+    /* || -- a value that is merely FALSY is replaced, so an empty string is
+       treated as absent. */
+    $orNA := function($v) { $v ? $v : "N/A" };
+
+    /* IMD's own wording for a bearing, clockwise from north in 22.5 degree
+       sectors. The two the provider happens to send -- "South Easterly" for SE,
+       "West-North Westerly" for WNW -- fix the pattern: the abbreviation's
+       letters expand in order and the last one takes -erly. The rest of the
+       table follows that pattern and has not been checked against IMD, which is
+       the one thing here that is inferred rather than observed. */
+    $compass := [
+      "Northerly", "North-North Easterly", "North Easterly", "East-North Easterly",
+      "Easterly", "East-South Easterly", "South Easterly", "South-South Easterly",
+      "Southerly", "South-South Westerly", "South Westerly", "West-South Westerly",
+      "Westerly", "West-North Westerly", "North Westerly", "North-North Westerly"
+    ];
+    /* Half a sector added before flooring, so each name is centred on its
+       bearing rather than starting at it: 348.75 through 11.25 is north. */
+    $bearingName := function($deg) {
+      $exists($deg) ? $compass[$floor((($number($deg) % 360) + 11.25) / 22.5) % 16] : ""
+    };
+
+    $resources := response.message.contract.commitments[0].resources;
+
+    /* One named parameter out of a resource's flat parameters array. The pack
+       groups every statistic for a parameter under `values`, so minimum and
+       maximum are keys here rather than separate entries. */
+    $param := function($ra, $name) { $ra.parameters[parameter = $name] };
+
+    /* MIDNIGHT TONIGHT IN IST, in epoch milliseconds, without parsing a date.
+       $now() is UTC; adding the offset, flooring to the day and taking it back
+       off lands on the IST midnight that has most recently passed.
+
+       This exists because the V1 day labels are slot numbers and V2 carries no
+       slot. fcstday1 is today for this provider, so the slot IS the offset from
+       today and the date is enough to recover it. */
+    $todayMs := $floor(($toMillis($now()) + 19800000) / 86400000) * 86400000 - 19800000;
+
+    /* A resource's forecast day, as a slot number: 0 for today, 1 for tomorrow.
+       validity.startsAt is already that day's IST midnight. */
+    $slotOf := function($res) {
+      $round(($toMillis($res.resourceAttributes.validity.startsAt) - $todayMs) / 86400000)
+    };
+
+    /* V1 had five slots and silently dropped a sixth day, so days beyond the
+       horizon go the same way. A negative slot would be a forecast for a day
+       already past, which V1 could not have shown either. */
+    $inHorizon := $filter($resources, function($res) {
+      $slotOf($res) >= 0 and $slotOf($res) <= 4
+    });
+
+    $dayTags := function($res) {
+      (
+        $ra := $res.resourceAttributes;
+        $rain := $param($ra, "Rainfall").values.sum;
+        $temp := $param($ra, "Temperature").values;
+        $rh := $param($ra, "Humidity").values;
+        $wspd := $param($ra, "WindSpeed").values.mean;
+        $wdir := $param($ra, "WindDirection").values.instantaneous;
+        $alert := $param($ra, "Alert").values.instantaneous;
+        [
+          /* The question, not the answer: what the caller asked for, exactly as
+             V1 rendered it, and deliberately not the grid cell below. */
+          {"descriptor": {"code": "Location"}, "value": "Lat: " & $string($lat) & ", Lon: " & $string($lon)},
+          {"descriptor": {"code": "Date"}, "value": $orNA($substringBefore($ra.validity.startsAt, "T"))},
+          {"descriptor": {"code": "Rainfall"}, "value": $reading($rain) & " mm"},
+          {"descriptor": {"code": "Min Temp"}, "value": $reading($temp.minimum) & " °C"},
+          {"descriptor": {"code": "Max Temp"}, "value": $reading($temp.maximum) & " °C"},
+          {"descriptor": {"code": "Min Humidity"}, "value": $reading($rh.minimum) & " %"},
+          {"descriptor": {"code": "Max Humidity"}, "value": $reading($rh.maximum) & " %"},
+          {"descriptor": {"code": "Wind Speed"}, "value": $reading($wspd) & " m/s"},
+          /* No unit appended, so a bearing V2 did not carry reads "N/A" and not
+             "N/A ", which is how V1 rendered the same absence. */
+          {"descriptor": {"code": "Wind Direction"}, "value": $orNA($bearingName($wdir))},
+          /* V1 fell through to cloud_message here when the warning was empty.
+             V2 does not carry one, so the fall-through lands on "N/A". The
+             single irrecoverable field in this mapping. */
+          {"descriptor": {"code": "Weather Condition"}, "value": $orNA($alert)}
+        ]
+      )
+    };
+
+    /* Sorted rather than trusted to arrive in order, because the labels are
+       assigned per day and a reordering would otherwise put Day_3 before
+       Today. On startsAt, which is ISO 8601 and therefore sorts as text. */
+    $tags := [$map($inHorizon^(resourceAttributes.validity.startsAt), function($res) {
+      (
+        $n := $slotOf($res);
+        {
+          "descriptor": {"code": $n = 0 ? "Today" : "Day_" & $string($n + 1)},
+          "list": $dayTags($res)
+        }
+      )
+    })];
+
+    /* Where the forecast actually applies: the grid cell the provider snapped
+       to, which V2 carries as the resource location. Shown on the fulfillment
+       and in the item name, never in the Location tag above. */
+    $cell := $inHorizon[0].resourceAttributes.location.geo.coordinates;
+    $finalLat := $string($cell[1] ? $cell[1] : $lat);
+    $finalLon := $string($cell[0] ? $cell[0] : $lon);
+
+    /* An answer with neither of the first two days is no answer: V1 refuses to
+       lead with Day_3, and says so with a catalog carrying no providers rather
+       than an error. */
+    $hasAnswer := $count($filter($inHorizon, function($res) { $slotOf($res) <= 1 })) > 0;
+
+    {
+      "context": $context,
+      "message": {
+        "catalog": $hasAnswer ? {
+          "descriptor": {"name": "Weather Catalog for " & $query},
+          "providers": [{
+            "id": "mausamgram-provider",
+            "descriptor": {
+              "name": "Mausamgram Weather Forecast",
+              "short_desc": "Gram Panchayat-Level Weather Forecasts",
+              "images": []
+            },
+            "categories": [{
+              "id": "c1",
+              "descriptor": {"code": "Weather-forecast", "name": "Weather Forecast"}
+            }],
+            "fulfillments": [{
+              "id": "f1",
+              "stops": [{"location": {"lat": $finalLat, "lon": $finalLon}}]
+            }],
+            "items": [{
+              "id": "mausamgram-item-1",
+              "descriptor": {
+                "images": [],
+                "name": "Weather Report for Lat: " & $finalLat & ", Lon: " & $finalLon,
+                "short_desc": "Mausamgram Forecast"
+              },
+              "matched": true,
+              "recommended": true,
+              "category_ids": ["c1"],
+              "fulfillment_ids": ["f1"],
+              "tags": $tags
+            }]
+          }]
+        } : {
+          "descriptor": {"name": "Weather Catalog for " & $query},
+          "providers": []
+        }
+      }
+    }
+  )
+
+# The answer when there is no V2 answer to map.
+#
+# Read on two occasions and the same document for both: the request half above
+# refused before the call, or the call was made and did not come back. V1 has
+# one way of not answering and it is this -- a 200 carrying a catalog with no
+# providers -- so both occasions arrive here rather than as a NACK the caller
+# was never built to read.
+#
+# It says nothing about what went wrong, and cannot: the upstream's own failure
+# text is not in scope here, so this cannot publish why the forecast is missing.
+# That is deliberate, and it is also exactly what V1 did.
+fallback: |
+  (
+    {
+      "context": $merge([beckn.context, {
+        "action": "on_search",
+        "timestamp": $now()
+      }]),
+      "message": {
+        "catalog": {
+          "descriptor": {"name": "Weather Catalog for " & beckn.message.intent.category.descriptor.name},
+          "providers": []
+        }
+      }
+    }
+  )

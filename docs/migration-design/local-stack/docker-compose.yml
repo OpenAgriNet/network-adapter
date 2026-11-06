@@ -1,0 +1,62 @@
+# Bharat Vistaar weather use case, reduced to the two things it actually needs.
+#
+#   bv-beckn          the real V1 service, built from the BharatVistaar/Beckn repo
+#   mock-mausamgram   a stand-in for the upstream forecast provider
+#
+# The Mausamgram path never reads Postgres, so no database is needed here.
+# Only the IMD weather path does, and that capability is out of scope.
+
+services:
+  mock-mausamgram:
+    image: python:3.12-alpine
+    container_name: mock-mausamgram
+    command: ["python", "-u", "/srv/server.py"]
+    volumes:
+      - ./mock-mausamgram:/srv:ro
+    environment:
+      MOCK_USER: bv-local
+      MOCK_KEY: local-dev-key
+      PORT: "9100"
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:9100/healthz')"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  bv-beckn:
+    container_name: bv-beckn
+    build:
+      # Not in this repo. The default assumes the legacy checkout sits beside
+      # this one; set BV_BECKN_REPO to point somewhere else.
+      context: ${BV_BECKN_REPO:-../../../../../OpenAgriNetLegacy/BharatVistaar/Beckn}
+      # The repo's own Dockerfile no longer builds: it pins node:20.0.0, whose
+      # Debian release has been archived, so its apt step 404s. It is also
+      # installing curl, which nothing in the service uses, and its start script
+      # points at dist/main while the build emits dist/src/main. Rather than
+      # change a repo we do not own, the working equivalent is inlined here.
+      dockerfile_inline: |
+        FROM node:20-bookworm-slim
+        WORKDIR /app
+        COPY package*.json ./
+        RUN npm install --no-audit --no-fund
+        COPY . .
+        RUN npm run build
+        EXPOSE 3000
+        CMD ["node", "dist/src/main"]
+    depends_on:
+      mock-mausamgram:
+        condition: service_healthy
+    environment:
+      PORT: "3000"
+      MAUSAMGRAM_ENDPOINT: http://mock-mausamgram:9100
+      MAUSAMGRAM_USER: bv-local
+      MAUSAMGRAM_X_API_KEY: local-dev-key
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/',r=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

@@ -1,0 +1,84 @@
+# The V2 provider adapter, as the V1 adapter's upstream.
+#
+# This is the stack the migration is to: an OpenAgriNet provider adapter
+# answering openagrinet:WeatherObservation in the network's own payloads. It
+# does not know the V1 adapter exists. It receives a Beckn v2 select and answers
+# an on_select, exactly as it would for any other caller on the network.
+#
+# It runs here so the comparison next door measures the real thing. The mapping
+# it serves is the file the V2 network publishes, fetched out of the beckn-onix
+# tree rather than copied, because the question being asked is precisely what
+# that file carries and what it drops.
+#
+# Signing and schema validation are absent for the same reason they are absent
+# from the V1 adapter: this stack is measuring payload fidelity, and keys are a
+# separate question. On a real network this is a signed hop.
+appName: "v2-provider-adapter"
+
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys: [transaction_id, message_id, subscriber_id, module_id]
+
+http:
+  port: 3002
+  timeout:
+    read: 60
+    write: 60
+    idle: 60
+
+pluginManager:
+  # Relative, so this file is not tied to one machine. up.sh starts both
+  # adapters from the directory this file is in, which is what it is
+  # relative to.
+  root: plugins
+
+modules:
+  - name: v2Provider
+    path: /
+    handler:
+      type: std
+      role: bpp
+      # What the V1 adapter addresses its select to. The step compares the two
+      # before it looks at anything else, so these must agree.
+      subscriberId: oan.local
+
+      plugins:
+        registry:
+          id: sunbirdRegistry
+          config:
+            url: http://localhost:9200/api/v1
+            entity: Participant
+            providerEntity: ProviderSchema
+            timeout: 2
+            retry_max: 1
+
+        mapper:
+          id: jsonmapper
+          config:
+            fetchTimeout: 5s
+            cacheTTL: 5s
+            negativeTTL: 1s
+
+        providerSteps:
+          - id: WeatherObservation
+            config:
+              # The network's own binding key. Unlike the V1 side, both halves
+              # come off the payload: a v2 request names the provider it is for.
+              bindingKeys: "mausamgram|openagrinet:WeatherObservation"
+              # No providerIdAt or capabilityCodeAt: absent means the Beckn v2
+              # convention, which is where a v2 payload carries both. Writing
+              # them out is what the V1 side next door has to do, and the
+              # contrast is the point.
+
+              # The real upstream credential, the only one in this stack. V1
+              # built Basic base64(user:key) itself and sent it as one header,
+              # so the whole header value travels in one variable.
+              mausamgram:
+                authScheme: header
+                headerName: Authorization
+                headerValueEnv: MAUSAMGRAM_AUTH
+
+      steps:
+        - WeatherObservation

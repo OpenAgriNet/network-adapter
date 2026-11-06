@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2514" height="1036" viewBox="0 0 2514 1036" font-family="Helvetica, Arial, sans-serif">
+<rect width="2514" height="1036" fill="#ffffff"/>
+<g transform="translate(-28.0,144.0)">
+<rect x="60.0" y="96.0" width="1800.0" height="374.0" rx="0" fill="#b2f2bb" fill-opacity="0.55" stroke="#2f9e44" stroke-width="2" stroke-dasharray="10 8"/>
+<rect x="60.0" y="500.0" width="1800.0" height="346.0" rx="0" fill="#a5d8ff" fill-opacity="0.55" stroke="#1971c2" stroke-width="2" stroke-dasharray="10 8"/>
+<rect x="420.0" y="0.0" width="280.0" height="56.0" rx="12" fill="#e9ecef" fill-opacity="0.55" stroke="#1e1e1e" stroke-width="2"/>
+<rect x="810.0" y="0.0" width="280.0" height="56.0" rx="12" fill="#e9ecef" fill-opacity="0.55" stroke="#1e1e1e" stroke-width="2"/>
+<rect x="1200.0" y="0.0" width="280.0" height="56.0" rx="12" fill="#e9ecef" fill-opacity="0.55" stroke="#1e1e1e" stroke-width="2"/>
+<rect x="1590.0" y="0.0" width="280.0" height="56.0" rx="12" fill="#e9ecef" fill-opacity="0.55" stroke="#1e1e1e" stroke-width="2"/>
+<rect x="970.0" y="614.0" width="300.0" height="40.0" rx="12" fill="#ffec99" fill-opacity="0.55" stroke="#1e1e1e" stroke-width="2"/>
+<path d="M 560.0,56.0 L 560.0,860.0" fill="none" stroke="#868e96" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 950.0,56.0 L 950.0,860.0" fill="none" stroke="#868e96" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 1340.0,56.0 L 1340.0,860.0" fill="none" stroke="#868e96" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 1730.0,56.0 L 1730.0,860.0" fill="none" stroke="#868e96" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 560.0,182.0 L 950.0,182.0" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round"/>
+<path d="M 937.0,187.2 L 950.0,182.0 L 937.0,176.8" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 950.0,240.0 L 1340.0,240.0" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round"/>
+<path d="M 1327.0,245.2 L 1340.0,240.0 L 1327.0,234.8" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1340.0,298.0 L 1730.0,298.0" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round"/>
+<path d="M 1717.0,303.2 L 1730.0,298.0 L 1717.0,292.8" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1730.0,356.0 L 1340.0,356.0" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 1353.0,350.8 L 1340.0,356.0 L 1353.0,361.2" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1340.0,414.0 L 950.0,414.0" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 963.0,408.8 L 950.0,414.0 L 963.0,419.2" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 950.0,452.0 L 560.0,452.0" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 573.0,446.8 L 560.0,452.0 L 573.0,457.2" fill="none" stroke="#2f9e44" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 560.0,586.0 L 950.0,586.0" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round"/>
+<path d="M 937.0,591.2 L 950.0,586.0 L 937.0,580.8" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 950.0,700.0 L 1730.0,700.0" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round"/>
+<path d="M 1717.0,705.2 L 1730.0,700.0 L 1717.0,694.8" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 1730.0,758.0 L 950.0,758.0" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 963.0,752.8 L 950.0,758.0 L 963.0,763.2" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 950.0,816.0 L 560.0,816.0" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round" stroke-dasharray="10 8"/>
+<path d="M 573.0,810.8 L 560.0,816.0 L 573.0,821.2" fill="none" stroke="#1971c2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="60.0" y="-85.4" text-anchor="start" font-size="28" font-weight="400" fill="#1e1e1e">What happens to one request</text>
+<text x="60.0" y="-55.8" text-anchor="start" font-size="15" font-weight="400" fill="#868e96">The top half is a capability we have not moved. The bottom half is one we have. The farmer&#x27;s side is identical in both.</text>
+<text x="560.0" y="23.8" text-anchor="middle" font-size="14" font-weight="600" fill="#1e1e1e">Bharat Vistaar</text>
+<text x="560.0" y="41.3" text-anchor="middle" font-size="14" font-weight="400" fill="#1e1e1e">agent</text>
+<text x="950.0" y="32.5" text-anchor="middle" font-size="14" font-weight="400" fill="#1e1e1e">The V1 Adapter</text>
+<text x="1340.0" y="32.5" text-anchor="middle" font-size="14" font-weight="400" fill="#1e1e1e">The old service</text>
+<text x="1730.0" y="23.8" text-anchor="middle" font-size="14" font-weight="600" fill="#1e1e1e">Mausamgram</text>
+<text x="1730.0" y="41.3" text-anchor="middle" font-size="14" font-weight="400" fill="#1e1e1e">the provider</text>
+<text x="84.0" y="126.2" text-anchor="start" font-size="15" font-weight="400" fill="#2f9e44">FORWARD  ·  the default, and every capability on day one</text>
+<text x="584.0" y="168.3" text-anchor="start" font-size="13" font-weight="400" fill="#2f9e44">POST /mobility/search</text>
+<text x="974.0" y="226.3" text-anchor="start" font-size="13" font-weight="400" fill="#2f9e44">not moved yet, so forward. Same bytes.</text>
+<text x="1364.0" y="284.4" text-anchor="start" font-size="13" font-weight="400" fill="#2f9e44">the old service calls the provider</text>
+<text x="1364.0" y="342.4" text-anchor="start" font-size="13" font-weight="400" fill="#2f9e44">provider data</text>
+<text x="974.0" y="400.4" text-anchor="start" font-size="13" font-weight="400" fill="#2f9e44">V1 reply</text>
+<text x="584.0" y="438.4" text-anchor="start" font-size="13" font-weight="400" fill="#2f9e44">streamed back byte for byte</text>
+<text x="84.0" y="530.2" text-anchor="start" font-size="15" font-weight="400" fill="#1971c2">ANSWER  ·  a capability we have moved</text>
+<text x="584.0" y="572.4" text-anchor="start" font-size="13" font-weight="400" fill="#1971c2">POST /mobility/search  ·  identical request</text>
+<text x="1120.0" y="638.2" text-anchor="middle" font-size="13" font-weight="400" fill="#1e1e1e">already moved</text>
+<text x="974.0" y="686.4" text-anchor="start" font-size="13" font-weight="400" fill="#1971c2">it calls the provider itself</text>
+<text x="974.0" y="744.4" text-anchor="start" font-size="13" font-weight="400" fill="#1971c2">the same provider data</text>
+<text x="584.0" y="802.4" text-anchor="start" font-size="13" font-weight="400" fill="#1971c2">V1 reply it built, byte-identical</text>
+<text x="1360.0" y="590.4" text-anchor="start" font-size="13" font-weight="400" fill="#868e96">never touched</text>
+</g>
+</svg>

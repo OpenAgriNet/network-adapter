@@ -1,0 +1,116 @@
+# The V1 adapter.
+#
+# The same binary and the same plugins the V2 provider adapter runs, with a
+# different config file and a different mapping. That is the claim this file
+# exists to test: that serving V1 is a deployment of what already exists rather
+# than a second thing to build.
+#
+# Its "upstream" is the V2 adapter. A V1 search arrives here, leaves as a V2
+# select, and the V2 answer is mapped back to the V1 shape -- so V2 is what
+# travels between the two adapters and V1 never leaves this one's edges.
+#
+#   V1 caller --search--> HERE --select--> v2-adapter.yaml --GET--> Mausamgram
+#
+# Nothing about that is special-cased. The V2 adapter is reached the way any
+# upstream is: a base URL off a participant record, a method and a path off an
+# action plan, a mapping in both directions.
+#
+# WHAT IS DELIBERATELY ABSENT, and why each one matters for the real thing:
+#
+#   validateSign     V1 BharatVistaar signs nothing this adapter can check
+#                    against a registry it is not in. Left out so this tests
+#                    the mapping rather than the key distribution.
+#   validateSchema   the inbound payload is Beckn V1. Validating it against the
+#                    pinned V2 spec rejects every request. Omitting the step is
+#                    a one-line config change, which is the useful finding.
+#   signAck          a V1 caller does not verify our signature, and signing
+#                    costs a key this spike has no reason to hold.
+#
+# The steps list is what runs. A plugin configured and not listed never
+# executes.
+appName: "v1-adapter"
+
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys: [transaction_id, message_id, subscriber_id, module_id]
+
+http:
+  port: 3001
+  timeout:
+    read: 60
+    write: 60
+    idle: 60
+
+pluginManager:
+  # Relative, so this file is not tied to one machine. up.sh starts both
+  # adapters from the directory this file is in, which is what it is
+  # relative to.
+  root: plugins
+
+modules:
+  - name: v1Provider
+    # V1 puts the action in the URL and in the body, and this adapter reads the
+    # body: the provider step takes context.action, not the path. Mounted at
+    # the subtree so /mobility/search and /search both land here.
+    path: /
+    handler:
+      type: std
+      role: bpp
+      subscriberId: v1-adapter.local
+
+      plugins:
+        registry:
+          id: sunbirdRegistry
+          config:
+            url: http://localhost:9200/api/v1
+            entity: Participant
+            providerEntity: ProviderSchema
+            timeout: 2
+            retry_max: 1
+
+        # No keyManager, signer or signValidator. Nothing in the steps list
+        # signs or verifies, and simplekeymanager refuses to start without a
+        # signing key -- so configuring one here would mean minting a key pair
+        # for a path that never uses it.
+
+        mapper:
+          id: jsonmapper
+          config:
+            fetchTimeout: 5s
+            # Seconds rather than the hour a deployment wants, so an edit to
+            # the mapping is visible on the next request.
+            cacheTTL: 5s
+            negativeTTL: 1s
+
+        providerSteps:
+          - id: WeatherObservation
+            config:
+              # V1 NAMES NO PROVIDER. There is no field anywhere in the payload
+              # saying who should answer -- V1 dispatched on the category
+              # descriptor alone -- so the binding key's left half has to come
+              # from the capability too. Its code serves: it is already one
+              # value per upstream.
+              bindingKeys: "WFC|Weather-Forecast-Mausamgram"
+              providerIdAt: "message.intent.category.descriptor.code"
+              capabilityCodeAt: "message.intent.category.descriptor.name"
+
+              # A V1 payload names no receiver either, so without this the step
+              # refuses every request before it ever looks at the capability.
+              # Safe here because the binding check still follows: anything
+              # this step is not configured for passes through untouched.
+              answersUnaddressed: true
+
+              # V1 is a Nest service and answers 201 on POST. The bodies match
+              # without this; the status does not.
+              responseStatus: 201
+
+              # The V2 adapter is not an upstream with a credential of its own.
+              # On a real network this hop is signed rather than authenticated,
+              # and signing is the handler's, not the step's.
+              WFC:
+                authScheme: none
+
+      steps:
+        - WeatherObservation
