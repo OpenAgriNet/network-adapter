@@ -936,6 +936,31 @@ func TestActiveProviderIDsFailsOnAnEmptyPageBeforeTheTotal(t *testing.T) {
 
 // A backend that answers with a bare array gives no total, so a short page
 // ends the listing.
+// A backend that ignores offset and gives no total would page forever.
+func TestActiveProviderIDsStopsAtThePageCap(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	full := make([]string, activePageSize)
+	for i := range full {
+		full[i] = fmt.Sprintf(`{"participantId":"p%d","status":"active"}`, i)
+	}
+	body := "[" + strings.Join(full, ",") + "]"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") || ids != nil {
+		t.Fatalf("ids = %d, error = %v; want no list and the page cap named", len(ids), err)
+	}
+	if calls.Load() != activeMaxPages {
+		t.Errorf("calls = %d, want %d", calls.Load(), activeMaxPages)
+	}
+}
+
 func TestActiveProviderIDsStopsOnAShortPageWithoutATotal(t *testing.T) {
 	t.Parallel()
 

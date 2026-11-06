@@ -324,6 +324,10 @@ const (
 // about 225 KB of rows, well inside maxResponseBytes.
 const activePageSize = 500
 
+// activeMaxPages bounds one listing (50,000 rows), so a registry that ignores
+// offset or reports a huge total cannot make it run or grow without end.
+const activeMaxPages = 100
+
 // ActiveProviderIDs lists each active participant's id once, optionally only
 // those of one type or role (empty means any). Rows are re-checked here, so a
 // registry that ignores a filter cannot widen the list. An error never comes
@@ -344,7 +348,12 @@ func (c *Client) ActiveProviderIDs(ctx context.Context, participantType, role st
 		filters[fieldRole] = eqFilter{Contains: role}
 	}
 	var participants []participant
-	for offset := 0; ; {
+	for offset, pages := 0, 0; ; {
+		if pages == activeMaxPages {
+			return nil, c.lookupFailed(ctx, span, start, operationProviderRecord,
+				fmt.Errorf("registry listing exceeds %d pages of %d rows", activeMaxPages, activePageSize))
+		}
+		pages++
 		page, total, err := searchPage[participant](ctx, c, tracer, c.searchURL, filters, activePageSize, offset)
 		if err != nil {
 			return nil, c.lookupFailed(ctx, span, start, operationProviderRecord, err)
