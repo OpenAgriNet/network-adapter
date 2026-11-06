@@ -22,12 +22,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/Grievance"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/mappingurls"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
 const (
-	mappingsURL       = mappingurls.PMFBY
+	mappingsURL       = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/pmfby"
 	shippedBindingKey = "pmfby|openagrinet:Grievance"
 	stubToken         = "stub-login-token"
 	knownTicket       = "100626000099001"

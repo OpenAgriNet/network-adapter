@@ -23,12 +23,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/WeatherObservation"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/mappingurls"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live.
-const mappingsURL = mappingurls.Mausamgram
+// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/mausamgram"
 
 // selectedResourceID is the resource the request selects, and therefore the one
 // the answer quotes. It is the same string in both directions on purpose.

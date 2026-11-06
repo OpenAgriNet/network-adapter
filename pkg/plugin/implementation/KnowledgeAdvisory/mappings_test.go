@@ -22,12 +22,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/mappingurls"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live.
-const mappingsURL = mappingurls.Knowledge
+// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/knowledge"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment must match the action the registry entry
