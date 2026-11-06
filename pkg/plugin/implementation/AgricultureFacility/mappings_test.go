@@ -28,13 +28,14 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/AgricultureFacility"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/shippedmappings"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+// mappingsURL is where the shipped mappings live.
 // Reading the published file rather than a fixture is the whole point: this test
 // breaks when what is deployed breaks.
-const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/pocra"
+const mappingsURL = shippedmappings.POCRA
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment of the name must match the action the registry
