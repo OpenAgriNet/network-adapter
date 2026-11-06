@@ -48,7 +48,7 @@ func sendResponse(ctx *model.StepContext, w http.ResponseWriter) []byte {
 	// The envelope check is NOT here. It is in ServeHTTP, ahead of the response
 	// steps, because ackSigner is one of those steps: refusing at this point
 	// means the Signature header is already set, over the body being refused.
-	return writeJSONResponse(ctx, w, ctx.ResponseBody)
+	return writeJSONResponse(ctx, w, ctx.ResponseBody, ctx.ResponseStatus)
 }
 
 // verifyEnvelope checks that a step's answer is a JSON object.
@@ -68,10 +68,14 @@ func verifyEnvelope(body []byte) error {
 	return nil
 }
 
-// writeJSONResponse writes body as a 200 JSON response, reporting what it wrote.
-func writeJSONResponse(ctx context.Context, w http.ResponseWriter, body []byte) []byte {
+// writeJSONResponse writes body as a JSON response, reporting what it wrote.
+// status 0 means 200, which is everything that does not deliberately set one.
+func writeJSONResponse(ctx context.Context, w http.ResponseWriter, body []byte, status int) []byte {
+	if status == 0 {
+		status = http.StatusOK
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	if _, err := w.Write(body); err != nil {
 		log.Errorf(ctx, err, "failed to write response body: %v", err)
 	}

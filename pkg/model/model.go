@@ -414,6 +414,14 @@ type StepContext struct {
 	// It is only consulted on the no-route path: once a Route is set the proxy
 	// owns the response.
 	ResponseBody []byte
+
+	// ResponseStatus is the HTTP status for ResponseBody. Zero means 200, which
+	// is every module that does not set it.
+	//
+	// It exists for an adapter standing in for an existing service whose
+	// callers were built against that service's status. Read only alongside
+	// ResponseBody, and ignored once a Route is set.
+	ResponseStatus int
 }
 
 // WithContext updates the existing StepContext with a new context.
