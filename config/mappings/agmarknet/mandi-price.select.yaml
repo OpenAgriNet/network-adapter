@@ -7,48 +7,16 @@
 # The upstream is Agmarknet's Vistaar select. It takes governed codes -- state,
 # district, market, commodity -- plus a date range, and every one of them is in
 # the payload, so nothing here needs resolving before the call. That is why the
-# mandi plugin has no prerequisites: a MandiPrice select names the market it
+# mandi plugin resolves nothing: a MandiPrice select names the market it
 # wants rather than a point to search from.
 #
-# THE ANSWER IS WITHIN THE PACK; THE REQUEST IS NOT, AND CANNOT BE YET.
+# THE ANSWER IS WITHIN THE PACK.
 #
 # Every field the response sets is declared by openagrinet:MandiPrice v0.1 and
 # correctly placed, inside the closed market and prices property sets. Where
 # the upstream reports something the pack has no home for, it is dropped rather
 # than invented.
-#
-# The REQUEST half is a different matter, and an earlier version of this note
-# claimed otherwise. It reads market and validity, and the pack's OnDemand
-# branch EXCLUDES both -- see the note on the guards below. That is a gap in
-# the pack rather than a mistake here: OnDemand describes what a provider can
-# obtain and Direct describes an obtained reading, and a request is neither.
 
-# What this capability cannot serve, refused before the provider is called.
-#
-# THE PACK AND THESE GUARDS DISAGREE TODAY, and an earlier version of this note
-# said the pack leaves market and validity OPTIONAL. It does not: the OnDemand
-# branch EXCLUDES them, alongside source, commodity, commodityGroup, grade,
-# variety, arrivalDate, prices and generatedAt. So a payload that satisfies
-# these guards cannot validate against the pack, and one that validates cannot
-# satisfy them.
-#
-# Nothing breaks in practice: the exclusion sits under if/then, which the
-# validator parses and never evaluates. That is an accident to rely on rather
-# than a design, and it is written down here so it is not mistaken for one.
-#
-# Resolving it is a pack change. For the market, coverageAreas is the likely
-# home -- inherited from AgricultureResource, not excluded in OnDemand, and it
-# accepts an AdministrativeAreaReference. For the date range there is no
-# candidate at all: historyPeriod and updateFrequency are durations describing
-# provider capability, not a window a caller asks for.
-#
-# What IS true, and is the reason this block exists: the pack defines
-# market.district and market.state as "name or governed code", so a payload can
-# be perfectly valid and still be unanswerable by this upstream, which wants
-# codes and a date range.
-#
-# Refusing here names what is missing. Sending it anyway earns a 400 from
-# Agmarknet, or worse an empty result that reads as "no prices".
 required:
   - check: |
       (
