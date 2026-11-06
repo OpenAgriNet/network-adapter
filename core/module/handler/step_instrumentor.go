@@ -92,12 +92,16 @@ func (is *InstrumentedStep) Run(ctx *model.StepContext) error {
 		log.Errorf(stepCtx.Context, err, "Step %s failed", is.stepName)
 	}
 
-	ctx.Body = stepCtx.Body
-	ctx.ResponseBody = stepCtx.ResponseBody
-	ctx.Route = stepCtx.Route
-	ctx.SubID = stepCtx.SubID
-	ctx.Role = stepCtx.Role
-	ctx.WithContext(stepCtx.Context)
+	// Everything the step did, carried back as a whole-struct assignment rather
+	// than a list of fields. The list was the comment above half-kept: a new
+	// field on StepContext was copied IN automatically and dropped HERE, with
+	// nothing to catch it -- which is what happened to ResponseStatus, whose
+	// value a step set and this silently discarded, leaving every answer on the
+	// default 200.
+	//
+	// The embedded context goes back too, which is what the WithContext call
+	// this replaces was for: steps run under the span opened above.
+	*ctx = stepCtx
 	return err
 }
 

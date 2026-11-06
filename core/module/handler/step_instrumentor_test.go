@@ -25,6 +25,8 @@ func (mutatingStep) Run(ctx *model.StepContext) error {
 	ctx.Route = nil
 	ctx.SubID = "sub-updated"
 	ctx.Role = model.RoleBPP
+	ctx.ResponseBody = []byte(`{"answered":true}`)
+	ctx.ResponseStatus = 201
 	return nil
 }
 
@@ -82,6 +84,13 @@ func TestInstrumentedStep_PropagatesMutations(t *testing.T) {
 	require.Nil(t, stepCtx.Route)
 	require.Equal(t, "sub-updated", stepCtx.SubID)
 	require.Equal(t, model.RoleBPP, stepCtx.Role)
+	require.Equal(t, `{"answered":true}`, string(stepCtx.ResponseBody))
+
+	// The one this file used to miss. The instrumentor copied a hand-written
+	// list of fields back, so a step's answer survived and the status it chose
+	// for that answer did not -- every response went out on the default 200
+	// with nothing failing.
+	require.Equal(t, 201, stepCtx.ResponseStatus)
 }
 
 // ---------------------------------------------------------------------------
