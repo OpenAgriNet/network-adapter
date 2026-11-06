@@ -771,18 +771,6 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			},
 			expect: "marketName alone is insufficient",
 		},
-		{
-			// Everything downstream reads supportedCommodities[0], so this
-			// used to be queried for Paddy alone and answered confidently.
-			name: "more commodities than one request can serve",
-			mutate: func(ra map[string]any) {
-				ra["supportedCommodities"] = []any{
-					map[string]any{"code": "2", "name": "Paddy(Common)"},
-					map[string]any{"code": "3", "name": "Wheat"},
-				}
-			},
-			expect: "exactly one commodity",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var payload map[string]any
@@ -1004,5 +992,31 @@ func TestShippedMappingPriceFieldsMinimumAloneAndDefaultAll(t *testing.T) {
 				t.Errorf("prices.%s is missing; with nothing asked for, all three are returned", field)
 			}
 		}
+	}
+}
+
+// Several commodities are not refused: only the first is sent to Agmarknet,
+// which takes one code per call, and the plugin logs the rest as dropped.
+func TestShippedMappingSendsOnlyTheFirstCommodity(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	ra := firstCommitment(t, payload)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	ra["supportedCommodities"] = []any{
+		map[string]any{"code": "2", "name": "Paddy(Common)"},
+		map[string]any{"code": "3", "name": "Wheat"},
+	}
+	request, _ := json.Marshal(payload)
+
+	query, answer := runShippedWith(t, string(request), providerResponse)
+
+	if got := query.Get("commoditycode"); got != "2" {
+		t.Errorf("commoditycode = %q, want the first commodity, \"2\"", got)
+	}
+	if len(resourcesOf(t, answer)) == 0 {
+		t.Error("no resources; several commodities must be served for the first, not refused")
 	}
 }

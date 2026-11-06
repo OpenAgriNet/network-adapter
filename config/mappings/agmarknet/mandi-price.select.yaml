@@ -53,16 +53,11 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Exactly one. Everything downstream reads supportedCommodities[0]:
-           this guard, the outbound query, and the commodity stamped on each
-           resource. So a caller sending three commodities passed validation, was
-           queried for the first, and got a confident signed answer to a third of
-           what it asked -- the same failure capabilitybinding refuses at the
-           commitment level, where guessing would silently serve part of a
-           request. */
-        $count($ra.supportedCommodities) = 1
+        /* Only supportedCommodities[0] is sent: Agmarknet takes one code per call.
+           Extra commodities are logged by the plugin, not refused (team decision). */
+        $exists($ra.supportedCommodities[0].code)
       )
-    message: "this capability needs exactly one commodity code in supportedCommodities; send several requests rather than have all but the first dropped"
+    message: "this capability needs a commodity code in supportedCommodities"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
