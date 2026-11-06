@@ -3,12 +3,10 @@ package KnowledgeAdvisory_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -45,18 +43,6 @@ func TestLiveEndToEnd(t *testing.T) {
 	if tokenURL == "" || base == "" || os.Getenv("KNOWLEDGE_CLIENT_ID") == "" {
 		t.Skip("live credentials not in the environment")
 	}
-
-	mappings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := os.ReadFile(filepath.Join("../../../../config/mappings/knowledge",
-			filepath.Base(r.URL.Path)))
-		if err != nil {
-			t.Errorf("mapping read: %v", err)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		fmt.Fprint(w, string(body))
-	}))
-	defer mappings.Close()
 
 	// A counting proxy in front of the real issuer, so token REUSE is measured
 	// against the live endpoint rather than inferred from timings.
@@ -95,7 +81,7 @@ func TestLiveEndToEnd(t *testing.T) {
 		CapabilityCode: "openagrinet:KnowledgeAdvisory", BaseURL: base,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodPost, Path: "/docs-pipeline-api/search",
-				Mappings:  mappings.URL + "/knowledge-advisory.select.yaml",
+				Mappings:  mappingsURL + "/knowledge-advisory.select.yaml",
 				TimeoutMs: 60000, RetryMax: 1},
 		},
 	}}

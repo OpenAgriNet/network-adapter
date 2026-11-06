@@ -160,9 +160,6 @@ func TestLiveAgainstPocra(t *testing.T) {
 		t.Skip("set POCRA_LIVE=1 to run this against the real POCRA API")
 	}
 
-	mappings := serveMappings(t)
-	defer mappings.Close()
-
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
 		t.Fatalf("failed to build the mapper: %v", err)
@@ -183,7 +180,7 @@ func TestLiveAgainstPocra(t *testing.T) {
 			// about eight seconds, so 30s is the right order of magnitude and
 			// 15s would be uncomfortably close.
 			"select": {Method: http.MethodPost, Path: "/search",
-				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 2},
+				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 2},
 		},
 	}}
 
@@ -306,9 +303,6 @@ func TestLiveCategoryLeakIsFiltered(t *testing.T) {
 		t.Skip("set POCRA_LIVE=1 to run this against the real POCRA API")
 	}
 
-	mappings := serveMappings(t)
-	defer mappings.Close()
-
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
 		t.Fatalf("failed to build the mapper: %v", err)
@@ -323,7 +317,7 @@ func TestLiveCategoryLeakIsFiltered(t *testing.T) {
 		BindingKey: shippedBindingKey, BaseURL: proxy.URL,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodPost, Path: "/search",
-				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
+				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000},
 		},
 	}}
 

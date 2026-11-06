@@ -15,8 +15,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -27,8 +25,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsDir is where the shipped mappings live, relative to this package.
-const mappingsDir = "../../../../config/mappings/knowledge"
+// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/knowledge"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment must match the action the registry entry
@@ -152,21 +150,6 @@ const providerResponse = `{
  ]
 }`
 
-// serveMappings publishes the shipped mapping over HTTP, which is how the
-// mapper fetches it in production.
-func serveMappings(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
-		if err != nil {
-			t.Errorf("could not read the mapping %q: %v", r.URL.Path, err)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		fmt.Fprint(w, string(body))
-	}))
-}
-
 type stubRegistry struct{ plan *model.ProviderRecord }
 
 func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderRecord, error) {
@@ -181,9 +164,6 @@ func runShipped(t *testing.T, request string) (map[string]any, map[string]any) {
 
 func runShippedWith(t *testing.T, request, providerBody string) (map[string]any, map[string]any) {
 	t.Helper()
-
-	mappings := serveMappings(t)
-	defer mappings.Close()
 
 	var sent map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +188,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 			// POST with a body -- the first capability to send one. The others
 			// are GETs whose mapping output becomes a query string.
 			"select": {Method: http.MethodPost, Path: "/docs-pipeline-api/search",
-				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 1},
+				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 1},
 		},
 	}}
 

@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	mappingsDir       = "../../../../config/mappings/pmfby"
+	mappingsURL       = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/pmfby"
 	shippedBindingKey = "pmfby|openagrinet:Grievance"
 	stubToken         = "stub-login-token"
 	knownTicket       = "100626000099001"
@@ -125,8 +125,6 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 	pmfby.calls = map[string]int{}
 	pmfby.bodies = map[string]map[string]any{}
 
-	mappings := httptest.NewServer(http.FileServer(http.Dir(mappingsDir)))
-	t.Cleanup(mappings.Close)
 	upstream := httptest.NewServer(pmfby)
 	t.Cleanup(upstream.Close)
 
@@ -138,7 +136,7 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 
 	action := func(path, file string, retries int) model.ActionPlan {
 		return model.ActionPlan{Method: http.MethodPost, Path: path,
-			Mappings: mappings.URL + "/" + file, RetryMax: retries}
+			Mappings: mappingsURL + "/" + file, RetryMax: retries}
 	}
 	registry := &stubRegistry{plan: &model.ProviderRecord{
 		BindingKey: shippedBindingKey, ParticipantID: "pmfby", CapabilityCode: "openagrinet:Grievance",

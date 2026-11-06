@@ -14,8 +14,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -28,8 +26,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsDir is where the shipped mappings live, relative to this package.
-const mappingsDir = "../../../../config/mappings/mausamgram"
+// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/mausamgram"
 
 // selectedResourceID is the resource the request selects, and therefore the one
 // the answer quotes. It is the same string in both directions on purpose.
@@ -93,21 +91,6 @@ const providerResponse = `{
   "fcstday3": { "date": "2026-08-28", "tmin": 23.4, "tmax": 32.0 }
 }`
 
-// serveMappings publishes the shipped mapping files over HTTP, the way the
-// registry's references point at them.
-func serveMappings(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
-		if err != nil {
-			t.Errorf("could not read the mapping %q: %v", r.URL.Path, err)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		fmt.Fprint(w, string(body))
-	}))
-}
-
 // stubRegistry answers with the call plan the live registry holds for this
 // capability.
 type stubRegistry struct{ plan *model.ProviderRecord }
@@ -118,8 +101,6 @@ func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderR
 
 // TestShippedMappingsServeARealSelect runs the published mappings end to end.
 func TestShippedMappingsServeARealSelect(t *testing.T) {
-	mappings := serveMappings(t)
-	defer mappings.Close()
 
 	var gotQuery string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +122,7 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 		BaseURL:        upstream.URL,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodGet, Path: "/get-daily",
-				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 3},
+				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 3},
 		},
 	}}
 
@@ -378,8 +359,6 @@ func assertAlert(t *testing.T, parameters []any, want string) {
 // is the point of it living in the mapping: when this provider wants another
 // parameter -- a date range, say -- it is an edit here and nothing else.
 func TestShippedMappingsExtractTheQueryFromThePayload(t *testing.T) {
-	mappings := serveMappings(t)
-	defer mappings.Close()
 
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
@@ -392,7 +371,7 @@ func TestShippedMappingsExtractTheQueryFromThePayload(t *testing.T) {
 		t.Fatalf("failed to decode the request: %v", err)
 	}
 
-	got, err := mapper.Transform(context.Background(), mappings.URL+"/"+shippedMapping,
+	got, err := mapper.Transform(context.Background(), mappingsURL+"/"+shippedMapping,
 		definition.DirectionRequest, map[string]any{"beckn": beckn})
 	if err != nil {
 		t.Fatalf("the request half returned an unexpected error: %v", err)
@@ -417,15 +396,13 @@ func TestShippedMappingsExtractTheQueryFromThePayload(t *testing.T) {
 // where "which geometries does this capability serve" is now answered -- in
 // configuration, not in Go.
 func TestShippedMappingsPreconditions(t *testing.T) {
-	mappings := serveMappings(t)
-	defer mappings.Close()
 
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
 		t.Fatalf("failed to build the mapper: %v", err)
 	}
 	defer closeMapper()
-	ref := mappings.URL + "/" + shippedMapping
+	ref := mappingsURL + "/" + shippedMapping
 
 	payload := func(t *testing.T, geometry string) map[string]any {
 		t.Helper()
@@ -481,8 +458,6 @@ func TestShippedMappingsPreconditions(t *testing.T) {
 // ten-day forecast delivered in that order would be wrong in a way nothing
 // downstream could detect.
 func TestShippedMappingsTakeHoweverManyDaysTheProviderSent(t *testing.T) {
-	mappings := serveMappings(t)
-	defer mappings.Close()
 
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
@@ -505,7 +480,7 @@ func TestShippedMappingsTakeHoweverManyDaysTheProviderSent(t *testing.T) {
 				}
 			}
 
-			got, err := mapper.Transform(context.Background(), mappings.URL+"/"+shippedMapping,
+			got, err := mapper.Transform(context.Background(), mappingsURL+"/"+shippedMapping,
 				definition.DirectionResponse,
 				map[string]any{"beckn": beckn, "response": provider})
 			if err != nil {

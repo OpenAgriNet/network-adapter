@@ -109,8 +109,8 @@ lives in the mapping and nowhere else.
 | `Warehouse` | `warehouse` |
 | `SoilTestingFacility` | `soil_lab` |
 
-Adding a type is three lines in
-`config/mappings/pocra/agriculture-facility.select.yaml` — the forward table in
+Adding a type is three lines in helmcharts'
+`quick-start/config/mappings/pocra/agriculture-facility.select.yaml` — the forward table in
 the request half, the inverse in the response half, and the governed value in the
 precondition's list. No rebuild.
 
@@ -179,8 +179,8 @@ go test ./pkg/plugin/implementation/AgricultureFacility/...
 into with `POCRA_LIVE=1`.
 
 `mappings_test.go` runs the shipped mapping through the real mapper and the real
-step against a fake POCRA. It reads from `config/mappings/pocra/` rather than
-from a fixture, so it breaks when what is deployed breaks.
+step against a fake POCRA. It fetches helmcharts' `quick-start/config/mappings/pocra/`
+(the `main` branch) rather than a fixture, so it breaks when what is deployed breaks.
 
 `conformance_test.go` validates the answer against
 `openagrinet:AgricultureFacility v0.1` with a real JSON Schema validator. It
