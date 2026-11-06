@@ -7,7 +7,7 @@
 # price) and turns it into one Direct price record. The other rows for the
 # pair -- earlier days, other varieties or grades -- are not published.
 #
-# What the select path (config/mappings/agmarknet/mandi-price.select.yaml)
+# What the select path (helmcharts quick-start/config/mappings/agmarknet/mandi-price.select.yaml)
 # learned about this upstream applies here too, and is followed rather than
 # re-learned:
 #   - keys are Title Case WITH SPACES (`Modal Price`), hence the backticks;

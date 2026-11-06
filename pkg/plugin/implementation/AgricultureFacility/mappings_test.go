@@ -15,8 +15,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -33,10 +31,10 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsDir is where the shipped mappings live, relative to this package.
+// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
 // Reading the published file rather than a fixture is the whole point: this test
 // breaks when what is deployed breaks.
-const mappingsDir = "../../../../config/mappings/pocra"
+const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/pocra"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment of the name must match the action the registry
@@ -196,21 +194,6 @@ const providerResponse = `{
   ]
 }`
 
-// serveMappings publishes the shipped mapping files over HTTP, which is how the
-// mapper fetches them in production.
-func serveMappings(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
-		if err != nil {
-			t.Errorf("could not read the mapping %q: %v", r.URL.Path, err)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		fmt.Fprint(w, string(body))
-	}))
-}
-
 // stubRegistry answers with the call plan the live registry holds for this
 // capability.
 type stubRegistry struct{ plan *model.ProviderRecord }
@@ -226,9 +209,6 @@ func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderR
 // as much of this mapping's job as serving one.
 func runSelect(t *testing.T, request string) (sent map[string]any, answer map[string]any, runErr error) {
 	t.Helper()
-
-	mappings := serveMappings(t)
-	defer mappings.Close()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
@@ -251,7 +231,7 @@ func runSelect(t *testing.T, request string) (sent map[string]any, answer map[st
 		BaseURL:        upstream.URL,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodPost, Path: "/search",
-				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 2},
+				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 2},
 		},
 	}}
 
@@ -887,9 +867,6 @@ func warehouseRequest(t *testing.T) string {
 func runAgainst(t *testing.T, request, providerBody string) map[string]any {
 	t.Helper()
 
-	mappings := serveMappings(t)
-	defer mappings.Close()
-
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, providerBody)
 	}))
@@ -905,7 +882,7 @@ func runAgainst(t *testing.T, request, providerBody string) map[string]any {
 		BindingKey: shippedBindingKey, BaseURL: upstream.URL,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodPost, Path: "/search",
-				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
+				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000},
 		},
 	}}
 
@@ -1361,9 +1338,6 @@ func (p *pocraByCategory) asked() []string {
 func runSplitSearch(t *testing.T, types []string, byCode map[string]string) (map[string]any, *pocraByCategory) {
 	t.Helper()
 
-	mappings := serveMappings(t)
-	defer mappings.Close()
-
 	pocra := &pocraByCategory{byCode: byCode}
 	upstream := httptest.NewServer(pocra)
 	defer upstream.Close()
@@ -1378,7 +1352,7 @@ func runSplitSearch(t *testing.T, types []string, byCode map[string]string) (map
 		BindingKey: shippedBindingKey, BaseURL: upstream.URL,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodPost, Path: "/search",
-				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
+				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000},
 		},
 	}}
 
