@@ -54,7 +54,7 @@ required:
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         /* Only supportedCommodities[0] is sent: Agmarknet takes one code per call.
-           Extra commodities are logged by the plugin, not refused (team decision). */
+           Extra commodities are ignored, not refused. */
         $exists($ra.supportedCommodities[0].code)
       )
     message: "this capability needs a commodity code in supportedCommodities"
@@ -346,13 +346,13 @@ response: |
                     "commodityGroup": $r.Group,
                     "variety":        $r.Variety,
                     "grade":          $r.Grade,
-                    /* From the record, except marketCode: Agmarknet reports none, so it is the
-                       requested one, and omitted district-wide. marketName is trimmed. */
+                    /* Codes from the request, so the market can be asked again; Agmarknet
+                       filters by them and returns names. marketName is the record's, trimmed. */
                     "market": {
                       "marketCode": $ra.market.marketCode,
                       "marketName": $trim($r.Market),
-                      "district":   $r.District,
-                      "state":      $r.State
+                      "district":   $ra.market.district,
+                      "state":      $ra.market.state
                     },
                     "arrivalDate": $iso($r.`Arrival Date`),
                     "prices": {

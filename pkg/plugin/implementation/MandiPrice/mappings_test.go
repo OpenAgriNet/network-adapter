@@ -384,8 +384,9 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 	}
 
 	market, _ := attributes["market"].(map[string]any)
-	if market["marketName"] != "Kasdol APMC" || market["state"] != "Chattisgarh" {
-		t.Errorf("market = %v, want the names the provider reported", market)
+	// Codes from the request, so the answer's market can be selected again.
+	if market["marketName"] != "Kasdol APMC" || market["district"] != "96" || market["state"] != "CG" {
+		t.Errorf("market = %v, want the reported name with the requested district and state codes", market)
 	}
 
 	// --- a record the market reported only partially -------------------------
@@ -688,9 +689,9 @@ func TestShippedMappingStatesWhatItKnowsRatherThanEchoing(t *testing.T) {
 		if market["marketCode"] != "2056" {
 			t.Errorf("market.marketCode = %#v, want the requested \"2056\"", market["marketCode"])
 		}
-		// And what is there comes from the record.
-		if market["marketName"] != "Kasdol APMC" || market["state"] != "Chattisgarh" {
-			t.Errorf("market = %#v, want the values the provider reported", market)
+		// The name from the record; district and state as the requested codes.
+		if market["marketName"] != "Kasdol APMC" || market["district"] != "96" || market["state"] != "CG" {
+			t.Errorf("market = %#v, want the reported name with the requested district and state codes", market)
 		}
 		// marketName is the one member the pack requires.
 		if _, ok := market["marketName"]; !ok {
@@ -996,7 +997,7 @@ func TestShippedMappingPriceFieldsMinimumAloneAndDefaultAll(t *testing.T) {
 }
 
 // Several commodities are not refused: only the first is sent to Agmarknet,
-// which takes one code per call, and the plugin logs the rest as dropped.
+// which takes one code per call, and the rest are ignored.
 func TestShippedMappingSendsOnlyTheFirstCommodity(t *testing.T) {
 	t.Parallel()
 
