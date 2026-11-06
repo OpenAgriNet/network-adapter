@@ -1,20 +1,29 @@
 package MandiPrice
 
-import "github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
+import (
+	"context"
+
+	"github.com/beckn-one/beckn-onix/pkg/log"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
+)
 
 // prerequisites is what a mandi capability needs that its payload does not
 // carry, keyed by binding key.
 //
-// Empty, and for a better reason than weather's: a market price select names
-// the market it wants. The MandiPrice pack has no top-level location -- only
-// market.marketCode, market.district and market.state -- so there is nothing
-// to resolve. Agmarknet's Vistaar select takes exactly those codes, and the
-// mapping reads them straight off the payload.
-//
-// An entry would be needed only for real I/O: a commodity name to resolve to a
-// code, a token to exchange, a point to turn into a market. Each of those is a
-// different upstream than the one this was written against, and each would
-// bring the question of where the provider-to-function binding belongs -- see
-// the note in WeatherObservation/prerequisites.go and prefer keeping the payload explicit
-// over adding an entry here.
-var prerequisites = common.Prerequisites{}
+// Nothing to resolve: a market price select names the market it wants, and the
+// mapping reads Agmarknet's codes straight off the payload. The one entry only
+// logs, because a mapping cannot: Agmarknet takes one commodity per call.
+var prerequisites = common.Prerequisites{
+	"agmarknet|openagrinet:MandiPrice": logExtraCommodities,
+}
+
+// logExtraCommodities warns when a select names several commodities. Only the
+// first is sent to Agmarknet, which takes one code per call; the rest are
+// dropped, not refused.
+func logExtraCommodities(ctx context.Context, beckn any) (map[string]any, error) {
+	path := "message.contract.commitments[].resources[].resourceAttributes.supportedCommodities[]"
+	if n := len(common.LeavesAt(beckn, path)); n > 1 {
+		log.Warnf(ctx, "MandiPrice select names %d commodities; Agmarknet takes one per call, so only supportedCommodities[0] is requested", n)
+	}
+	return nil, nil
+}

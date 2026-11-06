@@ -384,8 +384,9 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 	}
 
 	market, _ := attributes["market"].(map[string]any)
-	if market["marketName"] != "Kasdol APMC" || market["state"] != "Chattisgarh" {
-		t.Errorf("market = %v, want the names the provider reported", market)
+	// Codes from the request, so the answer's market can be selected again.
+	if market["marketName"] != "Kasdol APMC" || market["district"] != "96" || market["state"] != "CG" {
+		t.Errorf("market = %v, want the reported name with the requested district and state codes", market)
 	}
 
 	// --- a record the market reported only partially -------------------------
@@ -408,7 +409,6 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 // provider is called, with its own message.
 func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 	for _, tc := range []struct{ name, drop, expect string }{
-		{"no commodity code", "supportedCommodities", "commodity code"},
 		{"no market codes", "market", "codes in market"},
 		{"no validity window", "validity", "validity window"},
 	} {
@@ -683,13 +683,14 @@ func TestShippedMappingStatesWhatItKnowsRatherThanEchoing(t *testing.T) {
 		}
 
 		market, _ := ra["market"].(map[string]any)
-		// The upstream reports no market code, so the answer must not claim one.
-		if code, present := market["marketCode"]; present {
-			t.Errorf("market.marketCode = %#v; this upstream reports no code, so asserting one is unfounded", code)
+		// The upstream reports no market code, but this select named one and
+		// the query is scoped to it, so every row is that market's.
+		if market["marketCode"] != "2056" {
+			t.Errorf("market.marketCode = %#v, want the requested \"2056\"", market["marketCode"])
 		}
-		// And what is there comes from the record.
-		if market["marketName"] != "Kasdol APMC" || market["state"] != "Chattisgarh" {
-			t.Errorf("market = %#v, want the values the provider reported", market)
+		// The name from the record; district and state as the requested codes.
+		if market["marketName"] != "Kasdol APMC" || market["district"] != "96" || market["state"] != "CG" {
+			t.Errorf("market = %#v, want the reported name with the requested district and state codes", market)
 		}
 		// marketName is the one member the pack requires.
 		if _, ok := market["marketName"]; !ok {
@@ -723,16 +724,52 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			expect: "codes in market",
 		},
 		{
-			// Everything downstream reads supportedCommodities[0], so this
-			// used to be queried for Paddy alone and answered confidently.
-			name: "more commodities than one request can serve",
+			// The upstream takes both ends as from_date and to_date, so each is
+			// mandatory and must be a date.
+			name: "no validity start",
 			mutate: func(ra map[string]any) {
-				ra["supportedCommodities"] = []any{
-					map[string]any{"code": "2", "name": "Paddy(Common)"},
-					map[string]any{"code": "3", "name": "Wheat"},
-				}
+				delete(ra["validity"].(map[string]any), "startsAt")
 			},
-			expect: "exactly one commodity",
+			expect: "validity window",
+		},
+		{
+			name: "no validity end",
+			mutate: func(ra map[string]any) {
+				delete(ra["validity"].(map[string]any), "endsAt")
+			},
+			expect: "validity window",
+		},
+		{
+			name: "validity that ends before it starts",
+			mutate: func(ra map[string]any) {
+				ra["validity"] = map[string]any{"startsAt": "2025-08-21", "endsAt": "2025-08-20"}
+			},
+			expect: "must not be after",
+		},
+		{
+			// State, district and commodity are each mandatory; each is refused on
+			// its own, with a message that names it.
+			name: "no state",
+			mutate: func(ra map[string]any) {
+				delete(ra["market"].(map[string]any), "state")
+			},
+			expect: "market.state",
+		},
+		{
+			name: "no district",
+			mutate: func(ra map[string]any) {
+				delete(ra["market"].(map[string]any), "district")
+			},
+			expect: "numeric district",
+		},
+		{
+			// Agmarknet takes no name, so a name alone would answer for the
+			// whole district; refused before the call.
+			name: "a market name without a code",
+			mutate: func(ra map[string]any) {
+				delete(ra["market"].(map[string]any), "marketCode")
+			},
+			expect: "marketName alone is insufficient",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -877,5 +914,109 @@ func TestShippedMappingHonoursTheRequestedPriceFields(t *testing.T) {
 				t.Errorf("prices.%s is missing, which the pack requires", required)
 			}
 		}
+	}
+}
+
+// Without a market code or name the query is district-wide: no marketcode goes
+// upstream, no single code is claimed, and each row names its own market.
+func TestShippedMappingSearchesTheDistrictWithoutAMarketCode(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	ra := firstCommitment(t, payload)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	// Neither a code nor a name: the whole district is what was asked for.
+	delete(ra["market"].(map[string]any), "marketCode")
+	delete(ra["market"].(map[string]any), "marketName")
+	request, _ := json.Marshal(payload)
+
+	twoMarkets := strings.Replace(providerResponse, `"Market": "Kasdol APMC"`, `"Market": "Other APMC "`, 1)
+	query, answer := runShippedWith(t, string(request), twoMarkets)
+
+	if query.Has("marketcode") {
+		t.Errorf("marketcode = %q was sent; district-wide must omit it", query.Get("marketcode"))
+	}
+	names := map[string]bool{}
+	for _, r := range resourcesOf(t, answer) {
+		market := r["resourceAttributes"].(map[string]any)["market"].(map[string]any)
+		if code, present := market["marketCode"]; present {
+			t.Errorf("market.marketCode = %#v; no single code applies district-wide", code)
+		}
+		names[market["marketName"].(string)] = true
+	}
+	if !names["Other APMC"] || len(names) < 2 {
+		t.Errorf("market names = %v, want rows from more than one market, trimmed", names)
+	}
+}
+
+// Minimum alone gives the minimum alone; nothing passed gives all three.
+func TestShippedMappingPriceFieldsMinimumAloneAndDefaultAll(t *testing.T) {
+	t.Parallel()
+
+	minOnly := strings.Replace(selectRequest,
+		`"supportedPriceFields": ["Minimum", "Maximum", "Modal"]`,
+		`"supportedPriceFields": ["Minimum"]`, 1)
+	_, answer := runShippedWith(t, minOnly, providerResponse)
+	for _, r := range resourcesOf(t, answer) {
+		prices := r["resourceAttributes"].(map[string]any)["prices"].(map[string]any)
+		if _, ok := prices["minimum"]; !ok {
+			t.Error("prices.minimum is missing, and it is the field that was asked for")
+		}
+		for _, unasked := range []string{"maximum", "modal"} {
+			if _, present := prices[unasked]; present {
+				t.Errorf("prices.%s was returned though only Minimum was asked for", unasked)
+			}
+		}
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	ra := firstCommitment(t, payload)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	delete(ra, "supportedPriceFields")
+	request, _ := json.Marshal(payload)
+	// The shared fixture's second row reports no Min or Max, so price it fully.
+	allPriced := strings.Replace(providerResponse,
+		`"Price Unit": "Rs./Qtl",
+    "Modal Price": "2050",`,
+		`"Max Price": "2100", "Min Price": "1900", "Price Unit": "Rs./Qtl",
+    "Modal Price": "2050",`, 1)
+	_, answer = runShippedWith(t, string(request), allPriced)
+	for _, r := range resourcesOf(t, answer) {
+		prices := r["resourceAttributes"].(map[string]any)["prices"].(map[string]any)
+		for _, field := range []string{"minimum", "maximum", "modal"} {
+			if _, ok := prices[field]; !ok {
+				t.Errorf("prices.%s is missing; with nothing asked for, all three are returned", field)
+			}
+		}
+	}
+}
+
+// Several commodities are not refused: only the first is sent to Agmarknet,
+// which takes one code per call, and the plugin logs the rest as dropped.
+func TestShippedMappingSendsOnlyTheFirstCommodity(t *testing.T) {
+	t.Parallel()
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &payload); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	ra := firstCommitment(t, payload)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	ra["supportedCommodities"] = []any{
+		map[string]any{"code": "2", "name": "Paddy(Common)"},
+		map[string]any{"code": "3", "name": "Wheat"},
+	}
+	request, _ := json.Marshal(payload)
+
+	query, answer := runShippedWith(t, string(request), providerResponse)
+
+	if got := query.Get("commoditycode"); got != "2" {
+		t.Errorf("commoditycode = %q, want the first commodity, \"2\"", got)
+	}
+	if len(resourcesOf(t, answer)) == 0 {
+		t.Error("no resources; several commodities must be served for the first, not refused")
 	}
 }
