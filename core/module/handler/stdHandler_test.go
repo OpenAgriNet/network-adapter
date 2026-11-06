@@ -1361,3 +1361,91 @@ func TestLoadPayloadTransformerStep(t *testing.T) {
 		}
 	})
 }
+
+// registryStepManager records the registry it is handed and returns a step
+// that answers, so the tests can see the step ran in the pipeline.
+type registryStepManager struct {
+	noopPluginManager
+	gotRegistry definition.RegistryLookup
+	gotID       string
+}
+
+func (m *registryStepManager) RegistryStep(_ context.Context, registry definition.RegistryLookup, cfg *plugin.Config) (definition.Step, error) {
+	m.gotRegistry = registry
+	m.gotID = cfg.ID
+	return &answeringStep{answer: []byte(`{"ok":true}`)}, nil
+}
+
+func TestInitStepsLoadsARegistryStepAndHandsItTheRegistry(t *testing.T) {
+	reg := &stubProviderRegistry{}
+	h := &stdHandler{moduleName: "test-module", registry: reg}
+	mgr := &registryStepManager{}
+	cfg := &Config{
+		Plugins: PluginCfg{RegistrySteps: []plugin.Config{{ID: "x", Config: map[string]string{}}}},
+		Steps:   []string{"x"},
+	}
+
+	if err := h.initSteps(context.Background(), mgr, cfg); err != nil {
+		t.Fatalf("a registry step should load: %v", err)
+	}
+	if mgr.gotID != "x" {
+		t.Errorf("RegistryStep called with id %q, want x", mgr.gotID)
+	}
+	if mgr.gotRegistry != definition.RegistryLookup(reg) {
+		t.Error("RegistryStep was not handed the handler's registry")
+	}
+	if h.hasProviderSteps {
+		t.Error("a registry step must not set hasProviderSteps")
+	}
+	if len(h.steps) != 1 {
+		t.Fatalf("pipeline has %d steps, want 1", len(h.steps))
+	}
+	ctx := &model.StepContext{Context: context.Background()}
+	if err := h.steps[0].Run(ctx); err != nil {
+		t.Fatalf("step failed: %v", err)
+	}
+	if string(ctx.ResponseBody) != `{"ok":true}` {
+		t.Errorf("step did not run in the pipeline, body = %q", ctx.ResponseBody)
+	}
+}
+
+func TestInitStepsRefusesARegistryStepWithoutARegistry(t *testing.T) {
+	h := &stdHandler{moduleName: "test-module"}
+	cfg := &Config{Plugins: PluginCfg{RegistrySteps: []plugin.Config{{ID: "x"}}}}
+
+	err := h.initSteps(context.Background(), &registryStepManager{}, cfg)
+	if err == nil {
+		t.Fatal("expected a registry step with no registry plugin to be refused")
+	}
+	if !strings.Contains(err.Error(), "x") || !strings.Contains(err.Error(), "Registry plugin not configured") {
+		t.Errorf("error %q should name the step id and the missing registry", err)
+	}
+}
+
+func TestInitStepsRefusesARepeatedRegistryStepID(t *testing.T) {
+	h := &stdHandler{moduleName: "test-module", registry: &stubProviderRegistry{}}
+	cfg := &Config{Plugins: PluginCfg{RegistrySteps: []plugin.Config{{ID: "x"}, {ID: "x"}}}}
+
+	err := h.initSteps(context.Background(), &registryStepManager{}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "configured more than once") || !strings.Contains(err.Error(), "x") {
+		t.Errorf("error %v should be the duplicate-id refusal naming x", err)
+	}
+}
+
+func TestInitStepsRefusesARegistryStepSharingAProviderStepID(t *testing.T) {
+	h := &stdHandler{moduleName: "test-module", mapper: &stubProviderMapper{}, registry: &stubProviderRegistry{}}
+	cfg := &Config{Plugins: PluginCfg{
+		ProviderSteps: []plugin.Config{{ID: "x"}},
+		RegistrySteps: []plugin.Config{{ID: "x"}},
+	}}
+
+	err := h.initSteps(context.Background(), &registryStepManager{}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "configured more than once") {
+		t.Errorf("error %v should be the duplicate-id refusal", err)
+	}
+}
+
+// RegistryStep returns a mock implementation of the registry Step interface.
+func (noopPluginManager) RegistryStep(ctx context.Context, registry definition.RegistryLookup, cfg *plugin.Config) (definition.Step, error) {
+	return nil, nil
+}

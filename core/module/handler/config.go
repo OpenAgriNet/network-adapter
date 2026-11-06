@@ -33,6 +33,7 @@ type PluginManager interface {
 	CatalogBlobStore(ctx context.Context, cfg *plugin.Config) (definition.CatalogBlobStore, error)
 	Mapper(ctx context.Context, cfg *plugin.Config) (definition.Mapper, error)
 	ProviderStep(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg *plugin.Config) (definition.Step, error)
+	RegistryStep(ctx context.Context, registry definition.RegistryLookup, cfg *plugin.Config) (definition.Step, error)
 }
 
 // Type defines different handler types for processing requests.
@@ -95,6 +96,9 @@ type PluginCfg struct {
 	// the plain StepProvider contract cannot do. They resolve by id in a step
 	// list exactly as Steps entries do.
 	ProviderSteps []plugin.Config `yaml:"providerSteps,omitempty"`
+	// RegistrySteps are steps that are handed the registry. They resolve by id in
+	// a step list exactly as Steps entries do.
+	RegistrySteps []plugin.Config `yaml:"registrySteps,omitempty"`
 }
 
 // PluginEntries returns a flat list of all configured plugins in this PluginCfg.
@@ -132,6 +136,11 @@ func (p *PluginCfg) PluginEntries() []telemetry.PluginEntry {
 	for i := range p.ProviderSteps {
 		if p.ProviderSteps[i].ID != "" {
 			entries = append(entries, telemetry.PluginEntry{Type: "provider_step", ID: p.ProviderSteps[i].ID})
+		}
+	}
+	for i := range p.RegistrySteps {
+		if p.RegistrySteps[i].ID != "" {
+			entries = append(entries, telemetry.PluginEntry{Type: "registry_step", ID: p.RegistrySteps[i].ID})
 		}
 	}
 	for i := range p.Middleware {
