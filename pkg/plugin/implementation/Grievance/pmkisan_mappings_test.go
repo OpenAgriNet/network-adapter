@@ -32,11 +32,11 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/Grievance"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/shippedmappings"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/mappingurls"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-const pkMappingsURL = shippedmappings.PMKisan
+const pkMappingsURL = mappingurls.PMKisan
 
 const (
 	pkCapability = "openagrinet:Grievance"

@@ -1,7 +1,7 @@
-// Package shippedmappings names where the provider mappings live: helmcharts,
+// Package mappingurls names where the provider mappings live: helmcharts,
 // which deployments read. Tests fetch from here, so the tested mapping is the
 // shipped one. A new provider is one more line below.
-package shippedmappings
+package mappingurls
 
 // Base is helmcharts' quick-start mappings folder on main.
 const Base = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings"

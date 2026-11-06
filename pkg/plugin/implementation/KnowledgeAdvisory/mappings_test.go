@@ -22,12 +22,12 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/shippedmappings"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/mappingurls"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
 // mappingsURL is where the shipped mappings live.
-const mappingsURL = shippedmappings.Knowledge
+const mappingsURL = mappingurls.Knowledge
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment must match the action the registry entry
