@@ -273,6 +273,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	}
 
 	ctx.ResponseBody = becknResponse
+	ctx.ResponseStatus = s.config.ResponseStatus
 	log.Infof(ctx, "served %s in %d bytes", plan.BindingKey, len(becknResponse))
 	return nil
 }
@@ -315,6 +316,7 @@ func (s *Step) answerAnyway(ctx *model.StepContext, call model.ActionPlan, plan 
 	}
 
 	ctx.ResponseBody = body
+	ctx.ResponseStatus = s.config.ResponseStatus
 	// Warn, not Info: the caller is getting an ordinary-looking answer, so this
 	// log line is the only place the failure behind it is visible.
 	log.Warnf(ctx, "%s could not be served (%v); answering with its fallback in %d bytes",

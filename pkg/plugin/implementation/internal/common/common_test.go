@@ -2872,6 +2872,83 @@ func TestRunDoesNotUseTheFallbackWhenTheRequestHalfCannotBeApplied(t *testing.T)
 
 // --- the response status ----------------------------------------------------
 
+// Unset means the handler's own default, which is 200. Only a step that was
+// configured for a different one carries it.
+func TestRunLeavesTheResponseStatusUnsetByDefault(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"served":true}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+
+	ctx, err := runStep(t, step, selectBody)
+	if err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if ctx.ResponseStatus != 0 {
+		t.Errorf("ResponseStatus = %d, want 0 so the handler decides", ctx.ResponseStatus)
+	}
+}
+
+func TestRunCarriesTheConfiguredResponseStatus(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"served":true}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
+		func(c *Config) { c.ResponseStatus = http.StatusCreated })
+
+	ctx, err := runStep(t, step, selectBody)
+	if err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if ctx.ResponseStatus != http.StatusCreated {
+		t.Errorf("ResponseStatus = %d, want 201", ctx.ResponseStatus)
+	}
+}
+
+// A fallback is still that capability's answer, so it is written the same way
+// a real one is. Otherwise a caller checking the status would see the failure
+// the fallback exists to hide.
+func TestFallbackCarriesTheConfiguredResponseStatus(t *testing.T) {
+	t.Parallel()
+
+	mapper := &stubMapper{
+		requestResult:  []byte(`{"_error":{"status":400,"code":"X","message":"no usable location"}}`),
+		fallbackResult: []byte(`{"message":{"catalog":{"providers":[]}}}`),
+	}
+	step := newStep(t, &stubRegistry{plan: testPlan("http://upstream.invalid", http.MethodGet)}, mapper,
+		func(c *Config) { c.ResponseStatus = http.StatusCreated })
+
+	ctx, err := runStep(t, step, selectBody)
+	if err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if ctx.ResponseStatus != http.StatusCreated {
+		t.Errorf("ResponseStatus on a fallback = %d, want 201", ctx.ResponseStatus)
+	}
+}
+
+func TestParseStepConfigRefusesANonSuccessResponseStatus(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"404", "500", "0", "twenty"} {
+		if _, err := ParseStepConfig(map[string]string{
+			"bindingKeys": testBindingKey, "responseStatus": raw,
+		}); err == nil {
+			t.Errorf("responseStatus %q was accepted; it is the status for an answer", raw)
+		}
+	}
+}
+
 // --- a request that names no receiver ---------------------------------------
 
 // unaddressedBody is what a caller with no concept of addressing a participant

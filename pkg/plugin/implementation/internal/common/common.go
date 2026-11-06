@@ -105,6 +105,11 @@ type Config struct {
 
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+
+	// ResponseStatus is the HTTP status for an answer this step produced. Zero
+	// means 200, and it changes the status only, never the body. Non-success
+	// values are refused at parse. Why it is configurable: ADR-0005.
+	ResponseStatus int `yaml:"responseStatus" json:"responseStatus"`
 }
 
 // Step serves whatever capabilities a domain package configures it for. It is
@@ -192,6 +197,19 @@ func ParseStepConfig(config map[string]string) (*Config, error) {
 		BindingKeys:      splitList(config["bindingKeys"]),
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
+	}
+
+	if raw := config["responseStatus"]; raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid responseStatus value '%s': %w", raw, err)
+		}
+		// Refused here rather than at write time, where an impossible status
+		// becomes a panic inside net/http on the first request.
+		if value < 200 || value > 299 {
+			return nil, fmt.Errorf("responseStatus must be a 2xx, got %d: it is the status for an answer", value)
+		}
+		cfg.ResponseStatus = value
 	}
 
 	if raw := config["maxResponseBytes"]; raw != "" {
