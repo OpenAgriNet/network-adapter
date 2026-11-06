@@ -2962,3 +2962,67 @@ const unaddressedBody = `{
     "offer": { "provider": { "id": "mausamgram" } }
   }] } }
 }`
+
+// The default. A payload on the network's own wire that names no receiver is a
+// mistake, and this is where it is caught.
+func TestRunRefusesAnUnaddressedRequestByDefault(t *testing.T) {
+	t.Parallel()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan("http://upstream.invalid", http.MethodGet)}, mapper)
+
+	_, err := runStep(t, step, unaddressedBody)
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
+		t.Fatalf("status for a request naming no receiver = %v, want 400", err)
+	}
+}
+
+func TestRunServesAnUnaddressedRequestWhenConfiguredTo(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"served":true}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
+		func(c *Config) { c.AnswersUnaddressed = true })
+
+	ctx, err := runStep(t, step, unaddressedBody)
+	if err != nil {
+		t.Fatalf("Run() returned an unexpected error: %v", err)
+	}
+	if string(ctx.ResponseBody) != `{"served":true}` {
+		t.Errorf("answered %q, want the mapped answer", ctx.ResponseBody)
+	}
+}
+
+// The safety the opt-out leans on: answering an unaddressed request is still
+// gated by the binding check, so a capability this step was not configured for
+// passes through rather than being served.
+func TestUnaddressedRequestsStillPassThroughWhenTheCapabilityIsNotServed(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper,
+		func(c *Config) {
+			c.AnswersUnaddressed = true
+			c.BindingKeys = []string{"someone-else|openagrinet:MandiPrice"}
+		})
+
+	ctx, err := runStep(t, step, unaddressedBody)
+	if err != nil {
+		t.Fatalf("an unserved capability should pass through, got %v", err)
+	}
+	if len(ctx.ResponseBody) != 0 || called {
+		t.Error("a capability this step does not serve was answered anyway")
+	}
+}

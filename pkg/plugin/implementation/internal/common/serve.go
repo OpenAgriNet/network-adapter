@@ -434,6 +434,21 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 	// network's request with our data.
 	receiver := contextValue(becknContext, "bpp_id", "bppId", "receiverId")
 	if receiver == "" {
+		// Normally refused rather than assumed. Guessing "ours" is what answers
+		// another network's request with our data.
+		//
+		// A step may opt out, for one case: a caller that has no concept of
+		// addressing a participant at all. Such a payload names a capability
+		// and nothing else, so there is no field to omit and no mistake to
+		// catch -- the refusal above would reject every request it ever sends.
+		// Opting out is safe BECAUSE the binding check still follows: the
+		// request is answered only if it names a capability this step was
+		// configured for, and passes through untouched otherwise. What is given
+		// up is the ability to forward it, which a caller that cannot address
+		// anyone was never going to use.
+		if s.config.AnswersUnaddressed {
+			return false, nil
+		}
 		return false, model.NewBadReqErr("", fmt.Errorf(
 			"the request names no receiver, so there is nothing to decide by: "+
 				"set context.receiverId to the participant that should answer"))

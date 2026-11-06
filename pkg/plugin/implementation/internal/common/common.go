@@ -106,6 +106,12 @@ type Config struct {
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 
+	// AnswersUnaddressed lets this step serve a request whose context names no
+	// receiver, instead of refusing it. Off by default, and it must stay off for
+	// any step serving the network's own payloads: switched on, it disables the
+	// check ADR-0004 relies on. See routeElsewhere, and ADR-0005.
+	AnswersUnaddressed bool `yaml:"answersUnaddressed" json:"answersUnaddressed"`
+
 	// ResponseStatus is the HTTP status for an answer this step produced. Zero
 	// means 200, and it changes the status only, never the body. Non-success
 	// values are refused at parse. Why it is configurable: ADR-0005.
@@ -197,6 +203,14 @@ func ParseStepConfig(config map[string]string) (*Config, error) {
 		BindingKeys:      splitList(config["bindingKeys"]),
 		ProviderIDAt:     config["providerIdAt"],
 		CapabilityCodeAt: config["capabilityCodeAt"],
+	}
+
+	if raw := config["answersUnaddressed"]; raw != "" {
+		answers, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid answersUnaddressed value '%s': %w", raw, err)
+		}
+		cfg.AnswersUnaddressed = answers
 	}
 
 	if raw := config["responseStatus"]; raw != "" {
