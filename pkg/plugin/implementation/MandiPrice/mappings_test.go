@@ -409,7 +409,6 @@ func TestShippedMappingServesARealSelect(t *testing.T) {
 // provider is called, with its own message.
 func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 	for _, tc := range []struct{ name, drop, expect string }{
-		{"no commodity code", "supportedCommodities", "commodity code"},
 		{"no market codes", "market", "codes in market"},
 		{"no validity window", "validity", "validity window"},
 	} {

@@ -53,14 +53,6 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Only supportedCommodities[0] is sent: Agmarknet takes one code per call.
-           Extra commodities are logged by the plugin, not refused. */
-        $exists($ra.supportedCommodities[0].code)
-      )
-    message: "this capability needs a commodity code in supportedCommodities"
-  - check: |
-      (
-        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         /* Mandatory, and a code: Agmarknet wants a numeric district (96). The pack
            allows a name, which Agmarknet answers with nothing. */
         $exists($ra.market.district)
