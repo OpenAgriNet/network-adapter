@@ -14,8 +14,7 @@ func (p provider) New(ctx context.Context, registry definition.RegistryLookup, c
 	if err != nil {
 		return nil, nil, err
 	}
-	step, err := providerstatus.New(registry, cfg)
-	return step, nil, err
+	return providerstatus.New(registry, cfg)
 }
 
 var Provider = provider{}

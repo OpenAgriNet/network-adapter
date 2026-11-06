@@ -9,7 +9,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
@@ -35,6 +37,12 @@ type Config struct {
 	// count as providers; empty means any.
 	ParticipantType string
 	ParticipantRole string
+	// RefreshInterval is how often the active list is re-read from the
+	// registry: the longest a status change takes to apply.
+	RefreshInterval time.Duration
+	// MaxStaleness is how old the list may get, while refreshes fail, before
+	// requests are refused.
+	MaxStaleness time.Duration
 }
 
 // The config keys, and the defaults that keep today's behaviour.
@@ -44,10 +52,15 @@ const (
 	keyProviderField    = "providerField"
 	keyParticipantType  = "participantType"
 	keyParticipantRole  = "participantRole"
+	keyRefreshInterval  = "refreshInterval"
+	keyMaxStaleness     = "maxStaleness"
 
 	defaultPublishEndpoint  = "publish"
 	defaultDiscoverEndpoint = "discover"
 	defaultProviderField    = "provider.id"
+	defaultRefreshInterval  = 10 * time.Second
+	defaultMaxStaleness     = 60 * time.Second
+	minRefreshInterval      = time.Second
 )
 
 var (
@@ -68,6 +81,8 @@ func BuildConfig(config map[string]string) (Config, error) {
 		PublishEndpoint:  defaultPublishEndpoint,
 		DiscoverEndpoint: defaultDiscoverEndpoint,
 		ProviderField:    defaultProviderField,
+		RefreshInterval:  defaultRefreshInterval,
+		MaxStaleness:     defaultMaxStaleness,
 	}
 	for key, value := range config {
 		switch key {
@@ -81,6 +96,16 @@ func BuildConfig(config map[string]string) (Config, error) {
 			cfg.ParticipantType = value
 		case keyParticipantRole:
 			cfg.ParticipantRole = value
+		case keyRefreshInterval, keyMaxStaleness:
+			d, err := time.ParseDuration(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("invalid config: providerstatus %s %q is not a duration", key, value)
+			}
+			if key == keyRefreshInterval {
+				cfg.RefreshInterval = d
+			} else {
+				cfg.MaxStaleness = d
+			}
 		default:
 			return Config{}, fmt.Errorf("invalid config: providerstatus has no key %q", key)
 		}
@@ -133,14 +158,22 @@ func (c Config) validate() error {
 		return fmt.Errorf("invalid config: providerstatus %s %q must be one of %q",
 			keyParticipantRole, c.ParticipantRole, participantRoles)
 	}
+	if c.RefreshInterval < minRefreshInterval {
+		return fmt.Errorf("invalid config: providerstatus %s %s must be at least %s",
+			keyRefreshInterval, c.RefreshInterval, minRefreshInterval)
+	}
+	if c.MaxStaleness < c.RefreshInterval {
+		return fmt.Errorf("invalid config: providerstatus %s %s must be at least %s %s",
+			keyMaxStaleness, c.MaxStaleness, keyRefreshInterval, c.RefreshInterval)
+	}
 	return nil
 }
 
 // step keeps providers the registry does not mark active out of publish and
 // discover.
 type step struct {
-	registry activeProviderLister
-	cfg      Config
+	list *refresher
+	cfg  Config
 	// actions maps each gated path segment to the context.action values a body
 	// sent there may carry.
 	actions map[string][]string
@@ -152,27 +185,35 @@ type step struct {
 
 // New fails when the registry cannot list providers: the gate would otherwise
 // wave every publish through. It validates cfg itself, so a Config built
-// without BuildConfig cannot skip the checks.
-func New(registry definition.RegistryLookup, cfg Config) (definition.Step, error) {
+// without BuildConfig cannot skip the checks. It loads the active list once and
+// keeps it fresh in the background; the returned func stops that. A registry
+// that cannot be read at startup does not stop startup: gated requests are
+// refused until a refresh succeeds.
+func New(registry definition.RegistryLookup, cfg Config) (definition.Step, func() error, error) {
 	lister, ok := registry.(activeProviderLister)
 	if !ok {
-		return nil, fmt.Errorf("invalid config: the Registry plugin cannot list active providers, " +
+		return nil, nil, fmt.Errorf("invalid config: the Registry plugin cannot list active providers, " +
 			"so providerstatus would let every provider through")
 	}
 	if err := cfg.validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	list := newRefresher(lister, cfg.ParticipantType, cfg.ParticipantRole, cfg.RefreshInterval, cfg.MaxStaleness)
+	if err := list.refresh(context.Background()); err != nil {
+		log.Errorf(context.Background(), err, "providerstatus: could not load the active provider list at startup")
+	}
+	list.start()
 	field := strings.Split(cfg.ProviderField, ".")
 	return &step{
-		registry: lister,
-		cfg:      cfg,
+		list: list,
+		cfg:  cfg,
 		actions: map[string][]string{
 			cfg.PublishEndpoint:  {"catalog/" + cfg.PublishEndpoint, cfg.PublishEndpoint},
 			cfg.DiscoverEndpoint: {cfg.DiscoverEndpoint},
 		},
 		field: field,
 		keys:  append(slices.Clone(fixedKeys), field...),
-	}, nil
+	}, list.close, nil
 }
 
 func (s *step) Run(ctx *model.StepContext) error {
@@ -218,22 +259,16 @@ func (s *step) checkPublish(ctx *model.StepContext) error {
 		return model.NewBadReqErr("", err)
 	}
 
-	active, err := s.registry.ActiveProviderIDs(ctx, s.cfg.ParticipantType, s.cfg.ParticipantRole)
+	// Not a verdict on the provider when the list is missing or stale: an
+	// unanswered question must never read as "active".
+	snap, err := s.list.active()
 	if err != nil {
-		// Not a verdict on the provider: the registry could not be asked, and an
-		// unanswered question must never read as "active".
-		return fmt.Errorf("could not check provider status: %w", err)
-	}
-
-	// A set, so the check is linear in the catalog count the sender controls.
-	activeSet := make(map[string]struct{}, len(active))
-	for _, id := range active {
-		activeSet[id] = struct{}{}
+		return err
 	}
 	// The whole batch is refused on one bad provider, so a partial publish never
 	// leaves the sender guessing which catalogs landed.
 	for _, id := range named {
-		if _, ok := activeSet[id]; !ok {
+		if _, ok := snap.set[id]; !ok {
 			return model.NewBadReqErr("", fmt.Errorf(
 				"provider %q is not an active provider in the registry", id))
 		}
@@ -242,11 +277,11 @@ func (s *step) checkPublish(ctx *model.StepContext) error {
 }
 
 func (s *step) narrowDiscover(ctx *model.StepContext) error {
-	active, err := s.registry.ActiveProviderIDs(ctx, s.cfg.ParticipantType, s.cfg.ParticipantRole)
+	snap, err := s.list.active()
 	if err != nil {
-		return fmt.Errorf("could not check provider status: %w", err)
+		return err
 	}
-	narrowed, err := narrowFilter(s.field, s.keys, ctx.Body, active)
+	narrowed, err := narrowFilter(s.field, s.keys, ctx.Body, snap.ids)
 	if err != nil {
 		return err
 	}

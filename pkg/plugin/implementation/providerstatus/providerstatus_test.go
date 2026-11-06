@@ -9,13 +9,16 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
 
 type fakeLister struct {
+	mu    sync.Mutex
 	ids   []string
 	err   error
 	calls int
@@ -25,6 +28,8 @@ type fakeLister struct {
 }
 
 func (f *fakeLister) ActiveProviderIDs(ctx context.Context, participantType, role string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	f.participantType, f.role = participantType, role
 	return f.ids, f.err
@@ -55,10 +60,15 @@ func newStepWith(t *testing.T, l *fakeLister, config map[string]string) definiti
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
-	s, err := New(listingRegistry{fakeLister: l}, cfg)
+	s, closeFn, err := New(listingRegistry{fakeLister: l}, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() { _ = closeFn() })
+	// New loads the list once; count only what requests ask from here on.
+	l.mu.Lock()
+	l.calls = 0
+	l.mu.Unlock()
 	return s
 }
 
@@ -94,7 +104,7 @@ func TestNewRefusesARegistryThatCannotListProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
-	if _, err := New(bareRegistry{}, cfg); err == nil {
+	if _, _, err := New(bareRegistry{}, cfg); err == nil {
 		t.Fatal("expected an error for a registry that cannot list providers")
 	}
 }
@@ -104,8 +114,8 @@ func TestPublishAllowsAnActiveProvider(t *testing.T) {
 	if err := run(newStep(t, l), "/publish", publishBody("catalog/publish", "p1")); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if l.calls != 1 {
-		t.Fatalf("lister calls = %d, want 1", l.calls)
+	if l.calls != 0 {
+		t.Fatalf("lister calls = %d, want 0: requests read the loaded list", l.calls)
 	}
 }
 
@@ -127,8 +137,8 @@ func TestPublishRejectsTheWholeBatchOnOneBadProvider(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("want an error naming ghost, got %v", err)
 	}
-	if l.calls != 1 {
-		t.Fatalf("lister calls = %d, want 1", l.calls)
+	if l.calls != 0 {
+		t.Fatalf("lister calls = %d, want 0: requests read the loaded list", l.calls)
 	}
 }
 
@@ -631,6 +641,8 @@ func TestBuildConfigDefaultsReproduceTheFixedBehaviour(t *testing.T) {
 		PublishEndpoint:  "publish",
 		DiscoverEndpoint: "discover",
 		ProviderField:    "provider.id",
+		RefreshInterval:  10 * time.Second,
+		MaxStaleness:     60 * time.Second,
 	}
 	for name, config := range map[string]map[string]string{"nil": nil, "empty": {}} {
 		t.Run(name, func(t *testing.T) {
@@ -652,11 +664,13 @@ func TestBuildConfigReadsEveryKey(t *testing.T) {
 		"providerField":    "bpp.provider.id",
 		"participantType":  "node",
 		"participantRole":  "provider",
+		"refreshInterval":  "5s",
+		"maxStaleness":     "30s",
 	})
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
-	want := Config{"submit", "search", "bpp.provider.id", "node", "provider"}
+	want := Config{"submit", "search", "bpp.provider.id", "node", "provider", 5 * time.Second, 30 * time.Second}
 	if got != want {
 		t.Fatalf("config = %+v, want %+v", got, want)
 	}
@@ -667,6 +681,9 @@ func TestBuildConfigReadsEveryKey(t *testing.T) {
 func TestBuildConfigRefuses(t *testing.T) {
 	for name, config := range map[string]map[string]string{
 		"unknown key":                {"providerfield": "provider.id"},
+		"interval under 1s":          {"refreshInterval": "500ms"},
+		"interval not a duration":    {"refreshInterval": "x"},
+		"staleness under interval":   {"refreshInterval": "10s", "maxStaleness": "5s"},
 		"typo of a key":              {"participantRoles": "provider"},
 		"empty publish endpoint":     {"publishEndpoint": ""},
 		"upper-case publish":         {"publishEndpoint": "Publish"},
@@ -723,11 +740,13 @@ func TestNewRefusesAnInvalidConfig(t *testing.T) {
 		"same endpoints": func(c *Config) { c.DiscoverEndpoint = c.PublishEndpoint },
 		"bad role":       func(c *Config) { c.ParticipantRole = "admin" },
 		"bad type":       func(c *Config) { c.ParticipantType = "bpp" },
+		"no interval":    func(c *Config) { c.RefreshInterval = 0 },
+		"stale < tick":   func(c *Config) { c.MaxStaleness = c.RefreshInterval / 2 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			bad := cfg
 			mutate(&bad)
-			if _, err := New(listingRegistry{fakeLister: &fakeLister{}}, bad); err == nil {
+			if _, _, err := New(listingRegistry{fakeLister: &fakeLister{}}, bad); err == nil {
 				t.Fatalf("New(%+v) succeeded, want an error", bad)
 			}
 		})
@@ -918,8 +937,10 @@ func TestConfiguredTypeAndRoleReachTheLister(t *testing.T) {
 				if err := run(newStepWith(t, l, tc.config), path, body); err != nil {
 					t.Fatalf("Run: %v", err)
 				}
-				if l.calls != 1 || l.participantType != tc.typ || l.role != tc.role {
-					t.Fatalf("calls = %d, type %q, role %q; want 1, %q, %q",
+				// The restriction is sent when the list is loaded; requests
+				// read the loaded list and make no call of their own.
+				if l.calls != 0 || l.participantType != tc.typ || l.role != tc.role {
+					t.Fatalf("calls = %d, type %q, role %q; want 0, %q, %q",
 						l.calls, l.participantType, l.role, tc.typ, tc.role)
 				}
 			})

@@ -110,6 +110,13 @@ Every config key is optional:
 | `providerField` | `provider.id` | dotted names, `^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$` (it is spliced into the jsonpath, so it stays this strict) |
 | `participantType` | empty (any) | `node`, `upstream` |
 | `participantRole` | empty (any) | `consumer`, `provider`, `network` |
+| `refreshInterval` | `10s` | a Go duration, at least `1s`: how often the active list is re-read, so the longest a status change takes to apply |
+| `maxStaleness` | `60s` | a Go duration, at least `refreshInterval`: how old the list may get while refreshes fail before gated requests are refused |
+
+Requests never call the registry. The step loads the active list at startup and
+re-reads it in the background (paged, 500 rows a page). Until a load succeeds,
+or once the list is older than `maxStaleness`, gated requests fail closed with a
+server error, as a registry outage did before.
 
 A blank value for an endpoint or `providerField` is refused at startup, not
 read as the default. So are crossed endpoints (`publishEndpoint: discover` or
