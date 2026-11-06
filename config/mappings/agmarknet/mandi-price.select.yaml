@@ -6,11 +6,7 @@
 #
 # The upstream is Agmarknet's Vistaar select. It takes governed codes -- state,
 # district, market, commodity -- plus a date range, and every one of them is in
-# the payload, so nothing here needs resolving before the call. That is why the
-# mandi plugin resolves nothing: a MandiPrice select names the market it
-# wants rather than a point to search from.
-#
-# THE ANSWER IS WITHIN THE PACK.
+# the payload, so nothing here needs resolving before the call.
 #
 # Every field the response sets is declared by openagrinet:MandiPrice v0.1 and
 # correctly placed, inside the closed market and prices property sets. Where
