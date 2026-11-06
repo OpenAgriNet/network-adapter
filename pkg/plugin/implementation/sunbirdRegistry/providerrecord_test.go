@@ -828,9 +828,8 @@ func TestActiveProviderIDsRefusesAnOversizedAnswer(t *testing.T) {
 	}
 }
 
-// The registry's own default page size applies: the search body carries the
-// filters and nothing else, like every other search this plugin sends.
-func TestActiveProviderIDsSendsOnlyFilters(t *testing.T) {
+// The search asks for a page: filters, the page size and the offset.
+func TestActiveProviderIDsSendsFiltersAndAPage(t *testing.T) {
 	t.Parallel()
 
 	var got map[string]any
@@ -845,8 +844,114 @@ func TestActiveProviderIDsSendsOnlyFilters(t *testing.T) {
 	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", ""); err != nil {
 		t.Fatalf("ActiveProviderIDs() error = %v", err)
 	}
-	if _, present := got["filters"]; !present || len(got) != 1 {
-		t.Errorf("search body = %v, want only filters", got)
+	_, hasFilters := got["filters"]
+	if len(got) != 3 || !hasFilters || got["limit"] != float64(activePageSize) || got["offset"] != float64(0) {
+		t.Errorf("search body = %v, want filters, limit %d and offset 0", got, activePageSize)
+	}
+}
+
+// pagedJSON is a registry page: the records and the registry's total count.
+func pagedJSON(t *testing.T, total int, ids ...string) string {
+	t.Helper()
+	records := make([]participant, 0, len(ids))
+	for _, id := range ids {
+		r := upstreamRecord()
+		r.ParticipantID = id
+		records = append(records, r)
+	}
+	data, err := json.Marshal(struct {
+		Data       []participant `json:"data"`
+		TotalCount int           `json:"totalCount"`
+	}{records, total})
+	if err != nil {
+		t.Fatalf("failed to marshal test page: %v", err)
+	}
+	return string(data)
+}
+
+func TestActiveProviderIDsPagesUntilTheTotal(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var offsets []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req pagedSearchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		if req.Limit != activePageSize {
+			t.Errorf("limit = %d, want %d", req.Limit, activePageSize)
+		}
+		mu.Lock()
+		offsets = append(offsets, req.Offset)
+		mu.Unlock()
+		switch req.Offset {
+		case 0:
+			fmt.Fprint(w, pagedJSON(t, 5, "a", "b"))
+		case 2:
+			fmt.Fprint(w, pagedJSON(t, 5, "b", "c")) // b again: rows moved between pages
+		case 4:
+			fmt.Fprint(w, pagedJSON(t, 5, "d"))
+		default:
+			t.Errorf("unexpected offset %d", req.Offset)
+			fmt.Fprint(w, pagedJSON(t, 5))
+		}
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if fmt.Sprint(ids) != "[a b c d]" {
+		t.Errorf("ids = %v, want [a b c d]", ids)
+	}
+	if fmt.Sprint(offsets) != "[0 2 4]" {
+		t.Errorf("offsets = %v, want [0 2 4]", offsets)
+	}
+}
+
+func TestActiveProviderIDsFailsOnAnEmptyPageBeforeTheTotal(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req pagedSearchRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Offset == 0 {
+			fmt.Fprint(w, pagedJSON(t, 5, "a", "b"))
+			return
+		}
+		fmt.Fprint(w, pagedJSON(t, 5))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err == nil || !strings.Contains(err.Error(), "offset 2") || !strings.Contains(err.Error(), "5") {
+		t.Fatalf("error = %v, want the empty page at offset 2 of 5 named", err)
+	}
+	if ids != nil {
+		t.Errorf("ids = %v, want no partial list", ids)
+	}
+}
+
+// A backend that answers with a bare array gives no total, so a short page
+// ends the listing.
+func TestActiveProviderIDsStopsOnAShortPageWithoutATotal(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, `[{"participantId":"a","status":"active"},{"participantId":"b","status":"active"}]`)
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if fmt.Sprint(ids) != "[a b]" || calls.Load() != 1 {
+		t.Errorf("ids = %v after %d calls, want [a b] after 1", ids, calls.Load())
 	}
 }
 
