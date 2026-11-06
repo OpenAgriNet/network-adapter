@@ -997,7 +997,7 @@ func TestShippedMappingPriceFieldsMinimumAloneAndDefaultAll(t *testing.T) {
 }
 
 // Several commodities are not refused: only the first is sent to Agmarknet,
-// which takes one code per call, and the rest are ignored.
+// which takes one code per call, and the plugin logs the rest as dropped.
 func TestShippedMappingSendsOnlyTheFirstCommodity(t *testing.T) {
 	t.Parallel()
 

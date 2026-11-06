@@ -54,7 +54,7 @@ required:
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         /* Only supportedCommodities[0] is sent: Agmarknet takes one code per call.
-           Extra commodities are ignored, not refused. */
+           Extra commodities are logged by the plugin, not refused. */
         $exists($ra.supportedCommodities[0].code)
       )
     message: "this capability needs a commodity code in supportedCommodities"
