@@ -61,6 +61,11 @@ type mappingFile struct {
 	Required []requirement `yaml:"required"`
 	Request  string        `yaml:"request"`
 	Response string        `yaml:"response"`
+
+	// Fallback is the answer to give when the upstream could not be asked or
+	// did not answer. Absent means those stay errors, which is the default.
+	// See definition.DirectionFallback for why a mapping owns this at all.
+	Fallback string `yaml:"fallback"`
 }
 
 // requirement is one precondition: what must hold, and what to tell the caller
@@ -290,9 +295,12 @@ func applyDefaults(cfg *Config) {
 
 // Transform runs one direction of the mapping at mappingRef over input.
 func (m *Mapper) Transform(ctx context.Context, mappingRef string, direction definition.Direction, input any) ([]byte, error) {
-	if direction != definition.DirectionRequest && direction != definition.DirectionResponse {
-		return nil, fmt.Errorf("jsonmapper: mapping %q: %q is not a direction; want %q or %q",
-			mappingRef, direction, definition.DirectionRequest, definition.DirectionResponse)
+	switch direction {
+	case definition.DirectionRequest, definition.DirectionResponse, definition.DirectionFallback:
+	default:
+		return nil, fmt.Errorf("jsonmapper: mapping %q: %q is not a direction; want %q, %q or %q",
+			mappingRef, direction, definition.DirectionRequest, definition.DirectionResponse,
+			definition.DirectionFallback)
 	}
 
 	entry, err := m.compiled(ctx, mappingRef)
@@ -506,9 +514,13 @@ func (m *Mapper) fetchAndCompile(ctx context.Context, mappingRef string) (
 	// Both halves are compiled now rather than on first use, so one fetch leaves
 	// the file ready in both directions. A compile failure is recorded against
 	// its own half and goes no further.
-	directions := make(map[definition.Direction]*compiledMapping, 2)
+	directions := make(map[definition.Direction]*compiledMapping, 3)
 	directions[definition.DirectionRequest] = m.compileMapping(ctx, mappingRef, definition.DirectionRequest, file.Request)
 	directions[definition.DirectionResponse] = m.compileMapping(ctx, mappingRef, definition.DirectionResponse, file.Response)
+	// Registered whether or not the file carries one, so "this mapping declares
+	// no fallback" reaches the caller as an empty result rather than as the
+	// error for a direction that does not exist. Most files declare none.
+	directions[definition.DirectionFallback] = m.compileMapping(ctx, mappingRef, definition.DirectionFallback, file.Fallback)
 	log.Debugf(ctx, "JSON mapper compiled mapping: %s (%d precondition(s))", mappingRef, len(checks))
 	return directions, checks, nil
 }

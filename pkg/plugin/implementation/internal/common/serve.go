@@ -189,7 +189,13 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local)
 	if err != nil {
-		return err
+		var declined refused
+		if !errors.As(err, &declined) {
+			return err
+		}
+		// The mapping guarded the call and the guard did not hold. Nothing was
+		// sent, so this is the pre-call occasion for the fallback.
+		return s.answerAnyway(ctx, call, plan, beckn, local, err)
 	}
 
 	// Resolved from the binding key, so a step serving several providers
@@ -222,7 +228,10 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	upstreamResponse, err := s.call(ctx, auth, base, call, upstreamRequest)
 	if err != nil {
-		return err
+		// The provider was asked and did not answer: timed out, refused, or
+		// answered non-2xx until the retry budget ran out. The post-call
+		// occasion for the fallback, and the same document serves it.
+		return s.answerAnyway(ctx, call, plan, beckn, local, err)
 	}
 
 	if open != nil {
@@ -268,6 +277,51 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	return nil
 }
 
+// refused marks an error a mapping ASKED for, as opposed to one that stopped it
+// running. Only the first means the capability has an opinion about what should
+// happen instead.
+type refused struct{ error }
+
+// Unwrap keeps the wrapped error's own classification -- its status, its code --
+// reachable, so a refusal with no fallback behind it is reported exactly as it
+// was before this wrapper existed.
+func (r refused) Unwrap() error { return r.error }
+
+// answerAnyway returns the mapping's fallback in place of a failure, when it
+// declares one.
+//
+// cause is logged and never mapped, so a fallback cannot quote our provider's
+// wording back to the caller. ADR-0005 records why.
+//
+// A mapping with no fallback half, and one whose fallback produced nothing, are
+// the same answer: the failure stands. Nothing is assumed on a capability's
+// behalf, so every mapping that does not opt in behaves exactly as before.
+func (s *Step) answerAnyway(ctx *model.StepContext, call model.ActionPlan, plan *model.ProviderRecord,
+	beckn any, local map[string]any, cause error) error {
+	body, err := s.mapper.Transform(ctx, call.Mappings, definition.DirectionFallback, map[string]any{
+		"beckn":  beckn,
+		"_local": local,
+	})
+	if err != nil {
+		// The fallback is broken. Report the original failure rather than this
+		// one: the caller needs to know their request went unanswered, and a
+		// mapping defect is ours to find in the log.
+		log.Errorf(ctx, err, "the fallback half of %s could not be applied, so %s is answered with the original failure: %v",
+			call.Mappings, plan.BindingKey, err)
+		return cause
+	}
+	if len(body) == 0 {
+		return cause
+	}
+
+	ctx.ResponseBody = body
+	// Warn, not Info: the caller is getting an ordinary-looking answer, so this
+	// log line is the only place the failure behind it is visible.
+	log.Warnf(ctx, "%s could not be served (%v); answering with its fallback in %d bytes",
+		plan.BindingKey, cause, len(body))
+	return nil
+}
+
 // buildRequest produces what the provider is sent.
 //
 // Whatever the mapping produces IS the request: a body for a method that takes
@@ -283,7 +337,11 @@ func (s *Step) buildRequest(ctx context.Context, call model.ActionPlan, beckn an
 		return nil, err
 	}
 	if _, err := refusalIn(mapped); err != nil {
-		return nil, err
+		// Wrapped so serve can tell a mapping that DECIDED not to call from a
+		// mapping that could not be applied. Only the first is answerable with
+		// a fallback: a mapping that failed to run says nothing about what the
+		// caller should get instead.
+		return nil, refused{err}
 	}
 	if len(mapped) == 0 {
 		log.Debugf(ctx, "the request half of %s produced nothing; sending an empty request", call.Mappings)

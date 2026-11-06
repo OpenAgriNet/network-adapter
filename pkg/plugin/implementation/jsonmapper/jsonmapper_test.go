@@ -1083,3 +1083,75 @@ func TestEvaluateLockedRunsAnOrdinaryExpression(t *testing.T) {
 		t.Errorf("got %q, want the evaluated object", got)
 	}
 }
+
+// --- the fallback half ------------------------------------------------------
+
+// A file that declares one runs it like any other half, over beckn and _local.
+func TestTransformRunsTheFallbackHalf(t *testing.T) {
+	t.Parallel()
+
+	const withFallback = `request: |
+  { "txn": beckn.context.transactionId }
+fallback: |
+  { "txn": beckn.context.transactionId, "providers": [] }
+`
+	srv := newMappingServer(t, withFallback, nil)
+	defer srv.Close()
+
+	got, err := newTestMapper(t).Transform(context.Background(), ref(srv.URL),
+		definition.DirectionFallback, requestInput())
+	if err != nil {
+		t.Fatalf("Transform() returned an unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `"txn":"txn-123"`) {
+		t.Errorf("fallback produced %q; it should read the inbound payload", got)
+	}
+}
+
+// The common case, and the one the provider step depends on: a file with no
+// fallback answers with nothing rather than with the error for a direction
+// that does not exist. Without this, declaring a fallback would have to become
+// mandatory for every mapping ever published.
+func TestTransformAnswersNothingWhenNoFallbackIsDeclared(t *testing.T) {
+	t.Parallel()
+
+	srv := newMappingServer(t, requestOnly, nil)
+	defer srv.Close()
+
+	got, err := newTestMapper(t).Transform(context.Background(), ref(srv.URL),
+		definition.DirectionFallback, requestInput())
+	if err != nil {
+		t.Fatalf("a mapping with no fallback should not be an error, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("a mapping with no fallback produced %q, want nothing", got)
+	}
+}
+
+// A broken fallback is reported against itself and takes neither other half
+// down with it, the same way a broken request or response half does.
+func TestABrokenFallbackLeavesTheOtherHalvesWorking(t *testing.T) {
+	t.Parallel()
+
+	const brokenFallback = `request: |
+  { "txn": beckn.context.transactionId }
+fallback: |
+  { "txn": ((( }
+`
+	srv := newMappingServer(t, brokenFallback, nil)
+	defer srv.Close()
+	mapper := newTestMapper(t)
+
+	if _, err := mapper.Transform(context.Background(), ref(srv.URL),
+		definition.DirectionFallback, requestInput()); err == nil {
+		t.Error("expected a fallback that does not compile to be reported")
+	}
+	got, err := mapper.Transform(context.Background(), ref(srv.URL),
+		definition.DirectionRequest, requestInput())
+	if err != nil {
+		t.Fatalf("the request half should still work, got %v", err)
+	}
+	if !strings.Contains(string(got), `"txn":"txn-123"`) {
+		t.Errorf("request half produced %q", got)
+	}
+}

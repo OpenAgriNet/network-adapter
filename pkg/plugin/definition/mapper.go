@@ -13,6 +13,14 @@ const (
 	DirectionRequest Direction = "request"
 	// DirectionResponse translates the upstream's answer back.
 	DirectionResponse Direction = "response"
+	// DirectionFallback produces the answer to give when the upstream could not
+	// be asked, or did not answer. Declaring none leaves both as errors, which
+	// is the default. Why it exists: ADR-0005.
+	//
+	// It reads beckn and _local only. There is no response to read -- that is
+	// the situation it is for -- and the upstream's own failure text is not
+	// offered, so a fallback cannot leak why we could not answer.
+	DirectionFallback Direction = "fallback"
 )
 
 // Mapper transforms a document with a mapping fetched from a reference.

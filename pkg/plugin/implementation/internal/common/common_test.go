@@ -93,8 +93,17 @@ const testMappingRef = "https://mappings.example.com/mausamgram/weather-observat
 type stubMapper struct {
 	requestResult  []byte
 	responseResult []byte
-	err            error
-	requestErr     error
+
+	// fallbackResult is what the fallback half answers with. Empty is a mapping
+	// that declares none, which is almost every one -- and is what the real
+	// mapper returns for a half a file does not carry. It is held separately
+	// from responseResult ON PURPOSE: a stub answering every direction alike
+	// would hand a fallback to every failing test, turning each refusal it was
+	// written to assert into an ordinary answer.
+	fallbackResult []byte
+
+	err        error
+	requestErr error
 
 	verifyErr error
 	verified  bool
@@ -124,6 +133,9 @@ func (s *stubMapper) Transform(_ context.Context, mappingRef string, direction d
 			return nil, s.requestErr
 		}
 		return s.requestResult, nil
+	}
+	if direction == definition.DirectionFallback {
+		return s.fallbackResult, nil
 	}
 	s.responseInput = input
 	return s.responseResult, nil
@@ -2723,3 +2735,153 @@ func TestParseStepConfig_MaxResponseBytes_Refused(t *testing.T) {
 		}
 	}
 }
+
+// --- the fallback half ------------------------------------------------------
+//
+// What these establish, together: a capability may declare an answer to give
+// when there is no real one, and nothing gets that answer by accident. Every
+// test here that expects a fallback sets fallbackResult; every test elsewhere
+// in this file leaves it empty and still gets its failure.
+
+// A provider that does not answer is a failure the caller sees, which is the
+// behaviour every mapping has unless it says otherwise.
+func TestRunReportsAFailedCallWhenNoFallbackIsDeclared(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{}`)}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+
+	ctx, err := runStep(t, step, selectBody)
+	if err == nil {
+		t.Fatal("expected a provider that never answered to fail the request")
+	}
+	if len(ctx.ResponseBody) != 0 {
+		t.Errorf("a failed call answered with %q; it should have answered with nothing", ctx.ResponseBody)
+	}
+}
+
+// The post-call occasion: asked, and no answer came back. The caller gets the
+// mapping's own document and no error at all.
+func TestRunAnswersWithTheFallbackWhenTheProviderDoesNotAnswer(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	const empty = `{"message":{"catalog":{"providers":[]}}}`
+	mapper := &stubMapper{
+		requestResult:  []byte(`{}`),
+		responseResult: []byte(`{"served":true}`),
+		fallbackResult: []byte(empty),
+	}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+
+	ctx, err := runStep(t, step, selectBody)
+	if err != nil {
+		t.Fatalf("a declared fallback should have answered the request, got %v", err)
+	}
+	if string(ctx.ResponseBody) != empty {
+		t.Errorf("answered %q, want the fallback %q", ctx.ResponseBody, empty)
+	}
+	// The response half is for an answer that exists. Running it over nothing
+	// is how a fallback ends up quoting fields the provider never sent.
+	if slices.Contains(mapper.directions, definition.DirectionResponse) {
+		t.Error("the response half ran even though the provider never answered")
+	}
+}
+
+// The pre-call occasion: the mapping guarded the call and the guard did not
+// hold, so nothing was sent.
+func TestRunAnswersWithTheFallbackWhenTheRequestHalfRefuses(t *testing.T) {
+	t.Parallel()
+
+	const empty = `{"message":{"catalog":{"providers":[]}}}`
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer upstream.Close()
+
+	mapper := &stubMapper{
+		// The reserved field a mapping refuses with.
+		requestResult:  []byte(`{"_error":{"status":400,"code":"X","message":"no usable location"}}`),
+		fallbackResult: []byte(empty),
+	}
+	step := newStep(t, &stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper)
+
+	ctx, err := runStep(t, step, selectBody)
+	if err != nil {
+		t.Fatalf("a declared fallback should have answered the refusal, got %v", err)
+	}
+	if string(ctx.ResponseBody) != empty {
+		t.Errorf("answered %q, want the fallback %q", ctx.ResponseBody, empty)
+	}
+	if called {
+		t.Error("the provider was called even though the request half refused")
+	}
+}
+
+// A refusal with no fallback behind it keeps the status and code the mapping
+// asked for, rather than being flattened by passing through the new path.
+func TestRunKeepsARefusalsOwnStatusWhenNoFallbackIsDeclared(t *testing.T) {
+	t.Parallel()
+
+	mapper := &stubMapper{
+		requestResult: []byte(`{"_error":{"status":404,"code":"NO_SUCH_PLACE","message":"unknown district"}}`),
+	}
+	step := newStep(t, &stubRegistry{plan: testPlan("http://upstream.invalid", http.MethodGet)}, mapper)
+
+	_, err := runStep(t, step, selectBody)
+	var coded *model.CodedErr
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusNotFound {
+		t.Fatalf("status for a refusal = %v, want 404", err)
+	}
+	if !strings.Contains(err.Error(), "unknown district") {
+		t.Errorf("error %q drops the mapping's own message", err)
+	}
+}
+
+// A mapping that could not be applied is this adapter's defect, not a
+// capability deciding anything. It must NOT reach for the fallback: doing so
+// would answer a caller with an empty catalog whenever a mapping is broken,
+// which hides the defect behind a plausible answer forever.
+func TestRunDoesNotUseTheFallbackWhenTheRequestHalfCannotBeApplied(t *testing.T) {
+	t.Parallel()
+
+	mapper := &stubMapper{
+		requestErr:     errors.New("mapping could not be compiled"),
+		fallbackResult: []byte(`{"message":{"catalog":{"providers":[]}}}`),
+	}
+	step := newStep(t, &stubRegistry{plan: testPlan("http://upstream.invalid", http.MethodGet)}, mapper)
+
+	ctx, err := runStep(t, step, selectBody)
+	if err == nil {
+		t.Fatal("a mapping that could not be applied should fail the request")
+	}
+	if len(ctx.ResponseBody) != 0 {
+		t.Errorf("a broken mapping answered with %q; the defect should surface", ctx.ResponseBody)
+	}
+}
+
+// --- the response status ----------------------------------------------------
+
+// --- a request that names no receiver ---------------------------------------
+
+// unaddressedBody is what a caller with no concept of addressing a participant
+// sends: a capability and nothing else.
+const unaddressedBody = `{
+  "context": { "version": "2.0.0", "action": "select", "transactionId": "txn-1" },
+  "message": { "contract": { "commitments": [{
+    "resources": [{ "resourceAttributes": {
+      "@type": "openagrinet:WeatherObservation",
+      "location": { "type": "Point", "coordinates": [73.7898, 19.9975] } } }],
+    "offer": { "provider": { "id": "mausamgram" } }
+  }] } }
+}`
