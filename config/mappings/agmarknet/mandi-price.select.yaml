@@ -6,86 +6,52 @@
 #
 # The upstream is Agmarknet's Vistaar select. It takes governed codes -- state,
 # district, market, commodity -- plus a date range, and every one of them is in
-# the payload, so nothing here needs resolving before the call. That is why the
-# mandi plugin has no prerequisites: a MandiPrice select names the market it
-# wants rather than a point to search from.
-#
-# THE ANSWER IS WITHIN THE PACK; THE REQUEST IS NOT, AND CANNOT BE YET.
+# the payload, so nothing here needs resolving before the call.
 #
 # Every field the response sets is declared by openagrinet:MandiPrice v0.1 and
 # correctly placed, inside the closed market and prices property sets. Where
 # the upstream reports something the pack has no home for, it is dropped rather
 # than invented.
-#
-# The REQUEST half is a different matter, and an earlier version of this note
-# claimed otherwise. It reads market and validity, and the pack's OnDemand
-# branch EXCLUDES both -- see the note on the guards below. That is a gap in
-# the pack rather than a mistake here: OnDemand describes what a provider can
-# obtain and Direct describes an obtained reading, and a request is neither.
 
-# What this capability cannot serve, refused before the provider is called.
-#
-# THE PACK AND THESE GUARDS DISAGREE TODAY, and an earlier version of this note
-# said the pack leaves market and validity OPTIONAL. It does not: the OnDemand
-# branch EXCLUDES them, alongside source, commodity, commodityGroup, grade,
-# variety, arrivalDate, prices and generatedAt. So a payload that satisfies
-# these guards cannot validate against the pack, and one that validates cannot
-# satisfy them.
-#
-# Nothing breaks in practice: the exclusion sits under if/then, which the
-# validator parses and never evaluates. That is an accident to rely on rather
-# than a design, and it is written down here so it is not mistaken for one.
-#
-# Resolving it is a pack change. For the market, coverageAreas is the likely
-# home -- inherited from AgricultureResource, not excluded in OnDemand, and it
-# accepts an AdministrativeAreaReference. For the date range there is no
-# candidate at all: historyPeriod and updateFrequency are durations describing
-# provider capability, not a window a caller asks for.
-#
-# What IS true, and is the reason this block exists: the pack defines
-# market.district and market.state as "name or governed code", so a payload can
-# be perfectly valid and still be unanswerable by this upstream, which wants
-# codes and a date range.
-#
-# Refusing here names what is missing. Sending it anyway earns a 400 from
-# Agmarknet, or worse an empty result that reads as "no prices".
 required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Exactly one. Everything downstream reads supportedCommodities[0]:
-           this guard, the outbound query, and the commodity stamped on each
-           resource. So a caller sending three commodities passed validation, was
-           queried for the first, and got a confident signed answer to a third of
-           what it asked -- the same failure capabilitybinding refuses at the
-           commitment level, where guessing would silently serve part of a
-           request. */
-        $exists($ra.supportedCommodities[0].code)
-          and $count($ra.supportedCommodities) = 1
+        /* Mandatory, and a code: Agmarknet wants a numeric district (96). The pack
+           allows a name, which Agmarknet answers with nothing. */
+        $exists($ra.market.district)
+          and $count($match($ra.market.district, /^[0-9]+$/)) > 0
       )
-    message: "this capability needs exactly one commodity code in supportedCommodities; send several requests rather than have all but the first dropped"
+    message: "this capability needs Agmarknet's codes in market: a numeric district, not a name"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Shape, not just presence. The pack describes district and state as
-           "name or governed code", so the names form is pack-legal -- and the
-           existence-only check passed it, after which it went to Agmarknet
-           verbatim as codes. Agmarknet answered nothing, and the caller got a
-           signed, spec-valid "no prices" for a market that had prices.
-        
-           Agmarknet wants a numeric district and a short alphabetic state (96,
-           CG), so a district that is not all digits or a state longer than four
-           letters is a name and is refused with the reason. */
-        $match($ra.market.district, /^[0-9]+$/)
-          and $match($ra.market.state, /^[A-Za-z]{2,4}$/)
+        /* Mandatory, and a code: Agmarknet wants a short alphabetic state (CG).
+           The pack allows a name, which Agmarknet answers with nothing. */
+        $exists($ra.market.state)
+          and $count($match($ra.market.state, /^[A-Za-z]{2,4}$/)) > 0
       )
-    message: "this capability needs Agmarknet's codes in market: a numeric district and a short alphabetic state, not their names"
+    message: "this capability needs market.state, Agmarknet's state code: a short alphabetic code, not a name"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        /* Agmarknet takes no market name, so a name alone would return the whole
+           district. Refused: send the code, or neither for a district search. */
+        $not($exists($ra.market.marketName) and $not($exists($ra.market.marketCode)))
+      )
+    message: "market.marketName alone is insufficient; provide market.marketCode or omit market.marketName for district-wide search."
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
         $exists($ra.validity.startsAt) and $exists($ra.validity.endsAt)
       )
     message: "this capability needs a validity window; it reports prices over a date range"
+  - check: |
+      (
+        $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
+        $substring($ra.validity.startsAt, 0, 10) <= $substring($ra.validity.endsAt, 0, 10)
+      )
+    message: "validity.startsAt must not be after validity.endsAt"
 
 # The upstream is a GET, so this object becomes the query string. The token is
 # not here and must never be: it comes from the adapter's authScheme query,
@@ -338,21 +304,13 @@ response: |
                     "commodityGroup": $r.Group,
                     "variety":        $r.Variety,
                     "grade":          $r.Grade,
-                    /* Every member comes from the RECORD, so the answer describes what
-                       the provider reported rather than what was asked for.
-                    
-                       marketCode is absent, and that is not an omission. This upstream
-                       TAKES a market code as a query parameter and reports none back --
-                       there is no such field anywhere in its response. Restating the
-                       requested code against a returned row would assert something
-                       unverified, and district-wide there is no requested code at all
-                       while the rows come from several markets, so one code would have
-                       been wrong for most of them. The pack requires only marketName
-                       and calls marketCode "when available"; here it is not. */
+                    /* Codes from the request, so the market can be asked again; Agmarknet
+                       filters by them and returns names. marketName is the record's, trimmed. */
                     "market": {
-                      "marketName": $r.Market,
-                      "district":   $r.District,
-                      "state":      $r.State
+                      "marketCode": $ra.market.marketCode,
+                      "marketName": $trim($r.Market),
+                      "district":   $ra.market.district,
+                      "state":      $ra.market.state
                     },
                     "arrivalDate": $iso($r.`Arrival Date`),
                     "prices": {
