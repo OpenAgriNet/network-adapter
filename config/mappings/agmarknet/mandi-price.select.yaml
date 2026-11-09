@@ -26,10 +26,12 @@ required:
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;
-        /* Mandatory: Agmarknet refuses a call without statecode. */
+        /* Mandatory, and a code: Agmarknet wants a short alphabetic state (CG).
+           The pack allows a name, which Agmarknet answers with nothing. */
         $exists($ra.market.state)
+          and $count($match($ra.market.state, /^[A-Za-z]{2,4}$/)) > 0
       )
-    message: "this capability needs market.state, Agmarknet's state code"
+    message: "this capability needs market.state, Agmarknet's state code: a short alphabetic code, not a name"
   - check: |
       (
         $ra := beckn.message.contract.commitments[0].resources[0].resourceAttributes;

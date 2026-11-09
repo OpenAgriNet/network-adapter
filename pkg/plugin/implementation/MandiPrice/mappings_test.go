@@ -756,6 +756,15 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 			expect: "market.state",
 		},
 		{
+			// A numeric district with a state name: the name would go upstream
+			// as statecode and come back as "no prices".
+			name: "a state name where the upstream wants a code",
+			mutate: func(ra map[string]any) {
+				ra["market"].(map[string]any)["state"] = "Chattisgarh"
+			},
+			expect: "short alphabetic code",
+		},
+		{
 			name: "no district",
 			mutate: func(ra map[string]any) {
 				delete(ra["market"].(map[string]any), "district")
