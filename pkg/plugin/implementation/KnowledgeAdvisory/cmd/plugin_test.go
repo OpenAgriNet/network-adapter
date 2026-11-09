@@ -236,36 +236,6 @@ func TestParseConfig(t *testing.T) {
 	}
 }
 
-// A plugin config is map[string]string, so a list arrives comma-separated.
-// Binding keys separate their own halves with a pipe, so a comma is
-// unambiguous.
-func TestSplitList(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct {
-		name string
-		raw  string
-		want []string
-	}{
-		{name: "empty is nil, not a one-element list of nothing", raw: "", want: nil},
-		{name: "whitespace only is nil", raw: "   ", want: nil},
-		{name: "one value", raw: "a|openagrinet:One", want: []string{"a|openagrinet:One"}},
-		{
-			name: "several, with the blanks and spacing a wrapped config line produces",
-			raw:  "a|openagrinet:One, b|openagrinet:Two ,,  ",
-			want: []string{"a|openagrinet:One", "b|openagrinet:Two"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := splitList(tc.raw); !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("splitList(%q) = %v, want %v", tc.raw, got, tc.want)
-			}
-		})
-	}
-}
-
 // The override is two keys, both or neither. Absent leaves the step on the
 // Beckn v2 convention, which is what every deployment should be running.
 func TestParseConfigReadsTheBindingKeyOverride(t *testing.T) {

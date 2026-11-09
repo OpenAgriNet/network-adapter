@@ -44,6 +44,12 @@ type Config struct {
 	CapabilityCodeAt string   `yaml:"capabilityCodeAt" json:"capabilityCodeAt"`
 	MaxResponseBytes int64    `yaml:"maxResponseBytes" json:"maxResponseBytes"`
 
+	// Repeated from common.Config, which documents what they mean. They are
+	// here rather than inherited for the same reason the four above are: this
+	// struct is flat.
+	AnswersUnaddressed bool `yaml:"answersUnaddressed" json:"answersUnaddressed"`
+	ResponseStatus     int  `yaml:"responseStatus" json:"responseStatus"`
+
 	// AuthByProvider carries one credential profile per provider, keyed by
 	// participant id. Passed through to the inner step, which is where the
 	// schemes are defined and validated -- see common.AuthProfile.
@@ -86,6 +92,9 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		CapabilityCodeAt: cfg.CapabilityCodeAt,
 		MaxResponseBytes: cfg.MaxResponseBytes,
 		AuthByProvider:   cfg.AuthByProvider,
+
+		AnswersUnaddressed: cfg.AnswersUnaddressed,
+		ResponseStatus:     cfg.ResponseStatus,
 	}
 
 	one, closer, err := common.New(ctx, registry, mapper, prerequisites, upstreamCfg)

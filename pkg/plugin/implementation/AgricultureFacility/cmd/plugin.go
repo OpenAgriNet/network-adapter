@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -25,42 +24,30 @@ type agriFacilityProvider struct{}
 // newStepFunc creates a new step. Indirected for tests.
 var newStepFunc = AgricultureFacility.New
 
-// parseConfig turns the plugin config map into a typed Config. Anything absent
-// is left zero: AgricultureFacility.New applies the defaults and validates the auth
-// scheme, so those rules live in one place.
+// parseConfig turns the plugin config map into a typed Config. The settings
+// every provider step shares are read by common.ParseStepConfig and copied
+// across, because this package's Config is a flat struct rather than an alias
+// (see AgricultureFacility.Config for why). Only the two settings that are this
+// capability's own are read here.
 func (p agriFacilityProvider) parseConfig(config map[string]string) (*AgricultureFacility.Config, error) {
+	shared, err := common.ParseStepConfig(config)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &AgricultureFacility.Config{
-		BindingKeys: splitList(config["bindingKeys"]),
-		// Absent means the Beckn v2 convention. See common.Config for why
-		// this is a default rather than something to set.
-		ProviderIDAt:     config["providerIdAt"],
-		CapabilityCodeAt: config["capabilityCodeAt"],
+		BindingKeys:        shared.BindingKeys,
+		ProviderIDAt:       shared.ProviderIDAt,
+		CapabilityCodeAt:   shared.CapabilityCodeAt,
+		MaxResponseBytes:   shared.MaxResponseBytes,
+		AnswersUnaddressed: shared.AnswersUnaddressed,
+		ResponseStatus:     shared.ResponseStatus,
+		AuthByProvider:     shared.AuthByProvider,
 		// Absent means the Beckn v2 convention. See
 		// AgricultureFacility.DefaultFacilityTypesAt.
 		FacilityTypesAt: config["facilityTypesAt"],
 	}
 
-	// One credential profile per provider, read from the flattened
-	// authScheme-<participantId> settings. Shared with the other capability
-	// plugins so a scheme added in one place is not missed in three.
-	auth, err := common.ParseProviderAuth(config)
-	if err != nil {
-		return nil, err
-	}
-	cfg.AuthByProvider = auth
-
-	if raw, exists := config["maxResponseBytes"]; exists && raw != "" {
-		value, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid maxResponseBytes value '%s': %w", raw, err)
-		}
-		if value <= 0 {
-			return nil, fmt.Errorf("maxResponseBytes must be positive, got %d", value)
-		}
-		cfg.MaxResponseBytes = value
-	}
-
-	if raw, exists := config["searchConcurrency"]; exists && raw != "" {
+	if raw := config["searchConcurrency"]; raw != "" {
 		value, err := strconv.Atoi(raw)
 		if err != nil {
 			return nil, fmt.Errorf("invalid searchConcurrency value '%s': %w", raw, err)
@@ -94,25 +81,6 @@ func (p agriFacilityProvider) New(ctx context.Context, registry definition.Provi
 
 	log.Infof(ctx, "Agriculture facility step created successfully")
 	return step, closer, nil
-}
-
-// splitList reads a comma-separated config value, which is how a list reaches a
-// plugin -- the config is map[string]string. Blanks are dropped and spaces
-// trimmed, so a trailing comma or a wrapped line is not a config error.
-//
-// A comma is unambiguous here: a binding key separates its own halves with a
-// pipe.
-func splitList(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	var out []string
-	for _, part := range strings.Split(raw, ",") {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
 }
 
 // Provider is the exported plugin instance.

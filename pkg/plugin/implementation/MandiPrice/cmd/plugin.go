@@ -8,8 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
@@ -23,40 +21,11 @@ type mandiProvider struct{}
 // newStepFunc creates a new step. Indirected for tests.
 var newStepFunc = MandiPrice.New
 
-// parseConfig turns the plugin config map into a typed Config. Anything absent
-// is left zero: MandiPrice.New applies the defaults and validates the auth scheme,
-// so those rules live in one place.
+// parseConfig turns the plugin config map into a typed Config. Every provider
+// step reads the same settings the same way, so the reading is shared; what is
+// defaulted and what is refused are left to MandiPrice.New.
 func (p mandiProvider) parseConfig(config map[string]string) (*MandiPrice.Config, error) {
-	cfg := &MandiPrice.Config{
-		BindingKeys: splitList(config["bindingKeys"]),
-		// Absent means the Beckn v2 convention. See common.Config for why
-		// this is a default rather than something to set.
-		ProviderIDAt:     config["providerIdAt"],
-		CapabilityCodeAt: config["capabilityCodeAt"],
-	}
-
-	if raw, exists := config["maxResponseBytes"]; exists && raw != "" {
-		value, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid maxResponseBytes value '%s': %w", raw, err)
-		}
-		if value <= 0 {
-			return nil, fmt.Errorf("maxResponseBytes must be positive, got %d", value)
-		}
-		cfg.MaxResponseBytes = value
-	}
-
-	// One credential profile per provider, read from the flattened
-	// authScheme-<participantId> settings. Shared with the other capability
-	// plugins: each used to copy the same field list, so a scheme added in one
-	// had to be remembered in three.
-	auth, err := common.ParseProviderAuth(config)
-	if err != nil {
-		return nil, err
-	}
-	cfg.AuthByProvider = auth
-
-	return cfg, nil
+	return common.ParseStepConfig(config)
 }
 
 // New creates a new mandi provider step instance.
@@ -79,25 +48,6 @@ func (p mandiProvider) New(ctx context.Context, registry definition.ProviderReco
 
 	log.Infof(ctx, "Mandi step created successfully")
 	return step, closer, nil
-}
-
-// splitList reads a comma-separated config value, which is how a list reaches a
-// plugin -- the config is map[string]string. Blanks are dropped and spaces
-// trimmed, so a trailing comma or a wrapped line is not a config error.
-//
-// A comma is unambiguous here: a binding key separates its own halves with a
-// pipe.
-func splitList(raw string) []string {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	var out []string
-	for _, part := range strings.Split(raw, ",") {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
 }
 
 // Provider is the exported plugin instance.
