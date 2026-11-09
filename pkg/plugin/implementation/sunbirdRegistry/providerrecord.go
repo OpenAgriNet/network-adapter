@@ -98,7 +98,22 @@ func searchURLFor(baseURL, entity string) string {
 // suspended, unroutable -- returns ErrProviderRecordNotFound, because a caller
 // does the same thing with all of them. A registry that could not be consulted
 // returns its own error instead: that is an outage, not an answer.
+//
+// A refusal from a cached copy is rechecked with the registry.
 func (c *Client) ProviderRecord(ctx context.Context, bindingKey string) (*model.ProviderRecord, error) {
+	plan, err := c.providerRecord(ctx, bindingKey)
+	if c.records == nil || !errors.Is(err, definition.ErrProviderRecordNotFound) ||
+		!c.holds(ctx, c.providerEntity, fieldBindingKey, bindingKey) {
+		return plan, err
+	}
+	if plan, err = c.direct().providerRecord(ctx, bindingKey); err == nil {
+		c.records.Refresh(c.providerEntity)
+		c.records.Refresh(c.entity)
+	}
+	return plan, err
+}
+
+func (c *Client) providerRecord(ctx context.Context, bindingKey string) (*model.ProviderRecord, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry provider record")
@@ -351,42 +366,58 @@ func toProviderRecord(binding providerBinding, owner participant) *model.Provide
 	}
 }
 
-// findRecords returns the records of entity whose field equals value: through
-// the registry cache when one is in use, and from the registry otherwise.
-//
-// The registry cache holds active records only, so through it an inactive
-// record reads as absent -- refused all the same, under a not-found outcome.
-// A record missing from its cached list (one that joined since the list was
-// loaded) is asked of the registry by the cache's Get. Several matches are all
-// returned, so callers keep their own handling of a duplicated key.
-func findRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, url, entity, field, value string) ([]T, error) {
-	if c.records == nil {
-		return searchRecords[T](ctx, c, tracer, url, map[string]eqFilter{field: {Eq: value}})
-	}
-	raws, err := c.records.List(ctx, entity, map[string]string{field: value})
-	if err != nil {
-		return nil, err
-	}
-	if len(raws) == 0 {
-		raw, err := c.records.Get(ctx, entity, field, value)
-		if errors.Is(err, definition.ErrRegistryRecordNotFound) {
-			return nil, nil
+// findRecords returns entity's records whose field equals value, from the
+// registry cache, else from the registry; an active one the cache lacked refreshes it.
+func findRecords[T registryRecord](ctx context.Context, c *Client, tracer trace.Tracer, url, entity, field, value string) ([]T, error) {
+	listed := false
+	if c.records != nil {
+		raws, err := c.records.List(ctx, entity, map[string]string{field: value})
+		if err == nil && len(raws) > 0 {
+			if records, err := decodeCached[T](raws); err == nil {
+				return records, nil
+			} else {
+				log.Warnf(ctx, "OAN registry asking the registry for %s %s=%s: unreadable cached record: %v", entity, field, value, err)
+			}
 		}
-		if err != nil {
-			return nil, err
-		}
-		raws = []json.RawMessage{raw}
+		listed = err == nil
 	}
+	records, err := searchRecords[T](ctx, c, tracer, url, map[string]eqFilter{field: {Eq: value}})
+	if listed {
+		for _, r := range records {
+			if r.active() {
+				c.records.Refresh(entity)
+				break
+			}
+		}
+	}
+	return records, err
+}
+
+func decodeCached[T any](raws []json.RawMessage) ([]T, error) {
 	records := make([]T, 0, len(raws))
 	for _, raw := range raws {
 		var record T
 		if err := json.Unmarshal(raw, &record); err != nil {
-			return nil, fmt.Errorf("unreadable cached %s record: %w", entity, err)
+			return nil, err
 		}
 		records = append(records, record)
 	}
 	return records, nil
 }
+
+// holds reports whether the registry cache has the record, so a refusal came from it.
+func (c *Client) holds(ctx context.Context, entity, field, value string) bool {
+	raws, err := c.records.List(ctx, entity, map[string]string{field: value})
+	return err == nil && len(raws) > 0
+}
+
+// registryRecord is a record that says whether it is active.
+type registryRecord interface {
+	active() bool
+}
+
+func (p participant) active() bool     { return isActive(p.Status) }
+func (b providerBinding) active() bool { return isActive(b.Status) }
 
 // searchRecords posts a filter to one registry entity and decodes the matching
 // records. It is the single transport path for both entities: they differ only

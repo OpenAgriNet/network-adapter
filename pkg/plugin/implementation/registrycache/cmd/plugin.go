@@ -12,20 +12,15 @@ import (
 
 type registryCacheProvider struct{}
 
-// New reads:
-//   - url (required): the registry base, e.g. http://registry:8081/api/v1
-//   - ttl: Go duration, e.g. "24h"; absent or 0 disables caching
-//   - preload: entities loaded up front, comma separated, e.g.
-//     "Participant,ProviderSchema"
+// New reads url, ttl (e.g. "24h") and preload (e.g. "Participant,ProviderSchema"),
+// all required.
 func (registryCacheProvider) New(ctx context.Context, cache definition.Cache, cfg map[string]string) (definition.RegistryCache, func() error, error) {
 	config := registrycache.Config{URL: cfg["url"]}
-	if raw := cfg["ttl"]; raw != "" {
-		ttl, err := time.ParseDuration(raw)
-		if err != nil || ttl < 0 {
-			return nil, nil, fmt.Errorf("invalid ttl %q", raw)
-		}
-		config.TTL = ttl
+	ttl, err := time.ParseDuration(cfg["ttl"])
+	if err != nil || ttl <= 0 {
+		return nil, nil, fmt.Errorf("invalid ttl %q, want a positive duration such as 24h", cfg["ttl"])
 	}
+	config.TTL = ttl
 	for _, entity := range strings.Split(cfg["preload"], ",") {
 		if entity = strings.TrimSpace(entity); entity == "" {
 			continue
@@ -34,6 +29,9 @@ func (registryCacheProvider) New(ctx context.Context, cache definition.Cache, cf
 			return nil, nil, fmt.Errorf("invalid preload entity %q, want an entity name such as Participant", entity)
 		}
 		config.Preload = append(config.Preload, entity)
+	}
+	if len(config.Preload) == 0 {
+		return nil, nil, fmt.Errorf("preload is required, e.g. Participant,ProviderSchema")
 	}
 
 	store, err := registrycache.New(cache, config)

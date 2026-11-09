@@ -138,18 +138,9 @@ modules:
             #
             #   cacheTTL: 60s                 # default: unset, meaning off
 
-        # ------------------------------------------------------------------
-        # registryCache -- the registry's active records, kept in Redis.
-        #
-        # Off here for the same reason cacheTTL is: it needs the cache plugin,
-        # and this sample runs no redis. Uncomment both to turn it on. The
-        # registry above then reads participants and bindings through it, and
-        # cacheTTL no longer applies.
-        #
-        # ttl is how long a record is kept, and so how long a suspension, a
-        # withdrawn key or a changed baseUrl takes to apply. New records apply
-        # at once, and a refusal is rechecked with the registry.
-        # ------------------------------------------------------------------
+        # registryCache -- keeps the registry's active records in Redis; the
+        # registry reads through it. Needs redis, so off here. ttl is also how
+        # long a suspension or changed record takes to apply.
         # cache:
         #   id: cache
         #   config:
@@ -158,8 +149,8 @@ modules:
         #   id: registrycache
         #   config:
         #     url: <>                         # the registry url above
-        #     ttl: 24h                        # absent or 0: off
-        #     preload: Participant,ProviderSchema
+        #     ttl: 24h                        # required
+        #     preload: Participant,ProviderSchema   # required
 
         keyManager:
           id: simplekeymanager

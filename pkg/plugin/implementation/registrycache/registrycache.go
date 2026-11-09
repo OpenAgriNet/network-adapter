@@ -1,7 +1,5 @@
 // Package registrycache keeps the registry's active records in the cache, one
-// list per entity. It loads every active record of the configured entities up
-// front, reloads them each TTL, and falls back to the registry for anything
-// not in the cache.
+// list per entity, loaded up front and reloaded each TTL.
 package registrycache
 
 import (
@@ -14,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/beckn-one/beckn-onix/pkg/log"
@@ -24,8 +23,8 @@ import (
 // maxResponseBytes caps a registry answer; a larger one is refused.
 const maxResponseBytes = util.DefaultMaxResponseBytes
 
-// ErrNotFound reports that no active record, or more than one, matched.
-var ErrNotFound = definition.ErrRegistryRecordNotFound
+// ErrNotCached reports that an entity's list is not in the cache.
+var ErrNotCached = errors.New("registry list not cached")
 
 // Config configures a Store.
 type Config struct {
@@ -43,8 +42,10 @@ type Store struct {
 	ttl     time.Duration
 	check   time.Duration
 	preload []string
-	cache   definition.Cache
-	http    *http.Client
+	// stale marks a preload entity to reload at the next check.
+	stale map[string]*atomic.Bool
+	cache definition.Cache
+	http  *http.Client
 }
 
 // New returns a Store. cache may be nil, which disables caching.
@@ -52,21 +53,31 @@ func New(cache definition.Cache, cfg Config) (*Store, error) {
 	if cfg.URL == "" {
 		return nil, errors.New("registrycache: url is required")
 	}
+	stale := make(map[string]*atomic.Bool, len(cfg.Preload))
+	for _, entity := range cfg.Preload {
+		stale[entity] = new(atomic.Bool)
+	}
 	return &Store{
 		url:     strings.TrimSuffix(cfg.URL, "/"),
 		ttl:     cfg.TTL,
 		check:   time.Minute,
 		preload: cfg.Preload,
+		stale:   stale,
 		cache:   cache,
 		http:    &http.Client{Timeout: 10 * time.Second},
 	}, nil
 }
 
-// Start loads each preload entity now and again every TTL, in the background,
-// until the returned stop is called. Every minute it also reloads an entity
-// whose load failed, or whose list is gone from the cache (expired while the
-// host slept, or the cache was restarted). A failed load keeps the list
-// already cached; reads fall back to the registry meanwhile.
+// Refresh reloads entity's list at the next check. Only the background load
+// writes the list.
+func (s *Store) Refresh(entity string) {
+	if flag, ok := s.stale[entity]; ok {
+		flag.Store(true)
+	}
+}
+
+// Start loads each preload entity now and every TTL until stopped. Each minute
+// it also reloads a failed, missing or refreshed entity.
 func (s *Store) Start(ctx context.Context) (stop func()) {
 	if !s.caching() || len(s.preload) == 0 {
 		return func() {}
@@ -76,12 +87,12 @@ func (s *Store) Start(ctx context.Context) (stop func()) {
 		go func() {
 			var due time.Time // zero: load now
 			for {
-				if !time.Now().Before(due) || s.missing(ctx, entity) {
-					// Timed from the start of the load, so the next one lands
-					// before the list it cached expires.
+				refresh := s.stale[entity].Swap(false)
+				if refresh || !time.Now().Before(due) || s.missing(ctx, entity) {
+					// Reload a check before the list expires.
 					start := time.Now()
 					if s.load(ctx, entity) {
-						due = start.Add(s.ttl)
+						due = start.Add(max(s.ttl-s.check, s.check))
 					}
 				}
 				select {
@@ -95,16 +106,14 @@ func (s *Store) Start(ctx context.Context) (stop func()) {
 	return cancel
 }
 
-// missing reports whether entity's list is absent from the cache. A cache it
-// could not read is not reported missing: reloading would not refill it, and
-// would only send every check to the registry.
+// missing reports whether entity's list is absent. An unreadable cache is not
+// missing: reloading would not refill it.
 func (s *Store) missing(ctx context.Context, entity string) bool {
-	raw, err := s.cache.Get(ctx, listKey(entity))
+	raw, err := s.cache.Get(ctx, s.listKey(entity))
 	return err == nil && raw == ""
 }
 
-// load reads every record of entity and caches the active ones as its list,
-// reporting whether the registry answered.
+// load caches entity's active records, reporting whether the registry answered.
 func (s *Store) load(ctx context.Context, entity string) bool {
 	records, err := s.search(ctx, entity, map[string]any{})
 	if err != nil {
@@ -117,65 +126,30 @@ func (s *Store) load(ctx context.Context, entity string) bool {
 	return true
 }
 
-// Get returns the one active record of entity whose field equals value (or, for
-// a list field, contains it), exactly as the registry sent it. It is found in
-// the entity's cached list; a record the list lacks is asked of the registry
-// and, when active, added to the list. No match, an inactive record, or more
-// than one match is ErrNotFound.
-func (s *Store) Get(ctx context.Context, entity, field, value string) (json.RawMessage, error) {
-	match := map[string]string{field: value}
-	all, cached, err := s.activeRecords(ctx, entity)
-	if err != nil {
-		return nil, err
-	}
-	found := matching(all, match)
-	if len(found) == 0 && cached {
-		// Not in the cached list: it may have joined since the last load.
-		records, err := s.search(ctx, entity, map[string]any{field: map[string]string{"eq": value}})
-		if err != nil {
-			return nil, err
-		}
-		if found = matching(activeOf(records), match); len(found) == 1 {
-			s.storeList(ctx, entity, append(all, found[0]))
-		}
-	}
-	if len(found) != 1 {
-		return nil, ErrNotFound
-	}
-	return found[0], nil
-}
-
-// List returns every active record of entity whose fields match, each exactly
-// as the registry sent it. A field matches when it equals the value or, for a
-// list field, contains it; an empty match returns every active record. The
-// entity's list is served from the cache when present, and otherwise read
-// from the registry and cached.
+// List returns the cached active records of entity whose fields match (equal,
+// or contained in a list field), or ErrNotCached. It never asks the registry.
 func (s *Store) List(ctx context.Context, entity string, match map[string]string) ([]json.RawMessage, error) {
-	all, _, err := s.activeRecords(ctx, entity)
+	all, err := s.cached(ctx, entity)
 	if err != nil {
 		return nil, err
 	}
 	return matching(all, match), nil
 }
 
-// activeRecords returns entity's active records and whether they came from the
-// cache; on a miss they are read from the registry and cached.
-func (s *Store) activeRecords(ctx context.Context, entity string) ([]json.RawMessage, bool, error) {
-	if s.caching() {
-		if raw, err := s.cache.Get(ctx, listKey(entity)); err == nil && raw != "" {
-			var all []json.RawMessage
-			if json.Unmarshal([]byte(raw), &all) == nil {
-				return all, true, nil
-			}
-		}
+// cached returns entity's cached active records.
+func (s *Store) cached(ctx context.Context, entity string) ([]json.RawMessage, error) {
+	if !s.caching() {
+		return nil, ErrNotCached
 	}
-	records, err := s.search(ctx, entity, map[string]any{})
+	raw, err := s.cache.Get(ctx, s.listKey(entity))
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	all := activeOf(records)
-	s.storeList(ctx, entity, all)
-	return all, false, nil
+	var all []json.RawMessage
+	if raw == "" || json.Unmarshal([]byte(raw), &all) != nil {
+		return nil, ErrNotCached
+	}
+	return all, nil
 }
 
 func (s *Store) storeList(ctx context.Context, entity string, all []json.RawMessage) {
@@ -184,23 +158,23 @@ func (s *Store) storeList(ctx context.Context, entity string, all []json.RawMess
 	}
 	raw, err := json.Marshal(all)
 	if err == nil {
-		err = s.cache.Set(ctx, listKey(entity), string(raw), s.ttl)
+		err = s.cache.Set(ctx, s.listKey(entity), string(raw), s.ttl)
 	}
 	if err != nil {
-		log.Warnf(ctx, "Failed to cache registry list %s: %v", listKey(entity), err)
+		log.Warnf(ctx, "Failed to cache registry list %s: %v", s.listKey(entity), err)
 	}
 }
 
-func listKey(entity string) string {
-	return fmt.Sprintf("registry_%s_all", entity)
+// listKey includes the registry URL, so registries sharing a Redis keep apart.
+func (s *Store) listKey(entity string) string {
+	return fmt.Sprintf("registry_%s_%s_all", s.url, entity)
 }
 
 func (s *Store) caching() bool {
 	return s.cache != nil && s.ttl > 0
 }
 
-// search asks the registry for the records of entity matching filters. An
-// empty filters object matches every record.
+// search asks the registry for entity's records; empty filters match all.
 func (s *Store) search(ctx context.Context, entity string, filters map[string]any) ([]json.RawMessage, error) {
 	body, err := json.Marshal(map[string]any{"filters": filters})
 	if err != nil {

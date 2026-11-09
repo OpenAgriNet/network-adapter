@@ -241,7 +241,7 @@ func TestANetworkWithNoIDIsNotLookedUp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	agreed, err := newTestClient(t, srv.URL, nil).agreementWith(context.Background(), "   ", false)
+	agreed, err := newTestClient(t, srv.URL, nil).agreementWith(context.Background(), "   ")
 	if err != nil {
 		t.Fatalf("agreementWith: %v", err)
 	}

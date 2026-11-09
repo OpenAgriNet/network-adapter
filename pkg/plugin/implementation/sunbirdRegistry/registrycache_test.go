@@ -10,8 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 )
 
 // fakeRecords is a registry cache holding the given records per entity,
@@ -42,15 +40,21 @@ func (f fakeRecords) List(_ context.Context, entity string, match map[string]str
 	return found, nil
 }
 
-func (f fakeRecords) Get(ctx context.Context, entity, field, value string) (json.RawMessage, error) {
-	found, err := f.List(ctx, entity, map[string]string{field: value})
-	if err != nil {
-		return nil, err
+func (fakeRecords) Refresh(string) {}
+
+// watchedRecords is fakeRecords recording which entities it was asked to refresh.
+type watchedRecords struct {
+	fakeRecords
+	refreshed []string
+}
+
+func (w *watchedRecords) Refresh(entity string) { w.refreshed = append(w.refreshed, entity) }
+
+func wantRefreshed(t *testing.T, w *watchedRecords, want ...string) {
+	t.Helper()
+	if fmt.Sprint(w.refreshed) != fmt.Sprint(want) {
+		t.Fatalf("refreshed %v, want %v", w.refreshed, want)
 	}
-	if len(found) != 1 {
-		return nil, definition.ErrRegistryRecordNotFound
-	}
-	return found[0], nil
 }
 
 // countingSearches answers every search with body and counts the calls.
@@ -83,18 +87,76 @@ func TestThroughTheRegistryCacheALookupAsksNoRegistry(t *testing.T) {
 	}
 }
 
-func TestThroughTheRegistryCacheAnAbsentParticipantIsNotFound(t *testing.T) {
+func TestThroughTheRegistryCacheAParticipantNotCachedIsAskedOfTheRegistry(t *testing.T) {
+	// Joined since the last load.
 	url, calls := countingSearches(t, recordJSON(t, activeRecord()))
 	client := newTestClient(t, url, nil)
-	client.UseRegistryCache(fakeRecords{})
+	records := &watchedRecords{fakeRecords: fakeRecords{}}
+	client.UseRegistryCache(records)
 
 	results, err := lookup(t, client)
-	if err != nil || len(results) != 0 {
-		t.Fatalf("got %+v, %v, want not found", results, err)
+	if err != nil || len(results) != 1 || results[0].Status != statusSubscribed {
+		t.Fatalf("got %+v, %v, want the registry's participant", results, err)
 	}
-	if *calls != 0 {
-		t.Fatalf("registry asked %d times, want the registry cache to answer", *calls)
+	if *calls != 1 {
+		t.Fatalf("registry asked %d times, want once", *calls)
 	}
+	wantRefreshed(t, records, DefaultEntity)
+}
+
+func TestThroughTheRegistryCacheARotatedKeyIsRecheckedWithTheRegistry(t *testing.T) {
+	// The cached copy predates the key the participant now signs with.
+	cached := activeRecord()
+	cached.Keys[0].OSID = "1-retired"
+	url, calls := countingSearches(t, recordJSON(t, activeRecord()))
+	client := newTestClient(t, url, nil)
+	records := &watchedRecords{fakeRecords: fakeRecords{DefaultEntity: {cached}}}
+	client.UseRegistryCache(records)
+
+	results, err := lookup(t, client)
+	if err != nil || len(results) != 1 || results[0].Status != statusSubscribed {
+		t.Fatalf("got %+v, %v, want the rotated key to verify", results, err)
+	}
+	if *calls != 1 {
+		t.Fatalf("registry asked %d times, want one recheck", *calls)
+	}
+	wantRefreshed(t, records, DefaultEntity)
+}
+
+func TestThroughTheRegistryCacheAnActionAddedSinceIsServed(t *testing.T) {
+	// The cached binding predates its only active action.
+	cached := bindingRecord()
+	cached.Actions[0].Status = "inactive"
+	srv := newRegistryServer(t, arrayJSON(t, bindingRecord()), arrayJSON(t, upstreamRecord()))
+	t.Cleanup(srv.Close)
+	client := newTestClient(t, srv.URL, nil)
+	records := &watchedRecords{fakeRecords: fakeRecords{
+		DefaultProviderEntity: {cached},
+		DefaultEntity:         {upstreamRecord()},
+	}}
+	client.UseRegistryCache(records)
+
+	if _, err := resolvePlan(t, client); err != nil {
+		t.Fatalf("a binding refused from its cached copy must be rechecked: %v", err)
+	}
+	wantRefreshed(t, records, DefaultProviderEntity, DefaultEntity)
+}
+
+func TestThroughTheRegistryCacheAnInactiveNetworkIsStillRefused(t *testing.T) {
+	// Not in the cache, which holds active records only. Read as "no
+	// agreement", it would pass as an ordinary participant.
+	record := admittedRecord(federationRole{Source: agreedPacks()})
+	record.Status = "inactive"
+	url, _ := countingSearches(t, recordJSON(t, record))
+	client := newTestClient(t, url, nil)
+	records := &watchedRecords{fakeRecords: fakeRecords{}}
+	client.UseRegistryCache(records)
+
+	if err := discoverFor(t, client, testAgreedContext); err == nil {
+		t.Fatal("a network we only read from must be refused, inactive or not")
+	}
+	// An inactive record is not missing from the cache: nothing to refresh.
+	wantRefreshed(t, records)
 }
 
 func TestThroughTheRegistryCacheAProviderRecordAsksNoRegistry(t *testing.T) {
@@ -133,7 +195,8 @@ func TestThroughTheRegistryCacheARefusalIsRecheckedWithTheRegistry(t *testing.T)
 	fresh := admittedRecord(federationRole{Requester: agreedPacks()})
 	url, calls := countingSearches(t, recordJSON(t, fresh))
 	client := newTestClient(t, url, nil)
-	client.UseRegistryCache(fakeRecords{DefaultEntity: {cached}})
+	records := &watchedRecords{fakeRecords: fakeRecords{DefaultEntity: {cached}}}
+	client.UseRegistryCache(records)
 
 	if err := discoverFor(t, client, testAgreedContext); err != nil {
 		t.Fatalf("an agreement made since the copy must not be refused: %v", err)
@@ -141,6 +204,7 @@ func TestThroughTheRegistryCacheARefusalIsRecheckedWithTheRegistry(t *testing.T)
 	if *calls != 1 {
 		t.Fatalf("registry asked %d times, want one recheck", *calls)
 	}
+	wantRefreshed(t, records, DefaultEntity)
 }
 
 func TestThroughTheRegistryCacheAnAllowedCallerAsksNoRegistry(t *testing.T) {
@@ -167,13 +231,17 @@ func TestThroughTheRegistryCacheARefusalTheRegistryConfirmsStands(t *testing.T) 
 	}
 }
 
-func TestThroughTheRegistryCacheAnUnreadableCacheIsAnError(t *testing.T) {
-	url, _ := countingSearches(t, `[]`)
+func TestThroughTheRegistryCacheAnUnreadableCacheFallsBackToTheRegistry(t *testing.T) {
+	url, calls := countingSearches(t, recordJSON(t, activeRecord()))
 	client := newTestClient(t, url, nil)
 	client.UseRegistryCache(failingRecords{})
 
-	if _, err := lookup(t, client); err == nil {
-		t.Fatal("a registry cache that cannot answer must surface as an error, not a not-found")
+	results, err := lookup(t, client)
+	if err != nil || len(results) != 1 || results[0].Status != statusSubscribed {
+		t.Fatalf("got %+v, %v, want the registry's answer while the cache cannot give one", results, err)
+	}
+	if *calls != 1 {
+		t.Fatalf("registry asked %d times, want once", *calls)
 	}
 }
 
@@ -182,6 +250,38 @@ type failingRecords struct{}
 func (failingRecords) List(context.Context, string, map[string]string) ([]json.RawMessage, error) {
 	return nil, errors.New("registry down")
 }
-func (failingRecords) Get(context.Context, string, string, string) (json.RawMessage, error) {
-	return nil, errors.New("registry down")
+
+func (failingRecords) Refresh(string) {}
+
+func TestThroughTheRegistryCacheAnUnknownCallerCostsOneRegistryCall(t *testing.T) {
+	url, calls := countingSearches(t, `[]`)
+	client := newTestClient(t, url, nil)
+	records := &watchedRecords{fakeRecords: fakeRecords{}}
+	client.UseRegistryCache(records)
+
+	if results, err := lookup(t, client); err != nil || len(results) != 0 {
+		t.Fatalf("got %+v, %v, want not found", results, err)
+	}
+	if err := discoverFor(t, client, testAgreedContext); err != nil {
+		t.Fatalf("an unknown caller is an ordinary participant here: %v", err)
+	}
+	// One search each: a refusal the registry gave is not asked again.
+	if *calls != 2 {
+		t.Fatalf("registry asked %d times, want once per check", *calls)
+	}
+	wantRefreshed(t, records)
+}
+
+func TestThroughTheRegistryCacheAnUnreadableCachedRecordFallsBackToTheRegistry(t *testing.T) {
+	url, calls := countingSearches(t, recordJSON(t, activeRecord()))
+	client := newTestClient(t, url, nil)
+	client.UseRegistryCache(fakeRecords{DefaultEntity: {map[string]any{"participantId": testParticipantID, "keys": "not a list"}}})
+
+	results, err := lookup(t, client)
+	if err != nil || len(results) != 1 || results[0].Status != statusSubscribed {
+		t.Fatalf("got %+v, %v, want the registry's answer", results, err)
+	}
+	if *calls != 1 {
+		t.Fatalf("registry asked %d times, want once", *calls)
+	}
 }

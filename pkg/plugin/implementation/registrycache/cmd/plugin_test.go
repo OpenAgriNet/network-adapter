@@ -11,13 +11,14 @@ func TestNew(t *testing.T) {
 		cfg  map[string]string
 		ok   bool
 	}{
-		{"url and ttl", map[string]string{"url": "http://registry:8081/api/v1", "ttl": "24h"}, true},
-		{"no ttl disables caching", map[string]string{"url": "http://registry:8081/api/v1"}, true},
-		{"missing url", map[string]string{"ttl": "24h"}, false},
+		{"url and ttl without preload", map[string]string{"url": "http://registry:8081/api/v1", "ttl": "24h"}, false},
+		{"no ttl", map[string]string{"url": "http://registry:8081/api/v1", "preload": "Participant"}, false},
+		{"zero ttl", map[string]string{"url": "http://r", "ttl": "0s"}, false},
+		{"missing url", map[string]string{"ttl": "24h", "preload": "Participant"}, false},
 		{"bad ttl", map[string]string{"url": "http://r", "ttl": "a day"}, false},
 		{"negative ttl", map[string]string{"url": "http://r", "ttl": "-1h"}, false},
-		{"preload", map[string]string{"url": "http://r", "preload": "Participant, ProviderSchema"}, true},
-		{"preload with a field", map[string]string{"url": "http://r", "preload": "Participant:participantId"}, false},
+		{"preload", map[string]string{"url": "http://r", "ttl": "24h", "preload": "Participant, ProviderSchema"}, true},
+		{"preload with a field", map[string]string{"url": "http://r", "ttl": "24h", "preload": "Participant:participantId"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rc, _, err := Provider.New(context.Background(), nil, tc.cfg)

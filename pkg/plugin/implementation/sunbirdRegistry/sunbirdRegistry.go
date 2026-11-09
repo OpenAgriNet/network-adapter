@@ -160,8 +160,7 @@ type Config struct {
 }
 
 // Client resolves participants from the registry. It is safe for concurrent
-// use: every field is set once, in New or by UseRegistryCache at startup, and
-// never mutated once traffic arrives.
+// use: every field is set at startup and never mutated afterwards.
 type Client struct {
 	searchURL         string
 	providerSearchURL string
@@ -171,15 +170,20 @@ type Client struct {
 	cache             definition.Cache
 	cacheTTL          time.Duration
 	maxResponseBytes  int64
-	// records, when set, serves the single-record reads in place of the
-	// registry, and replaces this client's own answer caching.
+	// records, when set, serves reads and replaces the answer cache.
 	records definition.RegistryCache
 }
 
-// UseRegistryCache reads participants and bindings through rc from now on, and
-// stops caching answers of its own. Called once at startup, before traffic.
+// UseRegistryCache reads records through rc. Called once at startup.
 func (c *Client) UseRegistryCache(rc definition.RegistryCache) {
 	c.records = rc
+}
+
+// direct is this client without any cache, to recheck a cached refusal.
+func (c *Client) direct() *Client {
+	d := *c
+	d.records, d.cacheTTL = nil, 0
+	return &d
 }
 
 // participant is the subset of a registry record this plugin reads. The
@@ -444,7 +448,25 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 // not-found error. A participant that exists but may not sign is returned with
 // a status the caller rejects, so that "unknown" and "suspended" stay
 // distinguishable instead of collapsing into the same empty result.
+//
+// A refusal from a cached copy is rechecked with the registry.
 func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.Subscription, error) {
+	results, err := c.lookup(ctx, req)
+	if c.records == nil || err != nil || subscribed(results) ||
+		!c.holds(ctx, c.entity, fieldParticipantID, req.SubscriberID) {
+		return results, err
+	}
+	if results, err = c.direct().lookup(ctx, req); err == nil && subscribed(results) {
+		c.records.Refresh(c.entity)
+	}
+	return results, err
+}
+
+func subscribed(results []model.Subscription) bool {
+	return len(results) == 1 && results[0].Status == statusSubscribed
+}
+
+func (c *Client) lookup(ctx context.Context, req *model.Subscription) ([]model.Subscription, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry lookup")
@@ -792,22 +814,25 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 		return nil
 	}
 
-	agreed, err := c.agreementWith(ctx, caller, false)
+	agreed, err := c.agreementWith(ctx, caller)
 	if err != nil {
 		// A registry we could not ask is not an agreement we can honour.
 		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
 	}
 	refusal := judgeRequester(ctx, caller, action, schemaContexts, agreed)
-	if refusal == nil || c.records == nil {
+	if refusal == nil || c.records == nil || !c.holds(ctx, c.entity, fieldParticipantID, caller) {
 		return refusal
 	}
-	// Never refuse on a cached copy, which can be a TTL old: an agreement made
-	// or widened since would be refused until the next load. Ask the registry.
-	if agreed, err = c.agreementWith(ctx, caller, true); err != nil {
+	// Never refuse on a cached copy: recheck with the registry.
+	if agreed, err = c.direct().agreementWith(ctx, caller); err != nil {
 		log.Warnf(ctx, "OAN registry could not recheck %s before refusing, refusing on the cached agreement: %v", caller, err)
 		return refusal
 	}
-	return judgeRequester(ctx, caller, action, schemaContexts, agreed)
+	if refusal = judgeRequester(ctx, caller, action, schemaContexts, agreed); refusal == nil {
+		// The copy is out of date.
+		c.records.Refresh(c.entity)
+	}
+	return refusal
 }
 
 // judgeRequester applies what we agreed with caller to one request.

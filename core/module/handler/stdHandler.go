@@ -44,7 +44,6 @@ type stdHandler struct {
 	signValidator         definition.SignValidator
 	cache                 definition.Cache
 	registry              definition.RegistryLookup
-	registryCache         definition.RegistryCache
 	manifestLoader        definition.ManifestLoader
 	km                    definition.KeyManager
 	schemaValidator       definition.SchemaValidator
@@ -518,25 +517,25 @@ func LoadKeyManager(ctx context.Context, mgr PluginManager, registry definition.
 
 // loadRegistryCache loads the registry cache and has the registry read its
 // records through it.
-func loadRegistryCache(ctx context.Context, mgr PluginManager, cache definition.Cache, registry definition.RegistryLookup, cfg *plugin.Config) (definition.RegistryCache, error) {
+func loadRegistryCache(ctx context.Context, mgr PluginManager, cache definition.Cache, registry definition.RegistryLookup, cfg *plugin.Config) error {
 	if cfg == nil {
 		log.Debug(ctx, "Skipping RegistryCache plugin: not configured")
-		return nil, nil
+		return nil
 	}
 	if cache == nil {
-		return nil, fmt.Errorf("failed to load RegistryCache plugin (%s): Cache plugin not configured", cfg.ID)
+		return fmt.Errorf("failed to load RegistryCache plugin (%s): Cache plugin not configured", cfg.ID)
 	}
 	user, ok := registry.(definition.RegistryCacheUser)
 	if !ok {
-		return nil, fmt.Errorf("failed to load RegistryCache plugin (%s): Registry plugin not configured, or cannot read through it", cfg.ID)
+		return fmt.Errorf("failed to load RegistryCache plugin (%s): Registry plugin not configured, or cannot read through it", cfg.ID)
 	}
 	rc, err := mgr.RegistryCache(ctx, cache, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load RegistryCache plugin (%s): %w", cfg.ID, err)
+		return fmt.Errorf("failed to load RegistryCache plugin (%s): %w", cfg.ID, err)
 	}
 	user.UseRegistryCache(rc)
 	log.Debugf(ctx, "Loaded RegistryCache plugin: %s; the registry reads through it", cfg.ID)
-	return rc, nil
+	return nil
 }
 
 func loadManifestLoader(ctx context.Context, mgr PluginManager, cache definition.Cache, registry definition.RegistryLookup, cfg *plugin.Config) (definition.ManifestLoader, error) {
@@ -638,7 +637,7 @@ func (h *stdHandler) initPlugins(ctx context.Context, mgr PluginManager, cfg *Pl
 	}); err != nil {
 		return err
 	}
-	if h.registryCache, err = loadRegistryCache(ctx, mgr, h.cache, h.registry, cfg.RegistryCache); err != nil {
+	if err = loadRegistryCache(ctx, mgr, h.cache, h.registry, cfg.RegistryCache); err != nil {
 		return err
 	}
 	if h.km, err = LoadKeyManager(ctx, mgr, h.registry, cfg.KeyManager); err != nil {

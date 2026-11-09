@@ -65,22 +65,12 @@ func (c *Client) searchNetworks(ctx context.Context, tracer trace.Tracer, extra 
 // agreementWith returns what we agreed with a participant, from federationRole
 // alone. Not AdmittedNetwork: that answers whether we can CALL them, which a
 // half-filled record fails without meaning we may answer it.
-//
-// fresh asks the registry itself, bypassing the registry cache.
-func (c *Client) agreementWith(ctx context.Context, participantID string, fresh bool) (model.Agreement, error) {
+func (c *Client) agreementWith(ctx context.Context, participantID string) (model.Agreement, error) {
 	if strings.TrimSpace(participantID) == "" {
 		return model.Agreement{}, nil
 	}
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
-	var records []participant
-	var err error
-	if fresh {
-		records, err = searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
-			fieldParticipantID: {Eq: participantID},
-		})
-	} else {
-		records, err = findRecords[participant](ctx, c, tracer, c.searchURL, c.entity, fieldParticipantID, participantID)
-	}
+	records, err := findRecords[participant](ctx, c, tracer, c.searchURL, c.entity, fieldParticipantID, participantID)
 	if err != nil {
 		return model.Agreement{}, err
 	}

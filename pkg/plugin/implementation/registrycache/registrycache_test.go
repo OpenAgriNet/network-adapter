@@ -96,60 +96,8 @@ func TestPreloadCachesEveryActiveRecordAsOneList(t *testing.T) {
 	if len(cache) != 1 {
 		t.Fatalf("cache = %v, want only the list", cache)
 	}
-	if got := ids(t, cache["registry_Participant_all"]); len(got) != 3 || got[0] != "oan-a" || got[1] != "oan-c" {
+	if got := ids(t, cache[s.listKey("Participant")]); len(got) != 3 || got[0] != "oan-a" || got[1] != "oan-c" {
 		t.Fatalf("list = %v, want oan-a, oan-c and the record without an id", got)
-	}
-}
-
-func TestGetIsServedFromTheListByAnyField(t *testing.T) {
-	answer := `[{"participantId":"pocra","baseUrl":"https://pocra","status":"active"},{"participantId":"oan-dev","status":"active"}]`
-	s, _, calls := registry(t, &answer)
-	s.load(context.Background(), "Participant")
-
-	for _, by := range [][2]string{{"participantId", "pocra"}, {"baseUrl", "https://pocra"}} {
-		got, err := s.Get(context.Background(), "Participant", by[0], by[1])
-		if err != nil || !matches(got, map[string]string{"participantId": "pocra"}) {
-			t.Fatalf("%v: got %s, %v", by, got, err)
-		}
-	}
-	if *calls != 1 {
-		t.Fatalf("registry called %d times, want only the preload", *calls)
-	}
-}
-
-func TestGetAsksTheRegistryForARecordNotInTheList(t *testing.T) {
-	answer := `[{"participantId":"new","status":"active"}]`
-	s, cache, calls := registry(t, &answer)
-	cache["registry_Participant_all"] = `[]`
-
-	for i := 0; i < 2; i++ {
-		if _, err := s.Get(context.Background(), "Participant", "participantId", "new"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if *calls != 1 {
-		t.Fatalf("registry called %d times, want once", *calls)
-	}
-	if got := ids(t, cache["registry_Participant_all"]); len(got) != 1 || got[0] != "new" {
-		t.Fatalf("list = %v, want the new record added", got)
-	}
-}
-
-func TestGetOfAnInactiveUnknownOrAmbiguousRecordIsNotFound(t *testing.T) {
-	answer := `[
-		{"participantId":"oan-b","type":"node","status":"inactive"},
-		{"participantId":"oan-c","type":"node","status":"active"},
-		{"participantId":"oan-d","type":"node","status":"active"}
-	]`
-	s, cache, _ := registry(t, &answer)
-
-	for _, by := range [][2]string{{"participantId", "oan-b"}, {"participantId", "nobody"}, {"type", "node"}} {
-		if _, err := s.Get(context.Background(), "Participant", by[0], by[1]); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("%v: err=%v, want ErrNotFound", by, err)
-		}
-	}
-	if got := ids(t, cache["registry_Participant_all"]); len(got) != 2 {
-		t.Fatalf("list = %v, want only the active records", got)
 	}
 }
 
@@ -161,6 +109,7 @@ func TestListMatchesFieldsAndListFields(t *testing.T) {
 	]`
 	s, _, _ := registry(t, &answer)
 	ctx := context.Background()
+	s.load(ctx, "Participant")
 
 	for _, tc := range []struct {
 		match map[string]string
@@ -180,31 +129,28 @@ func TestListMatchesFieldsAndListFields(t *testing.T) {
 	}
 }
 
-func TestListAsksTheRegistryOnceOnAMiss(t *testing.T) {
-	answer := `[{"participantId":"pocra","status":"active"},{"participantId":"oan-x","status":"inactive"}]`
+func TestListWithNothingCachedAsksNoRegistry(t *testing.T) {
+	answer := `[{"participantId":"pocra","status":"active"}]`
 	s, _, calls := registry(t, &answer)
 
-	for i := 0; i < 2; i++ {
-		if got, err := s.List(context.Background(), "Participant", nil); err != nil || len(got) != 1 {
-			t.Fatalf("got %s, %v, want only the active record", got, err)
-		}
+	if _, err := s.List(context.Background(), "Participant", nil); !errors.Is(err, ErrNotCached) {
+		t.Fatalf("err=%v, want ErrNotCached", err)
 	}
-	if *calls != 1 {
-		t.Fatalf("registry called %d times, want once", *calls)
+	if *calls != 0 {
+		t.Fatalf("registry called %d times: a request must not fetch every record", *calls)
 	}
 }
 
-func TestWithoutATTLEveryCallAsks(t *testing.T) {
-	answer := `[{"participantId":"x","status":"active"}]`
-	s, cache, calls := registry(t, &answer)
-	s.ttl = 0
-	for i := 0; i < 2; i++ {
-		if _, err := s.Get(context.Background(), "Participant", "participantId", "x"); err != nil {
-			t.Fatal(err)
-		}
+func TestAnUnreadableCacheIsNotReadAsAMiss(t *testing.T) {
+	answer := `[{"participantId":"pocra","status":"active"}]`
+	s, _, calls := registry(t, &answer)
+	s.cache = &lockedCache{m: memCache{}, down: true}
+
+	if _, err := s.List(context.Background(), "Participant", nil); err == nil || errors.Is(err, ErrNotCached) {
+		t.Fatalf("err=%v, want the cache's own error", err)
 	}
-	if *calls != 2 || len(cache) != 0 {
-		t.Fatalf("calls=%d cache=%v", *calls, cache)
+	if *calls != 0 {
+		t.Fatalf("registry called %d times, want none", *calls)
 	}
 }
 
@@ -213,12 +159,13 @@ func TestAFailedPreloadKeepsWhatIsCached(t *testing.T) {
 		http.Error(w, "down", http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(srv.Close)
-	cache := memCache{"registry_Participant_all": "kept"}
+	cache := memCache{}
 	s, _ := New(cache, Config{URL: srv.URL, TTL: time.Hour, Preload: []string{"Participant"}})
+	cache[s.listKey("Participant")] = "kept"
 
 	s.load(context.Background(), "Participant")
 
-	if cache["registry_Participant_all"] != "kept" {
+	if cache[s.listKey("Participant")] != "kept" {
 		t.Fatalf("cache = %v", cache)
 	}
 }
@@ -305,12 +252,12 @@ func TestAListGoneFromTheCacheIsReloadedWithinACheck(t *testing.T) {
 	}
 
 	// Expired while the host slept, or the cache restarted.
-	cache.Delete(context.Background(), "registry_Participant_all")
+	cache.Delete(context.Background(), s.listKey("Participant"))
 	waitFor(t, calls, 2)
 	if n := atomic.LoadInt32(calls); n != 2 {
 		t.Fatalf("registry asked %d times, want one reload of the missing list", n)
 	}
-	if raw, _ := cache.Get(context.Background(), "registry_Participant_all"); raw == "" {
+	if raw, _ := cache.Get(context.Background(), s.listKey("Participant")); raw == "" {
 		t.Fatal("list not refilled")
 	}
 }
@@ -326,5 +273,37 @@ func TestAnUnreachableCacheDoesNotSendChecksToTheRegistry(t *testing.T) {
 	waitFor(t, calls, 1)
 	if n := atomic.LoadInt32(calls); n != 1 {
 		t.Fatalf("registry asked %d times, want only the first load", n)
+	}
+}
+
+func TestARefreshReloadsAtTheNextCheckOnly(t *testing.T) {
+	answer := `[{"participantId":"pocra","status":"active"}]`
+	s, _, calls := registry(t, &answer)
+	s.cache = &lockedCache{m: memCache{}}
+	s.check = 10 * time.Millisecond
+
+	stop := s.Start(context.Background())
+	defer stop()
+	waitFor(t, calls, 1)
+
+	// However often it is asked, one reload.
+	for i := 0; i < 5; i++ {
+		s.Refresh("Participant")
+	}
+	s.Refresh("NotPreloaded")
+	waitFor(t, calls, 2)
+	if n := atomic.LoadInt32(calls); n != 2 {
+		t.Fatalf("registry asked %d times, want the first load and one refresh", n)
+	}
+}
+
+func TestListsOfDifferentRegistriesKeepApartInOneCache(t *testing.T) {
+	cache := memCache{}
+	a, _ := New(cache, Config{URL: "http://registry-a/api/v1", TTL: time.Hour})
+	b, _ := New(cache, Config{URL: "http://registry-b/api/v1", TTL: time.Hour})
+	a.storeList(context.Background(), "Participant", []json.RawMessage{json.RawMessage(`{"participantId":"a"}`)})
+
+	if _, err := b.List(context.Background(), "Participant", nil); !errors.Is(err, ErrNotCached) {
+		t.Fatalf("err=%v, want registry b not to read registry a's list", err)
 	}
 }
