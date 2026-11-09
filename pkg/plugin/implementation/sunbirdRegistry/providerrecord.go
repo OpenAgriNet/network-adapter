@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -225,9 +226,7 @@ func (c *Client) fail(ctx context.Context, span trace.Span, start time.Time, err
 
 // activeBinding reads the capability binding and reports whether it may be used.
 func (c *Client) activeBinding(ctx context.Context, tracer trace.Tracer, bindingKey string) (providerBinding, string, error) {
-	bindings, err := searchRecords[providerBinding](ctx, c, tracer, c.providerSearchURL, map[string]eqFilter{
-		fieldBindingKey: {Eq: bindingKey},
-	})
+	bindings, err := findRecords[providerBinding](ctx, c, tracer, c.providerSearchURL, c.providerEntity, fieldBindingKey, bindingKey)
 	if err != nil {
 		return providerBinding{}, "", err
 	}
@@ -283,9 +282,7 @@ func servableActions(binding providerBinding) []actionPlan {
 // activeUpstream reads the participant that owns a binding and reports whether
 // its upstream may be called.
 func (c *Client) activeUpstream(ctx context.Context, tracer trace.Tracer, participantID string) (participant, string, error) {
-	participants, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
-		fieldParticipantID: {Eq: participantID},
-	})
+	participants, err := findRecords[participant](ctx, c, tracer, c.searchURL, c.entity, fieldParticipantID, participantID)
 	if err != nil {
 		return participant{}, "", err
 	}
@@ -352,6 +349,43 @@ func toProviderRecord(binding providerBinding, owner participant) *model.Provide
 		BaseURL:        baseURL,
 		Actions:        actions,
 	}
+}
+
+// findRecords returns the records of entity whose field equals value: through
+// the registry cache when one is in use, and from the registry otherwise.
+//
+// The registry cache holds active records only, so through it an inactive
+// record reads as absent -- refused all the same, under a not-found outcome.
+// A record missing from its cached list (one that joined since the list was
+// loaded) is asked of the registry by the cache's Get. Several matches are all
+// returned, so callers keep their own handling of a duplicated key.
+func findRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, url, entity, field, value string) ([]T, error) {
+	if c.records == nil {
+		return searchRecords[T](ctx, c, tracer, url, map[string]eqFilter{field: {Eq: value}})
+	}
+	raws, err := c.records.List(ctx, entity, map[string]string{field: value})
+	if err != nil {
+		return nil, err
+	}
+	if len(raws) == 0 {
+		raw, err := c.records.Get(ctx, entity, field, value)
+		if errors.Is(err, definition.ErrRegistryRecordNotFound) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		raws = []json.RawMessage{raw}
+	}
+	records := make([]T, 0, len(raws))
+	for _, raw := range raws {
+		var record T
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return nil, fmt.Errorf("unreadable cached %s record: %w", entity, err)
+		}
+		records = append(records, record)
+	}
+	return records, nil
 }
 
 // searchRecords posts a filter to one registry entity and decodes the matching

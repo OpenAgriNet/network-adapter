@@ -625,6 +625,26 @@ func (m *Manager) ManifestLoader(ctx context.Context, cache definition.Cache, lo
 	return loader, nil
 }
 
+// RegistryCache returns a RegistryCache instance based on the provided configuration.
+func (m *Manager) RegistryCache(ctx context.Context, cache definition.Cache, cfg *Config) (definition.RegistryCache, error) {
+	rp, err := provider[definition.RegistryCacheProvider](m.plugins, cfg.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load provider for %s: %w", cfg.ID, err)
+	}
+	rc, closer, err := rp.New(ctx, cache, cfg.Config)
+	if err != nil {
+		return nil, err
+	}
+	if closer != nil {
+		m.closers = append(m.closers, func() {
+			if err := closer(); err != nil {
+				panic(err)
+			}
+		})
+	}
+	return rc, nil
+}
+
 // Registry returns a RegistryLookup instance based on the provided configuration.
 // It registers a cleanup function for resource management.
 func (m *Manager) Registry(ctx context.Context, cache definition.Cache, cfg *Config) (definition.RegistryLookup, error) {

@@ -160,14 +160,26 @@ type Config struct {
 }
 
 // Client resolves participants from the registry. It is safe for concurrent
-// use: every field is set once in New and never mutated afterwards.
+// use: every field is set once, in New or by UseRegistryCache at startup, and
+// never mutated once traffic arrives.
 type Client struct {
 	searchURL         string
 	providerSearchURL string
+	entity            string
+	providerEntity    string
 	client            *retryablehttp.Client
 	cache             definition.Cache
 	cacheTTL          time.Duration
 	maxResponseBytes  int64
+	// records, when set, serves the single-record reads in place of the
+	// registry, and replaces this client's own answer caching.
+	records definition.RegistryCache
+}
+
+// UseRegistryCache reads participants and bindings through rc from now on, and
+// stops caching answers of its own. Called once at startup, before traffic.
+func (c *Client) UseRegistryCache(rc definition.RegistryCache) {
+	c.records = rc
 }
 
 // participant is the subset of a registry record this plugin reads. The
@@ -403,6 +415,8 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 	client := &Client{
 		searchURL:         searchURLFor(cfg.URL, entity),
 		providerSearchURL: searchURLFor(cfg.URL, providerEntity),
+		entity:            entity,
+		providerEntity:    providerEntity,
 		client:            rc,
 		cache:             cache,
 		cacheTTL:          cfg.CacheTTL,
@@ -515,9 +529,7 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 // participants server-side would return an empty result, making "suspended"
 // indistinguishable from "unknown" and losing the reason the caller reports.
 func (c *Client) search(ctx context.Context, tracer trace.Tracer, participantID, keyID string) (participant, key, string, error) {
-	records, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
-		fieldParticipantID: {Eq: participantID},
-	})
+	records, err := findRecords[participant](ctx, c, tracer, c.searchURL, c.entity, fieldParticipantID, participantID)
 	if err != nil {
 		return participant{}, key{}, "", err
 	}
@@ -660,7 +672,7 @@ func encryptionKey(p participant) string {
 // verifying until it expires, so the TTL is exactly the suspension-propagation
 // window and is left to the operator to opt into.
 func (c *Client) cachingEnabled() bool {
-	return c.cache != nil && c.cacheTTL > 0
+	return c.cache != nil && c.cacheTTL > 0 && c.records == nil
 }
 
 func (c *Client) cached(ctx context.Context, tracer trace.Tracer, key string) ([]model.Subscription, bool) {
@@ -672,7 +684,7 @@ func (c *Client) cached(ctx context.Context, tracer trace.Tracer, key string) ([
 	defer span.End()
 
 	raw, err := c.cache.Get(cacheCtx, key)
-	if err != nil {
+	if err != nil || raw == "" {
 		return nil, false
 	}
 	var results []model.Subscription
@@ -780,11 +792,26 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 		return nil
 	}
 
-	agreed, err := c.agreementWith(ctx, caller)
+	agreed, err := c.agreementWith(ctx, caller, false)
 	if err != nil {
 		// A registry we could not ask is not an agreement we can honour.
 		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
 	}
+	refusal := judgeRequester(ctx, caller, action, schemaContexts, agreed)
+	if refusal == nil || c.records == nil {
+		return refusal
+	}
+	// Never refuse on a cached copy, which can be a TTL old: an agreement made
+	// or widened since would be refused until the next load. Ask the registry.
+	if agreed, err = c.agreementWith(ctx, caller, true); err != nil {
+		log.Warnf(ctx, "OAN registry could not recheck %s before refusing, refusing on the cached agreement: %v", caller, err)
+		return refusal
+	}
+	return judgeRequester(ctx, caller, action, schemaContexts, agreed)
+}
+
+// judgeRequester applies what we agreed with caller to one request.
+func judgeRequester(ctx context.Context, caller, action string, schemaContexts []string, agreed model.Agreement) error {
 	// No agreement is an ordinary participant -- a provider, our own deployment,
 	// or a caller signature validation will reject anyway. No federation rule
 	// applies to them.

@@ -71,6 +71,10 @@ func (m *mockPluginManager) KeyManager(ctx context.Context, rLookup definition.R
 	return nil, nil
 }
 
+func (m *mockPluginManager) RegistryCache(ctx context.Context, cache definition.Cache, cfg *plugin.Config) (definition.RegistryCache, error) {
+	return nil, nil
+}
+
 func (m *mockPluginManager) ManifestLoader(ctx context.Context, cache definition.Cache, lookup definition.RegistryMetadataLookup, cfg *plugin.Config) (definition.ManifestLoader, error) {
 	return nil, nil
 }
