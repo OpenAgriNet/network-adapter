@@ -28,7 +28,7 @@ import (
 )
 
 // mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
-const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/agmarknet"
+const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/agmarknet"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment of the name must match the action the registry

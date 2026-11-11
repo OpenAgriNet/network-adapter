@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	mappingsURL       = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/pmfby"
+	mappingsURL       = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/pmfby"
 	shippedBindingKey = "pmfby|openagrinet:Grievance"
 	stubToken         = "stub-login-token"
 	knownTicket       = "100626000099001"

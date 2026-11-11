@@ -35,7 +35,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-const pkMappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/pmkisan"
+const pkMappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/pmkisan"
 
 const (
 	pkCapability = "openagrinet:Grievance"

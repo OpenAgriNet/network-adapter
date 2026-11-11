@@ -27,7 +27,7 @@ import (
 )
 
 // mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
-const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/main/quick-start/config/mappings/mausamgram"
+const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/mausamgram"
 
 // selectedResourceID is the resource the request selects, and therefore the one
 // the answer quotes. It is the same string in both directions on purpose.
