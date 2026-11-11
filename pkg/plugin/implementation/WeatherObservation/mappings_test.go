@@ -26,7 +26,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+// mappingsURL is where the shipped mappings live: helmcharts development, which releases are cut from.
 const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/mausamgram"
 
 // selectedResourceID is the resource the request selects, and therefore the one
@@ -101,7 +101,6 @@ func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderR
 
 // TestShippedMappingsServeARealSelect runs the published mappings end to end.
 func TestShippedMappingsServeARealSelect(t *testing.T) {
-
 	var gotQuery string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
@@ -359,7 +358,6 @@ func assertAlert(t *testing.T, parameters []any, want string) {
 // is the point of it living in the mapping: when this provider wants another
 // parameter -- a date range, say -- it is an edit here and nothing else.
 func TestShippedMappingsExtractTheQueryFromThePayload(t *testing.T) {
-
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
 		t.Fatalf("failed to build the mapper: %v", err)
@@ -396,7 +394,6 @@ func TestShippedMappingsExtractTheQueryFromThePayload(t *testing.T) {
 // where "which geometries does this capability serve" is now answered -- in
 // configuration, not in Go.
 func TestShippedMappingsPreconditions(t *testing.T) {
-
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
 		t.Fatalf("failed to build the mapper: %v", err)
@@ -458,7 +455,6 @@ func TestShippedMappingsPreconditions(t *testing.T) {
 // ten-day forecast delivered in that order would be wrong in a way nothing
 // downstream could detect.
 func TestShippedMappingsTakeHoweverManyDaysTheProviderSent(t *testing.T) {
-
 	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
 	if err != nil {
 		t.Fatalf("failed to build the mapper: %v", err)

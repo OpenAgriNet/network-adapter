@@ -31,7 +31,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+// mappingsURL is where the shipped mappings live: helmcharts development, which releases are cut from.
 // Reading the published file rather than a fixture is the whole point: this test
 // breaks when what is deployed breaks.
 const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/pocra"

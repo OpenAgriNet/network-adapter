@@ -25,7 +25,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live: helmcharts, which deployments read.
+// mappingsURL is where the shipped mappings live: helmcharts development, which releases are cut from.
 const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/knowledge"
 
 // shippedMapping is the file this binding-action publishes: one file, both
