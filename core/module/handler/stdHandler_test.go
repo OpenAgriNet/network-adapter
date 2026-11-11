@@ -149,6 +149,9 @@ func (noopPluginManager) Registry(context.Context, definition.Cache, *plugin.Con
 func (noopPluginManager) KeyManager(context.Context, definition.RegistryLookup, *plugin.Config) (definition.KeyManager, error) {
 	return nil, nil
 }
+func (noopPluginManager) RegistryCache(context.Context, definition.Cache, *plugin.Config) (definition.RegistryCache, error) {
+	return nil, nil
+}
 func (noopPluginManager) ManifestLoader(context.Context, definition.Cache, definition.RegistryMetadataLookup, *plugin.Config) (definition.ManifestLoader, error) {
 	return nil, nil
 }

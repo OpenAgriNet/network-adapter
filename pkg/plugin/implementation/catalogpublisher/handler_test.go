@@ -190,6 +190,10 @@ func (m *catalogPublishTestManager) PolicyChecker(_ context.Context, _ definitio
 func (m *catalogPublishTestManager) SchemaVersionMediator(context.Context, definition.ManifestLoader, *plugin.Config) (definition.SchemaVersionMediator, error) {
 	panic("unused")
 }
+func (m *catalogPublishTestManager) RegistryCache(context.Context, definition.Cache, *plugin.Config) (definition.RegistryCache, error) {
+	return nil, nil
+}
+
 func (m *catalogPublishTestManager) ManifestLoader(context.Context, definition.Cache, definition.RegistryMetadataLookup, *plugin.Config) (definition.ManifestLoader, error) {
 	panic("unused")
 }

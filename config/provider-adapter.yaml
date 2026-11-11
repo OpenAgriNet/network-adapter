@@ -138,6 +138,20 @@ modules:
             #
             #   cacheTTL: 60s                 # default: unset, meaning off
 
+        # registryCache -- keeps the registry's active records in Redis; the
+        # registry reads through it. Needs redis, so off here. ttl is also how
+        # long a suspension or changed record takes to apply.
+        # cache:
+        #   id: cache
+        #   config:
+        #     addr: <>                        # e.g. redis:6379
+        # registryCache:
+        #   id: registrycache
+        #   config:
+        #     url: <>                         # the registry url above
+        #     ttl: 24h                        # required
+        #     preload: Participant,ProviderSchema   # required
+
         keyManager:
           id: simplekeymanager
           config:

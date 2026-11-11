@@ -160,14 +160,30 @@ type Config struct {
 }
 
 // Client resolves participants from the registry. It is safe for concurrent
-// use: every field is set once in New and never mutated afterwards.
+// use: every field is set at startup and never mutated afterwards.
 type Client struct {
 	searchURL         string
 	providerSearchURL string
+	entity            string
+	providerEntity    string
 	client            *retryablehttp.Client
 	cache             definition.Cache
 	cacheTTL          time.Duration
 	maxResponseBytes  int64
+	// records, when set, serves reads and replaces the answer cache.
+	records definition.RegistryCache
+}
+
+// UseRegistryCache reads records through rc. Called once at startup.
+func (c *Client) UseRegistryCache(rc definition.RegistryCache) {
+	c.records = rc
+}
+
+// direct is this client without any cache, to recheck a cached refusal.
+func (c *Client) direct() *Client {
+	d := *c
+	d.records, d.cacheTTL = nil, 0
+	return &d
 }
 
 // participant is the subset of a registry record this plugin reads. The
@@ -403,6 +419,8 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 	client := &Client{
 		searchURL:         searchURLFor(cfg.URL, entity),
 		providerSearchURL: searchURLFor(cfg.URL, providerEntity),
+		entity:            entity,
+		providerEntity:    providerEntity,
 		client:            rc,
 		cache:             cache,
 		cacheTTL:          cfg.CacheTTL,
@@ -430,7 +448,25 @@ func New(ctx context.Context, cache definition.Cache, cfg *Config) (*Client, fun
 // not-found error. A participant that exists but may not sign is returned with
 // a status the caller rejects, so that "unknown" and "suspended" stay
 // distinguishable instead of collapsing into the same empty result.
+//
+// A refusal from a cached copy is rechecked with the registry.
 func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.Subscription, error) {
+	results, err := c.lookup(ctx, req)
+	if c.records == nil || err != nil || subscribed(results) ||
+		!c.holds(ctx, c.entity, fieldParticipantID, req.SubscriberID) {
+		return results, err
+	}
+	if results, err = c.direct().lookup(ctx, req); err == nil && subscribed(results) {
+		c.records.Refresh(c.entity)
+	}
+	return results, err
+}
+
+func subscribed(results []model.Subscription) bool {
+	return len(results) == 1 && results[0].Status == statusSubscribed
+}
+
+func (c *Client) lookup(ctx context.Context, req *model.Subscription) ([]model.Subscription, error) {
 	start := time.Now()
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
 	ctx, span := tracer.Start(ctx, "registry lookup")
@@ -515,9 +551,7 @@ func (c *Client) Lookup(ctx context.Context, req *model.Subscription) ([]model.S
 // participants server-side would return an empty result, making "suspended"
 // indistinguishable from "unknown" and losing the reason the caller reports.
 func (c *Client) search(ctx context.Context, tracer trace.Tracer, participantID, keyID string) (participant, key, string, error) {
-	records, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
-		fieldParticipantID: {Eq: participantID},
-	})
+	records, err := findRecords[participant](ctx, c, tracer, c.searchURL, c.entity, fieldParticipantID, participantID)
 	if err != nil {
 		return participant{}, key{}, "", err
 	}
@@ -660,7 +694,7 @@ func encryptionKey(p participant) string {
 // verifying until it expires, so the TTL is exactly the suspension-propagation
 // window and is left to the operator to opt into.
 func (c *Client) cachingEnabled() bool {
-	return c.cache != nil && c.cacheTTL > 0
+	return c.cache != nil && c.cacheTTL > 0 && c.records == nil
 }
 
 func (c *Client) cached(ctx context.Context, tracer trace.Tracer, key string) ([]model.Subscription, bool) {
@@ -672,7 +706,7 @@ func (c *Client) cached(ctx context.Context, tracer trace.Tracer, key string) ([
 	defer span.End()
 
 	raw, err := c.cache.Get(cacheCtx, key)
-	if err != nil {
+	if err != nil || raw == "" {
 		return nil, false
 	}
 	var results []model.Subscription
@@ -785,6 +819,24 @@ func (c *Client) CheckCrossNetworkRequester(ctx context.Context, caller, action 
 		// A registry we could not ask is not an agreement we can honour.
 		return fmt.Errorf("could not check what we agreed with %s: %w", caller, err)
 	}
+	refusal := judgeRequester(ctx, caller, action, schemaContexts, agreed)
+	if refusal == nil || c.records == nil || !c.holds(ctx, c.entity, fieldParticipantID, caller) {
+		return refusal
+	}
+	// Never refuse on a cached copy: recheck with the registry.
+	if agreed, err = c.direct().agreementWith(ctx, caller); err != nil {
+		log.Warnf(ctx, "OAN registry could not recheck %s before refusing, refusing on the cached agreement: %v", caller, err)
+		return refusal
+	}
+	if refusal = judgeRequester(ctx, caller, action, schemaContexts, agreed); refusal == nil {
+		// The copy is out of date.
+		c.records.Refresh(c.entity)
+	}
+	return refusal
+}
+
+// judgeRequester applies what we agreed with caller to one request.
+func judgeRequester(ctx context.Context, caller, action string, schemaContexts []string, agreed model.Agreement) error {
 	// No agreement is an ordinary participant -- a provider, our own deployment,
 	// or a caller signature validation will reject anyway. No federation rule
 	// applies to them.

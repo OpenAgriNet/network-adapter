@@ -24,6 +24,7 @@ type PluginManager interface {
 	SchemaVersionMediator(ctx context.Context, manifestLoader definition.ManifestLoader, cfg *plugin.Config) (definition.SchemaVersionMediator, error)
 	Cache(ctx context.Context, cfg *plugin.Config) (definition.Cache, error)
 	Registry(ctx context.Context, cache definition.Cache, cfg *plugin.Config) (definition.RegistryLookup, error)
+	RegistryCache(ctx context.Context, cache definition.Cache, cfg *plugin.Config) (definition.RegistryCache, error)
 	KeyManager(ctx context.Context, rLookup definition.RegistryLookup, cfg *plugin.Config) (definition.KeyManager, error)
 	ManifestLoader(ctx context.Context, cache definition.Cache, lookup definition.RegistryMetadataLookup, cfg *plugin.Config) (definition.ManifestLoader, error)
 	TransportWrapper(ctx context.Context, cfg *plugin.Config) (definition.TransportWrapper, error)
@@ -80,6 +81,7 @@ type PluginCfg struct {
 	Router                *plugin.Config  `yaml:"router,omitempty"`
 	Cache                 *plugin.Config  `yaml:"cache,omitempty"`
 	Registry              *plugin.Config  `yaml:"registry,omitempty"`
+	RegistryCache         *plugin.Config  `yaml:"registryCache,omitempty"`
 	KeyManager            *plugin.Config  `yaml:"keyManager,omitempty"`
 	ManifestLoader        *plugin.Config  `yaml:"manifestLoader,omitempty"`
 	SchemaVersionMediator *plugin.Config  `yaml:"schemaVersionMediator,omitempty"`

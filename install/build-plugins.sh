@@ -31,6 +31,7 @@ plugins=(
     "registry"
     "dediregistry"
     "sunbirdRegistry"
+    "registrycache"
     "jsonmapper"
     "WeatherObservation"
     "MandiPrice"

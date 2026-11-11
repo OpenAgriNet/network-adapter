@@ -70,9 +70,7 @@ func (c *Client) agreementWith(ctx context.Context, participantID string) (model
 		return model.Agreement{}, nil
 	}
 	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
-	records, err := searchRecords[participant](ctx, c, tracer, c.searchURL, map[string]eqFilter{
-		fieldParticipantID: {Eq: participantID},
-	})
+	records, err := findRecords[participant](ctx, c, tracer, c.searchURL, c.entity, fieldParticipantID, participantID)
 	if err != nil {
 		return model.Agreement{}, err
 	}
