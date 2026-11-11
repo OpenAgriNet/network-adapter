@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
-	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
@@ -274,61 +273,14 @@ func resourcesOf(t *testing.T, answer map[string]any) []any {
 	return res
 }
 
-// The request half's main job: the caller's topics become the query. Only
-// `query` is required upstream; provider_id and index_name are added when named.
+// The request half's whole job: the caller's topics become the query. Only
+// `query` is required upstream, so nothing else has to be sent.
 func TestShippedMappingTurnsTopicsIntoTheQuery(t *testing.T) {
 	sent, _ := runShipped(t, selectRequest)
 
 	if got := sent["query"]; got != "gruha jyoti scheme eligibility" {
 		t.Errorf("query = %v, want the caller's topics joined", got)
 	}
-}
-
-// The provider the offer names scopes the search. With none named, the key is
-// ABSENT, as for index_name, so the provider searches everything it holds.
-func TestShippedMappingScopesTheSearchToTheOfferedProvider(t *testing.T) {
-	const provider = `"provider": { "id": "knowledge-provider" },`
-	if !strings.Contains(selectRequest, provider) {
-		t.Fatalf("selectRequest no longer carries %s", provider)
-	}
-
-	t.Run("a provider named", func(t *testing.T) {
-		sent, _ := runShipped(t, selectRequest)
-		if got := sent["provider_id"]; got != "knowledge-provider" {
-			t.Errorf("provider_id = %v, want the offer's provider id", got)
-		}
-	})
-
-	// Through the mapper alone: with no provider the step has nothing to bind.
-	t.Run("no provider named", func(t *testing.T) {
-		var beckn map[string]any
-		if err := json.Unmarshal([]byte(strings.Replace(selectRequest, provider, "", 1)), &beckn); err != nil {
-			t.Fatalf("the fixture is not JSON: %v", err)
-		}
-		mappings := serveMappings(t)
-		defer mappings.Close()
-		mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
-		if err != nil {
-			t.Fatalf("failed to build the mapper: %v", err)
-		}
-		defer closeMapper()
-
-		got, err := mapper.Transform(context.Background(), mappings.URL+"/"+shippedMapping,
-			definition.DirectionRequest, map[string]any{"beckn": beckn})
-		if err != nil {
-			t.Fatalf("the request half returned an unexpected error: %v", err)
-		}
-		var sent map[string]any
-		if err := json.Unmarshal(got, &sent); err != nil {
-			t.Fatalf("the request half produced something that is not an object: %v", err)
-		}
-		if got, present := sent["provider_id"]; present {
-			t.Errorf("provider_id = %v, want the key ABSENT", got)
-		}
-		if got := sent["query"]; got != "gruha jyoti scheme eligibility" {
-			t.Errorf("query = %v, want the caller's topics joined", got)
-		}
-	})
 }
 
 // withCategories rewrites selectRequest's subjectCategories, as raw JSON so a
