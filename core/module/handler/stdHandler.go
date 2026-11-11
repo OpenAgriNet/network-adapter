@@ -683,6 +683,20 @@ func (h *stdHandler) loadProviderStep(ctx context.Context, mgr PluginManager, cf
 	return step, nil
 }
 
+// loadRegistryStep loads one registry step, checking up front for the registry
+// it cannot be built without.
+func (h *stdHandler) loadRegistryStep(ctx context.Context, mgr PluginManager, cfg *plugin.Config) (definition.Step, error) {
+	if h.registry == nil {
+		return nil, fmt.Errorf("failed to load RegistryStep plugin (%s): Registry plugin not configured", cfg.ID)
+	}
+	step, err := mgr.RegistryStep(ctx, h.registry, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load RegistryStep plugin (%s): %w", cfg.ID, err)
+	}
+	log.Debugf(ctx, "Loaded RegistryStep plugin: %s", cfg.ID)
+	return step, nil
+}
+
 // initSteps initializes and validates processing steps for the processor.
 func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Config) error {
 	steps := make(map[string]definition.Step)
@@ -715,6 +729,21 @@ func (h *stdHandler) initSteps(ctx context.Context, mgr PluginManager, cfg *Conf
 		steps[c.ID] = step
 	}
 	h.hasProviderSteps = len(cfg.Plugins.ProviderSteps) > 0
+
+	// Load registry steps into the same id-keyed map. They do not set
+	// hasProviderSteps: they serve no capability, so an unanswered request is
+	// still an ACK.
+	for _, c := range cfg.Plugins.RegistrySteps {
+		if _, taken := steps[c.ID]; taken {
+			return fmt.Errorf("registry step %q is configured more than once, "+
+				"or shares its id with another step", c.ID)
+		}
+		step, err := h.loadRegistryStep(ctx, mgr, &c)
+		if err != nil {
+			return err
+		}
+		steps[c.ID] = step
+	}
 
 	// Register processing steps
 	for _, step := range cfg.Steps {

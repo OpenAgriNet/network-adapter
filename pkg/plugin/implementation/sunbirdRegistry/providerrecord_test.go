@@ -749,3 +749,345 @@ func TestProviderBindingKeysServingListsOnlyBindingsWithTheAction(t *testing.T) 
 		t.Errorf("keys = %v, want %v (select-only and inactive-publish bindings excluded)", keys, want)
 	}
 }
+
+// --- active providers ---------------------------------------------------------
+
+func TestActiveProviderIDsReturnsOnlyActive(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		a, off, b := upstreamRecord(), upstreamRecord(), upstreamRecord()
+		a.ParticipantID, off.ParticipantID, b.ParticipantID = "alpha", "beta", "gamma"
+		off.Status = "inactive"
+		fmt.Fprint(w, envelopeJSON(t, a, off, b))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "alpha" || ids[1] != "gamma" {
+		t.Errorf("ids = %v, want [alpha gamma]", ids)
+	}
+}
+
+func TestActiveProviderIDsSendsAStatusFilter(t *testing.T) {
+	t.Parallel()
+
+	var got searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		fmt.Fprint(w, envelopeJSON[participant](t))
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", ""); err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if got.Filters["status"].Eq != "active" {
+		t.Errorf("status filter = %+v, want eq active", got.Filters["status"])
+	}
+}
+
+func TestActiveProviderIDsFailsWhenTheRegistryDoes(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err == nil {
+		t.Fatal("expected an error when the registry answers 500")
+	}
+	if ids != nil {
+		t.Errorf("ids = %v, want nil on failure", ids)
+	}
+}
+
+func TestActiveProviderIDsRefusesAnOversizedAnswer(t *testing.T) {
+	t.Parallel()
+
+	const limit = 512
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"participantId":"alpha","status":"active","padding":%q}]`, strings.Repeat("x", limit*4))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL, nil, func(c *Config) { c.MaxResponseBytes = limit })
+	ids, err := client.ActiveProviderIDs(context.Background(), "", "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want the size limit named", err)
+	}
+	if ids != nil {
+		t.Errorf("ids = %v, want no truncated list", ids)
+	}
+}
+
+// The search asks for a page: filters, the page size and the offset.
+func TestActiveProviderIDsSendsFiltersAndAPage(t *testing.T) {
+	t.Parallel()
+
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		fmt.Fprint(w, envelopeJSON[participant](t))
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", ""); err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	_, hasFilters := got["filters"]
+	if len(got) != 3 || !hasFilters || got["limit"] != float64(activePageSize) || got["offset"] != float64(0) {
+		t.Errorf("search body = %v, want filters, limit %d and offset 0", got, activePageSize)
+	}
+}
+
+// pagedJSON is a registry page: the records and the registry's total count.
+func pagedJSON(t *testing.T, total int, ids ...string) string {
+	t.Helper()
+	records := make([]participant, 0, len(ids))
+	for _, id := range ids {
+		r := upstreamRecord()
+		r.ParticipantID = id
+		records = append(records, r)
+	}
+	data, err := json.Marshal(struct {
+		Data       []participant `json:"data"`
+		TotalCount int           `json:"totalCount"`
+	}{records, total})
+	if err != nil {
+		t.Fatalf("failed to marshal test page: %v", err)
+	}
+	return string(data)
+}
+
+func TestActiveProviderIDsPagesUntilTheTotal(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var offsets []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req pagedSearchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		if req.Limit != activePageSize {
+			t.Errorf("limit = %d, want %d", req.Limit, activePageSize)
+		}
+		mu.Lock()
+		offsets = append(offsets, req.Offset)
+		mu.Unlock()
+		switch req.Offset {
+		case 0:
+			fmt.Fprint(w, pagedJSON(t, 5, "a", "b"))
+		case 2:
+			fmt.Fprint(w, pagedJSON(t, 5, "b", "c")) // b again: rows moved between pages
+		case 4:
+			fmt.Fprint(w, pagedJSON(t, 5, "d"))
+		default:
+			t.Errorf("unexpected offset %d", req.Offset)
+			fmt.Fprint(w, pagedJSON(t, 5))
+		}
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if fmt.Sprint(ids) != "[a b c d]" {
+		t.Errorf("ids = %v, want [a b c d]", ids)
+	}
+	if fmt.Sprint(offsets) != "[0 2 4]" {
+		t.Errorf("offsets = %v, want [0 2 4]", offsets)
+	}
+}
+
+func TestActiveProviderIDsFailsOnAnEmptyPageBeforeTheTotal(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req pagedSearchRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Offset == 0 {
+			fmt.Fprint(w, pagedJSON(t, 5, "a", "b"))
+			return
+		}
+		fmt.Fprint(w, pagedJSON(t, 5))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err == nil || !strings.Contains(err.Error(), "offset 2") || !strings.Contains(err.Error(), "5") {
+		t.Fatalf("error = %v, want the empty page at offset 2 of 5 named", err)
+	}
+	if ids != nil {
+		t.Errorf("ids = %v, want no partial list", ids)
+	}
+}
+
+// A backend that answers with a bare array gives no total, so a short page
+// ends the listing.
+// A backend that ignores offset and gives no total would page forever.
+func TestActiveProviderIDsStopsAtThePageCap(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	full := make([]string, activePageSize)
+	for i := range full {
+		full[i] = fmt.Sprintf(`{"participantId":"p%d","status":"active"}`, i)
+	}
+	body := "[" + strings.Join(full, ",") + "]"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") || ids != nil {
+		t.Fatalf("ids = %d, error = %v; want no list and the page cap named", len(ids), err)
+	}
+	if calls.Load() != activeMaxPages {
+		t.Errorf("calls = %d, want %d", calls.Load(), activeMaxPages)
+	}
+}
+
+func TestActiveProviderIDsStopsOnAShortPageWithoutATotal(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		fmt.Fprint(w, `[{"participantId":"a","status":"active"},{"participantId":"b","status":"active"}]`)
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if fmt.Sprint(ids) != "[a b]" || calls.Load() != 1 {
+		t.Errorf("ids = %v after %d calls, want [a b] after 1", ids, calls.Load())
+	}
+}
+
+func TestActiveProviderIDsSendsNoTypeOrRoleFilterWhenUnrestricted(t *testing.T) {
+	t.Parallel()
+
+	var got searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		a := upstreamRecord()
+		a.ParticipantID, a.Type, a.Role = "alpha", "node", roleList{"consumer"}
+		fmt.Fprint(w, envelopeJSON(t, a))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if len(got.Filters) != 1 || got.Filters["status"].Eq != "active" {
+		t.Errorf("filters = %+v, want status only", got.Filters)
+	}
+	if len(ids) != 1 || ids[0] != "alpha" {
+		t.Errorf("ids = %v, want [alpha]", ids)
+	}
+}
+
+func TestActiveProviderIDsSendsTheTypeAndRoleFilters(t *testing.T) {
+	t.Parallel()
+
+	var got searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("search body did not decode: %v", err)
+		}
+		fmt.Fprint(w, envelopeJSON[participant](t))
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "node", "provider"); err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if len(got.Filters) != 3 {
+		t.Errorf("filters = %+v, want status, type and role", got.Filters)
+	}
+	if f := got.Filters["status"]; f.Eq != "active" || f.Contains != "" {
+		t.Errorf("status filter = %+v, want eq active", f)
+	}
+	if f := got.Filters["type"]; f.Eq != "node" || f.Contains != "" {
+		t.Errorf("type filter = %+v, want eq node", f)
+	}
+	if f := got.Filters["role"]; f.Contains != "provider" || f.Eq != "" {
+		t.Errorf("role filter = %+v, want contains provider", f)
+	}
+}
+
+// A registry that ignores a filter must not widen the list: every row is
+// checked again here for the type and role asked for.
+func TestActiveProviderIDsRechecksTypeAndRole(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		row := func(id, typ string, roles ...string) participant {
+			p := upstreamRecord()
+			p.ParticipantID, p.Type, p.Role = id, typ, roles
+			return p
+		}
+		fmt.Fprint(w, envelopeJSON(t,
+			row("good", "node", "provider"),
+			row("good-many", "NODE", "consumer", "Provider"),
+			row("wrong-type", "upstream", "provider"),
+			row("wrong-role", "node", "consumer"),
+			row("no-role", "node"),
+			row("no-type", "", "provider"),
+		))
+	}))
+	defer srv.Close()
+
+	ids, err := newTestClient(t, srv.URL, nil).ActiveProviderIDs(context.Background(), "node", "provider")
+	if err != nil {
+		t.Fatalf("ActiveProviderIDs() error = %v", err)
+	}
+	if want := []string{"good", "good-many"}; fmt.Sprint(ids) != fmt.Sprint(want) {
+		t.Errorf("ids = %v, want %v", ids, want)
+	}
+}
+
+func TestActiveProviderIDsRestrictsOnTypeOrRoleAlone(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		a, b := upstreamRecord(), upstreamRecord()
+		a.ParticipantID, a.Type, a.Role = "a", "node", roleList{"consumer"}
+		b.ParticipantID, b.Type, b.Role = "b", "upstream", roleList{"provider"}
+		fmt.Fprint(w, envelopeJSON(t, a, b))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv.URL, nil)
+	for _, tc := range []struct{ typ, role, want string }{
+		{"node", "", "[a]"},
+		{"", "provider", "[b]"},
+	} {
+		ids, err := client.ActiveProviderIDs(context.Background(), tc.typ, tc.role)
+		if err != nil {
+			t.Fatalf("ActiveProviderIDs(%q, %q) error = %v", tc.typ, tc.role, err)
+		}
+		if fmt.Sprint(ids) != tc.want {
+			t.Errorf("ActiveProviderIDs(%q, %q) = %v, want %s", tc.typ, tc.role, ids, tc.want)
+		}
+	}
+}

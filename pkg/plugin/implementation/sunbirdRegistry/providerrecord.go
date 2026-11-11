@@ -313,6 +313,92 @@ func (c *Client) activeUpstream(ctx context.Context, tracer trace.Tracer, partic
 	return owner, outcomeFound, nil
 }
 
+// The participant fields the active-provider search filters on.
+const (
+	fieldStatus = "status"
+	fieldType   = "type"
+	fieldRole   = "role"
+)
+
+// activePageSize is the page size ActiveProviderIDs asks the registry for:
+// about 225 KB of rows, well inside maxResponseBytes.
+const activePageSize = 500
+
+// activeMaxPages bounds one listing (50,000 rows), so a registry that ignores
+// offset or reports a huge total cannot make it run or grow without end.
+const activeMaxPages = 100
+
+// ActiveProviderIDs lists each active participant's id once, optionally only
+// those of one type or role (empty means any). Rows are re-checked here, so a
+// registry that ignores a filter cannot widen the list. An error never comes
+// with a partial list, since absence reads as a refusal. It pages until the
+// registry's totalCount, or, when the answer carries none, a short page.
+func (c *Client) ActiveProviderIDs(ctx context.Context, participantType, role string) ([]string, error) {
+	start := time.Now()
+	tracer := otel.Tracer(telemetry.ScopeName, trace.WithInstrumentationVersion(telemetry.ScopeVersion))
+	ctx, span := tracer.Start(ctx, "registry active provider ids")
+	defer span.End()
+
+	filters := map[string]eqFilter{fieldStatus: {Eq: statusActive}}
+	if participantType != "" {
+		filters[fieldType] = eqFilter{Eq: participantType}
+	}
+	if role != "" {
+		// A list field, so contains, as searchNetworks asks for roleNetwork.
+		filters[fieldRole] = eqFilter{Contains: role}
+	}
+	var participants []participant
+	for offset, pages := 0, 0; ; {
+		if pages == activeMaxPages {
+			return nil, c.lookupFailed(ctx, span, start, operationProviderRecord,
+				fmt.Errorf("registry listing exceeds %d pages of %d rows", activeMaxPages, activePageSize))
+		}
+		pages++
+		page, total, err := searchPage[participant](ctx, c, tracer, c.searchURL, filters, activePageSize, offset)
+		if err != nil {
+			return nil, c.lookupFailed(ctx, span, start, operationProviderRecord, err)
+		}
+		participants = append(participants, page...)
+		offset += len(page)
+		if total < 0 {
+			if len(page) < activePageSize {
+				break
+			}
+			continue
+		}
+		if offset >= total {
+			break
+		}
+		if len(page) == 0 {
+			return nil, c.lookupFailed(ctx, span, start, operationProviderRecord,
+				fmt.Errorf("registry returned an empty page at offset %d of %d", offset, total))
+		}
+	}
+
+	seen := make(map[string]struct{}, len(participants))
+	ids := make([]string, 0, len(participants))
+	for _, p := range participants {
+		if !isActive(p.Status) || p.ParticipantID == "" {
+			continue
+		}
+		if participantType != "" && !strings.EqualFold(p.Type, participantType) {
+			continue
+		}
+		if role != "" && !p.Role.has(role) {
+			continue
+		}
+		if _, dup := seen[p.ParticipantID]; dup {
+			continue
+		}
+		seen[p.ParticipantID] = struct{}{}
+		ids = append(ids, p.ParticipantID)
+	}
+
+	span.SetAttributes(telemetry.AttrErrorType.String(outcomeFound))
+	c.emitMetrics(ctx, start, operationProviderRecord, outcomeFound)
+	return ids, nil
+}
+
 // isActive reports whether a registry status permits use.
 //
 // An allow-list, deliberately, and for the same reason resolveStatus is one: a
@@ -412,6 +498,63 @@ func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, u
 		return nil, fmt.Errorf("%w: %s", errRegistryStatus, resp.Status)
 	}
 	return decodeRecords[T](respBody)
+}
+
+// pagedSearchRequest is a search for one page of records.
+type pagedSearchRequest struct {
+	Filters map[string]eqFilter `json:"filters"`
+	Limit   int                 `json:"limit"`
+	Offset  int                 `json:"offset"`
+}
+
+// searchPage is searchRecords for one page: the same transport and limits, and
+// the registry's totalCount, or -1 when the answer is a bare array.
+func searchPage[T any](ctx context.Context, c *Client, tracer trace.Tracer, url string, filters map[string]eqFilter, limit, offset int) ([]T, int, error) {
+	body, err := json.Marshal(pagedSearchRequest{Filters: filters, Limit: limit, Offset: offset})
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to marshal search request: %w", err)
+	}
+	req, err := retryablehttp.NewRequest(http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create search request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	httpCtx, httpSpan := tracer.Start(ctx, "http search page")
+	defer httpSpan.End()
+	req = req.WithContext(httpCtx)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to send search request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, c.maxResponseBytes+1))
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read search response: %w", err)
+	}
+	if int64(len(respBody)) > c.maxResponseBytes {
+		return nil, 0, fmt.Errorf("search response exceeds the %d byte limit", c.maxResponseBytes)
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Errorf(ctx, nil, "OAN registry search failed with status: %s, response: %s", resp.Status, util.Explain(respBody))
+		return nil, 0, fmt.Errorf("%w: %s", errRegistryStatus, resp.Status)
+	}
+
+	var envelope struct {
+		Data       *[]T `json:"data"`
+		TotalCount *int `json:"totalCount"`
+	}
+	if json.Unmarshal(respBody, &envelope) == nil && envelope.Data != nil {
+		total := -1
+		if envelope.TotalCount != nil {
+			total = *envelope.TotalCount
+		}
+		return *envelope.Data, total, nil
+	}
+	records, err := decodeRecords[T](respBody)
+	return records, -1, err
 }
 
 // decodeRecords accepts either shape the registry answers with: a bare array on

@@ -43,3 +43,10 @@ type StepProvider interface {
 type ProviderStepProvider interface {
 	New(ctx context.Context, registry ProviderRecordLookup, mapper Mapper, config map[string]string) (Step, func() error, error)
 }
+
+// RegistryStepProvider builds a Step that needs the registry handed to it, which
+// StepProvider cannot do. Unlike a ProviderStep it serves no provider capability
+// and needs no mapper, so it takes the whole RegistryLookup.
+type RegistryStepProvider interface {
+	New(ctx context.Context, registry RegistryLookup, config map[string]string) (Step, func() error, error)
+}
