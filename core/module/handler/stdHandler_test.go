@@ -1,14 +1,17 @@
 package handler
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1092,6 +1095,166 @@ func TestProxy_QueryParamsForwardedToUpstream(t *testing.T) {
 
 	if capturedRawQuery != "subscriptionId=test123&page=2" {
 		t.Errorf("upstream received RawQuery = %q, want %q", capturedRawQuery, "subscriptionId=test123&page=2")
+	}
+}
+
+type fixedRouteStep struct{ target *url.URL }
+
+func (s *fixedRouteStep) Run(ctx *model.StepContext) error {
+	ctx.Route = &model.Route{TargetType: "url", URL: s.target}
+	return nil
+}
+
+// newEventUpstream sends one event, then holds the second until release is called.
+func newEventUpstream(t *testing.T) (*httptest.Server, func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: one\n\n")
+		w.(http.Flusher).Flush()
+		<-gate
+		io.WriteString(w, "data: two\n\n")
+	}))
+	t.Cleanup(func() { release(); upstream.Close() })
+	return upstream, release
+}
+
+func expectFirstEventBeforeTheUpstreamFinishes(t *testing.T, adapterURL string, release func()) {
+	t.Helper()
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Post(adapterURL, "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("no response while the upstream was still paused: %v", err)
+	}
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+	first, err := reader.ReadString('\n')
+	if err != nil || first != "data: one\n" {
+		t.Fatalf("first event = %q (%v), want it before the upstream finishes", first, err)
+	}
+	release()
+	rest, _ := io.ReadAll(reader)
+	if !strings.Contains(string(rest), "data: two") {
+		t.Errorf("rest = %q, want the second event", rest)
+	}
+}
+
+func TestResponseRecorder_CanFlush(t *testing.T) {
+	underlying := httptest.NewRecorder()
+	recorder := &responseRecorder{ResponseWriter: underlying}
+
+	if err := http.NewResponseController(recorder).Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if !underlying.Flushed {
+		t.Error("expected the flush to reach the underlying writer")
+	}
+}
+
+func TestProxyStreaming_PassesEventsOnAsTheyArrive(t *testing.T) {
+	upstream, release := newEventUpstream(t)
+	target, _ := url.Parse(upstream.URL)
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stepCtx := &model.StepContext{Context: r.Context(), Route: &model.Route{TargetType: "url", URL: target}}
+		proxyStreaming(stepCtx, r, &responseRecorder{ResponseWriter: w}, http.DefaultClient)
+	}))
+	defer adapter.Close()
+
+	expectFirstEventBeforeTheUpstreamFinishes(t, adapter.URL, release)
+}
+
+func TestProxyStreaming_ReturnsAPlainAnswerAsItIs(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream", "yes")
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"answer":"leaf curl"}`)
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stepCtx := &model.StepContext{Context: r.Context(), Route: &model.Route{TargetType: "url", URL: target}}
+		proxyStreaming(stepCtx, r, &responseRecorder{ResponseWriter: w}, http.DefaultClient)
+	}))
+	defer adapter.Close()
+
+	resp, err := http.Post(adapter.URL, "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status = %d, want 201", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Upstream"); got != "yes" {
+		t.Errorf("X-Upstream = %q, want yes", got)
+	}
+	if string(body) != `{"answer":"leaf curl"}` {
+		t.Errorf("body = %q, want the upstream body", body)
+	}
+}
+
+func TestServeHTTP_StreamsWhenTheModuleStreamsResponses(t *testing.T) {
+	upstream, release := newEventUpstream(t)
+	target, _ := url.Parse(upstream.URL)
+	h := &stdHandler{
+		SubscriberID:    "test-sub",
+		role:            model.RoleBPP,
+		moduleName:      "test-module",
+		httpClient:      http.DefaultClient,
+		streamResponses: true,
+		steps:           []definition.Step{&fixedRouteStep{target: target}},
+	}
+	adapter := httptest.NewServer(h)
+	defer adapter.Close()
+
+	expectFirstEventBeforeTheUpstreamFinishes(t, adapter.URL, release)
+}
+
+func TestCheckStreamingFits(t *testing.T) {
+	steps := []definition.ResponseStep{&mockResponseStep{}}
+	tests := []struct {
+		name      string
+		streaming bool
+		steps     []definition.ResponseStep
+		wantErr   bool
+	}{
+		{"streaming with a response step", true, steps, true},
+		{"streaming with no response step", true, nil, false},
+		{"not streaming with a response step", false, steps, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkStreamingFits(tt.streaming, tt.steps)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestInitSteps_RefusesStreamingWithAResponseStep(t *testing.T) {
+	h := &stdHandler{signer: &mockSigner{}, km: &mockKM{}, streamResponses: true}
+
+	err := h.initSteps(context.Background(), noopPluginManager{}, &Config{Steps: []string{"signAck"}})
+
+	if err == nil || !strings.Contains(err.Error(), "streamResponses") {
+		t.Errorf("expected an error naming streamResponses, got %v", err)
+	}
+}
+
+func TestNewStdHandler_ReadsStreamResponses(t *testing.T) {
+	h, err := NewStdHandler(context.Background(), noopPluginManager{}, &Config{StreamResponses: true}, "test-module")
+	if err != nil {
+		t.Fatalf("NewStdHandler: %v", err)
+	}
+	if !h.(*stdHandler).streamResponses {
+		t.Error("expected streamResponses to be set from the config")
 	}
 }
 

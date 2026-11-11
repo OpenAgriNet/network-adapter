@@ -31,6 +31,9 @@ something proves it.
 4. **We sign as ourselves.** The forwarded call carries our own subscriber id,
    not the participant the request names, or signature validation at the far end
    resolves the wrong keyset.
+   The caller's name in the body becomes ours too. The far end holds
+   `context.senderId` against the key that signed, so a body naming our
+   consumer, signed as us, is refused as an identity mismatch.
 5. **`checkCrossNetworkRequester` is listed after `validateSign`.** It judges
    `context.senderId`, which only `validateSign` proves. Listed first, or listed
    without it, it judges a name nobody checked.
@@ -47,6 +50,8 @@ something proves it.
 
 ## Consequences
 
+- The far network never sees which of our consumers asked. We log the name we
+  replaced; the forwarded body does not carry it.
 - `bppUri` is taken as given. A caller that names an address we would not have
   chosen gets a request signed by us sent there, and the protocol offers nothing
   to check it against.
