@@ -44,6 +44,9 @@ func TestLiveEndToEnd(t *testing.T) {
 		t.Skip("live credentials not in the environment")
 	}
 
+	mappings := serveMappings(t)
+	defer mappings.Close()
+
 	// A counting proxy in front of the real issuer, so token REUSE is measured
 	// against the live endpoint rather than inferred from timings.
 	var exchanges atomic.Int32
@@ -81,7 +84,7 @@ func TestLiveEndToEnd(t *testing.T) {
 		CapabilityCode: "openagrinet:KnowledgeAdvisory", BaseURL: base,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodPost, Path: "/docs-pipeline-api/search",
-				Mappings:  mappingsURL + "/knowledge-advisory.select.yaml",
+				Mappings:  mappings.URL + "/knowledge-advisory.select.yaml",
 				TimeoutMs: 60000, RetryMax: 1},
 		},
 	}}

@@ -82,6 +82,8 @@ jobs:
           go-version-file: go.mod
 
       - run: make build
+      # Its own step so a failed fetch reads as one, not as a test failure.
+      - run: make sync-mappings
       - run: make test-ci
 
       # Diff-scoped, never whole-repo: the repo's existing coverage is well

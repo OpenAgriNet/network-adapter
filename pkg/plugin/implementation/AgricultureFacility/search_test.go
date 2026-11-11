@@ -33,6 +33,9 @@ import (
 func runSearchTimed(t *testing.T, types []string, cfg *AgricultureFacility.Config, handler http.HandlerFunc) error {
 	t.Helper()
 
+	mappings := serveMappings(t)
+	defer mappings.Close()
+
 	upstream := httptest.NewServer(handler)
 	defer upstream.Close()
 
@@ -46,7 +49,7 @@ func runSearchTimed(t *testing.T, types []string, cfg *AgricultureFacility.Confi
 		BindingKey: shippedBindingKey, BaseURL: upstream.URL,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodPost, Path: "/search",
-				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000},
+				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
 		},
 	}}
 

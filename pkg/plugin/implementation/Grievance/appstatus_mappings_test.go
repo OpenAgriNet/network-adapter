@@ -184,6 +184,7 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 	t.Helper()
 	t.Setenv("TEST_PMKISAN_OTP_TOKEN", pkOTPToken)
 
+	mappings := pkServeMappings(t)
 	host := httptest.NewServer(chatbot)
 	t.Cleanup(host.Close)
 
@@ -200,9 +201,9 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 		BaseURL:        host.URL + asService,
 		Actions: map[string]model.ActionPlan{
 			"init": {Method: http.MethodPost, Path: "/ChatbotOTP",
-				Mappings: pkMappingsURL + "/application-status.init.yaml", TimeoutMs: 20000},
+				Mappings: mappings.URL + "/application-status.init.yaml", TimeoutMs: 20000},
 			"status": {Method: http.MethodPost, Path: "/ChatbotUserDetails",
-				Mappings: pkMappingsURL + "/application-status.status.yaml", TimeoutMs: 30000},
+				Mappings: mappings.URL + "/application-status.status.yaml", TimeoutMs: 30000},
 		},
 	}}
 

@@ -24,6 +24,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +37,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-const pkMappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/pmkisan"
+const pkMappingsDir = "../../../../.helmcharts/quick-start/config/mappings/pmkisan"
 
 const (
 	pkCapability = "openagrinet:Grievance"
@@ -285,6 +287,24 @@ func (o *pkOTPService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // --- harness ----------------------------------------------------------------
 
+func pkServeMappings(t *testing.T) *httptest.Server {
+	t.Helper()
+	if _, err := os.Stat(pkMappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", pkMappingsDir)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := os.ReadFile(filepath.Join(pkMappingsDir, filepath.Base(r.URL.Path)))
+		if err != nil {
+			t.Errorf("could not read the mapping %q: %v", r.URL.Path, err)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, string(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
 // pkRegistry answers the served binding with plan, and any other binding it
 // publishes (the OTP service's) with its own record.
 type pkRegistry struct {
@@ -317,6 +337,7 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 	t.Setenv("TEST_PMKISAN_TOKEN", pkToken)
 	t.Setenv("TEST_PMKISAN_OTP_TOKEN", pkOTPToken)
 
+	mappings := pkServeMappings(t)
 	upstream := httptest.NewServer(p)
 	t.Cleanup(upstream.Close)
 	otpHost := httptest.NewServer(otp)
@@ -336,11 +357,11 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 		Actions: map[string]model.ActionPlan{
 			// The OTP lives on another participant, which the envelope names.
 			"init": {Method: http.MethodPost, Path: "/ChatbotOTP",
-				Mappings: pkMappingsURL + "/grievance.init.yaml", TimeoutMs: 20000},
+				Mappings: mappings.URL + "/grievance.init.yaml", TimeoutMs: 20000},
 			"support": {Method: http.MethodPost, Path: "/LodgeGrievance",
-				Mappings: pkMappingsURL + "/grievance.support.yaml", TimeoutMs: 30000},
+				Mappings: mappings.URL + "/grievance.support.yaml", TimeoutMs: 30000},
 			"status": {Method: http.MethodPost, Path: "/GrievanceStatusCheck",
-				Mappings: pkMappingsURL + "/grievance.status.yaml", TimeoutMs: 30000, RetryMax: 2},
+				Mappings: mappings.URL + "/grievance.status.yaml", TimeoutMs: 30000, RetryMax: 2},
 		},
 	}, others: map[string]*model.ProviderRecord{
 		pkOTPBindingKey: {BindingKey: pkOTPBindingKey, ParticipantID: "pmkisan", BaseURL: otpHost.URL}, // the binding's own host

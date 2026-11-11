@@ -172,6 +172,7 @@ URL instead. Both are exercised.
 ## Testing
 
 ```sh
+make sync-mappings   # once: the helmcharts mappings the tests read
 go test ./pkg/plugin/implementation/AgricultureFacility/...
 ```
 
@@ -179,8 +180,8 @@ go test ./pkg/plugin/implementation/AgricultureFacility/...
 into with `POCRA_LIVE=1`.
 
 `mappings_test.go` runs the shipped mapping through the real mapper and the real
-step against a fake POCRA. It fetches helmcharts' `quick-start/config/mappings/pocra/`
-(the `development` branch) rather than a fixture, so it breaks when what is deployed breaks.
+step against a fake POCRA. It reads helmcharts' `quick-start/config/mappings/pocra/`
+at the pinned `HELMCHARTS_REF` (`make sync-mappings`, ADR-0005) rather than a fixture.
 
 `conformance_test.go` validates the answer against
 `openagrinet:AgricultureFacility v0.1` with a real JSON Schema validator. It

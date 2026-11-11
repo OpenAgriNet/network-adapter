@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -26,7 +27,7 @@ import (
 )
 
 const (
-	mappingsURL       = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/pmfby"
+	mappingsDir       = "../../../../.helmcharts/quick-start/config/mappings/pmfby"
 	shippedBindingKey = "pmfby|openagrinet:Grievance"
 	stubToken         = "stub-login-token"
 	knownTicket       = "100626000099001"
@@ -125,6 +126,11 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 	pmfby.calls = map[string]int{}
 	pmfby.bodies = map[string]map[string]any{}
 
+	if _, err := os.Stat(mappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", mappingsDir)
+	}
+	mappings := httptest.NewServer(http.FileServer(http.Dir(mappingsDir)))
+	t.Cleanup(mappings.Close)
 	upstream := httptest.NewServer(pmfby)
 	t.Cleanup(upstream.Close)
 
@@ -136,7 +142,7 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 
 	action := func(path, file string, retries int) model.ActionPlan {
 		return model.ActionPlan{Method: http.MethodPost, Path: path,
-			Mappings: mappingsURL + "/" + file, RetryMax: retries}
+			Mappings: mappings.URL + "/" + file, RetryMax: retries}
 	}
 	registry := &stubRegistry{plan: &model.ProviderRecord{
 		BindingKey: shippedBindingKey, ParticipantID: "pmfby", CapabilityCode: "openagrinet:Grievance",

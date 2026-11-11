@@ -15,18 +15,21 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/KnowledgeAdvisory"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live: helmcharts development, which releases are cut from.
-const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/knowledge"
+// mappingsDir is where the shipped mappings live, relative to this package.
+const mappingsDir = "../../../../.helmcharts/quick-start/config/mappings/knowledge"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment must match the action the registry entry
@@ -150,6 +153,24 @@ const providerResponse = `{
  ]
 }`
 
+// serveMappings publishes the shipped mapping over HTTP, which is how the
+// mapper fetches it in production.
+func serveMappings(t *testing.T) *httptest.Server {
+	t.Helper()
+	if _, err := os.Stat(mappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", mappingsDir)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
+		if err != nil {
+			t.Errorf("could not read the mapping %q: %v", r.URL.Path, err)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, string(body))
+	}))
+}
+
 type stubRegistry struct{ plan *model.ProviderRecord }
 
 func (s *stubRegistry) ProviderRecord(context.Context, string) (*model.ProviderRecord, error) {
@@ -164,6 +185,9 @@ func runShipped(t *testing.T, request string) (map[string]any, map[string]any) {
 
 func runShippedWith(t *testing.T, request, providerBody string) (map[string]any, map[string]any) {
 	t.Helper()
+
+	mappings := serveMappings(t)
+	defer mappings.Close()
 
 	var sent map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +212,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 			// POST with a body -- the first capability to send one. The others
 			// are GETs whose mapping output becomes a query string.
 			"select": {Method: http.MethodPost, Path: "/docs-pipeline-api/search",
-				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 1},
+				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 1},
 		},
 	}}
 
@@ -250,14 +274,61 @@ func resourcesOf(t *testing.T, answer map[string]any) []any {
 	return res
 }
 
-// The request half's whole job: the caller's topics become the query. Only
-// `query` is required upstream, so nothing else has to be sent.
+// The request half's main job: the caller's topics become the query. Only
+// `query` is required upstream; provider_id and index_name are added when named.
 func TestShippedMappingTurnsTopicsIntoTheQuery(t *testing.T) {
 	sent, _ := runShipped(t, selectRequest)
 
 	if got := sent["query"]; got != "gruha jyoti scheme eligibility" {
 		t.Errorf("query = %v, want the caller's topics joined", got)
 	}
+}
+
+// The provider the offer names scopes the search. With none named, the key is
+// ABSENT, as for index_name, so the provider searches everything it holds.
+func TestShippedMappingScopesTheSearchToTheOfferedProvider(t *testing.T) {
+	const provider = `"provider": { "id": "knowledge-provider" },`
+	if !strings.Contains(selectRequest, provider) {
+		t.Fatalf("selectRequest no longer carries %s", provider)
+	}
+
+	t.Run("a provider named", func(t *testing.T) {
+		sent, _ := runShipped(t, selectRequest)
+		if got := sent["provider_id"]; got != "knowledge-provider" {
+			t.Errorf("provider_id = %v, want the offer's provider id", got)
+		}
+	})
+
+	// Through the mapper alone: with no provider the step has nothing to bind.
+	t.Run("no provider named", func(t *testing.T) {
+		var beckn map[string]any
+		if err := json.Unmarshal([]byte(strings.Replace(selectRequest, provider, "", 1)), &beckn); err != nil {
+			t.Fatalf("the fixture is not JSON: %v", err)
+		}
+		mappings := serveMappings(t)
+		defer mappings.Close()
+		mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
+		if err != nil {
+			t.Fatalf("failed to build the mapper: %v", err)
+		}
+		defer closeMapper()
+
+		got, err := mapper.Transform(context.Background(), mappings.URL+"/"+shippedMapping,
+			definition.DirectionRequest, map[string]any{"beckn": beckn})
+		if err != nil {
+			t.Fatalf("the request half returned an unexpected error: %v", err)
+		}
+		var sent map[string]any
+		if err := json.Unmarshal(got, &sent); err != nil {
+			t.Fatalf("the request half produced something that is not an object: %v", err)
+		}
+		if got, present := sent["provider_id"]; present {
+			t.Errorf("provider_id = %v, want the key ABSENT", got)
+		}
+		if got := sent["query"]; got != "gruha jyoti scheme eligibility" {
+			t.Errorf("query = %v, want the caller's topics joined", got)
+		}
+	})
 }
 
 // withCategories rewrites selectRequest's subjectCategories, as raw JSON so a

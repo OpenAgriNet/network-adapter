@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -27,8 +28,8 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-// mappingsURL is where the shipped mappings live: helmcharts development, which releases are cut from.
-const mappingsURL = "https://raw.githubusercontent.com/OpenAgriNet/helmcharts/development/quick-start/config/mappings/agmarknet"
+// mappingsDir is where the shipped mappings live, relative to this package.
+const mappingsDir = "../../../../.helmcharts/quick-start/config/mappings/agmarknet"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment of the name must match the action the registry
@@ -130,6 +131,24 @@ const providerResponse = `[
   }
 ]`
 
+// serveMappings publishes the shipped mapping files over HTTP, which is how the
+// mapper fetches them in production.
+func serveMappings(t *testing.T) *httptest.Server {
+	t.Helper()
+	if _, err := os.Stat(mappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", mappingsDir)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
+		if err != nil {
+			t.Errorf("could not read the mapping %q: %v", r.URL.Path, err)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, string(body))
+	}))
+}
+
 // stubRegistry answers with the call plan the live registry holds for this
 // capability.
 type stubRegistry struct{ plan *model.ProviderRecord }
@@ -149,6 +168,9 @@ func runShipped(t *testing.T, request string) (url.Values, map[string]any) {
 // exercised rather than the request that fetched it.
 func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map[string]any) {
 	t.Helper()
+
+	mappings := serveMappings(t)
+	defer mappings.Close()
 
 	var gotQuery url.Values
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +192,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map
 		BaseURL:        upstream.URL,
 		Actions: map[string]model.ActionPlan{
 			"select": {Method: http.MethodGet, Path: "/v1/fetch-agmarknet-vistaar",
-				Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 3},
+				Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000, RetryMax: 3},
 		},
 	}}
 
@@ -412,6 +434,9 @@ func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 				t.Fatalf("could not rebuild the payload: %v", err)
 			}
 
+			mappings := serveMappings(t)
+			defer mappings.Close()
+
 			called := false
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called = true
@@ -429,7 +454,7 @@ func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 				BindingKey: shippedBindingKey, BaseURL: upstream.URL,
 				Actions: map[string]model.ActionPlan{
 					"select": {Method: http.MethodGet, Path: "/v1/fetch-agmarknet-vistaar",
-						Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000},
+						Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
 				},
 			}}
 			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
@@ -771,6 +796,9 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 				t.Fatalf("could not rebuild the payload: %v", err)
 			}
 
+			mappings := serveMappings(t)
+			defer mappings.Close()
+
 			called := false
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				called = true
@@ -788,7 +816,7 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 				BindingKey: shippedBindingKey, BaseURL: upstream.URL,
 				Actions: map[string]model.ActionPlan{
 					"select": {Method: http.MethodGet, Path: "/v1/fetch-agmarknet-vistaar",
-						Mappings: mappingsURL + "/" + shippedMapping, TimeoutMs: 30000},
+						Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
 				},
 			}}
 			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
