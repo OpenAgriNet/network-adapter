@@ -3,12 +3,10 @@ package KnowledgeAdvisory_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,16 +44,7 @@ func TestLiveEndToEnd(t *testing.T) {
 		t.Skip("live credentials not in the environment")
 	}
 
-	mappings := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := os.ReadFile(filepath.Join("../../../../config/mappings/knowledge",
-			filepath.Base(r.URL.Path)))
-		if err != nil {
-			t.Errorf("mapping read: %v", err)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		fmt.Fprint(w, string(body))
-	}))
+	mappings := serveMappings(t)
 	defer mappings.Close()
 
 	// A counting proxy in front of the real issuer, so token REUSE is measured

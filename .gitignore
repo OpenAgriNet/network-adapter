@@ -188,3 +188,6 @@ test_request.json
 config/network.yaml
 config/*-secrets.yaml
 .playwright-mcp/
+
+# helmcharts provider mappings, fetched by make sync-mappings
+.helmcharts/

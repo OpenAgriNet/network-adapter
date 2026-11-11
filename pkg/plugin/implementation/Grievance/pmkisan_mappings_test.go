@@ -37,7 +37,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/jsonmapper"
 )
 
-const pkMappingsDir = "../../../../config/mappings/pmkisan"
+const pkMappingsDir = "../../../../.helmcharts/quick-start/config/mappings/pmkisan"
 
 const (
 	pkCapability = "openagrinet:Grievance"
@@ -289,6 +289,9 @@ func (o *pkOTPService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func pkServeMappings(t *testing.T) *httptest.Server {
 	t.Helper()
+	if _, err := os.Stat(pkMappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", pkMappingsDir)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := os.ReadFile(filepath.Join(pkMappingsDir, filepath.Base(r.URL.Path)))
 		if err != nil {

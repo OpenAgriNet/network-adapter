@@ -28,7 +28,7 @@ import (
 )
 
 // mappingsDir is where the shipped mappings live, relative to this package.
-const mappingsDir = "../../../../config/mappings/knowledge"
+const mappingsDir = "../../../../.helmcharts/quick-start/config/mappings/knowledge"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment must match the action the registry entry
@@ -156,6 +156,9 @@ const providerResponse = `{
 // mapper fetches it in production.
 func serveMappings(t *testing.T) *httptest.Server {
 	t.Helper()
+	if _, err := os.Stat(mappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", mappingsDir)
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
 		if err != nil {

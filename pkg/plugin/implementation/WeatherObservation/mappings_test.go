@@ -29,7 +29,7 @@ import (
 )
 
 // mappingsDir is where the shipped mappings live, relative to this package.
-const mappingsDir = "../../../../config/mappings/mausamgram"
+const mappingsDir = "../../../../.helmcharts/quick-start/config/mappings/mausamgram"
 
 // selectedResourceID is the resource the request selects, and therefore the one
 // the answer quotes. It is the same string in both directions on purpose.
@@ -97,6 +97,9 @@ const providerResponse = `{
 // registry's references point at them.
 func serveMappings(t *testing.T) *httptest.Server {
 	t.Helper()
+	if _, err := os.Stat(mappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", mappingsDir)
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
 		if err != nil {

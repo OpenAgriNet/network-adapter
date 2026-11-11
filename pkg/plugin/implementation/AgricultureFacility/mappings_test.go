@@ -34,9 +34,9 @@ import (
 )
 
 // mappingsDir is where the shipped mappings live, relative to this package.
-// Reading the published file rather than a fixture is the whole point: this test
-// breaks when what is deployed breaks.
-const mappingsDir = "../../../../config/mappings/pocra"
+// Reading the helmcharts file rather than a fixture is the whole point: this
+// test breaks when the pinned helmcharts mapping breaks.
+const mappingsDir = "../../../../.helmcharts/quick-start/config/mappings/pocra"
 
 // shippedMapping is the file this binding-action publishes: one file, both
 // directions. The action segment of the name must match the action the registry
@@ -200,6 +200,9 @@ const providerResponse = `{
 // mapper fetches them in production.
 func serveMappings(t *testing.T) *httptest.Server {
 	t.Helper()
+	if _, err := os.Stat(mappingsDir); err != nil {
+		t.Fatalf("%s is missing: run make sync-mappings (docs/adr/0005)", mappingsDir)
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := os.ReadFile(filepath.Join(mappingsDir, filepath.Base(r.URL.Path)))
 		if err != nil {

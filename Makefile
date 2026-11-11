@@ -40,6 +40,13 @@ TRIVY_VERSION         := v0.74.0
 ACTIONLINT_VERSION    := v1.7.12
 GOVULNCHECK_VERSION   := v1.8.0
 
+# The helmcharts commit whose provider mappings the tests read (docs/adr/0005).
+# A full SHA only: a branch name would never be fetched again.
+override HELMCHARTS_REPO := https://github.com/OpenAgriNet/helmcharts.git
+HELMCHARTS_REF  ?= b1861de7b2d8e435acbe064ae2075db691df1a13
+MAPPINGS_DIR    := .helmcharts
+MAPPINGS_STAMP  := $(MAPPINGS_DIR)/.ref-$(HELMCHARTS_REF)
+
 GOLANGCI_LINT := $(BIN_DIR)/golangci-lint
 GOTESTSUM     := $(BIN_DIR)/gotestsum
 TRIVY         := $(BIN_DIR)/trivy
@@ -95,23 +102,37 @@ build:
 	$(GO) build -trimpath -o $(BIN_DIR)/ ./cmd/adapter/...
 
 ## test: run the unit and integration suites (plugin packages without -race)
-test:
+test: $(MAPPINGS_STAMP)
 	$(GO) test -race $(MAIN_PKGS)
 	$(GO) test $(PLUGIN_PKGS)
 
 ## cover: run the suites and write a merged coverage profile to coverage.out
-cover:
+cover: $(MAPPINGS_STAMP)
 	$(GO) test -race -covermode=atomic -coverprofile=coverage.out $(MAIN_PKGS)
 	$(GO) test -covermode=atomic -coverprofile=coverage-plugin.out $(PLUGIN_PKGS)
 	@$(MAKE) --no-print-directory merge-coverage
 
 ## test-ci: cover, through gotestsum — one line per package. What ci.yml calls.
-test-ci: $(GOTESTSUM)
+test-ci: $(GOTESTSUM) $(MAPPINGS_STAMP)
 	$(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
 		-race -coverprofile=coverage.out -covermode=atomic $(MAIN_PKGS)
 	$(GOTESTSUM) --format pkgname --format-hide-empty-pkg -- \
 		-coverprofile=coverage-plugin.out -covermode=atomic $(PLUGIN_PKGS)
 	@$(MAKE) --no-print-directory merge-coverage
+
+## sync-mappings: check out helmcharts' provider mappings at HELMCHARTS_REF into .helmcharts/
+sync-mappings: $(MAPPINGS_STAMP)
+
+# One shallow, sparse fetch per ref: later runs are offline until the ref moves.
+$(MAPPINGS_STAMP):
+	@echo '$(HELMCHARTS_REF)' | grep -qxE '[0-9a-f]{40}' || \
+		{ echo 'HELMCHARTS_REF must be a full 40-character commit SHA'; exit 1; }
+	rm -rf $(MAPPINGS_DIR)
+	git init -q $(MAPPINGS_DIR)
+	git -C $(MAPPINGS_DIR) sparse-checkout set quick-start/config/mappings
+	git -C $(MAPPINGS_DIR) fetch -q --depth 1 --filter=blob:none $(HELMCHARTS_REPO) $(HELMCHARTS_REF)
+	git -C $(MAPPINGS_DIR) checkout -q FETCH_HEAD
+	touch $@
 
 # `;` not `&&`, and always removes the intermediate: a failed tail must not
 # leave coverage-plugin.out behind for someone to pick up by hand and misread.
@@ -454,7 +475,7 @@ require-image-repo:
 
 ## clean: remove build output and coverage/scan artifacts
 clean:
-	rm -rf $(BIN_DIR) coverage.out coverage-plugin.out coverage-report.md \
+	rm -rf $(BIN_DIR) $(MAPPINGS_DIR) coverage.out coverage-plugin.out coverage-report.md \
 		$(SARIF_REPORTS) trivy-report.md \
 		image-metadata-*.json digest-*.txt
 
@@ -495,7 +516,7 @@ $(TRIVY):
 	curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/$(TRIVY_VERSION)/contrib/install.sh | \
 		sh -s -- -b $(abspath $(BIN_DIR)) $(TRIVY_VERSION)
 
-.PHONY: help build test cover test-ci merge-coverage cover-diff lint fmt \
+.PHONY: help build test cover test-ci sync-mappings merge-coverage cover-diff lint fmt \
 	lint-actions lint-staged hooks security \
 	trivy-deps trivy-image trivy-report trivy-gate \
 	docker image-build image-publish require-image-repo clean
