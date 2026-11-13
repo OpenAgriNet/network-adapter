@@ -246,7 +246,7 @@ func (s *Step) postForToken(ctx context.Context, cfg AuthProfile, payload []byte
 // earn one here; permanent causes are marked with permanentTokenErr instead.
 func (s *Step) tokenErr(err error) error {
 	return model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable,
-		fmt.Errorf("oauth2 token exchange failed: %w", err))
+		fmt.Errorf("%w: %w", errTokenExchange, err))
 }
 
 // permanentTokenErr is tokenErr for a cause no further attempt would change: a

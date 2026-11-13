@@ -281,7 +281,7 @@ func providerIDFrom(bindingKey string) string {
 // somebody else's deployment detail -- the caller cannot set it and the fix is
 // the operator's. So the name goes to the log and the wire gets the scheme.
 func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames string) error {
-	err := fmt.Errorf("the %s credential for %s is not configured", scheme, provider)
+	err := fmt.Errorf("%w: the %s credential for %s is not set", errNotConfigured, scheme, provider)
 	log.Errorf(ctx, err, "%s auth is configured for %s but %s is not set",
 		scheme, provider, envNames)
 	// Marked here rather than at the call site in attempt, which cannot tell

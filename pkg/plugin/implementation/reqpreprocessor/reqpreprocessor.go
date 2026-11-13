@@ -26,16 +26,18 @@ type Config struct {
 // correctly-coded but unsigned JSON body, not the full Beckn NACK envelope
 // nack() produces elsewhere — wiring this plugin into that pipeline (with the
 // signing/telemetry implications that carries) is tracked separately in #868.
-func writeCodedError(ctx context.Context, w http.ResponseWriter, status int, code, message string) {
-	// model.NewCodedError's result is a two-string-field struct that cannot
-	// realistically fail to marshal — matching nack()'s own established
-	// convention (core/module/handler/responsestep.go) of not guarding this.
-	data, _ := json.Marshal(model.NewCodedError(code, message))
+func writeCodedError(ctx context.Context, w http.ResponseWriter, status int, becknErr *model.Error) {
+	// The same NACK envelope core answers with, so a caller reads every error
+	// the same way. Cannot realistically fail to marshal, so not guarded.
+	data, _ := json.Marshal(model.Response{Message: model.Message{
+		Status: model.StatusNACK,
+		Error:  becknErr,
+	}})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if _, werr := w.Write(data); werr != nil {
 		log.Debugf(ctx, "failed to write coded error response: %v", werr)
-		http.Error(w, message, http.StatusInternalServerError)
+		http.Error(w, becknErr.Message, http.StatusInternalServerError)
 	}
 }
 
@@ -66,7 +68,7 @@ func NewPreProcessor(cfg *Config) (func(http.Handler) http.Handler, error) {
 			ctx := r.Context()
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
-				writeCodedError(ctx, w, http.StatusBadRequest, "SCH_INVALID_JSON", "Failed to read request body")
+				writeCodedError(ctx, w, http.StatusBadRequest, model.NewCodedError("SCH_INVALID_JSON", "the request body could not be read"))
 				return
 			}
 
@@ -90,7 +92,7 @@ func NewPreProcessor(cfg *Config) (func(http.Handler) http.Handler, error) {
 			// classification reqmapper (#867) relies on for the identical check.
 			_, reqContext, becknErr := model.ExtractContext(body)
 			if becknErr != nil {
-				writeCodedError(ctx, w, http.StatusBadRequest, becknErr.Code, becknErr.Message)
+				writeCodedError(ctx, w, http.StatusBadRequest, becknErr)
 				return
 			}
 

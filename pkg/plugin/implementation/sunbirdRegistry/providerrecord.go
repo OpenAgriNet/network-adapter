@@ -379,7 +379,7 @@ func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, u
 	log.Debugf(ctx, "Making OAN registry search request to: %s", url)
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send search request: %w", err)
+		return nil, registryUnavailableErr(fmt.Errorf("failed to send search request: %w", err))
 	}
 	defer resp.Body.Close()
 
@@ -409,9 +409,17 @@ func searchRecords[T any](ctx context.Context, c *Client, tracer trace.Tracer, u
 		// themselves, so this line is the only one a registry outage leaves
 		// for an alert to match.
 		log.Errorf(ctx, nil, "OAN registry search failed with status: %s, response: %s", resp.Status, util.Explain(respBody))
-		return nil, fmt.Errorf("%w: %s", errRegistryStatus, resp.Status)
+		return nil, registryUnavailableErr(fmt.Errorf("%w: %s", errRegistryStatus, resp.Status))
 	}
 	return decodeRecords[T](respBody)
+}
+
+// registryUnavailableErr is the 503 for a registry that could not answer.
+// Classified here because every lookup routes through searchRecords: the
+// signing-key check on each inbound message as well as the provider lookups.
+func registryUnavailableErr(err error) error {
+	return model.NewCodedErr(http.StatusServiceUnavailable, util.CodeUpstreamUnavailable, err).
+		WithMessage("registry is unavailable")
 }
 
 // decodeRecords accepts either shape the registry answers with: a bare array on

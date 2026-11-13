@@ -260,7 +260,11 @@ func prefixSchemaErrorPaths(schemaErrors []model.Error, objPath string) {
 	for i := range schemaErrors {
 		prefixed := objPath
 		if schemaErrors[i].Details != nil && schemaErrors[i].Details.Path != "" {
-			prefixed = objPath + "." + schemaErrors[i].Details.Path
+			separator := "."
+			if strings.HasPrefix(schemaErrors[i].Details.Path, "[") {
+				separator = ""
+			}
+			prefixed = objPath + separator + schemaErrors[i].Details.Path
 		}
 		if schemaErrors[i].Details != nil {
 			schemaErrors[i].Details.Path = prefixed
@@ -855,7 +859,7 @@ func (c *schemaCache) validateReferencedObject(
 	// @type names the entity; the action names the call made on it. A pack
 	// that tells the two apart is validated against the one call it is for.
 	if nominated, name, err := schemaForAction(doc, schema, action); err != nil {
-		return model.NewCodedErrorWithCause("SCH_ACTION_NOT_SUPPORTED", err.Error(), "", err)
+		return model.NewCodedErrorWithCause(codeActionNotSupported, err.Error(), "", err)
 	} else if name != "" {
 		log.Debugf(ctx, "action %s on @type %s validates against %s", action, matched, name)
 		schema = nominated

@@ -169,8 +169,8 @@ func FirstNonEmptyCode(errs []Error, defaultCode string) string {
 // type switch. That status is now set at construction.
 //
 // Use NewCodedErr, or NewBadReqErr, NewSignValidationErr and NewNotFoundErr
-// for the 400, 401 and 404 cases and their message prefixes. Status, prefix
-// and default code are unexported, so a usable value comes from a constructor.
+// for the 400, 401 and 404 cases. Status, prefix and default code are
+// unexported, so a usable value comes from a constructor.
 //
 // SchemaValidationErr and AckNoCallbackErr stay separate. They differ in
 // shape, not just status.
@@ -178,6 +178,13 @@ type CodedErr struct {
 	// Code is the taxonomy value for this failure's specific cause, or ""
 	// if unclassified, in which case BecknError() reports defaultCode.
 	Code string
+
+	// path is the JSONPath of the one field at fault, reported as
+	// details.path. Set with WithPath.
+	path string
+	// message is what the caller is told when the wrapped error's text is for
+	// the operator only. Set with WithMessage.
+	message string
 
 	// httpStatus is the status nackBecknError responds with.
 	httpStatus int
@@ -244,13 +251,47 @@ func (e *CodedErr) resolveCode() string {
 	return defaultUnclassifiedCode
 }
 
-// BecknError builds the *Error NACK payload from the resolved code and the
-// constructor's prefix prepended to the wrapped error's text.
+// BecknError builds the *Error NACK payload from the resolved code, the
+// message (or the constructor's prefix and the wrapped error's text) and the
+// path.
 func (e *CodedErr) BecknError() *Error {
-	return &Error{
+	becknError := &Error{
 		Code:    e.resolveCode(),
 		Message: e.prefix + e.Error(),
 	}
+	if e.message != "" {
+		becknError.Message = e.message
+	}
+	if e.path != "" {
+		becknError.Details = &ErrorDetails{Path: e.path}
+	}
+	return becknError
+}
+
+// WithMessage sets the message the caller is told, keeping the wrapped error
+// whole for the log: its text can name hosts, files and upstream replies.
+func (e *CodedErr) WithMessage(message string) *CodedErr {
+	e.message = message
+	return e
+}
+
+// WithPath sets the JSONPath of the one field at fault, reported as
+// details.path.
+func (e *CodedErr) WithPath(path string) *CodedErr {
+	e.path = path
+	return e
+}
+
+// codeMissingContextField is the Beckn code for a required context field the
+// request leaves out.
+const codeMissingContextField = "CTX_MISSING_FIELD"
+
+// NewMissingContextFieldErr creates the 400 for a required context field the
+// request leaves out, naming it in the message and in details.path.
+func NewMissingContextFieldErr(field string) *CodedErr {
+	fieldPath := "context." + field
+	return NewBadReqErr(codeMissingContextField, fmt.Errorf("%s is missing", fieldPath)).
+		WithPath("$." + fieldPath)
 }
 
 // defaultSignValidationCode is used when a signature-validation failure
@@ -295,7 +336,6 @@ func NewBadReqErr(code string, err error) *CodedErr {
 	return &CodedErr{
 		Code:        code,
 		httpStatus:  http.StatusBadRequest,
-		prefix:      "BAD Request: ",
 		defaultCode: defaultBadReqCode,
 		error:       err,
 	}
@@ -312,7 +352,6 @@ func NewNotFoundErr(code string, err error) *CodedErr {
 	return &CodedErr{
 		Code:        code,
 		httpStatus:  http.StatusNotFound,
-		prefix:      "Endpoint not found: ",
 		defaultCode: defaultNotFoundCode,
 		error:       err,
 	}

@@ -245,8 +245,8 @@ func TestExtractContext(t *testing.T) {
 		if becknErr.Code != "SCH_REQUIRED_FIELD_MISSING" {
 			t.Errorf("Code = %s, want SCH_REQUIRED_FIELD_MISSING", becknErr.Code)
 		}
-		if becknErr.Message != "context field not found or invalid" {
-			t.Errorf("Message = %q, want %q", becknErr.Message, "context field not found or invalid")
+		if becknErr.Message != "context is missing" {
+			t.Errorf("Message = %q, want %q", becknErr.Message, "context is missing")
 		}
 		if becknErr.Unwrap() != nil {
 			t.Errorf("expected a nil Unwrap() for a missing-context failure (no wrapped error of its own), got %v", becknErr.Unwrap())
@@ -260,6 +260,9 @@ func TestExtractContext(t *testing.T) {
 		}
 		if becknErr.Code != "SCH_REQUIRED_FIELD_MISSING" {
 			t.Errorf("Code = %s, want SCH_REQUIRED_FIELD_MISSING", becknErr.Code)
+		}
+		if becknErr.Message != "context must be an object" {
+			t.Errorf("Message = %q, want %q", becknErr.Message, "context must be an object")
 		}
 	})
 
@@ -301,8 +304,21 @@ func TestWrapExtractContextErr(t *testing.T) {
 		if err.Code != "SCH_REQUIRED_FIELD_MISSING" {
 			t.Errorf("Code = %s, want SCH_REQUIRED_FIELD_MISSING", err.Code)
 		}
-		if !strings.Contains(err.Error(), "context field not found or invalid") {
+		if !strings.Contains(err.Error(), "context is missing") {
 			t.Errorf("Error() = %q, want it to contain becknErr.Message", err.Error())
+		}
+	})
+
+	t.Run("caller is told the message alone, with the path", func(t *testing.T) {
+		_, _, becknErr := ExtractContext([]byte(`{"message":{}}`))
+
+		wireErr := WrapExtractContextErr("error parsing request body", becknErr).BecknError()
+
+		if wireErr.Message != "context is missing" {
+			t.Errorf("BecknError().Message = %q, want %q", wireErr.Message, "context is missing")
+		}
+		if wireErr.Details == nil || wireErr.Details.Path != "$.context" {
+			t.Errorf("BecknError().Details = %+v, want path $.context", wireErr.Details)
 		}
 	})
 }

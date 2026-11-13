@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -197,7 +198,47 @@ func newServer(ctx context.Context, mgr handler.PluginManager, cfg *Config) (htt
 	if err := module.Register(ctx, cfg.Modules, mux, mgr); err != nil {
 		return nil, fmt.Errorf("failed to register modules: %w", err)
 	}
-	return mux, nil
+	return withUnknownEndpointNack(mux), nil
+}
+
+// codeNotFound is the adapter's code for every 404.
+const codeNotFound = "NET_ENTITY_NOT_FOUND"
+
+// withUnknownEndpointNack answers a path no module serves with the NACK every
+// other error uses, not the mux's plain-text "404 page not found".
+func withUnknownEndpointNack(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		body, _ := json.Marshal(model.Response{Message: model.Message{
+			Status: model.StatusNACK,
+			Error:  model.NewCodedError(codeNotFound, "unknown endpoint: "+r.URL.Path),
+		}})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(body)
+	})
+}
+
+// responseMargin is how long before the server's write timeout a request's
+// work is cut off, leaving time to write the error that says so.
+const responseMargin = 2 * time.Second
+
+// withResponseDeadline ends a request's work before the server's write
+// timeout does. Past that timeout the connection is closed with no answer,
+// so a provider retried for longer than it would leave the caller nothing.
+func withResponseDeadline(next http.Handler, writeTimeout time.Duration) http.Handler {
+	if writeTimeout <= responseMargin {
+		return next
+	}
+	budget := writeTimeout - responseMargin
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), budget)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 var newManagerFunc = plugin.NewManager
@@ -262,7 +303,7 @@ func run(ctx context.Context, configPath string) error {
 	// Configure HTTP server.
 	httpServer := &http.Server{
 		Addr:         net.JoinHostPort("", cfg.HTTP.Port),
-		Handler:      srv,
+		Handler:      withResponseDeadline(srv, cfg.HTTP.Timeouts.Write*time.Second),
 		ReadTimeout:  cfg.HTTP.Timeouts.Read * time.Second,
 		WriteTimeout: cfg.HTTP.Timeouts.Write * time.Second,
 		IdleTimeout:  cfg.HTTP.Timeouts.Idle * time.Second,

@@ -849,6 +849,44 @@ func TestTransformBlamesTheRightPartyForEachDirection(t *testing.T) {
 	}
 }
 
+// The mapping's file name and expression error are for the operator: the
+// caller is told which leg failed, and the log keeps the rest.
+func TestTransformFailureMessagesHideTheMappingDetail(t *testing.T) {
+	t.Parallel()
+
+	failing := "request: |\n  $number(beckn.notANumber)\nresponse: |\n  $number(response.notANumber)\n"
+	srv := newMappingServer(t, failing, nil)
+	defer srv.Close()
+	mapper := newTestMapper(t)
+	ref := srv.URL + "/failing.yaml"
+
+	tests := []struct {
+		direction   definition.Direction
+		input       map[string]any
+		wantMessage string
+	}{
+		{definition.DirectionRequest, map[string]any{"beckn": map[string]any{"notANumber": "abc"}},
+			"the request could not be converted for the provider"},
+		{definition.DirectionResponse, map[string]any{"response": map[string]any{"notANumber": "abc"}},
+			"the provider's response could not be converted"},
+	}
+	for _, tt := range tests {
+		_, err := mapper.Transform(context.Background(), ref, tt.direction, tt.input)
+
+		var coded *model.CodedErr
+		if !errors.As(err, &coded) {
+			t.Fatalf("%s leg gave %v, want a *model.CodedErr", tt.direction, err)
+		}
+		wireErr := coded.BecknError()
+		if wireErr.Code != "SCH_SCHEMA_ADAPTATION_FAILED" || wireErr.Message != tt.wantMessage {
+			t.Errorf("%s leg = %s %q, want SCH_SCHEMA_ADAPTATION_FAILED %q", tt.direction, wireErr.Code, wireErr.Message, tt.wantMessage)
+		}
+		if !strings.Contains(err.Error(), "failing.yaml") {
+			t.Errorf("%s leg error %q, want the mapping named for the log", tt.direction, err)
+		}
+	}
+}
+
 // --- concurrency ------------------------------------------------------------
 
 // Every inbound request shares one mapper, so the cache is read and written
