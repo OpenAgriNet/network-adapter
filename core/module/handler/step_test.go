@@ -880,3 +880,37 @@ func TestAddRouteStep_Run_NoBasePath_UsesRawAction(t *testing.T) {
 		t.Errorf("router received path %q, want %q", mr.gotURL.Path, "search")
 	}
 }
+
+// A module that serves some capabilities itself and forwards the rest lists a
+// provider step ahead of addRoute. Both of these are what keeps the two from
+// fighting over the same request.
+
+func TestAddRouteStepLeavesAnAnsweredRequestAlone(t *testing.T) {
+	mr := &mockRecordingRouter{}
+	step, _ := newAddRouteStep(mr, "")
+	ctx := makeStepCtxWithURL("http://localhost/search")
+	ctx.ResponseBody = []byte(`{"context":{},"message":{}}`)
+
+	if err := step.Run(ctx); err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if mr.gotURL != nil {
+		t.Errorf("the router was consulted for a request already answered, at %q", mr.gotURL.Path)
+	}
+	if ctx.Route != nil {
+		t.Errorf("Route = %#v, want nil so the answer survives to the caller", ctx.Route)
+	}
+}
+
+func TestAddRouteStepRoutesWhenNobodyAnswered(t *testing.T) {
+	mr := &mockRecordingRouter{}
+	step, _ := newAddRouteStep(mr, "")
+	ctx := makeStepCtxWithURL("http://localhost/search")
+
+	if err := step.Run(ctx); err != nil {
+		t.Fatalf("Run() unexpected error: %v", err)
+	}
+	if ctx.Route == nil {
+		t.Fatal("Route is nil, so an unanswered request would 404 instead of being forwarded")
+	}
+}

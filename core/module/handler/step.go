@@ -439,7 +439,17 @@ func newAddRouteStep(router definition.Router, basePath string) (definition.Step
 }
 
 // Run executes the routing step.
+//
+// A request an earlier step already answered is left alone. Setting a route
+// would hand the response to the proxy, which discards the answer and calls an
+// upstream for one we already have. This is the mirror of the ctx.Route guard
+// provider steps open with, and it is what lets a module both serve some
+// capabilities itself and forward the rest.
 func (s *addRouteStep) Run(ctx *model.StepContext) error {
+	if len(ctx.ResponseBody) > 0 {
+		return nil
+	}
+
 	route, err := s.router.Route(ctx, stripBasePath(ctx.Request.URL, s.basePath), ctx.Body)
 	if err != nil {
 		return fmt.Errorf("failed to determine route: %w", err)
