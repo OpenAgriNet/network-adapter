@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -997,6 +998,98 @@ func TestProxy_ResponseBodyEmptyWhenResponseStepFails(t *testing.T) {
 	if len(responseBody) != 0 {
 		t.Errorf("expected responseBody to be empty on response step failure, got %q", responseBody)
 	}
+}
+
+// runProxy runs proxy against upstreamURL and returns the recorded answer.
+func runProxy(t *testing.T, upstreamURL string, responseSteps []definition.ResponseStep) *httptest.ResponseRecorder {
+	t.Helper()
+	target, _ := url.Parse(upstreamURL)
+	stepCtx := &model.StepContext{
+		Context: context.WithValue(context.Background(), model.ContextKeyProtocolVersion, "2.0.0"),
+		Route:   &model.Route{TargetType: "url", URL: target},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`))
+	rr := httptest.NewRecorder()
+	var responseBody []byte
+	proxy(stepCtx, req, rr, http.DefaultClient, responseSteps, &responseBody)
+	return rr
+}
+
+// requireNack checks rr holds a NACK envelope with the given status, code and message.
+func requireNack(t *testing.T, rr *httptest.ResponseRecorder, wantStatus int, wantCode, wantMessage string) {
+	t.Helper()
+	if rr.Code != wantStatus {
+		t.Errorf("status = %d, want %d", rr.Code, wantStatus)
+	}
+	var got model.Response
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body %q is not a NACK envelope: %v", rr.Body.String(), err)
+	}
+	if got.Message.Status != model.StatusNACK || got.Message.Error == nil {
+		t.Fatalf("body = %s, want a NACK carrying an error", rr.Body.String())
+	}
+	if got.Message.Error.Code != wantCode || got.Message.Error.Message != wantMessage {
+		t.Errorf("error = %s %q, want %s %q", got.Message.Error.Code, got.Message.Error.Message, wantCode, wantMessage)
+	}
+}
+
+func TestProxy_UnreachableTarget_AnswersNack503(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	unreachableURL := upstream.URL
+	upstream.Close()
+
+	rr := runProxy(t, unreachableURL, nil)
+
+	requireNack(t, rr, http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE",
+		"the forwarded service is unavailable")
+}
+
+func TestProxy_UnclassifiedResponseStepFailure_AnswersNack502(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"message":{"status":"ACK"}}`))
+	}))
+	defer upstream.Close()
+
+	rr := runProxy(t, upstream.URL, []definition.ResponseStep{&mockResponseStep{err: fmt.Errorf("response step failure")}})
+
+	requireNack(t, rr, http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE",
+		"the forwarded service's response was refused")
+}
+
+func TestProxy_ClassifiedResponseStepFailure_KeepsItsClassification(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"message":{"status":"ACK"}}`))
+	}))
+	defer upstream.Close()
+	refusal := model.NewSignValidationErr("AUT_SIGNATURE_INVALID", fmt.Errorf("bad signature"))
+
+	rr := runProxy(t, upstream.URL, []definition.ResponseStep{&mockResponseStep{err: refusal}})
+
+	requireNack(t, rr, http.StatusUnauthorized, "AUT_SIGNATURE_INVALID", "Signature Validation Error: bad signature")
+}
+
+func TestProxy_TargetTooSlow_AnswersNack504(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer upstream.Close()
+	defer close(release)
+	target, _ := url.Parse(upstream.URL)
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), model.ContextKeyProtocolVersion, "2.0.0"), 200*time.Millisecond)
+	defer cancel()
+	stepCtx := &model.StepContext{Context: ctx, Route: &model.Route{TargetType: "url", URL: target}}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`)).WithContext(ctx)
+	rr := httptest.NewRecorder()
+	var responseBody []byte
+
+	proxy(stepCtx, req, rr, http.DefaultClient, nil, &responseBody)
+
+	requireNack(t, rr, http.StatusGatewayTimeout, "NET_TIMEOUT",
+		"the forwarded service did not answer in time")
 }
 
 // stubPayloadStore is a minimal PayloadStore for storePayloadStep unit tests.

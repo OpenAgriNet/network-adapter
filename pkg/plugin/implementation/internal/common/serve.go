@@ -17,6 +17,7 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/log"
 	"github.com/beckn-one/beckn-onix/pkg/model"
 	"github.com/beckn-one/beckn-onix/pkg/plugin/definition"
+	"github.com/beckn-one/beckn-onix/pkg/plugin/implementation/internal/common/util"
 )
 
 // Run serves the request when it is this step's capability, and does nothing
@@ -62,9 +63,12 @@ func (s *Step) Run(ctx *model.StepContext) error {
 			// %w, not %v: the sentinel must stay unwrappable or errors.Is
 			// stops matching.
 			return model.NewNotFoundErr("", fmt.Errorf(
-				"the registry publishes no active binding for %s: %w", binding.Key(), err))
+				"the registry publishes no active binding for %s: %w", binding.Key(), err)).
+				WithMessage(binding.Key() + " is not available")
 		}
-		return fmt.Errorf("no call plan for %s: %w", binding.Key(), err)
+		return model.NewCodedErr(http.StatusServiceUnavailable, util.CodeUpstreamUnavailable,
+			fmt.Errorf("no call plan for %s: %w", binding.Key(), err)).
+			WithMessage("registry is unavailable")
 	}
 
 	return s.serve(ctx, plan)
@@ -162,10 +166,10 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	action := extractAction(ctx.Body)
 	call, served := plan.Actions[action]
 	if !served {
-		// No endpoint published for this action. Refused here rather than
-		// after calling whichever endpoint was on the record, and the error
-		// names what IS served so a registry mistake is a one-line fix.
-		return model.NewBadReqErr("", fmt.Errorf(
+		// No endpoint published for this action, or its entry is switched
+		// off: the registry drops inactive actions, so the two look the same
+		// here. Refused before calling anything, naming what IS served.
+		return model.NewNotFoundErr("", fmt.Errorf(
 			"%s does not serve action %q; it serves %s",
 			plan.BindingKey, action, strings.Join(plan.ServedActions(), ", ")))
 	}
@@ -174,11 +178,12 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	if err != nil {
 		return err
 	}
+	provider := providerIDFrom(plan.BindingKey)
 
 	// The mapping declares what a payload must satisfy, not this step: a
 	// different rule is a different mapping file, not a rebuild.
 	if err := s.mapper.Verify(ctx, call.Mappings, map[string]any{"beckn": beckn}); err != nil {
-		return err
+		return mappingFailure(provider, err)
 	}
 
 	// Whatever the payload does not carry. Empty for most capabilities.
@@ -189,16 +194,15 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	upstreamRequest, err := s.buildRequest(ctx, call, beckn, local)
 	if err != nil {
-		return err
+		return mappingFailure(provider, err)
 	}
 
 	// Resolved from the binding key, so a step serving several providers
 	// authenticates each as itself. Startup guarantees a profile per served
 	// provider; this guards a record arriving for an undeclared key.
-	provider := providerIDFrom(plan.BindingKey)
 	auth, configured := s.auth[provider]
 	if !configured {
-		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
+		return notConfiguredErr(provider, fmt.Errorf("no credential is configured for %s", plan.BindingKey))
 	}
 
 	// The binding's host, unless another binding serves this action.
@@ -220,7 +224,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		}
 	}
 
-	upstreamResponse, err := s.call(ctx, auth, base, call, upstreamRequest)
+	upstreamResponse, err := s.call(ctx, auth, provider, base, call, upstreamRequest)
 	if err != nil {
 		return err
 	}
@@ -233,7 +237,8 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 
 	answer, err := decodeBody(upstreamResponse)
 	if err != nil {
-		return fmt.Errorf("provider answered with something that is not JSON: %w", err)
+		return unreadableResponseErr(provider,
+			fmt.Errorf("provider answered with something that is not JSON: %w", err))
 	}
 
 	// The same file's other half. It is handed what each party sent, plus
@@ -244,7 +249,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		"response": answer,
 	})
 	if err != nil {
-		return err
+		return mappingFailure(provider, err)
 	}
 	// The provider body is not logged: it can carry the farmer's details.
 	// Its message is, so it is stripped of both our credentials and whatever
@@ -253,19 +258,30 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	if cause, err := refusalIn(becknResponse); err != nil {
 		log.Warnf(ctx, "%s refused the request: %v (provider said: %q)",
 			plan.BindingKey, err, s.redactString(redactSent(cause, upstreamRequest)))
-		return err
+		return mappingFailure(provider, err)
 	}
 	if len(becknResponse) == 0 {
 		// No response half, or its transform matched nothing. Either way there
 		// is no Beckn response, and returning the provider's own shape would
 		// be worse than failing.
-		return fmt.Errorf("the response half of %s produced nothing, so %s cannot be answered",
-			call.Mappings, plan.BindingKey)
+		return model.NewCodedErr(http.StatusBadGateway, util.CodeUnreadableAnswer, fmt.Errorf(
+			"the response half of %s produced nothing, so %s cannot be answered", call.Mappings, plan.BindingKey)).
+			WithMessage("the provider's response could not be converted")
 	}
 
 	ctx.ResponseBody = becknResponse
 	log.Infof(ctx, "served %s in %d bytes", plan.BindingKey, len(becknResponse))
 	return nil
+}
+
+// mappingFailure leaves a classified mapping refusal as it is. An unclassified
+// one is the mapping file failing to load or compile: this adapter's setup.
+func mappingFailure(provider string, err error) error {
+	var classified model.BecknErrorer
+	if errors.As(err, &classified) {
+		return err
+	}
+	return notConfiguredErr(provider, err)
 }
 
 // buildRequest produces what the provider is sent.
@@ -374,9 +390,7 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 	// network's request with our data.
 	receiver := contextValue(becknContext, "bpp_id", "bppId", "receiverId")
 	if receiver == "" {
-		return false, model.NewBadReqErr("", fmt.Errorf(
-			"the request names no receiver, so there is nothing to decide by: "+
-				"set context.receiverId to the participant that should answer"))
+		return false, model.NewMissingContextFieldErr("receiverId")
 	}
 
 	if ctx.OwnSubscriberID == "" {
@@ -392,7 +406,7 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 		return false, err
 	}
 
-	target, err := destinationOf(becknContext, receiver, ctx.OwnSubscriberID)
+	target, err := destinationOf(becknContext)
 	if err != nil {
 		return false, err
 	}
@@ -439,27 +453,23 @@ func (s *Step) agreedToReadFrom(ctx *model.StepContext, receiver string) error {
 
 // destinationOf builds the URL a request for another participant is sent to.
 // The address is context.bppUri, so the caller names where we send it.
-func destinationOf(becknContext map[string]any, receiver, us string) (*url.URL, error) {
+func destinationOf(becknContext map[string]any) (*url.URL, error) {
 	raw := contextValue(becknContext, "bpp_uri", "bppUri", "receiverUri")
 	if raw == "" {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"the request is for %s rather than %s, but names no context.bppUri, "+
-				"so there is no address to send it to", receiver, us))
+		return nil, model.NewMissingContextFieldErr("bppUri")
 	}
 
 	target, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || target.Host == "" {
-		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT", fmt.Errorf(
-			"context.bppUri %q is not a URL this request can be sent to", raw))
+		return nil, model.NewBadReqErr("CTX_INVALID_BPP_URI", fmt.Errorf(
+			"context.bppUri %q is not a URL this request can be sent to", raw)).WithPath("$.context.bppUri")
 	}
 
 	// The proxy replaces the request URL outright, so a bare bppUri would
 	// arrive at the other network's mount with no action left on it.
 	action := contextValue(becknContext, "action")
 	if action == "" {
-		return nil, model.NewBadReqErr("", fmt.Errorf(
-			"the request is for %s rather than %s, but names no context.action, "+
-				"so there is no endpoint to send it to", receiver, us))
+		return nil, model.NewMissingContextFieldErr("action")
 	}
 	if target.Path == "" {
 		target.Path = "/"
@@ -475,7 +485,7 @@ func becknContextOf(body []byte) (map[string]any, error) {
 		Context map[string]any `json:"context"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, model.NewBadReqErr("SCH_INVALID_FORMAT",
+		return nil, model.NewBadReqErr("SCH_INVALID_JSON",
 			fmt.Errorf("payload could not be read: %w", err))
 	}
 	return payload.Context, nil

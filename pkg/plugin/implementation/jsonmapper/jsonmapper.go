@@ -345,7 +345,8 @@ func (m *Mapper) Verify(ctx context.Context, mappingRef string, input any) error
 		if evalErr != nil {
 			log.Errorf(ctx, evalErr, "JSON mapping %s precondition failed to evaluate: %v", mappingRef, evalErr)
 			return model.NewBadReqErr(codeAdaptationFailed, fmt.Errorf(
-				"mapping %q precondition could not be applied: %w", mappingRef, evalErr))
+				"mapping %q precondition could not be applied: %w", mappingRef, evalErr)).
+				WithMessage("the request could not be checked")
 		}
 
 		holds, answered := asBool(result)
@@ -656,11 +657,13 @@ func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mapping
 			// half, is nothing the caller did -- reporting 400 sends them off
 			// to fix a request that was fine. 502: the upstream exchange is
 			// what failed.
-			return nil, model.NewCodedErr(http.StatusBadGateway, codeAdaptationFailed, wrapped)
+			return nil, model.NewCodedErr(http.StatusBadGateway, codeAdaptationFailed, wrapped).
+				WithMessage("the provider's response could not be converted")
 		}
 		// On the request leg the mapping is valid and the payload is not what it
 		// expected, so this is the caller's request being wrong.
-		return nil, model.NewBadReqErr(codeAdaptationFailed, wrapped)
+		return nil, model.NewBadReqErr(codeAdaptationFailed, wrapped).
+			WithMessage("the request could not be converted for the provider")
 	}
 	return result, nil
 }

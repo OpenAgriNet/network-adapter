@@ -171,13 +171,13 @@ func TestSendNack(t *testing.T) {
 			name:     "bad request (400)",
 			err:      model.NewBadReqErr("", errors.New("bad request error")),
 			status:   http.StatusBadRequest,
-			expected: `{"message":{"ack":{"status":"NACK"},"error":{"code":"SCH_INVALID_FORMAT","message":"BAD Request: bad request error"}}}`,
+			expected: `{"message":{"ack":{"status":"NACK"},"error":{"code":"SCH_INVALID_FORMAT","message":"bad request error"}}}`,
 		},
 		{
 			name:     "not found (404)",
 			err:      model.NewNotFoundErr("", errors.New("endpoint not found")),
 			status:   http.StatusNotFound,
-			expected: `{"message":{"ack":{"status":"NACK"},"error":{"code":"NET_ENTITY_NOT_FOUND","message":"Endpoint not found: endpoint not found"}}}`,
+			expected: `{"message":{"ack":{"status":"NACK"},"error":{"code":"NET_ENTITY_NOT_FOUND","message":"endpoint not found"}}}`,
 		},
 		{
 			name:     "InternalServerError",
@@ -203,7 +203,7 @@ func TestSendNack(t *testing.T) {
 			name:     "v2 SchemaValidationErr",
 			err:      model.NewBadReqErr("", errors.New("field missing")),
 			status:   http.StatusBadRequest,
-			expected: `{"message":{"status":"NACK","messageId":"msg-v2-1","error":{"code":"SCH_INVALID_FORMAT","message":"BAD Request: field missing"}}}`,
+			expected: `{"message":{"status":"NACK","messageId":"msg-v2-1","error":{"code":"SCH_INVALID_FORMAT","message":"field missing"}}}`,
 		},
 		{
 			name:     "v2 sign validation (401)",

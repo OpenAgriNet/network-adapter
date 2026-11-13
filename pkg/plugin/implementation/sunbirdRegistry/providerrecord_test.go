@@ -422,6 +422,34 @@ func TestProviderRecordReportsAFailingParticipantRead(t *testing.T) {
 	}
 }
 
+// A registry that answers with an error status, or not at all, is the
+// registry being unavailable: a 503 the caller is told about in plain words.
+func TestSearchRecords_RegistryUnavailable_Returns503(t *testing.T) {
+	t.Parallel()
+
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer failing.Close()
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closedURL := closed.URL
+	closed.Close()
+
+	for name, registryURL := range map[string]string{"error status": failing.URL, "not reachable": closedURL} {
+		t.Run(name, func(t *testing.T) {
+			_, err := resolvePlan(t, newTestClient(t, registryURL, nil))
+
+			var codedErr *model.CodedErr
+			if !errors.As(err, &codedErr) || codedErr.HTTPStatus() != http.StatusServiceUnavailable {
+				t.Fatalf("error = %v, want a 503", err)
+			}
+			if got := codedErr.BecknError(); got.Code != "NET_DOWNSTREAM_UNAVAILABLE" || got.Message != "registry is unavailable" {
+				t.Errorf("answer = %s %q, want NET_DOWNSTREAM_UNAVAILABLE %q", got.Code, got.Message, "registry is unavailable")
+			}
+		})
+	}
+}
+
 // --- both response envelopes ------------------------------------------------
 
 func TestProviderRecordAcceptsEitherEnvelope(t *testing.T) {

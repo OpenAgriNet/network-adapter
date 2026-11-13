@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -239,7 +240,8 @@ func (h *stdHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// request is the publisher path doing exactly what it should.
 			if h.hasProviderSteps && len(stepCtx.ResponseBody) == 0 {
 				err = model.NewNotFoundErr("", fmt.Errorf(
-					"this module serves no capability matching the request"))
+					"this module serves no capability matching the request")).
+					WithMessage("no provider serves this request")
 				log.Errorf(stepCtx, err, "No step answered and no route was set: %v", err)
 				h.signNackResponse(stepCtx, err)
 				responseBody = sendNack(stepCtx, wrapped, err)
@@ -460,7 +462,7 @@ func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpC
 		}
 		for _, step := range responseSteps {
 			if err := step.RunOnResponse(ctx, rctx); err != nil {
-				return err
+				return fmt.Errorf("%w: %w", errResponseRefused, err)
 			}
 		}
 		// Capture only after all response steps succeed — if a step fails the
@@ -470,14 +472,53 @@ func proxy(ctx *model.StepContext, r *http.Request, w http.ResponseWriter, httpC
 		return nil
 	}
 
+	// Without this the proxy answers a failure with an empty 502, the one
+	// error a caller would receive outside the NACK envelope.
+	errorHandler := func(w http.ResponseWriter, _ *http.Request, err error) {
+		log.Errorf(ctx, err, "forwarding to %s failed", target)
+		sendNack(ctx, w, forwardingFailure(err))
+	}
+
 	p := &httputil.ReverseProxy{
 		Director:       director,
 		Transport:      httpClient.Transport,
 		ModifyResponse: modifyResponse,
+		ErrorHandler:   errorHandler,
 		BufferPool:     reverseProxyBufferPool{},
 	}
 
 	p.ServeHTTP(w, r)
+}
+
+// errResponseRefused marks a failure of a response step, as opposed to the
+// forwarded request never getting an answer.
+var errResponseRefused = errors.New("a response step refused the forwarded response")
+
+// codeDownstreamUnavailable is the Beckn code for a service this adapter
+// depends on failing to answer.
+const codeDownstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
+
+// codeTimeout is the Beckn code for a service that did not answer in time.
+const codeTimeout = "NET_TIMEOUT"
+
+// forwardingFailure is what the caller is told when a forwarded request fails.
+// A response step's own classification stands; anything else is the service
+// behind the proxy failing.
+func forwardingFailure(err error) error {
+	var classified model.BecknErrorer
+	switch {
+	case errors.As(err, &classified):
+		return err
+	case errors.Is(err, context.DeadlineExceeded):
+		return model.NewCodedErr(http.StatusGatewayTimeout, codeTimeout, err).
+			WithMessage("the forwarded service did not answer in time")
+	case errors.Is(err, errResponseRefused):
+		return model.NewCodedErr(http.StatusBadGateway, codeDownstreamUnavailable, err).
+			WithMessage("the forwarded service's response was refused")
+	default:
+		return model.NewCodedErr(http.StatusServiceUnavailable, codeDownstreamUnavailable, err).
+			WithMessage("the forwarded service is unavailable")
+	}
 }
 
 // LoadPlugin is a generic function to load and validate plugins.

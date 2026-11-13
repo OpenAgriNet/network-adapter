@@ -534,3 +534,49 @@ func TestValidateConfigFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestWithUnknownEndpointNack_UnknownPath_AnswersNack404(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle("/consumer/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	handler := withUnknownEndpointNack(mux)
+
+	unknown := httptest.NewRecorder()
+	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodPost, "/no-such-path", nil))
+	known := httptest.NewRecorder()
+	handler.ServeHTTP(known, httptest.NewRequest(http.MethodPost, "/consumer/select", nil))
+
+	want := `{"message":{"status":"NACK","error":{"code":"NET_ENTITY_NOT_FOUND","message":"unknown endpoint: /no-such-path"}}}`
+	if unknown.Code != http.StatusNotFound || unknown.Body.String() != want {
+		t.Errorf("unknown path answered %d %s, want 404 %s", unknown.Code, unknown.Body.String(), want)
+	}
+	if known.Code != http.StatusTeapot {
+		t.Errorf("a served path answered %d, want the module's own answer", known.Code)
+	}
+}
+
+func TestWithResponseDeadline_EndsWorkBeforeTheWriteTimeout(t *testing.T) {
+	var remaining time.Duration
+	handler := withResponseDeadline(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		deadline, _ := r.Context().Deadline()
+		remaining = time.Until(deadline)
+	}), 30*time.Second)
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
+
+	if remaining <= 27*time.Second || remaining > 28*time.Second {
+		t.Errorf("work deadline is %v away, want just under the 30s write timeout less the %v margin", remaining, responseMargin)
+	}
+}
+
+func TestWithResponseDeadline_NoWriteTimeout_SetsNoDeadline(t *testing.T) {
+	hasDeadline := true
+	handler := withResponseDeadline(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, hasDeadline = r.Context().Deadline()
+	}), 0)
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", nil))
+
+	if hasDeadline {
+		t.Error("a server with no write timeout must not cut requests off")
+	}
+}

@@ -500,7 +500,7 @@ func TestRunKeepsTheProvidersAnswerWhenTheCallerLeavesDuringBackoff(t *testing.T
 }
 
 // A 4xx is the provider's final word, retried or not. A caller leaving at the
-// same moment does not turn it into a 504.
+// same moment does not turn it into a 504, and a 400 reaches the caller as one.
 func TestRunReportsAPermanentAnswerThatArrivesAsTheCallerLeaves(t *testing.T) {
 	t.Parallel()
 
@@ -522,8 +522,8 @@ func TestRunReportsAPermanentAnswerThatArrivesAsTheCallerLeaves(t *testing.T) {
 
 	err := step.Run(&model.StepContext{Context: ctx, OwnSubscriberID: "oan.test", Body: []byte(selectBody)})
 	var coded *model.CodedErr
-	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadGateway {
-		t.Errorf("status for a 400 answer = %v, want 502", err)
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
+		t.Errorf("status for a 400 answer = %v, want 400", err)
 	}
 	if !strings.Contains(err.Error(), "400") {
 		t.Errorf("error %q drops the provider's 400", err)
@@ -1899,10 +1899,10 @@ func TestRunSendsTheMethodInCanonicalCase(t *testing.T) {
 	}
 }
 
-// The classification is the point. A row that cannot produce a request is a
-// bad request, not a provider that failed to answer -- and it must not be
-// retried on the way to being reported.
-func TestRunReportsAnUnusableBaseURLAsABadRequest(t *testing.T) {
+// The classification is the point. A row that cannot produce a request is this
+// adapter's setup, not the caller's request nor a provider that failed to
+// answer -- and it must not be retried on the way to being reported.
+func TestRunReportsAnUnusableBaseURLAsASetupMistake(t *testing.T) {
 	t.Parallel()
 
 	plan := testPlan("registry:8081", http.MethodGet) // scheme left off
@@ -1914,8 +1914,11 @@ func TestRunReportsAnUnusableBaseURLAsABadRequest(t *testing.T) {
 		t.Fatal("expected an unusable base url to be reported")
 	}
 	var coded *model.CodedErr
-	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusBadRequest {
-		t.Errorf("error = %v, want a bad request rather than a bad gateway", err)
+	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusInternalServerError {
+		t.Errorf("error = %v, want a 500 rather than a bad request or a bad gateway", err)
+	}
+	if got := coded.BecknError().Message; got != "mausamgram is not configured on this adapter" {
+		t.Errorf("message = %q, want the setup mistake named without the registry detail", got)
 	}
 	if strings.Contains(err.Error(), "did not answer") {
 		t.Errorf("error = %v; a row that cannot build a request is not the provider failing", err)
@@ -2360,8 +2363,8 @@ func TestOAuth2ClassifiesATokenFailureAsUpstream(t *testing.T) {
 			// loop wraps its terminal failure in a 502 too, so an unclassified
 			// token error would still surface as one. The message is what says
 			// the exchange is where it broke, rather than the provider call.
-			if !strings.Contains(err.Error(), "oauth2 token exchange failed") {
-				t.Errorf("error %v does not identify the token exchange as the failure", err)
+			if got := coded.BecknError().Message; got != "could not get a login token from mausamgram" {
+				t.Errorf("message = %q; it does not identify the token exchange as the failure", got)
 			}
 			if len(seen) != 0 {
 				t.Errorf("the provider was called %d times without a token", len(seen))
