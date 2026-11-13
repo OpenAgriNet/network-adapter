@@ -89,6 +89,8 @@ V1 caller --search--> V1 adapter --select--> V2 adapter --GET--> Mausamgram
 
 So a V1 request is answered out of the V2 network, with the V2 representation genuinely on the wire in between, and the reply can be diffed against the legacy one field by field. That is where the comparison this stack exists to support actually happens. See [v1-adapter/README.md](v1-adapter/README.md).
 
+The V1 adapter also runs the other mode. Anything it is not configured to answer is forwarded to the legacy service on :3000 and the reply comes back untouched, which is checked here by sending the same request to both and comparing. They agree on status and on every byte of the body except the timestamp the legacy service regenerates per call. The weather request, which the adapter does answer, is served locally and never forwarded.
+
 ## Poking at it by hand
 
 `collection/` is an API collection covering all of the above: the V1 requests, the legacy requests to diff them against, the two legs inside the hop, and the registry rows that make the hop work. Runs in Postman or from the command line with newman. See [collection/README.md](collection/README.md).
@@ -96,3 +98,5 @@ So a V1 request is answered out of the V2 network, with the V2 representation ge
 ## What is not covered yet
 
 The failure path proves V1 answers with an empty catalog rather than an error, but the retry budget is only partly exercised. A provider that refuses fast costs about four seconds. A provider that hangs costs up to about ninety. The second shape needs a slow mode in the mock before the adapter's timeout is chosen.
+
+Forwarding runs into the same question from the other side, and it already bit once here. The legacy knowledge path takes about seventy-five seconds to fail in this stack, and the adapter's write timeout started at sixty, so the forwarded reply arrived after the deadline and the caller got a dropped connection instead of the legacy service's own error. It reads like the adapter failing when it was the old service being slow. A forwarding adapter's write timeout has to exceed the slowest thing it forwards to, which means the real one cannot be chosen until the old service's live latency is known.

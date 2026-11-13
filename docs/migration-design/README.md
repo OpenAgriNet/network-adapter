@@ -75,20 +75,25 @@ On day one every capability is on **forward**, so nothing has changed for anyone
 
 ### Where the modes are defined
 
-In the V1 Adapter's own configuration file, as one row per capability. Nowhere else.
+In the V1 Adapter's own configuration file, and nowhere else. A capability is in **answer** mode when it is named in the list of capabilities the adapter serves itself. Everything not named there falls through to forwarding, which is listed last and only ever sees a request nothing above it answered.
 
 ```yaml
-capabilities:
-  - name: weather-forecast
-    mode: answer           # or: forward
-    mapping: weather-forecast-v1
-  - name: mandi-price
-    mode: forward
+      providerSteps:
+        - id: WeatherObservation
+          config:
+            bindingKeys: "WFC|Weather-Forecast-Mausamgram"   # answer mode
+      steps:
+        - WeatherObservation
+        - addRoute                                           # everything else
 ```
 
-That file is the only place a capability's mode is recorded, and changing a row is a configuration reload rather than a deploy. Nothing else in the system knows which mode a capability is in: not Bharat Vistaar, not the old service, not V2.
+The forwarding target is a second table listing the old service's own endpoints and the address to send them to. It is written once and then left alone; moving a capability to answer mode does not touch it.
 
-A capability with no row is **forwarded**. So the table only ever lists what we have looked at, and leaving something out is always the safe answer.
+The order of that `steps` list is the whole of the dispatch. Each capability step either recognises the request and answers it, or passes it through untouched. Forwarding runs last, so a request reaches it only when nothing recognised it, and a request already answered is left alone rather than being sent upstream a second time.
+
+Changing which mode a capability is in is a configuration reload rather than a deploy, and nothing else in the system knows which mode a capability is in: not Bharat Vistaar, not the old service, not V2.
+
+A capability nobody is configured to answer is **forwarded**. So the configuration only ever lists what we have looked at, and leaving something out is always the safe answer.
 
 ### Who converts what
 
@@ -274,7 +279,11 @@ Level 4 works even if the V1 Adapter will not start. That is what running it sep
 
 ## Status
 
-Design agreed. The adapter is not built, but the weather use case now runs end to end on one machine, against a stubbed provider, so there is a recorded set of V1 replies for the adapter to be written against. See [local stack](local-stack/README.md).
+Both modes run end to end on one machine, against a stubbed provider. See [local stack](local-stack/README.md).
+
+In **answer** mode, the weather use case is served by OpenAgriNet and replies in V1. In **forward** mode, everything else reaches the old service and comes back with the same status and the same bytes as calling that service directly, which is what was measured rather than assumed. The dispatch between the two is configuration, and the adapter itself is the same binary and the same plugins V2 runs.
+
+What that leaves is the real deployment: the old service's live address instead of a local one, and the signing and schema steps the local stack deliberately leaves out.
 
 **Blocking:** agree the address handover with whoever operates the old service, and make one call against the live address to settle the reply shape.
 

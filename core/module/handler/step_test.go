@@ -881,9 +881,7 @@ func TestAddRouteStep_Run_NoBasePath_UsesRawAction(t *testing.T) {
 	}
 }
 
-// A module that serves some capabilities itself and forwards the rest lists a
-// provider step ahead of addRoute. Both of these are what keeps the two from
-// fighting over the same request.
+// Both halves of the dispatch in ADR-0006.
 
 func TestAddRouteStepLeavesAnAnsweredRequestAlone(t *testing.T) {
 	mr := &mockRecordingRouter{}

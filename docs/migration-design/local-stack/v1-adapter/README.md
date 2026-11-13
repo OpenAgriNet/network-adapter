@@ -22,8 +22,8 @@ V1 caller --search--> V1 adapter --select--> V2 adapter --GET--> Mausamgram
               :3001                 :3002               :9100
 ```
 
-Both adapters are the same beckn-onix binary and the same three plugins. They
-differ in a config file and a mapping. V2 is what travels between them, so the
+Both adapters are the same beckn-onix binary and the same plugins. They differ
+in a config file and a mapping. V2 is what travels between them, so the
 V2 representation is genuinely in the path and anything it cannot carry is
 genuinely lost. V1 never leaves the outer edges.
 
@@ -32,6 +32,50 @@ adapter the way any upstream is reached: a base URL off a participant record, a
 method and a path off an action plan, a mapping in both directions. That is the
 second claim this spike makes and the more useful one. Serving V1 is a
 deployment of what already exists, not a second thing to build.
+
+## The other mode
+
+The diagram above is one of two paths, and the one that took the work. The other
+is the one almost every request takes on day one:
+
+```
+V1 caller --search--> V1 adapter --> legacy BharatVistaar Beckn
+              :3001                           :3000
+```
+
+Anything the adapter is not configured to answer is forwarded to the old service
+and the reply comes back untouched. That is what makes the migration
+incremental: a capability starts forwarded, moves to answered when its mapping
+is ready, and moves back by deleting a line. On day one nothing is answered
+locally and the old service sees exactly the traffic it sees today.
+
+It needed one change in beckn-onix and no new code beyond it. The routing step
+already matched a request to an address and the proxy already streamed the reply
+back verbatim; what it could not do was stand behind a step that had already
+answered, because setting a route discards the answer and calls upstream for one
+we were holding. It now leaves an answered request alone. The order of the steps
+is then the whole of the dispatch, with forwarding last.
+
+Measured both ways. A capability the adapter does not serve returns the same
+status and the same body through :3001 as calling :3000 directly, differing only
+in the timestamp the legacy service regenerates per call. The weather request is
+answered locally in a tenth of a second and never forwarded.
+
+Two things this turned up that a design document would not have:
+
+**The write timeout is a forwarding decision, not a serving one.** The legacy
+knowledge path takes about seventy-five seconds to fail in this stack. The
+adapter's write timeout was sixty, so the forwarded reply arrived after the
+deadline, the server discarded it, and the caller got a dropped connection. It
+reads like the adapter failing when it was the old service being slow. It must
+exceed the slowest thing it forwards to, so the real value cannot be chosen
+until the old service's live latency is known.
+
+**Two of the old service's paths cannot be forwarded as written.**
+`feedback/:id` and `submit-feedback/:id` carry a path parameter, and the routing
+table matches an exact path. Neither is a Beckn action and neither carries a
+Beckn envelope, so neither reaches this adapter today. If BharatVistaar is ever
+pointed here for them, they fail.
 
 ## What is running
 
@@ -178,8 +222,10 @@ hop.
 
 ## What had to change in beckn-onix
 
-Three capabilities, all small, all general rather than weather specific, all
-now merged into the adapter and covered by its test suite.
+Four changes, all small, all general rather than weather specific, all now
+merged into the adapter and covered by its test suite. The fourth, the routing
+step leaving an answered request alone, is described under the other mode
+above; the three the answer path needed are below.
 
 **A fallback half in a mapping.** onix had exactly one way to not answer: a
 NACK, which is an error status and an error body. V1 has exactly one way to not
@@ -256,6 +302,9 @@ blocking, but it is still unverified against the real caller.
 - `mappings/weather-forecast-mausamgram.search.yaml` — V1 to V2 on the way in,
   V2 to V1 on the way out, and the fallback body for when there is no answer.
   Commented against the legacy generator it reproduces.
+- `routing.yaml` — where a request goes when no capability answered it. One row
+  per endpoint of the old service, enumerated rather than wildcarded, so the
+  file doubles as the inventory of what this adapter stands in front of.
 - `up.sh`, `down.sh` — start and stop the three processes this directory adds.
 - `run.sh` — up, exercise all five scenarios against both services, diff, down.
 

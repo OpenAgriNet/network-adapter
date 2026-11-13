@@ -1,9 +1,5 @@
-# Where a request goes when no capability step answered it.
-#
-# This is forward mode. Every capability starts here and moves to answer mode
-# one at a time, which is what makes the migration incremental: on day one
-# nothing is answered locally and the old service sees exactly the traffic it
-# sees today.
+# Where a request goes when no capability step answered it. Forward mode, and
+# the default for anything not bound to a step: ADR-0006.
 #
 # The endpoints are the old service's own, transcribed from its controller.
 # They are enumerated rather than wildcarded because the router matches an
@@ -14,13 +10,9 @@
 # target.url has the endpoint appended back on, so mobility/search becomes
 # http://localhost:3000/mobility/search.
 #
-# NOT COVERED, and these are the honest gaps:
-#
-#   feedback/:id            a path parameter, which an exact-match table cannot
-#   submit-feedback/:id     express. Neither is a Beckn action and neither
-#                           carries a Beckn envelope, so neither reaches this
-#                           adapter today. If Bharat Vistaar is ever pointed
-#                           here for them, they 404.
+# NOT COVERED: feedback/:id and submit-feedback/:id take a path parameter an
+# exact-match table cannot express. Neither is a Beckn action and neither
+# carries a Beckn envelope, so neither reaches this adapter today.
 routingRules:
   - domain: "schemes:vistaar"
     version: "1.1.0"
