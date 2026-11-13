@@ -1,0 +1,42 @@
+# Where a request goes when no capability step answered it.
+#
+# This is forward mode. Every capability starts here and moves to answer mode
+# one at a time, which is what makes the migration incremental: on day one
+# nothing is answered locally and the old service sees exactly the traffic it
+# sees today.
+#
+# The endpoints are the old service's own, transcribed from its controller.
+# They are enumerated rather than wildcarded because the router matches an
+# exact path, and because a list is the inventory of what we are standing in
+# front of. A path not listed is a path we did not know existed.
+#
+# Written without a leading slash: the handler strips it before the lookup, and
+# target.url has the endpoint appended back on, so mobility/search becomes
+# http://localhost:3000/mobility/search.
+#
+# NOT COVERED, and these are the honest gaps:
+#
+#   feedback/:id            a path parameter, which an exact-match table cannot
+#   submit-feedback/:id     express. Neither is a Beckn action and neither
+#                           carries a Beckn envelope, so neither reaches this
+#                           adapter today. If Bharat Vistaar is ever pointed
+#                           here for them, they 404.
+routingRules:
+  - domain: "schemes:vistaar"
+    version: "1.1.0"
+    targetType: "url"
+    target:
+      url: "http://localhost:3000"
+    endpoints:
+      - mobility/search
+      - mobility/select
+      - mobility/init
+      - mobility/confirm
+      - mobility/rating
+      - mobility/status
+      - dsep/search
+      - dsep/select
+      - dsep/init
+      - dsep/confirm
+      - dsep/rating
+      - vistaar-proxy

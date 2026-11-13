@@ -39,7 +39,7 @@ export ONIX_MAPPINGS
 "$HERE/down.sh" >/dev/null 2>&1 || true
 mkdir -p "$WORK"
 
-echo "building the adapter and the three plugins it loads"
+echo "building the adapter and the four plugins it loads"
 ( cd "$ONIX"
   go build -o "$WORK/adapter-bin" ./cmd/adapter/
   # Emptied first. Every .so in this directory is loaded, so one left behind by
@@ -48,7 +48,9 @@ echo "building the adapter and the three plugins it loads"
   # change that made it stale.
   rm -rf "$HERE/plugins"
   mkdir -p "$HERE/plugins"
-  for name in sunbirdRegistry jsonmapper WeatherObservation; do
+  # router is the V1 adapter's forward mode: anything WeatherObservation did
+  # not answer goes to the old service through it.
+  for name in sunbirdRegistry jsonmapper WeatherObservation router; do
     go build -buildmode=plugin -o "$HERE/plugins/$name.so" \
       "./pkg/plugin/implementation/$name/cmd/plugin.go"
   done

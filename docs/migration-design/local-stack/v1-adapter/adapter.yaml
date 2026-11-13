@@ -40,7 +40,11 @@ http:
   port: 3001
   timeout:
     read: 60
-    write: 60
+    # Above the slowest thing we forward to, not a round number. A forwarded
+    # answer that arrives after this deadline is discarded by the server and the
+    # caller gets a dropped connection, which looks like the adapter failing
+    # when it was the old service being slow.
+    write: 180
     idle: 60
 
 pluginManager:
@@ -74,6 +78,14 @@ modules:
         # signs or verifies, and simplekeymanager refuses to start without a
         # signing key -- so configuring one here would mean minting a key pair
         # for a path that never uses it.
+
+        # Forward mode. Anything no capability step answered goes to the old
+        # service untouched, which is how a capability can be moved across one
+        # at a time instead of all at once. See routing.yaml.
+        router:
+          id: router
+          config:
+            routingConfig: routing.yaml
 
         mapper:
           id: jsonmapper
@@ -114,3 +126,8 @@ modules:
 
       steps:
         - WeatherObservation
+        # Last, and only reached by a request no step above answered. addRoute
+        # leaves an answered request alone, so the order here is the whole
+        # dispatch: recognised capabilities are served locally, the rest is
+        # forwarded.
+        - addRoute
