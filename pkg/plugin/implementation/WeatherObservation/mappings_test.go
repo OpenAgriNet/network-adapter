@@ -547,6 +547,153 @@ func TestShippedMappingsTakeHoweverManyDaysTheProviderSent(t *testing.T) {
 	}
 }
 
+// TestShippedMappingsFilterByRequestedParametersAndTypes proves the response
+// keeps only what the caller named. The provider always answers with every
+// parameter, so the narrowing is the mapping's job.
+//
+// providerResponse is uneven on purpose: only the first two days carry rain, and
+// the third carries temperature alone, so a Rainfall request must also drop the
+// third day rather than emit it with no parameters.
+func TestShippedMappingsFilterByRequestedParametersAndTypes(t *testing.T) {
+	mappings := serveMappings(t)
+	defer mappings.Close()
+
+	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
+	if err != nil {
+		t.Fatalf("failed to build the mapper: %v", err)
+	}
+	defer closeMapper()
+
+	var provider any
+	if err := json.Unmarshal([]byte(providerResponse), &provider); err != nil {
+		t.Fatalf("failed to decode the provider response: %v", err)
+	}
+
+	allParameters := []string{"Alert", "Humidity", "Rainfall", "Temperature", "WindSpeed"}
+
+	cases := []struct {
+		name           string
+		parameters     any
+		types          any
+		wantDays       int
+		wantParameters []string
+	}{
+		{"no filter returns everything", nil, nil, 3, allParameters},
+		{"one parameter drops days without it", []any{"Rainfall"}, nil, 2, []string{"Rainfall"}},
+		{"a bare string is read as a list", "Rainfall", nil, 2, []string{"Rainfall"}},
+		{"two parameters", []any{"Rainfall", "Temperature"}, nil, 3, []string{"Rainfall", "Temperature"}},
+		{"a parameter the provider lacks returns nothing", []any{"SoilMoisture"}, nil, 0, nil},
+		{"types without Forecast return nothing", nil, []any{"Observation"}, 0, nil},
+		{"types with Forecast return everything", nil, []any{"Forecast"}, 3, allParameters},
+		{"types as a bare string", nil, "Forecast", 3, allParameters},
+		{"types mixing Forecast with another", nil, []any{"Observation", "Forecast"}, 3, allParameters},
+		{"a parameter alongside types without Forecast", []any{"Rainfall"}, []any{"Observation"}, 0, nil},
+		{"a parameter the response never carries", []any{"WindDirection"}, nil, 0, nil},
+		// Only the first day has a weather_warning, so one day with one parameter
+		// is the case where a one-element list could collapse to a bare object.
+		{"a parameter present on a single day", []any{"Alert"}, nil, 1, []string{"Alert"}},
+		{"matching is exact, so lower case finds nothing", []any{"rainfall"}, nil, 0, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var beckn map[string]any
+			if err := json.Unmarshal([]byte(selectRequest), &beckn); err != nil {
+				t.Fatalf("failed to decode the request: %v", err)
+			}
+			attributes := firstCommitment(t, beckn)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+			if tc.parameters != nil {
+				attributes["supportedParameters"] = tc.parameters
+			}
+			if tc.types != nil {
+				attributes["supportedObservationTypes"] = tc.types
+			}
+
+			got, err := mapper.Transform(context.Background(), mappings.URL+"/"+shippedMapping,
+				definition.DirectionResponse,
+				map[string]any{"beckn": beckn, "response": provider})
+			if err != nil {
+				t.Fatalf("Transform() returned an unexpected error: %v", err)
+			}
+			var answer map[string]any
+			if err := json.Unmarshal(got, &answer); err != nil {
+				t.Fatalf("failed to decode the answer: %v", err)
+			}
+			commitment := firstCommitment(t, answer)
+			resources, _ := commitment["resources"].([]any)
+
+			if len(resources) != tc.wantDays {
+				t.Fatalf("got %d resources, want %d", len(resources), tc.wantDays)
+			}
+			// The offer is rebuilt from the same list, so it cannot name a day
+			// the answer dropped.
+			offer, _ := commitment["offer"].(map[string]any)
+			if referenced, _ := offer["resourceIds"].([]any); len(referenced) != tc.wantDays {
+				t.Errorf("offer references %d resources, want %d", len(referenced), tc.wantDays)
+			}
+
+			seen := map[string]bool{}
+			for _, entry := range resources {
+				parameters, _ := entry.(map[string]any)["resourceAttributes"].(map[string]any)["parameters"].([]any)
+				if len(parameters) == 0 {
+					t.Errorf("a resource has no parameters, which the pack refuses")
+				}
+				for _, raw := range parameters {
+					seen[raw.(map[string]any)["parameter"].(string)] = true
+				}
+			}
+			var gotParameters []string
+			for name := range seen {
+				gotParameters = append(gotParameters, name)
+			}
+			slices.Sort(gotParameters)
+			if !slices.Equal(gotParameters, tc.wantParameters) {
+				t.Errorf("parameters = %v, want %v", gotParameters, tc.wantParameters)
+			}
+		})
+	}
+}
+
+// Filtering removes parameters; it must not touch what the kept ones say.
+func TestShippedMappingsFilterKeepsTheRequestedValuesUntouched(t *testing.T) {
+	mappings := serveMappings(t)
+	defer mappings.Close()
+
+	mapper, closeMapper, err := jsonmapper.New(context.Background(), &jsonmapper.Config{})
+	if err != nil {
+		t.Fatalf("failed to build the mapper: %v", err)
+	}
+	defer closeMapper()
+
+	var beckn map[string]any
+	if err := json.Unmarshal([]byte(selectRequest), &beckn); err != nil {
+		t.Fatalf("failed to decode the request: %v", err)
+	}
+	attributes := firstCommitment(t, beckn)["resources"].([]any)[0].(map[string]any)["resourceAttributes"].(map[string]any)
+	attributes["supportedParameters"] = []any{"Rainfall"}
+
+	var provider any
+	if err := json.Unmarshal([]byte(providerResponse), &provider); err != nil {
+		t.Fatalf("failed to decode the provider response: %v", err)
+	}
+
+	got, err := mapper.Transform(context.Background(), mappings.URL+"/"+shippedMapping,
+		definition.DirectionResponse, map[string]any{"beckn": beckn, "response": provider})
+	if err != nil {
+		t.Fatalf("Transform() returned an unexpected error: %v", err)
+	}
+	var answer map[string]any
+	if err := json.Unmarshal(got, &answer); err != nil {
+		t.Fatalf("failed to decode the answer: %v", err)
+	}
+	resources, _ := firstCommitment(t, answer)["resources"].([]any)
+
+	for i, wantRain := range []float64{12.4, 3.1} {
+		parameters, _ := resources[i].(map[string]any)["resourceAttributes"].(map[string]any)["parameters"].([]any)
+		assertParameter(t, parameters, "Rainfall", "mm", map[string]float64{"sum": wantRain})
+	}
+}
+
 func firstCommitment(t *testing.T, answer map[string]any) map[string]any {
 	t.Helper()
 	message, _ := answer["message"].(map[string]any)

@@ -20,7 +20,8 @@ request: |
   /* Request half: an OnDemand KnowledgeAdvisory select -> POST /search.
 
      Only `query` is required upstream; every other SearchRequest field has a
-     provider-side default, so nothing else is sent.
+     provider-side default, so only `provider_id` and `index_name` are added,
+     and only when the request names them.
 
      The base URL and path are NOT here -- they live in the provider's registry
      ProviderSchema row, so moving the provider is a registry write and no file
@@ -52,7 +53,15 @@ request: |
     $categories := [$ra.subjectCategories];
     $schemesOnly := $count($categories) = 1 and $categories[0] = "Scheme";
 
-    $search := { "query": $trim($join($ra.topics, " ")) };
+    /* The provider the caller selected scopes the search. OMITTED when the
+       offer names none, for the same reason as index_name: absent means the
+       provider searches everything it holds. */
+    $providerId := beckn.message.contract.commitments[0].offer.provider.id;
+
+    $search := $merge([
+      { "query": $trim($join($ra.topics, " ")) },
+      $providerId ? { "provider_id": $providerId } : {}
+    ]);
 
     $schemesOnly
       ? $merge([$search, { "index_name": "documents-index-schemes" }])
