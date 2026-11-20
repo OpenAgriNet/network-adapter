@@ -19,11 +19,11 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
-// payload represents the structure of the data payload with context information.
 // codeActionNotSupported is the adapter's code for an action no loaded spec or
 // pack validates.
 const codeActionNotSupported = "SCH_ACTION_NOT_SUPPORTED"
 
+// payload represents the structure of the data payload with context information.
 type payload struct {
 	Context struct {
 		Action string `json:"action"`
