@@ -96,6 +96,10 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	defer cancel()
 
 	method := util.CanonicalMethod(call.Method)
+	mapped, err := s.withBodyCredential(attemptCtx, auth, method, mapped)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, util.RequestBody(method, mapped))
 	if err != nil {
 		return nil, util.DoNotRetry(fmt.Errorf("could not build the request: %w", err))

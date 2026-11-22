@@ -3,7 +3,9 @@
 package common
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -27,7 +29,7 @@ type AuthProfile struct {
 	// operator guessing which block to look at.
 	Provider string
 
-	// One of none, basic, header, query, oauth2, tokenQuery or tokenHeader.
+	// One of none, basic, header, query, body, oauth2, tokenQuery or tokenHeader.
 	Scheme string
 
 	// Variable NAMES, never the values.
@@ -41,6 +43,10 @@ type AuthProfile struct {
 	// The parameter to add, and the variable holding its value.
 	QueryName     string
 	QueryValueEnv string
+
+	// The JSON body field to set, and the variable holding its value.
+	BodyField    string
+	BodyValueEnv string
 
 	// The token endpoint. Not a credential, so it is named directly -- but it
 	// is deployment-specific, so the reference config carries a placeholder.
@@ -110,6 +116,11 @@ func (a *AuthProfile) validate() error {
 			return fmt.Errorf(
 				"%s: authScheme query requires queryName and queryValueEnv", a.Provider)
 		}
+	case util.AuthSchemeBody:
+		if a.BodyField == "" || a.BodyValueEnv == "" {
+			return fmt.Errorf(
+				"%s: authScheme body requires bodyField and bodyValueEnv", a.Provider)
+		}
 	case util.AuthSchemeOAuth2:
 		if a.TokenURL == "" || a.ClientIDEnv == "" || a.ClientSecretEnv == "" {
 			return fmt.Errorf(
@@ -169,7 +180,7 @@ func (a *AuthProfile) validate() error {
 			"and is none where the upstream needs no credential", a.Provider)
 	default:
 		return fmt.Errorf(
-			"%s: unknown authScheme %q: must be none, basic, header, query, "+
+			"%s: unknown authScheme %q: must be none, basic, header, query, body, "+
 				"oauth2, tokenQuery or tokenHeader", a.Provider, a.Scheme)
 	}
 	return nil
@@ -251,6 +262,8 @@ var authFields = map[string]func(*AuthProfile, string){
 	"headerValueEnv":  func(p *AuthProfile, v string) { p.HeaderValueEnv = v },
 	"queryName":       func(p *AuthProfile, v string) { p.QueryName = v },
 	"queryValueEnv":   func(p *AuthProfile, v string) { p.QueryValueEnv = v },
+	"bodyField":       func(p *AuthProfile, v string) { p.BodyField = v },
+	"bodyValueEnv":    func(p *AuthProfile, v string) { p.BodyValueEnv = v },
 	"tokenUrl":        func(p *AuthProfile, v string) { p.TokenURL = v },
 	"clientIdEnv":     func(p *AuthProfile, v string) { p.ClientIDEnv = v },
 	"clientSecretEnv": func(p *AuthProfile, v string) { p.ClientSecretEnv = v },
@@ -289,6 +302,41 @@ func (s *Step) missingCredential(ctx context.Context, provider, scheme, envNames
 	// environment variable is configuration: retrying reports an operator's
 	// missing variable as the provider being down.
 	return util.DoNotRetry(err)
+}
+
+// withBodyCredential returns the mapped body with the body scheme's credential
+// added. Other schemes get the body back unchanged.
+func (s *Step) withBodyCredential(ctx context.Context, auth *authenticator, method string, mapped []byte) ([]byte, error) {
+	cfg := auth.cfg
+	if cfg.Scheme != util.AuthSchemeBody {
+		return mapped, nil
+	}
+	if !util.HasBody(method) {
+		return nil, util.DoNotRetry(fmt.Errorf(
+			"%s: authScheme body needs a request body, and %s sends none", cfg.Provider, method))
+	}
+	value := os.Getenv(cfg.BodyValueEnv)
+	if value == "" {
+		return nil, s.missingCredential(ctx, cfg.Provider, "body", cfg.BodyValueEnv)
+	}
+	return setBodyField(cfg.Provider, mapped, cfg.BodyField, value)
+}
+
+// setBodyField sets one field on a JSON object body, keeping every other field.
+func setBodyField(provider string, body []byte, field, value string) ([]byte, error) {
+	fields := map[string]json.RawMessage{}
+	if len(bytes.TrimSpace(body)) > 0 {
+		if err := json.Unmarshal(body, &fields); err != nil {
+			return nil, util.DoNotRetry(fmt.Errorf(
+				"%s: authScheme body needs the mapped request to be a JSON object: %w", provider, err))
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, util.DoNotRetry(fmt.Errorf("%s: could not encode the body credential: %w", provider, err))
+	}
+	fields[field] = encoded
+	return json.Marshal(fields)
 }
 
 // authenticate presents this provider's credentials, read from the environment
