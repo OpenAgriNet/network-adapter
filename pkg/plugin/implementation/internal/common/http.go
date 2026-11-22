@@ -141,6 +141,11 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 		// Asking again will not make the answer smaller.
 		return nil, util.DoNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
 	}
+	if auth.cfg.isAnswer(resp.StatusCode) {
+		log.Infof(ctx, "provider %s answered %s for %s %s; configured as an answer, so it is mapped",
+			auth.cfg.Provider, resp.Status, method, requested)
+		return body, nil
+	}
 	// Any 2xx, not 200 alone: 202, 204 and 201 are all legitimate answers. 3xx
 	// does not reach here, since the client follows redirects.
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {

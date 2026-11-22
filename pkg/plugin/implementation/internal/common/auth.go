@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,6 +49,11 @@ type AuthProfile struct {
 	// The JSON body field to set, and the variable holding its value.
 	BodyField    string
 	BodyValueEnv string
+
+	// Non-2xx statuses this provider uses for a real answer, such as SATHI's 409
+	// for "no stock". Their body goes to the response mapping instead of failing.
+	AnswerStatusesRaw string
+	AnswerStatuses    []int
 
 	// The token endpoint. Not a credential, so it is named directly -- but it
 	// is deployment-specific, so the reference config carries a placeholder.
@@ -183,7 +190,34 @@ func (a *AuthProfile) validate() error {
 			"%s: unknown authScheme %q: must be none, basic, header, query, body, "+
 				"oauth2, tokenQuery or tokenHeader", a.Provider, a.Scheme)
 	}
+	if a.AnswerStatusesRaw != "" {
+		statuses, err := parseAnswerStatuses(a.Provider, a.AnswerStatusesRaw)
+		if err != nil {
+			return err
+		}
+		a.AnswerStatuses = statuses
+	}
 	return nil
+}
+
+// parseAnswerStatuses reads a comma-separated list of 4xx statuses. 5xx stays a
+// failure so it is still retried, and 2xx is already an answer.
+func parseAnswerStatuses(provider, raw string) ([]int, error) {
+	var statuses []int
+	for _, part := range strings.Split(raw, ",") {
+		status, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || status < 400 || status > 499 {
+			return nil, fmt.Errorf("%s: answerStatuses %q must be a comma-separated list of 4xx statuses",
+				provider, raw)
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
+}
+
+// isAnswer reports whether this provider uses status for a real answer.
+func (a *AuthProfile) isAnswer(status int) bool {
+	return slices.Contains(a.AnswerStatuses, status)
 }
 
 // ParseProviderAuth builds one credential profile per provider from a plugin's
@@ -264,6 +298,7 @@ var authFields = map[string]func(*AuthProfile, string){
 	"queryValueEnv":   func(p *AuthProfile, v string) { p.QueryValueEnv = v },
 	"bodyField":       func(p *AuthProfile, v string) { p.BodyField = v },
 	"bodyValueEnv":    func(p *AuthProfile, v string) { p.BodyValueEnv = v },
+	"answerStatuses":  func(p *AuthProfile, v string) { p.AnswerStatusesRaw = v },
 	"tokenUrl":        func(p *AuthProfile, v string) { p.TokenURL = v },
 	"clientIdEnv":     func(p *AuthProfile, v string) { p.ClientIDEnv = v },
 	"clientSecretEnv": func(p *AuthProfile, v string) { p.ClientSecretEnv = v },
