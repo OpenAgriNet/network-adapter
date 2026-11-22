@@ -37,6 +37,7 @@ plugins=(
     "Grievance"
     "KnowledgeAdvisory"
     "AgricultureFacility"
+    "AgricultureResource"
     "manifestloader"
     "reqpreprocessor"
     "otelsetup"
