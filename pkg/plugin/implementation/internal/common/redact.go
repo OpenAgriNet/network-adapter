@@ -115,6 +115,12 @@ func (a *authenticator) secretForms() []string {
 			return nil
 		}
 		return []string{value}
+	case util.AuthSchemeBody:
+		value := os.Getenv(a.cfg.BodyValueEnv)
+		if value == "" {
+			return nil
+		}
+		return []string{value}
 	case util.AuthSchemeOAuth2:
 		// Both halves: the secret we send the issuer, and the token it gave
 		// back. The token is what reaches the provider.

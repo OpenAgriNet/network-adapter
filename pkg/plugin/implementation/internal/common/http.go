@@ -96,6 +96,10 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	defer cancel()
 
 	method := util.CanonicalMethod(call.Method)
+	mapped, err := s.withBodyCredential(attemptCtx, auth, method, mapped)
+	if err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, util.RequestBody(method, mapped))
 	if err != nil {
 		return nil, util.DoNotRetry(fmt.Errorf("could not build the request: %w", err))
@@ -136,6 +140,11 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	if int64(len(body)) > s.config.MaxResponseBytes {
 		// Asking again will not make the answer smaller.
 		return nil, util.DoNotRetry(fmt.Errorf("response exceeds the %d byte limit", s.config.MaxResponseBytes))
+	}
+	if auth.cfg.isAnswer(resp.StatusCode) {
+		log.Infof(ctx, "provider %s answered %s for %s %s; configured as an answer, so it is mapped",
+			auth.cfg.Provider, resp.Status, method, requested)
+		return body, nil
 	}
 	// Any 2xx, not 200 alone: 202, 204 and 201 are all legitimate answers. 3xx
 	// does not reach here, since the client follows redirects.

@@ -84,6 +84,10 @@ const (
 	// tokenQuery's login exchange, but the token is sent bare (no "Bearer")
 	// in the configured header.
 	AuthSchemeTokenHeader = "tokenHeader"
+
+	// The credential goes in a field of the JSON request body, for an upstream
+	// that rejects it in a header or the query string.
+	AuthSchemeBody = "body"
 )
 
 // CodeUpstreamUnavailable: the provider could not be reached or failed. Not
