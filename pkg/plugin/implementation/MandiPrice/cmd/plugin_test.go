@@ -211,7 +211,7 @@ func TestNew(t *testing.T) {
 		t.Parallel()
 
 		//nolint:staticcheck // deliberately passing a nil context to assert the guard.
-		_, _, err := mandiProvider{}.New(nil, stubRegistry{}, stubMapper{}, map[string]string{})
+		_, _, err := mandiProvider{}.New(nil, nil, stubRegistry{}, stubMapper{}, map[string]string{})
 		if err == nil {
 			t.Fatal("expected an error for a nil context, got none")
 		}
@@ -220,7 +220,7 @@ func TestNew(t *testing.T) {
 	t.Run("rejects an unparseable config", func(t *testing.T) {
 		t.Parallel()
 
-		_, _, err := mandiProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+		_, _, err := mandiProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{"maxResponseBytes": "lots"})
 		if err == nil {
 			t.Fatal("expected an error for an invalid cap, got none")
@@ -230,7 +230,7 @@ func TestNew(t *testing.T) {
 	t.Run("propagates an invalid auth scheme from New", func(t *testing.T) {
 		t.Parallel()
 
-		_, _, err := mandiProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+		_, _, err := mandiProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{
 				"bindingKeys":          "agmarknet|openagrinet:MandiPrice",
 				"authScheme-agmarknet": "oauth",
@@ -246,7 +246,7 @@ func TestNew(t *testing.T) {
 	t.Run("refuses a config naming no capability", func(t *testing.T) {
 		t.Parallel()
 
-		if _, _, err := (mandiProvider{}).New(context.Background(), stubRegistry{}, stubMapper{},
+		if _, _, err := (mandiProvider{}).New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{}); err == nil {
 			t.Fatal("expected a config with no bindingKeys to be refused")
 		}
@@ -256,13 +256,13 @@ func TestNew(t *testing.T) {
 		// Not parallel: it swaps the package-level newStepFunc.
 		closed := false
 		original := newStepFunc
-		newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper,
+		newStepFunc = func(context.Context, definition.Cache, definition.ProviderRecordLookup, definition.Mapper,
 			*MandiPrice.Config) (definition.Step, func() error, error) {
 			return nil, func() error { closed = true; return nil }, nil
 		}
 		defer func() { newStepFunc = original }()
 
-		_, closer, err := mandiProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+		_, closer, err := mandiProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{"bindingKeys": "agmarknet|openagrinet:MandiPrice"})
 		if err != nil {
 			t.Fatalf("New() returned an unexpected error: %v", err)
@@ -281,13 +281,13 @@ func TestNew(t *testing.T) {
 	t.Run("propagates a failure from the step constructor", func(t *testing.T) {
 		original := newStepFunc
 		wanted := errors.New("upstream refused the config")
-		newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper,
+		newStepFunc = func(context.Context, definition.Cache, definition.ProviderRecordLookup, definition.Mapper,
 			*MandiPrice.Config) (definition.Step, func() error, error) {
 			return nil, nil, wanted
 		}
 		defer func() { newStepFunc = original }()
 
-		_, _, err := mandiProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+		_, _, err := mandiProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{"bindingKeys": "agmarknet|openagrinet:MandiPrice"})
 		if !errors.Is(err, wanted) {
 			t.Errorf("New() error = %v, want it to wrap %v", err, wanted)

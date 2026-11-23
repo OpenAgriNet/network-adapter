@@ -75,7 +75,7 @@ func (p agriFacilityProvider) parseConfig(config map[string]string) (*Agricultur
 }
 
 // New creates a new agriculture facility provider step instance.
-func (p agriFacilityProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
+func (p agriFacilityProvider) New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("context cannot be nil")
 	}
@@ -86,7 +86,7 @@ func (p agriFacilityProvider) New(ctx context.Context, registry definition.Provi
 		return nil, nil, fmt.Errorf("failed to parse agriculture facility configuration: %w", err)
 	}
 
-	step, closer, err := newStepFunc(ctx, registry, mapper, cfg)
+	step, closer, err := newStepFunc(ctx, cache, registry, mapper, cfg)
 	if err != nil {
 		log.Errorf(ctx, err, "Failed to create agriculture facility step")
 		return nil, nil, err

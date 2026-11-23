@@ -255,7 +255,7 @@ func runSelect(t *testing.T, request string) (sent map[string]any, answer map[st
 		},
 	}}
 
-	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+	step, closeStep, err := AgricultureFacility.New(context.Background(), nil, registry, mapper,
 		&AgricultureFacility.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.
@@ -909,7 +909,7 @@ func runAgainst(t *testing.T, request, providerBody string) map[string]any {
 		},
 	}}
 
-	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+	step, closeStep, err := AgricultureFacility.New(context.Background(), nil, registry, mapper,
 		&AgricultureFacility.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.
@@ -1382,7 +1382,7 @@ func runSplitSearch(t *testing.T, types []string, byCode map[string]string) (map
 		},
 	}}
 
-	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+	step, closeStep, err := AgricultureFacility.New(context.Background(), nil, registry, mapper,
 		&AgricultureFacility.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.

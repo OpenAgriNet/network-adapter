@@ -153,7 +153,7 @@ func TestNewRefusesAnEnvelopeForAProviderItDoesNotServe(t *testing.T) {
 	cfg := &Config{BindingKeys: []string{testBindingKey}}
 	cfg.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
 	cfg.Envelopes = map[string]Envelope{"elsewhere": &reversingEnvelope{}}
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, cfg)
+	_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, cfg)
 	if err == nil || !strings.Contains(err.Error(), "elsewhere") {
 		t.Fatalf("New() = %v, want the stray provider refused", err)
 	}
@@ -262,7 +262,7 @@ func TestNewRefusesAHostForAProviderItDoesNotServe(t *testing.T) {
 	hosts := map[string]map[string]string{"someone-else": {"init": otherBindingKey}}
 	cfg := &Config{BindingKeys: []string{testBindingKey}, HostedElsewhere: hosts}
 	cfg.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
-	if _, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, cfg); err == nil {
+	if _, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, cfg); err == nil {
 		t.Error("New() accepted it")
 	}
 }

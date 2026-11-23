@@ -20,7 +20,7 @@ import (
 )
 
 // call makes the upstream request the plan describes, retrying within util.Budget.
-func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
+func (s *Step) call(ctx context.Context, auth *authenticator, session sessionCredential, baseURL string, call model.ActionPlan, mapped []byte) ([]byte, error) {
 	endpoint, err := util.BuildEndpoint(baseURL, call, mapped)
 	if err != nil {
 		return nil, err
@@ -49,7 +49,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 		}
 		made = attempt
 
-		body, err := s.attempt(ctx, auth, call, endpoint, mapped, timeout)
+		body, err := s.attempt(ctx, auth, session, call, endpoint, mapped, timeout)
 		if err == nil {
 			return body, nil
 		}
@@ -91,7 +91,7 @@ func (s *Step) call(ctx context.Context, auth *authenticator, baseURL string, ca
 }
 
 // attempt makes one upstream request.
-func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration) ([]byte, error) {
+func (s *Step) attempt(ctx context.Context, auth *authenticator, session sessionCredential, call model.ActionPlan, endpoint string, mapped []byte, timeout time.Duration) ([]byte, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -107,7 +107,7 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, call model.Acti
 	if util.HasBody(method) {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if err := s.authenticate(auth, req); err != nil {
+	if err := s.authenticate(auth, session, req); err != nil {
 		// Already classified at the source. A missing environment variable is
 		// configuration and marked permanent there; an oauth2 exchange that
 		// could not reach the issuer is weather and is not, so the retry budget

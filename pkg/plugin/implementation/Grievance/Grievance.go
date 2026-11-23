@@ -14,7 +14,7 @@ import (
 type Config = common.Config
 
 // New creates the grievance step. It has no prerequisites.
-func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
+func New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
-	return common.New(ctx, registry, mapper, nil, cfg)
+	return common.New(ctx, cache, registry, mapper, nil, cfg)
 }

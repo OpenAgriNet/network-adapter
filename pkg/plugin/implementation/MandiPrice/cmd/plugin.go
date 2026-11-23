@@ -60,7 +60,7 @@ func (p mandiProvider) parseConfig(config map[string]string) (*MandiPrice.Config
 }
 
 // New creates a new mandi provider step instance.
-func (p mandiProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
+func (p mandiProvider) New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("context cannot be nil")
 	}
@@ -71,7 +71,7 @@ func (p mandiProvider) New(ctx context.Context, registry definition.ProviderReco
 		return nil, nil, fmt.Errorf("failed to parse mandi configuration: %w", err)
 	}
 
-	step, closer, err := newStepFunc(ctx, registry, mapper, cfg)
+	step, closer, err := newStepFunc(ctx, cache, registry, mapper, cfg)
 	if err != nil {
 		log.Errorf(ctx, err, "Failed to create mandi step")
 		return nil, nil, err

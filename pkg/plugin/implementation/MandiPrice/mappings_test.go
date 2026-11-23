@@ -193,7 +193,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (url.Values, map
 		},
 	}}
 
-	step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
+	step, closeStep, err := MandiPrice.New(context.Background(), nil, registry, mapper,
 		&MandiPrice.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing
@@ -454,7 +454,7 @@ func TestShippedMappingRefusesWhatItCannotServe(t *testing.T) {
 						Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
 				},
 			}}
-			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
+			step, closeStep, err := MandiPrice.New(context.Background(), nil, registry, mapper,
 				&MandiPrice.Config{
 					BindingKeys: []string{shippedBindingKey},
 					// Auth is per provider; these upstreams are stubs needing
@@ -816,7 +816,7 @@ func TestShippedMappingRefusesPayloadsItCannotAnswer(t *testing.T) {
 						Mappings: mappings.URL + "/" + shippedMapping, TimeoutMs: 30000},
 				},
 			}}
-			step, closeStep, err := MandiPrice.New(context.Background(), registry, mapper,
+			step, closeStep, err := MandiPrice.New(context.Background(), nil, registry, mapper,
 				&MandiPrice.Config{
 					BindingKeys: []string{shippedBindingKey},
 					// Auth is per provider; these upstreams are stubs needing

@@ -173,7 +173,7 @@ func (noopPluginManager) Mapper(_ context.Context, _ *plugin.Config) (definition
 	return nil, nil
 }
 
-func (noopPluginManager) ProviderStep(_ context.Context, _ definition.ProviderRecordLookup, _ definition.Mapper, _ *plugin.Config) (definition.Step, error) {
+func (noopPluginManager) ProviderStep(_ context.Context, _ definition.Cache, _ definition.ProviderRecordLookup, _ definition.Mapper, _ *plugin.Config) (definition.Step, error) {
 	return nil, nil
 }
 

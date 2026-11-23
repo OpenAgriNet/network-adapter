@@ -210,6 +210,17 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		}
 	}
 
+	// A provider that hands a session out on one call and wants it back on
+	// the next. Fetched before the request is built so a farmer who never
+	// verified is refused without the provider being called at all.
+	session := forBinding(s.config.SessionByBinding, plan.BindingKey)
+	var held sessionCredential
+	if session.sends(action) {
+		if held, err = s.sessionCredentialFor(ctx, session, beckn); err != nil {
+			return err
+		}
+	}
+
 	// The provider's envelope, if any: seal once before the retry loop, open
 	// once after it.
 	var open Opener
@@ -220,7 +231,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		}
 	}
 
-	upstreamResponse, err := s.call(ctx, auth, base, call, upstreamRequest)
+	upstreamResponse, err := s.call(ctx, auth, held, base, call, upstreamRequest)
 	if err != nil {
 		return err
 	}
@@ -234,6 +245,15 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	answer, err := decodeBody(upstreamResponse)
 	if err != nil {
 		return fmt.Errorf("provider answered with something that is not JSON: %w", err)
+	}
+
+	// Held before the response is mapped, and the request fails if it cannot
+	// be: an OTP cannot be spent twice, so a token that was taken and dropped
+	// leaves the farmer with no way forward and nothing saying why.
+	if session.captures(action) {
+		if err := s.keepSession(ctx, session, beckn, answer); err != nil {
+			return err
+		}
 	}
 
 	// The same file's other half. It is handed what each party sent, plus

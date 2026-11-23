@@ -149,7 +149,7 @@ func (m *catalogPublishTestManager) Mapper(context.Context, *plugin.Config) (def
 	return nil, nil
 }
 
-func (m *catalogPublishTestManager) ProviderStep(context.Context, definition.ProviderRecordLookup, definition.Mapper, *plugin.Config) (definition.Step, error) {
+func (m *catalogPublishTestManager) ProviderStep(context.Context, definition.Cache, definition.ProviderRecordLookup, definition.Mapper, *plugin.Config) (definition.Step, error) {
 	return nil, nil
 }
 

@@ -40,6 +40,11 @@ type StepProvider interface {
 // nothing and return nil. That is the whole dispatch mechanism: several provider
 // steps sit in one pipeline, each recognises its own work, and adding a provider
 // is one more entry rather than a change to a routing table.
+// The cache is the deployment's shared store, handed over so a step that has
+// to remember something between two calls -- a session a farmer's OTP bought,
+// and nothing else so far -- does not grow a store of its own. Nil when the
+// deployment configures no cache plugin; a step that needs one must say so at
+// startup rather than fail on the first request.
 type ProviderStepProvider interface {
-	New(ctx context.Context, registry ProviderRecordLookup, mapper Mapper, config map[string]string) (Step, func() error, error)
+	New(ctx context.Context, cache Cache, registry ProviderRecordLookup, mapper Mapper, config map[string]string) (Step, func() error, error)
 }

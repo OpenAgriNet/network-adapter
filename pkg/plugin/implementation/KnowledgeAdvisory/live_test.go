@@ -100,7 +100,7 @@ func TestLiveEndToEnd(t *testing.T) {
 		},
 	}}
 
-	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), registry, mapper,
+	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), nil, registry, mapper,
 		&KnowledgeAdvisory.Config{
 			BindingKeys: []string{key},
 			AuthByProvider: map[string]*common.AuthProfile{

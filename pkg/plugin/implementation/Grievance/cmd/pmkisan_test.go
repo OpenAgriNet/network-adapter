@@ -64,7 +64,7 @@ func TestParseConfig_PMKISANBlock_ReadsEnvelope(t *testing.T) {
 }
 
 func TestNew_BothSchemes_BuildsStep(t *testing.T) {
-	step, closer, err := grievanceProvider{}.New(context.Background(), stubRegistry{}, stubMapper{}, bothSchemesConfig())
+	step, closer, err := grievanceProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{}, bothSchemesConfig())
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
@@ -96,7 +96,7 @@ func TestNew_EnvelopeForAnUnservedProvider_Refused(t *testing.T) {
 	config := bothSchemesConfig()
 	config["bindingKeys"] = pmfbyBindingKey
 	delete(config, "authScheme-pmkisan")
-	if _, _, err := (grievanceProvider{}).New(context.Background(), stubRegistry{}, stubMapper{}, config); err == nil {
+	if _, _, err := (grievanceProvider{}).New(context.Background(), nil, stubRegistry{}, stubMapper{}, config); err == nil {
 		t.Fatal("New() accepted an envelope for a provider the step does not serve")
 	}
 }
@@ -153,7 +153,7 @@ func TestShippedConfig_GrievanceEntry_BuildsStep(t *testing.T) {
 	if cfg.AuthByProvider["pmkisan"] == nil {
 		t.Error("the shipped entry gives pmkisan no auth profile; application status would not start")
 	}
-	if _, _, err := (grievanceProvider{}).New(context.Background(), stubRegistry{}, stubMapper{}, shipped); err != nil {
+	if _, _, err := (grievanceProvider{}).New(context.Background(), nil, stubRegistry{}, stubMapper{}, shipped); err != nil {
 		t.Fatalf("the shipped entry does not build a step: %v", err)
 	}
 }

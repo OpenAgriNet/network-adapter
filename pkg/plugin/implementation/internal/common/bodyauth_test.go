@@ -133,7 +133,7 @@ func TestNewRefusesAHalfConfiguredBodyScheme(t *testing.T) {
 			t.Parallel()
 
 			cfg := &Config{BindingKeys: []string{testBindingKey}, AuthByProvider: authForTestProvider(tc.profile)}
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, cfg)
+			_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, cfg)
 			if err == nil {
 				t.Fatal("expected a half-configured body scheme to be refused")
 			}

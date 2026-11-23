@@ -388,7 +388,7 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 		t.Fatalf("ParseEnvelopes() = %v", err)
 	}
 
-	step, closeStep, err := Grievance.New(context.Background(), registry, mapper, &Grievance.Config{
+	step, closeStep, err := Grievance.New(context.Background(), nil, registry, mapper, &Grievance.Config{
 		BindingKeys: []string{pkBindingKey},
 		// status names the binding on its contract, support on its channel.
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id, message.support.channels[].provider.id",

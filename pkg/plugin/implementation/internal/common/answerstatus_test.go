@@ -100,7 +100,7 @@ func TestNewRefusesAnAnswerStatusOutsideFourHundreds(t *testing.T) {
 
 			profile := AuthProfile{Provider: testProvider, Scheme: util.AuthSchemeNone, AnswerStatusesRaw: raw}
 			cfg := &Config{BindingKeys: []string{testBindingKey}, AuthByProvider: map[string]*AuthProfile{testProvider: &profile}}
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, cfg)
+			_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, cfg)
 			if err == nil {
 				t.Fatalf("expected answerStatuses %q to be refused", raw)
 			}

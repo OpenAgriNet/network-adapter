@@ -722,12 +722,12 @@ func (m *Manager) Mapper(ctx context.Context, cfg *Config) (definition.Mapper, e
 
 // ProviderStep returns a ProviderStep instance based on the provided
 // configuration, handing it the registry and mapper it needs.
-func (m *Manager) ProviderStep(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg *Config) (definition.Step, error) {
+func (m *Manager) ProviderStep(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg *Config) (definition.Step, error) {
 	pp, err := provider[definition.ProviderStepProvider](m.plugins, cfg.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load provider for %s: %w", cfg.ID, err)
 	}
-	step, closer, err := pp.New(ctx, registry, mapper, cfg.Config)
+	step, closer, err := pp.New(ctx, cache, registry, mapper, cfg.Config)
 	if err != nil {
 		return nil, err
 	}

@@ -138,7 +138,7 @@ func TestParseConfig(t *testing.T) {
 func TestNewRefusesANilContext(t *testing.T) {
 	t.Parallel()
 
-	step, closer, err := agriFacilityProvider{}.New(nil, stubRegistry{}, stubMapper{}, map[string]string{}) //nolint:staticcheck // passing nil is what this asserts is refused
+	step, closer, err := agriFacilityProvider{}.New(nil, nil, stubRegistry{}, stubMapper{}, map[string]string{}) //nolint:staticcheck // passing nil is what this asserts is refused
 	if err == nil {
 		t.Fatal("expected a nil context to be refused")
 	}
@@ -150,12 +150,12 @@ func TestNewRefusesANilContext(t *testing.T) {
 func TestNewPropagatesAConstructionFailure(t *testing.T) {
 	original := newStepFunc
 	defer func() { newStepFunc = original }()
-	newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper,
+	newStepFunc = func(context.Context, definition.Cache, definition.ProviderRecordLookup, definition.Mapper,
 		*AgricultureFacility.Config) (definition.Step, func() error, error) {
 		return nil, nil, errors.New("boom")
 	}
 
-	_, _, err := agriFacilityProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+	_, _, err := agriFacilityProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 		map[string]string{"bindingKeys": "pocra|openagrinet:AgricultureFacility"})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("error = %v, want it to carry the construction failure", err)
@@ -168,7 +168,7 @@ func TestNewPropagatesAConstructionFailure(t *testing.T) {
 func TestNewRequiresBindingKeys(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := agriFacilityProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+	_, _, err := agriFacilityProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 		map[string]string{})
 	if err == nil || !strings.Contains(err.Error(), "bindingKeys") {
 		t.Fatalf("error = %v, want it to name bindingKeys", err)
@@ -178,7 +178,7 @@ func TestNewRequiresBindingKeys(t *testing.T) {
 func TestNewBuildsAStep(t *testing.T) {
 	t.Parallel()
 
-	step, closer, err := agriFacilityProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+	step, closer, err := agriFacilityProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 		map[string]string{
 			"bindingKeys": "pocra|openagrinet:AgricultureFacility",
 			// A served provider declares its own auth, even when it is none.

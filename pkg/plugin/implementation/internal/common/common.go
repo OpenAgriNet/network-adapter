@@ -105,6 +105,13 @@ type Config struct {
 
 	// MaxResponseBytes caps what is read from the provider.
 	MaxResponseBytes int64 `yaml:"maxResponseBytes" json:"maxResponseBytes"`
+
+	// SessionByBinding is the session settings per binding key, for a provider
+	// that hands out a token on one call and expects it back on the next.
+	//
+	// Built by ParseProviderSessions, not decoded from YAML, for the same
+	// reason AuthByProvider is.
+	SessionByBinding map[string]*SessionProfile `yaml:"-" json:"-"`
 }
 
 // Step serves whatever capabilities a domain package configures it for. It is
@@ -121,6 +128,12 @@ type Step struct {
 	// One per provider, built at startup so a request only looks one up. Each
 	// holds its own token, so two oauth2 providers cannot share one.
 	auth map[string]*authenticator
+
+	// The deployment's shared store, where a per-farmer session is held
+	// between the call that buys it and the calls that spend it. Nil when the
+	// deployment configures no cache plugin, which a session binding refuses
+	// at startup rather than on the first request.
+	cache definition.Cache
 }
 
 // admittedLookup lists the networks this one admitted. Narrowed from the
@@ -130,8 +143,8 @@ type admittedLookup interface {
 }
 
 // New creates the step.
-func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
-	prerequisites Prerequisites, cfg *Config) (*Step, func() error, error) {
+func New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup,
+	mapper definition.Mapper, prerequisites Prerequisites, cfg *Config) (*Step, func() error, error) {
 	if registry == nil {
 		return nil, nil, errors.New("a provider record lookup is required")
 	}
@@ -159,6 +172,16 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		// The timeout is per request, from the registry's budget.
 		httpClient: &http.Client{CheckRedirect: util.RefuseOffHostRedirect},
 		auth:       make(map[string]*authenticator, len(cfg.AuthByProvider)),
+		cache:      cache,
+	}
+
+	// A session needs somewhere to live. Refused here, because a deployment
+	// that configured the binding and forgot the cache plugin would otherwise
+	// look healthy until the first farmer verified an OTP.
+	if len(cfg.SessionByBinding) > 0 && cache == nil {
+		return nil, nil, fmt.Errorf(
+			"%s configures a session and the deployment has no cache plugin to hold it",
+			strings.Join(sessionBindings(cfg), ", "))
 	}
 	// Absent is a deployment that federates with nobody. Only a request
 	// addressed elsewhere needs it, and that path refuses rather than guessing.
@@ -205,8 +228,17 @@ func ParseStepConfig(config map[string]string) (*Config, error) {
 		cfg.MaxResponseBytes = value
 	}
 
+	// Sessions first, and auth reads what is left: ParseProviderAuth refuses
+	// every dashed setting it does not recognise, which is what catches a
+	// misspelled credential, so a session setting has to be gone by then.
+	sessions, rest, err := ParseProviderSessions(config)
+	if err != nil {
+		return nil, err
+	}
+	cfg.SessionByBinding = sessions
+
 	// One credential profile per provider.
-	auth, err := ParseProviderAuth(config)
+	auth, err := ParseProviderAuth(rest)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +371,13 @@ func applyDefaults(cfg *Config) error {
 		if !served[key] {
 			return fmt.Errorf(
 				"an action host is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				key, strings.Join(cfg.BindingKeys, ", "))
+		}
+	}
+	for _, key := range sortedKeys(cfg.SessionByBinding) {
+		if !served[key] {
+			return fmt.Errorf(
+				"a session is configured for %q, which is not a provider or binding in bindingKeys (%s)",
 				key, strings.Join(cfg.BindingKeys, ", "))
 		}
 	}

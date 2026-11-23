@@ -76,7 +76,7 @@ func TestTwoProviderStepsDispatchByBindingKey(t *testing.T) {
 				"select": {Method: http.MethodGet, Path: "/x", Mappings: dispatchMappingRef, RetryMax: 1},
 			},
 		}
-		step, closer, err := common.New(context.Background(),
+		step, closer, err := common.New(context.Background(), nil,
 			&stubRegistry{plan: plan},
 			fixedMapper{answer: answer},
 			nil,
@@ -150,7 +150,7 @@ func TestLaterPathPairFindsThisStepsOwnBinding(t *testing.T) {
 	defer upstream.Close()
 
 	const bindingKey = "mausamgram|openagrinet:WeatherObservation"
-	step, closer, err := common.New(context.Background(),
+	step, closer, err := common.New(context.Background(), nil,
 		&stubRegistry{plan: &model.ProviderRecord{
 			BindingKey: bindingKey,
 			BaseURL:    upstream.URL,

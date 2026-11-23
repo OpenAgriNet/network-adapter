@@ -80,7 +80,7 @@ func (m *MockPluginManager) Mapper(ctx context.Context, cfg *plugin.Config) (def
 }
 
 // ProviderStep returns a mock implementation of the provider Step interface.
-func (m *MockPluginManager) ProviderStep(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg *plugin.Config) (definition.Step, error) {
+func (m *MockPluginManager) ProviderStep(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg *plugin.Config) (definition.Step, error) {
 	return nil, nil
 }
 

@@ -102,7 +102,7 @@ func TestParseConfig_MisspelledAuthSetting_Refused(t *testing.T) {
 }
 
 func TestNew_ShippedPMFBYConfig_BuildsStep(t *testing.T) {
-	step, closer, err := grievanceProvider{}.New(context.Background(), stubRegistry{}, stubMapper{}, pmfbyConfig())
+	step, closer, err := grievanceProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{}, pmfbyConfig())
 	if err != nil {
 		t.Fatalf("New() = %v, want the shipped config to load", err)
 	}
@@ -132,7 +132,7 @@ func TestNew_InvalidConfig_Refused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := pmfbyConfig()
 			edit(config)
-			if _, _, err := (grievanceProvider{}).New(context.Background(), stubRegistry{}, stubMapper{}, config); err == nil {
+			if _, _, err := (grievanceProvider{}).New(context.Background(), nil, stubRegistry{}, stubMapper{}, config); err == nil {
 				t.Error("New() accepted an invalid config")
 			}
 		})
@@ -141,7 +141,7 @@ func TestNew_InvalidConfig_Refused(t *testing.T) {
 
 func TestNew_NilContext_Refused(t *testing.T) {
 	//nolint:staticcheck // deliberately passing a nil context to assert the guard.
-	if _, _, err := (grievanceProvider{}).New(nil, stubRegistry{}, stubMapper{}, pmfbyConfig()); err == nil {
+	if _, _, err := (grievanceProvider{}).New(nil, nil, stubRegistry{}, stubMapper{}, pmfbyConfig()); err == nil {
 		t.Error("New() accepted a nil context")
 	}
 }
@@ -149,13 +149,13 @@ func TestNew_NilContext_Refused(t *testing.T) {
 func TestNew_StepConstructorFails_PropagatesError(t *testing.T) {
 	original := newStepFunc
 	wanted := errors.New("upstream refused the config")
-	newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper,
+	newStepFunc = func(context.Context, definition.Cache, definition.ProviderRecordLookup, definition.Mapper,
 		*Grievance.Config) (definition.Step, func() error, error) {
 		return nil, nil, wanted
 	}
 	defer func() { newStepFunc = original }()
 
-	if _, _, err := (grievanceProvider{}).New(context.Background(), stubRegistry{}, stubMapper{}, pmfbyConfig()); !errors.Is(err, wanted) {
+	if _, _, err := (grievanceProvider{}).New(context.Background(), nil, stubRegistry{}, stubMapper{}, pmfbyConfig()); !errors.Is(err, wanted) {
 		t.Errorf("New() = %v, want it to wrap %v", err, wanted)
 	}
 }

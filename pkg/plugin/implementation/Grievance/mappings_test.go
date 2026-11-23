@@ -163,7 +163,7 @@ func newHarness(t *testing.T, pmfby *pmfbyStub, statusRetries int, tweak ...func
 	for _, apply := range tweak {
 		apply(cfg)
 	}
-	step, closeStep, err := Grievance.New(context.Background(), registry, mapper, cfg)
+	step, closeStep, err := Grievance.New(context.Background(), nil, registry, mapper, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

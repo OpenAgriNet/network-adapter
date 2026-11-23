@@ -61,7 +61,7 @@ func runSearchTimed(t *testing.T, types []string, cfg *AgricultureFacility.Confi
 			strings.Split(shippedBindingKey, "|")[0]: {Scheme: util.AuthSchemeNone},
 		}
 	}
-	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper, cfg)
+	step, closeStep, err := AgricultureFacility.New(context.Background(), nil, registry, mapper, cfg)
 	if err != nil {
 		t.Fatalf("failed to build the step: %v", err)
 	}

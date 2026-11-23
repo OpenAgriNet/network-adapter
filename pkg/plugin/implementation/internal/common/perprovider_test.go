@@ -90,7 +90,7 @@ func TestTwoProvidersOnOneStepAuthenticateDifferently(t *testing.T) {
 		"alpha|" + capability: planFor("alpha", capability, queryProvider.URL),
 		"beta|" + capability:  planFor("beta", capability, headerProvider.URL),
 	}}
-	step, closer, err := New(context.Background(), registry,
+	step, closer, err := New(context.Background(), nil, registry,
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"ok":true}`)}, nil, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -167,7 +167,7 @@ func TestTwoOAuth2ProvidersDoNotShareAToken(t *testing.T) {
 		"alpha|" + capability: planFor("alpha", capability, providerA.URL),
 		"beta|" + capability:  planFor("beta", capability, providerB.URL),
 	}}
-	step, closer, err := New(context.Background(), registry,
+	step, closer, err := New(context.Background(), nil, registry,
 		&stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"ok":true}`)}, nil, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -220,7 +220,7 @@ func TestRedactionCoversEveryProvidersSecret(t *testing.T) {
 			"beta":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-B", HeaderValueEnv: "TEST_PP_RED_B"},
 		},
 	}
-	step, closer, err := New(context.Background(), &routingRegistry{}, &stubMapper{}, nil, cfg)
+	step, closer, err := New(context.Background(), nil, &routingRegistry{}, &stubMapper{}, nil, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestRedactionSortsAcrossProvidersNotWithinOne(t *testing.T) {
 			"longy":  {Scheme: util.AuthSchemeHeader, HeaderName: "X-L", HeaderValueEnv: "TEST_PP_LONG"},
 		},
 	}
-	step, closer, err := New(context.Background(), &routingRegistry{}, &stubMapper{}, nil, cfg)
+	step, closer, err := New(context.Background(), nil, &routingRegistry{}, &stubMapper{}, nil, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

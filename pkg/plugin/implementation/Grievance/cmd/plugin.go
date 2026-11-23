@@ -39,7 +39,7 @@ func (p grievanceProvider) parseConfig(config map[string]string) (*Grievance.Con
 }
 
 // New creates a new grievance provider step instance.
-func (p grievanceProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
+func (p grievanceProvider) New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("context cannot be nil")
 	}
@@ -50,7 +50,7 @@ func (p grievanceProvider) New(ctx context.Context, registry definition.Provider
 		return nil, nil, fmt.Errorf("failed to parse grievance configuration: %w", err)
 	}
 
-	step, closer, err := newStepFunc(ctx, registry, mapper, cfg)
+	step, closer, err := newStepFunc(ctx, cache, registry, mapper, cfg)
 	if err != nil {
 		log.Errorf(ctx, err, "Failed to create grievance step")
 		return nil, nil, err

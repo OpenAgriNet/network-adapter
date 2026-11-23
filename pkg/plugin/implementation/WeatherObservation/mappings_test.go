@@ -145,7 +145,7 @@ func TestShippedMappingsServeARealSelect(t *testing.T) {
 		},
 	}}
 
-	step, closeStep, err := WeatherObservation.New(context.Background(), registry, mapper,
+	step, closeStep, err := WeatherObservation.New(context.Background(), nil, registry, mapper,
 		&WeatherObservation.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing

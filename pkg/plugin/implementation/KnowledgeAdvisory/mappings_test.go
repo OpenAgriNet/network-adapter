@@ -212,7 +212,7 @@ func runShippedWith(t *testing.T, request, providerBody string) (map[string]any,
 		},
 	}}
 
-	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), registry, mapper,
+	step, closeStep, err := KnowledgeAdvisory.New(context.Background(), nil, registry, mapper,
 		&KnowledgeAdvisory.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider; these upstreams are stubs needing

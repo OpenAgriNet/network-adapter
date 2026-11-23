@@ -32,7 +32,7 @@ type PluginManager interface {
 	CatalogPublisher(ctx context.Context, km definition.KeyManager, blobStore definition.CatalogBlobStore, registry definition.RegistryLookup, cfg *plugin.Config) (definition.CatalogPublisher, error)
 	CatalogBlobStore(ctx context.Context, cfg *plugin.Config) (definition.CatalogBlobStore, error)
 	Mapper(ctx context.Context, cfg *plugin.Config) (definition.Mapper, error)
-	ProviderStep(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg *plugin.Config) (definition.Step, error)
+	ProviderStep(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg *plugin.Config) (definition.Step, error)
 }
 
 // Type defines different handler types for processing requests.

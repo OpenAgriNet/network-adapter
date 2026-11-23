@@ -97,7 +97,7 @@ func (m *mockPluginManager) Mapper(_ context.Context, _ *plugin.Config) (definit
 	return nil, nil
 }
 
-func (m *mockPluginManager) ProviderStep(_ context.Context, _ definition.ProviderRecordLookup, _ definition.Mapper, _ *plugin.Config) (definition.Step, error) {
+func (m *mockPluginManager) ProviderStep(_ context.Context, _ definition.Cache, _ definition.ProviderRecordLookup, _ definition.Mapper, _ *plugin.Config) (definition.Step, error) {
 	return nil, nil
 }
 

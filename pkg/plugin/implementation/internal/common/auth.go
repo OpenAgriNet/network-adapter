@@ -375,8 +375,9 @@ func setBodyField(provider string, body []byte, field, value string) ([]byte, er
 }
 
 // authenticate presents this provider's credentials, read from the environment
-// at call time so a rotated secret takes effect without a restart.
-func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
+// at call time so a rotated secret takes effect without a restart, plus the
+// farmer's session if this call carries one.
+func (s *Step) authenticate(auth *authenticator, session sessionCredential, req *http.Request) error {
 	cfg := auth.cfg
 	switch cfg.Scheme {
 	case util.AuthSchemeBasic:
@@ -427,6 +428,15 @@ func (s *Step) authenticate(auth *authenticator, req *http.Request) error {
 		query := req.URL.Query()
 		query.Set(cfg.QueryName, token)
 		req.URL.RawQuery = query.Encode()
+	}
+
+	// The farmer's session, set AFTER the switch so it rides beside the
+	// deployment's own credential rather than instead of it. AIF checks two
+	// things on the same request: the service apiKey that says which
+	// integrator is calling, and the bearer that says which farmer consented.
+	// A scheme cannot express that, because a binding has exactly one.
+	if session.Name != "" && session.Value != "" {
+		req.Header.Set(session.Name, session.Value)
 	}
 	return nil
 }

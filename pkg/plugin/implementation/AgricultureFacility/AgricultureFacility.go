@@ -74,7 +74,7 @@ type Config struct {
 // concurrently, and merges the answers. Everything POCRA-specific about that
 // is in the outer step, which is why the inner one is the same step
 // MandiPrice and WeatherObservation use unchanged.
-func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
+func New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
 	if cfg == nil {
 		cfg = &Config{}
@@ -88,7 +88,7 @@ func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper d
 		AuthByProvider:   cfg.AuthByProvider,
 	}
 
-	one, closer, err := common.New(ctx, registry, mapper, prerequisites, upstreamCfg)
+	one, closer, err := common.New(ctx, cache, registry, mapper, prerequisites, upstreamCfg)
 	if err != nil {
 		return nil, nil, err
 	}

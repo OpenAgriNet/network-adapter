@@ -62,7 +62,7 @@ func (p knowledgeAdvisoryProvider) parseConfig(config map[string]string) (*Knowl
 }
 
 // New creates a new knowledge advisory provider step instance.
-func (p knowledgeAdvisoryProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
+func (p knowledgeAdvisoryProvider) New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, config map[string]string) (definition.Step, func() error, error) {
 	if ctx == nil {
 		return nil, nil, errors.New("context cannot be nil")
 	}
@@ -73,7 +73,7 @@ func (p knowledgeAdvisoryProvider) New(ctx context.Context, registry definition.
 		return nil, nil, fmt.Errorf("failed to parse knowledge advisory configuration: %w", err)
 	}
 
-	step, closer, err := newStepFunc(ctx, registry, mapper, cfg)
+	step, closer, err := newStepFunc(ctx, cache, registry, mapper, cfg)
 	if err != nil {
 		log.Errorf(ctx, err, "Failed to create knowledge advisory step")
 		return nil, nil, err

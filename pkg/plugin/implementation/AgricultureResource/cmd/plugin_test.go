@@ -63,7 +63,7 @@ func TestParseConfigRefusesAnUnknownProviderSetting(t *testing.T) {
 func TestNewBuildsTheStep(t *testing.T) {
 	t.Parallel()
 
-	step, closer, err := Provider.New(context.Background(), stubRegistry{}, stubMapper{}, sathiConfig())
+	step, closer, err := Provider.New(context.Background(), nil, stubRegistry{}, stubMapper{}, sathiConfig())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestNewRefusesANilContext(t *testing.T) {
 	t.Parallel()
 
 	//nolint:staticcheck // a nil context is the case under test
-	if _, _, err := Provider.New(nil, stubRegistry{}, stubMapper{}, sathiConfig()); err == nil {
+	if _, _, err := Provider.New(nil, nil, stubRegistry{}, stubMapper{}, sathiConfig()); err == nil {
 		t.Fatal("expected a nil context to be refused")
 	}
 }
@@ -91,7 +91,7 @@ func TestNewRefusesAHalfConfiguredProvider(t *testing.T) {
 
 	config := sathiConfig()
 	delete(config, "bodyField-sathi")
-	if _, _, err := Provider.New(context.Background(), stubRegistry{}, stubMapper{}, config); err == nil {
+	if _, _, err := Provider.New(context.Background(), nil, stubRegistry{}, stubMapper{}, config); err == nil {
 		t.Fatal("expected a body scheme with no bodyField to be refused")
 	}
 }

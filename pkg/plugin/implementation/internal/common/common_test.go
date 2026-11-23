@@ -155,7 +155,7 @@ func newStep(t *testing.T, registry definition.ProviderRecordLookup, mapper defi
 	if len(cfg.AuthByProvider) == 0 {
 		cfg.setProviderAuth(AuthProfile{Scheme: util.AuthSchemeNone})
 	}
-	step, closer, err := New(context.Background(), registry, mapper, nil, cfg)
+	step, closer, err := New(context.Background(), nil, registry, mapper, nil, cfg)
 	if err != nil {
 		t.Fatalf("New() returned an unexpected error: %v", err)
 	}
@@ -174,10 +174,10 @@ func runStep(t *testing.T, step *Step, body string) (*model.StepContext, error) 
 func TestNewRequiresItsDependencies(t *testing.T) {
 	t.Parallel()
 
-	if _, _, err := New(context.Background(), nil, &stubMapper{}, nil, minimalConfig()); err == nil {
+	if _, _, err := New(context.Background(), nil, nil, &stubMapper{}, nil, minimalConfig()); err == nil {
 		t.Error("expected a missing registry to be refused")
 	}
-	if _, _, err := New(context.Background(), &stubRegistry{}, nil, nil, minimalConfig()); err == nil {
+	if _, _, err := New(context.Background(), nil, &stubRegistry{}, nil, nil, minimalConfig()); err == nil {
 		t.Error("expected a missing mapper to be refused")
 	}
 }
@@ -217,7 +217,7 @@ func TestNewValidatesTheAuthScheme(t *testing.T) {
 			t.Parallel()
 
 			tc.config.BindingKeys = []string{testBindingKey}
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, tc.config)
+			_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, tc.config)
 			if tc.valid && err != nil {
 				t.Errorf("expected the config to be accepted, got %v", err)
 			}
@@ -927,7 +927,7 @@ func TestNewRefusesAHalfConfiguredQueryScheme(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, tc.cfg)
+			_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, tc.cfg)
 			if err == nil {
 				t.Fatal("expected a half-configured query scheme to be refused")
 			}
@@ -1330,7 +1330,7 @@ func TestRunReadsTheBindingKeyFromOverriddenPaths(t *testing.T) {
 func TestNewRefusesAHalfConfiguredOverride(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{
+	_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, &Config{
 		BindingKeys:    []string{testBindingKey},
 		ProviderIDAt:   "who.provider",
 		AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeNone}),
@@ -1429,7 +1429,7 @@ func minimalConfig() *Config {
 func TestNewRequiresBindingKeys(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil, &Config{})
+	_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil, &Config{})
 	if err == nil {
 		t.Fatal("expected a step configured for no capability to be refused")
 	}
@@ -1443,7 +1443,7 @@ func TestNewRequiresBindingKeys(t *testing.T) {
 func TestNewRefusesAnEmptyBindingKey(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := New(context.Background(), &stubRegistry{}, &stubMapper{}, nil,
+	_, _, err := New(context.Background(), nil, &stubRegistry{}, &stubMapper{}, nil,
 		&Config{BindingKeys: []string{testBindingKey, "  "}})
 	if err == nil {
 		t.Error("expected an empty binding key to be refused")
@@ -2077,7 +2077,7 @@ func TestRunHandsResolvedPrerequisitesToTheMappingAsLocal(t *testing.T) {
 	}
 
 	mapper := &stubMapper{requestResult: []byte(`{}`), responseResult: []byte(`{"answered":true}`)}
-	step, closer, err := New(context.Background(),
+	step, closer, err := New(context.Background(), nil,
 		&stubRegistry{plan: testPlan(upstream.URL, http.MethodGet)}, mapper, prerequisites,
 		&Config{BindingKeys: []string{testBindingKey},
 			AuthByProvider: authForTestProvider(AuthProfile{Scheme: util.AuthSchemeNone})})

@@ -188,3 +188,14 @@ test_request.json
 config/network.yaml
 config/*-secrets.yaml
 .playwright-mcp/
+
+# Agent tooling state and vector stores. Machine-local, regenerated on demand.
+.claude-flow/
+.swarm/
+ruvector.db
+agentdb.rvf
+agentdb.rvf.idmap.json
+
+# The local v1/v2 comparison stack: compiled plugins, adapter binaries and run
+# logs. ~100MB of build output, rebuilt by the scripts beside it.
+/docs/migration-design/local-stack/

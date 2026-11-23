@@ -675,7 +675,7 @@ func (h *stdHandler) loadProviderStep(ctx context.Context, mgr PluginManager, cf
 	if !ok {
 		return nil, fmt.Errorf("failed to load ProviderStep plugin (%s): Registry plugin does not implement ProviderRecordLookup", cfg.ID)
 	}
-	step, err := mgr.ProviderStep(ctx, recordLookup, h.mapper, cfg)
+	step, err := mgr.ProviderStep(ctx, h.cache, recordLookup, h.mapper, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load ProviderStep plugin (%s): %w", cfg.ID, err)
 	}

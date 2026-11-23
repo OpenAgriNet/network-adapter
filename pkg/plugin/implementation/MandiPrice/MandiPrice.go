@@ -32,7 +32,7 @@ type Config = common.Config
 //
 // Which capabilities it answers to is configuration, with no default: a package
 // serving a family cannot guess which of them a deployment has providers for.
-func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
+func New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
-	return common.New(ctx, registry, mapper, prerequisites, cfg)
+	return common.New(ctx, cache, registry, mapper, prerequisites, cfg)
 }

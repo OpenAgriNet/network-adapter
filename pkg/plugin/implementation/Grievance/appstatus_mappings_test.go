@@ -223,7 +223,7 @@ func runAppStatus(t *testing.T, chatbot *asChatbot, request string) ([]byte, err
 		t.Fatalf("ParseEnvelopes() = %v", err)
 	}
 
-	step, closeStep, err := Grievance.New(context.Background(), registry, mapper, &Grievance.Config{
+	step, closeStep, err := Grievance.New(context.Background(), nil, registry, mapper, &Grievance.Config{
 		BindingKeys:      []string{asBindingKey},
 		ProviderIDAt:     "message.contract.commitments[].offer.provider.id",
 		CapabilityCodeAt: "message.contract.commitments[].commitmentAttributes.@type",

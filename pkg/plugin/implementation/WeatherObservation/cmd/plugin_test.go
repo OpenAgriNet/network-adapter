@@ -168,7 +168,7 @@ func TestNew(t *testing.T) {
 		t.Parallel()
 
 		//nolint:staticcheck // deliberately passing a nil context to assert the guard.
-		_, _, err := weatherProvider{}.New(nil, stubRegistry{}, stubMapper{}, map[string]string{})
+		_, _, err := weatherProvider{}.New(nil, nil, stubRegistry{}, stubMapper{}, map[string]string{})
 		if err == nil {
 			t.Fatal("expected an error for a nil context, got none")
 		}
@@ -177,7 +177,7 @@ func TestNew(t *testing.T) {
 	t.Run("rejects an unparseable config", func(t *testing.T) {
 		t.Parallel()
 
-		_, _, err := weatherProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+		_, _, err := weatherProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{"maxResponseBytes": "lots"})
 		if err == nil {
 			t.Fatal("expected an error for an invalid cap, got none")
@@ -187,7 +187,7 @@ func TestNew(t *testing.T) {
 	t.Run("propagates an invalid auth scheme from New", func(t *testing.T) {
 		t.Parallel()
 
-		_, _, err := weatherProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+		_, _, err := weatherProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{
 				"bindingKeys":           "mausamgram|openagrinet:WeatherObservation",
 				"authScheme-mausamgram": "oauth",
@@ -203,7 +203,7 @@ func TestNew(t *testing.T) {
 	t.Run("refuses a config naming no capability", func(t *testing.T) {
 		t.Parallel()
 
-		if _, _, err := (weatherProvider{}).New(context.Background(), stubRegistry{}, stubMapper{},
+		if _, _, err := (weatherProvider{}).New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{}); err == nil {
 			t.Fatal("expected a config with no bindingKeys to be refused")
 		}
@@ -212,7 +212,7 @@ func TestNew(t *testing.T) {
 	t.Run("builds a step from the capabilities it is given", func(t *testing.T) {
 		t.Parallel()
 
-		step, closer, err := weatherProvider{}.New(context.Background(), stubRegistry{}, stubMapper{},
+		step, closer, err := weatherProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{},
 			map[string]string{
 				"bindingKeys":    "imd|openagrinet:WeatherObservation",
 				"authScheme-imd": "none",
@@ -234,11 +234,11 @@ func TestNew(t *testing.T) {
 		t.Cleanup(func() { newStepFunc = original })
 
 		wantErr := errors.New("boom")
-		newStepFunc = func(context.Context, definition.ProviderRecordLookup, definition.Mapper, *WeatherObservation.Config) (definition.Step, func() error, error) {
+		newStepFunc = func(context.Context, definition.Cache, definition.ProviderRecordLookup, definition.Mapper, *WeatherObservation.Config) (definition.Step, func() error, error) {
 			return nil, nil, wantErr
 		}
 
-		_, _, err := weatherProvider{}.New(context.Background(), stubRegistry{}, stubMapper{}, map[string]string{})
+		_, _, err := weatherProvider{}.New(context.Background(), nil, stubRegistry{}, stubMapper{}, map[string]string{})
 		if !errors.Is(err, wantErr) {
 			t.Errorf("expected the construction error to propagate, got %v", err)
 		}

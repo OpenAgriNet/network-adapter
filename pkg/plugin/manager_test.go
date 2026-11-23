@@ -3195,7 +3195,7 @@ type mockProviderStepProvider struct {
 	err  error
 }
 
-func (m *mockProviderStepProvider) New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg map[string]string) (definition.Step, func() error, error) {
+func (m *mockProviderStepProvider) New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper, cfg map[string]string) (definition.Step, func() error, error) {
 	if m.err != nil {
 		return nil, nil, m.err
 	}
@@ -3376,7 +3376,7 @@ func TestProviderStep_Success(t *testing.T) {
 		closers: []func(){},
 	}
 	cfg := &Config{ID: "providerstep", Config: map[string]string{}}
-	got, err := m.ProviderStep(context.Background(), &mockProviderRecordLookup{}, &mockMapper{}, cfg)
+	got, err := m.ProviderStep(context.Background(), nil, &mockProviderRecordLookup{}, &mockMapper{}, cfg)
 	require.NoError(t, err)
 	assert.Equal(t, step, got)
 	assert.Len(t, m.closers, 1)
@@ -3391,7 +3391,7 @@ func TestProviderStep_ProviderError(t *testing.T) {
 		closers: []func(){},
 	}
 	cfg := &Config{ID: "providerstep", Config: map[string]string{}}
-	_, err := m.ProviderStep(context.Background(), &mockProviderRecordLookup{}, &mockMapper{}, cfg)
+	_, err := m.ProviderStep(context.Background(), nil, &mockProviderRecordLookup{}, &mockMapper{}, cfg)
 	assert.Error(t, err)
 }
 
@@ -3399,7 +3399,7 @@ func TestProviderStep_ProviderError(t *testing.T) {
 func TestProviderStep_PluginNotFound(t *testing.T) {
 	m := &Manager{plugins: map[string]onixPlugin{}, closers: []func(){}}
 	cfg := &Config{ID: "missing-providerstep", Config: map[string]string{}}
-	_, err := m.ProviderStep(context.Background(), &mockProviderRecordLookup{}, &mockMapper{}, cfg)
+	_, err := m.ProviderStep(context.Background(), nil, &mockProviderRecordLookup{}, &mockMapper{}, cfg)
 	assert.Error(t, err)
 }
 

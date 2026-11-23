@@ -90,7 +90,7 @@ func crossStep(t *testing.T, upstreamURL string) definition.Step {
 
 func crossStepWith(t *testing.T, upstreamURL string, registry definition.ProviderRecordLookup) definition.Step {
 	t.Helper()
-	step, closer, err := common.New(context.Background(),
+	step, closer, err := common.New(context.Background(), nil,
 		registry,
 		fixedMapper{answer: `{"served":"locally"}`},
 		nil,

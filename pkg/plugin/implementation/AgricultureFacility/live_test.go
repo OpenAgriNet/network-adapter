@@ -187,7 +187,7 @@ func TestLiveAgainstPocra(t *testing.T) {
 		},
 	}}
 
-	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+	step, closeStep, err := AgricultureFacility.New(context.Background(), nil, registry, mapper,
 		&AgricultureFacility.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.
@@ -327,7 +327,7 @@ func TestLiveCategoryLeakIsFiltered(t *testing.T) {
 		},
 	}}
 
-	step, closeStep, err := AgricultureFacility.New(context.Background(), registry, mapper,
+	step, closeStep, err := AgricultureFacility.New(context.Background(), nil, registry, mapper,
 		&AgricultureFacility.Config{
 			BindingKeys: []string{shippedBindingKey},
 			// Auth is per provider now; POCRA needs no credential and says so.

@@ -13,7 +13,7 @@ import (
 type Config = common.Config
 
 // New creates the agriculture resource step.
-func New(ctx context.Context, registry definition.ProviderRecordLookup, mapper definition.Mapper,
+func New(ctx context.Context, cache definition.Cache, registry definition.ProviderRecordLookup, mapper definition.Mapper,
 	cfg *Config) (definition.Step, func() error, error) {
-	return common.New(ctx, registry, mapper, prerequisites, cfg)
+	return common.New(ctx, cache, registry, mapper, prerequisites, cfg)
 }
