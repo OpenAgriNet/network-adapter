@@ -42,6 +42,11 @@ type AuthProfile struct {
 	HeaderName     string
 	HeaderValueEnv string
 
+	// A second fixed header, sent beside whatever the scheme sends rather than
+	// instead of it. See docs/adr/0006-a-binding-may-carry-its-own-credential.md
+	ExtraHeaderName     string
+	ExtraHeaderValueEnv string
+
 	// The parameter to add, and the variable holding its value.
 	QueryName     string
 	QueryValueEnv string
@@ -190,6 +195,19 @@ func (a *AuthProfile) validate() error {
 			"%s: unknown authScheme %q: must be none, basic, header, query, body, "+
 				"oauth2, tokenQuery or tokenHeader", a.Provider, a.Scheme)
 	}
+	// Independent of the scheme, so checked outside the switch. One without
+	// the other is a half-written block: a name with no variable sends an
+	// empty header, and a variable with no name sends nothing at all.
+	if (a.ExtraHeaderName == "") != (a.ExtraHeaderValueEnv == "") {
+		return fmt.Errorf(
+			"%s: extraHeaderName and extraHeaderValueEnv are set together or not at all",
+			a.Provider)
+	}
+	if a.ExtraHeaderName != "" && strings.EqualFold(a.ExtraHeaderName, a.HeaderName) {
+		return fmt.Errorf(
+			"%s: extraHeaderName %q is the header the scheme already sets, so one would overwrite the other",
+			a.Provider, a.ExtraHeaderName)
+	}
 	if a.AnswerStatusesRaw != "" {
 		statuses, err := parseAnswerStatuses(a.Provider, a.AnswerStatusesRaw)
 		if err != nil {
@@ -289,19 +307,22 @@ func ParseProviderAuth(config map[string]string) (map[string]*AuthProfile, error
 // Being the whole vocabulary, this is also what makes the dash split decidable
 // and turns a misspelled setting into a startup error.
 var authFields = map[string]func(*AuthProfile, string){
-	"authScheme":      func(p *AuthProfile, v string) { p.Scheme = v },
-	"usernameEnv":     func(p *AuthProfile, v string) { p.UsernameEnv = v },
-	"passwordEnv":     func(p *AuthProfile, v string) { p.PasswordEnv = v },
-	"headerName":      func(p *AuthProfile, v string) { p.HeaderName = v },
-	"headerValueEnv":  func(p *AuthProfile, v string) { p.HeaderValueEnv = v },
-	"queryName":       func(p *AuthProfile, v string) { p.QueryName = v },
-	"queryValueEnv":   func(p *AuthProfile, v string) { p.QueryValueEnv = v },
-	"bodyField":       func(p *AuthProfile, v string) { p.BodyField = v },
-	"bodyValueEnv":    func(p *AuthProfile, v string) { p.BodyValueEnv = v },
-	"answerStatuses":  func(p *AuthProfile, v string) { p.AnswerStatusesRaw = v },
-	"tokenUrl":        func(p *AuthProfile, v string) { p.TokenURL = v },
-	"clientIdEnv":     func(p *AuthProfile, v string) { p.ClientIDEnv = v },
-	"clientSecretEnv": func(p *AuthProfile, v string) { p.ClientSecretEnv = v },
+	"authScheme":     func(p *AuthProfile, v string) { p.Scheme = v },
+	"usernameEnv":    func(p *AuthProfile, v string) { p.UsernameEnv = v },
+	"passwordEnv":    func(p *AuthProfile, v string) { p.PasswordEnv = v },
+	"headerName":     func(p *AuthProfile, v string) { p.HeaderName = v },
+	"headerValueEnv": func(p *AuthProfile, v string) { p.HeaderValueEnv = v },
+
+	"extraHeaderName":     func(p *AuthProfile, v string) { p.ExtraHeaderName = v },
+	"extraHeaderValueEnv": func(p *AuthProfile, v string) { p.ExtraHeaderValueEnv = v },
+	"queryName":           func(p *AuthProfile, v string) { p.QueryName = v },
+	"queryValueEnv":       func(p *AuthProfile, v string) { p.QueryValueEnv = v },
+	"bodyField":           func(p *AuthProfile, v string) { p.BodyField = v },
+	"bodyValueEnv":        func(p *AuthProfile, v string) { p.BodyValueEnv = v },
+	"answerStatuses":      func(p *AuthProfile, v string) { p.AnswerStatusesRaw = v },
+	"tokenUrl":            func(p *AuthProfile, v string) { p.TokenURL = v },
+	"clientIdEnv":         func(p *AuthProfile, v string) { p.ClientIDEnv = v },
+	"clientSecretEnv":     func(p *AuthProfile, v string) { p.ClientSecretEnv = v },
 
 	"tokenUserField":     func(p *AuthProfile, v string) { p.TokenUserField = v },
 	"tokenUserEnv":       func(p *AuthProfile, v string) { p.TokenUserEnv = v },
@@ -428,6 +449,18 @@ func (s *Step) authenticate(auth *authenticator, session sessionCredential, req 
 		query := req.URL.Query()
 		query.Set(cfg.QueryName, token)
 		req.URL.RawQuery = query.Encode()
+	}
+
+	// A second credential this deployment holds. PMFBY's insurance API wants
+	// both an exchanged token and a fixed password on one request, and a
+	// scheme sends exactly one thing.
+	if cfg.ExtraHeaderName != "" {
+		value := os.Getenv(cfg.ExtraHeaderValueEnv)
+		if value == "" {
+			return s.missingCredential(req.Context(), cfg.Provider, "extraHeader",
+				cfg.ExtraHeaderValueEnv)
+		}
+		req.Header.Set(cfg.ExtraHeaderName, value)
 	}
 
 	// The farmer's session, set AFTER the switch so it rides beside the

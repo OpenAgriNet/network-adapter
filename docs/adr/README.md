@@ -13,3 +13,4 @@ Start from [`0000-template.md`](0000-template.md).
 | [0002](0002-the-crawl-signs-with-its-own-key.md) | The background crawl signs for itself, with the sign step's key under the same names | network-adapter#76 |
 | [0003](0003-paging-a-crawl.md) | A crawl pages in the signed body and ends on the reported total | network-adapter#76 |
 | [0004](0004-sending-a-request-to-another-network.md) | Sending a request addressed to another network: who decides, where it goes, whose key signs it | network-adapter#78 |
+| [0006](0006-a-binding-may-carry-its-own-credential.md) | A binding may carry its own credential, and a second fixed header | |

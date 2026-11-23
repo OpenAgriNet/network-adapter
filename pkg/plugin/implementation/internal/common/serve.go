@@ -193,10 +193,11 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 	}
 
 	// Resolved from the binding key, so a step serving several providers
-	// authenticates each as itself. Startup guarantees a profile per served
-	// provider; this guards a record arriving for an undeclared key.
-	provider := providerIDFrom(plan.BindingKey)
-	auth, configured := s.auth[provider]
+	// authenticates each as itself, and a participant whose capabilities sit
+	// behind different logins authenticates each capability as itself. Startup
+	// guarantees a profile per served binding; this guards a record arriving
+	// for an undeclared key.
+	auth, configured := forBindingOK(s.auth, plan.BindingKey)
 	if !configured {
 		return fmt.Errorf("no credential is configured for %s", plan.BindingKey)
 	}
@@ -375,10 +376,17 @@ func decodeBody(body []byte) (any, error) {
 
 // forBinding is the setting for bindingKey: its own, else its provider's.
 func forBinding[T any](byKey map[string]T, bindingKey string) T {
+	v, _ := forBindingOK(byKey, bindingKey)
+	return v
+}
+
+// forBindingOK is forBinding, reporting whether either key was set.
+func forBindingOK[T any](byKey map[string]T, bindingKey string) (T, bool) {
 	if v, ok := byKey[bindingKey]; ok {
-		return v
+		return v, true
 	}
-	return byKey[providerIDFrom(bindingKey)]
+	v, ok := byKey[providerIDFrom(bindingKey)]
+	return v, ok
 }
 
 // routeElsewhere sends a request addressed to another network to that network.

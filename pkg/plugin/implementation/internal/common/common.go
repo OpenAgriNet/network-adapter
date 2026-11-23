@@ -332,34 +332,42 @@ func applyDefaults(cfg *Config) error {
 	// Both directions, because each catches a different silent mistake: a
 	// profile for an unserved provider is a typo applying to nothing, and a
 	// served provider with no profile would send no credential at all.
+	//
+	// A profile may be named for a provider or for one of its bindings.
+	// See docs/adr/0006-a-binding-may-carry-its-own-credential.md
 	served := map[string]bool{}
 	for _, key := range cfg.BindingKeys {
 		served[providerIDFrom(key)] = true
+		served[key] = true
 	}
-	for provider := range cfg.AuthByProvider {
-		if !served[provider] {
+	for name := range cfg.AuthByProvider {
+		if !served[name] {
 			return fmt.Errorf(
-				"auth is configured for %q, which is not a provider in bindingKeys (%s)",
-				provider, strings.Join(cfg.BindingKeys, ", "))
+				"auth is configured for %q, which is not a provider or binding in bindingKeys (%s)",
+				name, strings.Join(cfg.BindingKeys, ", "))
 		}
 	}
-	for provider := range served {
-		profile, ok := cfg.AuthByProvider[provider]
+	for _, key := range cfg.BindingKeys {
+		// Named for the binding, else for its provider -- the same order
+		// authenticate resolves in, so startup checks what will be sent.
+		name := key
+		profile, ok := cfg.AuthByProvider[name]
+		if !ok {
+			name = providerIDFrom(key)
+			profile, ok = cfg.AuthByProvider[name]
+		}
 		if !ok {
 			return fmt.Errorf(
 				"%q is served but has no auth block; every provider declares its own, "+
-					"using authScheme none where the upstream needs no credential", provider)
+					"using authScheme none where the upstream needs no credential", key)
 		}
-		profile.Provider = provider
+		profile.Provider = name
 		if err := profile.validate(); err != nil {
 			return err
 		}
 	}
 
 	// An envelope or host for an unserved provider or binding is a typo.
-	for _, key := range cfg.BindingKeys {
-		served[key] = true
-	}
 	for key := range cfg.Envelopes {
 		if !served[key] {
 			return fmt.Errorf(
