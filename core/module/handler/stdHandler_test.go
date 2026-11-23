@@ -1041,7 +1041,7 @@ func TestProxy_UnreachableTarget_AnswersNack503(t *testing.T) {
 	rr := runProxy(t, unreachableURL, nil)
 
 	requireNack(t, rr, http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE",
-		"the forwarded service is unavailable")
+		"the receiving service is unavailable")
 }
 
 func TestProxy_UnclassifiedResponseStepFailure_AnswersNack502(t *testing.T) {
@@ -1053,7 +1053,7 @@ func TestProxy_UnclassifiedResponseStepFailure_AnswersNack502(t *testing.T) {
 	rr := runProxy(t, upstream.URL, []definition.ResponseStep{&mockResponseStep{err: fmt.Errorf("response step failure")}})
 
 	requireNack(t, rr, http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE",
-		"the forwarded service's response was refused")
+		"the receiving service sent a response that could not be used")
 }
 
 func TestProxy_ClassifiedResponseStepFailure_KeepsItsClassification(t *testing.T) {
@@ -1089,7 +1089,7 @@ func TestProxy_TargetTooSlow_AnswersNack504(t *testing.T) {
 	proxy(stepCtx, req, rr, http.DefaultClient, nil, &responseBody)
 
 	requireNack(t, rr, http.StatusGatewayTimeout, "NET_TIMEOUT",
-		"the forwarded service did not answer in time")
+		"the receiving service did not answer in time")
 }
 
 // stubPayloadStore is a minimal PayloadStore for storePayloadStep unit tests.

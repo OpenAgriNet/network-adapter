@@ -39,13 +39,14 @@ type mockKMBasic struct {
 	publicKey string
 	lookupErr error
 	keyset    *model.Keyset // returned by Keyset(); nil when not set
+	keysetErr error         // returned by Keyset()
 }
 
 func (m *mockKMBasic) GenerateKeyset() (*model.Keyset, error)                          { return nil, nil }
 func (m *mockKMBasic) InsertKeyset(_ context.Context, _ string, _ *model.Keyset) error { return nil }
 func (m *mockKMBasic) DeleteKeyset(_ context.Context, _ string) error                  { return nil }
 func (m *mockKMBasic) Keyset(_ context.Context, _ string) (*model.Keyset, error) {
-	return m.keyset, nil
+	return m.keyset, m.keysetErr
 }
 func (m *mockKMBasic) LookupNPKeys(_ context.Context, _, _ string) (string, string, error) {
 	return m.publicKey, "", m.lookupErr
@@ -302,6 +303,54 @@ func TestSignStep_Run_SolicitedCallback_NoStoredEntry_FallsBackToSign(t *testing
 	}
 	if !signer.signCalled {
 		t.Error("expected Sign to be called when no stored entry exists")
+	}
+}
+
+func TestSignStep_Run_UnknownRequestSubscriber_ReturnsInvalidContextField(t *testing.T) {
+	tests := []struct {
+		role     model.Role
+		wantPath string
+	}{
+		{model.RoleBAP, "$.context.senderId"},
+		{model.RoleBPP, "$.context.receiverId"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.role), func(t *testing.T) {
+			km := &mockKMBasic{keysetErr: model.ErrKeysetNotFound}
+			step, _ := newSignStep(&mockSigner{}, km, nil)
+			ctx := makeSignStepCtx("select", "msg-sign-run-005", "stranger.example.com")
+			ctx.OwnSubscriberID = "bap.example.com"
+			ctx.Role = tt.role
+
+			var codedErr *model.CodedErr
+			if err := step.Run(ctx); !errors.As(err, &codedErr) {
+				t.Fatalf("Run() = %v, want a refusal naming the field", err)
+			}
+			wireErr := codedErr.BecknError()
+			wantMessage := "this service cannot send requests as stranger.example.com"
+			if codedErr.HTTPStatus() != http.StatusBadRequest || wireErr.Code != "CTX_INVALID_FIELD" || wireErr.Message != wantMessage {
+				t.Errorf("refusal = %d %s %q, want 400 CTX_INVALID_FIELD %q",
+					codedErr.HTTPStatus(), wireErr.Code, wireErr.Message, wantMessage)
+			}
+			if wireErr.Details == nil || wireErr.Details.Path != tt.wantPath {
+				t.Errorf("details = %+v, want path %s", wireErr.Details, tt.wantPath)
+			}
+		})
+	}
+}
+
+// The module's own identity is configuration, not the request, so its missing
+// key is this adapter's fault and must not be blamed on the caller.
+func TestSignStep_Run_OwnKeysetMissing_IsNotBlamedOnTheRequest(t *testing.T) {
+	km := &mockKMBasic{keysetErr: model.ErrKeysetNotFound}
+	step, _ := newSignStep(&mockSigner{}, km, nil)
+	ctx := makeSignStepCtx("on_select", "msg-sign-run-006", "bpp.example.com")
+	ctx.OwnSubscriberID = "bpp.example.com"
+
+	err := step.Run(ctx)
+	var codedErr *model.CodedErr
+	if err == nil || errors.As(err, &codedErr) {
+		t.Errorf("Run() = %v, want an unclassified error for this adapter's own missing key", err)
 	}
 }
 

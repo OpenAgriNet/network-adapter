@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -293,6 +294,23 @@ func NewMissingContextFieldErr(field string) *CodedErr {
 	return NewBadReqErr(codeMissingContextField, fmt.Errorf("%s is missing", fieldPath)).
 		WithPath("$." + fieldPath)
 }
+
+// codeInvalidContextField is the Beckn code for a context field whose value
+// this adapter cannot act on.
+const codeInvalidContextField = "CTX_INVALID_FIELD"
+
+// NewInvalidContextFieldErr creates the 400 for a context field whose value
+// this adapter cannot act on. message is what the caller is told; err stays
+// whole for the log.
+func NewInvalidContextFieldErr(field, message string, err error) *CodedErr {
+	return NewBadReqErr(codeInvalidContextField, err).
+		WithMessage(message).
+		WithPath("$.context." + field)
+}
+
+// ErrKeysetNotFound is a key manager holding no keys for the subscriber asked
+// for. Shared here so core can tell it apart without importing a key manager.
+var ErrKeysetNotFound = errors.New("keyset not found")
 
 // defaultSignValidationCode is used when a signature-validation failure
 // carries no more specific classification — the closest generic bucket in the

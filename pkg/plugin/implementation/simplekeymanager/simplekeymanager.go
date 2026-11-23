@@ -56,7 +56,7 @@ var (
 	ErrNilRegistryLookup = errors.New("registry lookup implementation cannot be nil")
 
 	// ErrKeysetNotFound indicates that the requested keyset was not found.
-	ErrKeysetNotFound = errors.New("keyset not found")
+	ErrKeysetNotFound = model.ErrKeysetNotFound
 
 	// ErrInvalidConfig indicates that the configuration is invalid.
 	ErrInvalidConfig = errors.New("invalid configuration")

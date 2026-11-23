@@ -1917,7 +1917,7 @@ func TestRunReportsAnUnusableBaseURLAsASetupMistake(t *testing.T) {
 	if !errors.As(err, &coded) || coded.HTTPStatus() != http.StatusInternalServerError {
 		t.Errorf("error = %v, want a 500 rather than a bad request or a bad gateway", err)
 	}
-	if got := coded.BecknError().Message; got != "mausamgram is not configured on this adapter" {
+	if got := coded.BecknError().Message; got != "mausamgram is not set up correctly on this service" {
 		t.Errorf("message = %q, want the setup mistake named without the registry detail", got)
 	}
 	if strings.Contains(err.Error(), "did not answer") {
@@ -2363,7 +2363,7 @@ func TestOAuth2ClassifiesATokenFailureAsUpstream(t *testing.T) {
 			// loop wraps its terminal failure in a 502 too, so an unclassified
 			// token error would still surface as one. The message is what says
 			// the exchange is where it broke, rather than the provider call.
-			if got := coded.BecknError().Message; got != "could not get a login token from mausamgram" {
+			if got := coded.BecknError().Message; got != "could not log in to mausamgram" {
 				t.Errorf("message = %q; it does not identify the token exchange as the failure", got)
 			}
 			if len(seen) != 0 {

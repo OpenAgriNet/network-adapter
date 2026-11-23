@@ -658,12 +658,12 @@ func (m *Mapper) evaluate(ctx context.Context, mapping *compiledMapping, mapping
 			// to fix a request that was fine. 502: the upstream exchange is
 			// what failed.
 			return nil, model.NewCodedErr(http.StatusBadGateway, codeAdaptationFailed, wrapped).
-				WithMessage("the provider's response could not be converted")
+				WithMessage("the provider's response could not be read")
 		}
 		// On the request leg the mapping is valid and the payload is not what it
 		// expected, so this is the caller's request being wrong.
 		return nil, model.NewBadReqErr(codeAdaptationFailed, wrapped).
-			WithMessage("the request could not be converted for the provider")
+			WithMessage("the request could not be prepared for the provider")
 	}
 	return result, nil
 }

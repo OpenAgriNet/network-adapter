@@ -64,7 +64,7 @@ func (s *Step) Run(ctx *model.StepContext) error {
 			// stops matching.
 			return model.NewNotFoundErr("", fmt.Errorf(
 				"the registry publishes no active binding for %s: %w", binding.Key(), err)).
-				WithMessage(binding.Key() + " is not available")
+				WithMessage(providerIDFrom(binding.Key()) + " is not available right now")
 		}
 		return model.NewCodedErr(http.StatusServiceUnavailable, util.CodeUpstreamUnavailable,
 			fmt.Errorf("no call plan for %s: %w", binding.Key(), err)).
@@ -169,9 +169,11 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		// No endpoint published for this action, or its entry is switched
 		// off: the registry drops inactive actions, so the two look the same
 		// here. Refused before calling anything, naming what IS served.
+		servedActions := strings.Join(plan.ServedActions(), ", ")
 		return model.NewNotFoundErr("", fmt.Errorf(
-			"%s does not serve action %q; it serves %s",
-			plan.BindingKey, action, strings.Join(plan.ServedActions(), ", ")))
+			"%s does not serve action %q; it serves %s", plan.BindingKey, action, servedActions)).
+			WithMessage(fmt.Sprintf("%s does not serve action %q; it serves %s",
+				providerIDFrom(plan.BindingKey), action, servedActions))
 	}
 
 	beckn, err := decodeBody(ctx.Body)
@@ -266,7 +268,7 @@ func (s *Step) serve(ctx *model.StepContext, plan *model.ProviderRecord) error {
 		// be worse than failing.
 		return model.NewCodedErr(http.StatusBadGateway, util.CodeUnreadableAnswer, fmt.Errorf(
 			"the response half of %s produced nothing, so %s cannot be answered", call.Mappings, plan.BindingKey)).
-			WithMessage("the provider's response could not be converted")
+			WithMessage(provider + " sent a response that could not be read")
 	}
 
 	ctx.ResponseBody = becknResponse
@@ -394,9 +396,9 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 	}
 
 	if ctx.OwnSubscriberID == "" {
-		return false, fmt.Errorf(
+		return false, setupErr("this service's network ID is not set up", fmt.Errorf(
 			"the request is addressed to %s, but this module has no subscriberId to compare it against",
-			receiver)
+			receiver))
 	}
 	if strings.EqualFold(receiver, ctx.OwnSubscriberID) {
 		return false, nil // ours: carry on into the binding check
@@ -424,9 +426,9 @@ func (s *Step) routeElsewhere(ctx *model.StepContext) (bool, error) {
 // a field in the request decides where a signed call of ours goes.
 func (s *Step) agreedToReadFrom(ctx *model.StepContext, receiver string) error {
 	if s.networks == nil {
-		return fmt.Errorf(
+		return setupErr("partner networks are not set up for this service", fmt.Errorf(
 			"the request is for %s, but this registry cannot list the networks we admitted",
-			receiver)
+			receiver))
 	}
 
 	admitted, err := s.networks.AdmittedNetworks(ctx)
@@ -439,16 +441,27 @@ func (s *Step) agreedToReadFrom(ctx *model.StepContext, receiver string) error {
 			continue
 		}
 		if !network.IsSource() {
-			return model.NewBadReqErr("", fmt.Errorf(
-				"we agreed %v with %s, which does not include reading from them",
-				network.Directions(), receiver))
+			return model.NewInvalidContextFieldErr(receiverField,
+				receiver+" is a partner network, but requests to it are not allowed",
+				fmt.Errorf("we agreed %v with %s, which does not include reading from them",
+					network.Directions(), receiver))
 		}
 		log.Infof(ctx, "%s is admitted, agreed %v; forwarding", receiver, network.Directions())
 		return nil
 	}
 
-	return model.NewNotFoundErr("", fmt.Errorf(
-		"%s is not a network we admitted, so this is not ours to send on", receiver))
+	return model.NewNotFoundErr("", fmt.Errorf("%s is not a partner network", receiver)).
+		WithPath("$.context." + receiverField)
+}
+
+// receiverField is the context field naming the network a request is for.
+const receiverField = "receiverId"
+
+// setupErr is the 500 for a module missing configuration it needs. message
+// names what is missing; err keeps the detail for the log.
+func setupErr(message string, err error) error {
+	return model.NewCodedErr(http.StatusInternalServerError, util.CodeInternalError, err).
+		WithMessage(message)
 }
 
 // destinationOf builds the URL a request for another participant is sent to.

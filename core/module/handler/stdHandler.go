@@ -511,13 +511,13 @@ func forwardingFailure(err error) error {
 		return err
 	case errors.Is(err, context.DeadlineExceeded):
 		return model.NewCodedErr(http.StatusGatewayTimeout, codeTimeout, err).
-			WithMessage("the forwarded service did not answer in time")
+			WithMessage("the receiving service did not answer in time")
 	case errors.Is(err, errResponseRefused):
 		return model.NewCodedErr(http.StatusBadGateway, codeDownstreamUnavailable, err).
-			WithMessage("the forwarded service's response was refused")
+			WithMessage("the receiving service sent a response that could not be used")
 	default:
 		return model.NewCodedErr(http.StatusServiceUnavailable, codeDownstreamUnavailable, err).
-			WithMessage("the forwarded service is unavailable")
+			WithMessage("the receiving service is unavailable")
 	}
 }
 

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -42,6 +43,26 @@ func newSignStep(signer definition.Signer, km definition.KeyManager, payloadStor
 	return &signStep{signer: signer, km: km, payloadStore: payloadStore}, nil
 }
 
+// signingKeyFailure is what the caller is told when no signing key is found.
+// No key for a subscriber the request named is the caller's mistake; no key
+// for this module's own subscriber is a setup mistake and stays a 500.
+func signingKeyFailure(ctx *model.StepContext, err error) error {
+	wrapped := fmt.Errorf("failed to get signing key: %w", err)
+	if !errors.Is(err, model.ErrKeysetNotFound) || ctx.SubID == ctx.OwnSubscriberID {
+		return wrapped
+	}
+	return model.NewInvalidContextFieldErr(subscriberField(ctx.Role),
+		"this service cannot send requests as "+ctx.SubID, wrapped)
+}
+
+// subscriberField is the context field a request names its own side in.
+func subscriberField(role model.Role) string {
+	if role == model.RoleBPP {
+		return "receiverId"
+	}
+	return "senderId"
+}
+
 // Run executes the signing step.
 func (s *signStep) Run(ctx *model.StepContext) error {
 	if len(ctx.SubID) == 0 {
@@ -56,7 +77,7 @@ func (s *signStep) Run(ctx *model.StepContext) error {
 		ks, err := s.km.Keyset(keySetCtx, ctx.SubID)
 		keySetSpan.End()
 		if err != nil {
-			return fmt.Errorf("failed to get signing key: %w", err)
+			return signingKeyFailure(ctx, err)
 		}
 		keySet = ks
 	}

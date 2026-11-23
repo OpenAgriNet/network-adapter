@@ -119,7 +119,7 @@ func callFailure(provider string, attempts int, timeout time.Duration, err error
 		return notConfiguredErr(provider, err)
 	case errors.Is(err, errTokenExchange):
 		return model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable, err).
-			WithMessage("could not get a login token from " + provider)
+			WithMessage("could not log in to " + provider)
 	case errors.As(err, &answered):
 		return providerAnswerErr(provider, attempts, answered.statusCode, err)
 	case errors.Is(err, errUnreadableResponse):
@@ -146,7 +146,7 @@ func providerAnswerErr(provider string, attempts, statusCode int, err error) err
 			WithMessage(provider + " has no matching record")
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable, err).
-			WithMessage(provider + " rejected the adapter's credentials")
+			WithMessage(provider + " did not accept our credentials")
 	default:
 		return model.NewCodedErr(http.StatusBadGateway, util.CodeUpstreamUnavailable, err).
 			WithMessage(fmt.Sprintf("%s returned %d after %s", provider, statusCode, attemptCount(attempts)))
@@ -164,7 +164,7 @@ func unreadableResponseErr(provider string, err error) error {
 // up: a missing credential or a registry record that describes no request.
 func notConfiguredErr(provider string, err error) error {
 	return model.NewCodedErr(http.StatusInternalServerError, util.CodeInternalError, err).
-		WithMessage(provider + " is not configured on this adapter")
+		WithMessage(provider + " is not set up correctly on this service")
 }
 
 // attemptCount reads "1 attempt" or "3 attempts".

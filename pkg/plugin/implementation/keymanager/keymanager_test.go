@@ -850,18 +850,21 @@ func TestKeysetFailure(t *testing.T) {
 		kvVersion string
 		keyID     string
 		success   bool
+		notFound  bool
 	}{
 		{
 			name:      "failure: vault returns 404 v2",
 			kvVersion: "v2",
 			keyID:     "missing-key-v2",
 			success:   false,
+			notFound:  true,
 		},
 		{
 			name:      "failure: vault returns 404 v1",
 			kvVersion: "v1",
 			keyID:     "missing-key-v1",
 			success:   false,
+			notFound:  true,
 		},
 		{
 			name:      "failure: empty keyID",
@@ -903,6 +906,9 @@ func TestKeysetFailure(t *testing.T) {
 			}
 			if keys != nil {
 				t.Fatalf("expected nil keys but got %+v", keys)
+			}
+			if got := errors.Is(err, model.ErrKeysetNotFound); got != tt.notFound {
+				t.Errorf("errors.Is(err, model.ErrKeysetNotFound) = %v, want %v (err: %v)", got, tt.notFound, err)
 			}
 		})
 	}

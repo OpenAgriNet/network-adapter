@@ -66,9 +66,9 @@ func TestRun_ProviderFailure_AnswersStandardError(t *testing.T) {
 		{"provider answers 404", answerWith(http.StatusNotFound, `{"error":"no such record"}`),
 			0, wantError{http.StatusNotFound, "NET_ENTITY_NOT_FOUND", "mausamgram has no matching record"}},
 		{"provider answers 401", answerWith(http.StatusUnauthorized, ""),
-			0, wantError{http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE", "mausamgram rejected the adapter's credentials"}},
+			0, wantError{http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE", "mausamgram did not accept our credentials"}},
 		{"provider answers 403", answerWith(http.StatusForbidden, ""),
-			0, wantError{http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE", "mausamgram rejected the adapter's credentials"}},
+			0, wantError{http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE", "mausamgram did not accept our credentials"}},
 		{"provider answers 500", answerWith(http.StatusInternalServerError, "stack trace"),
 			0, wantError{http.StatusBadGateway, "NET_DOWNSTREAM_UNAVAILABLE", "mausamgram returned 500 after 2 attempts"}},
 		{"provider answers 429", answerWith(http.StatusTooManyRequests, ""),
@@ -129,7 +129,7 @@ func TestRun_CredentialNotSet_Answers500(t *testing.T) {
 	_, err := runStep(t, step, selectBody)
 
 	requireCallerError(t, err,
-		wantError{http.StatusInternalServerError, "NET_INTERNAL_ERROR", "mausamgram is not configured on this adapter"})
+		wantError{http.StatusInternalServerError, "NET_INTERNAL_ERROR", "mausamgram is not set up correctly on this service"})
 	if called.Load() {
 		t.Error("the provider was called without a credential")
 	}
@@ -148,9 +148,9 @@ func TestRun_FailureBeforeTheCall_AnswersStandardError(t *testing.T) {
 		{"registry unavailable", &stubRegistry{err: errors.New("dial tcp 10.0.0.9:8081: connection refused")}, selectBody,
 			wantError{http.StatusServiceUnavailable, "NET_DOWNSTREAM_UNAVAILABLE", "registry is unavailable"}},
 		{"binding switched off", &stubRegistry{err: definition.ErrProviderRecordNotFound}, selectBody,
-			wantError{http.StatusNotFound, "NET_ENTITY_NOT_FOUND", testBindingKey + " is not available"}},
+			wantError{http.StatusNotFound, "NET_ENTITY_NOT_FOUND", "mausamgram is not available right now"}},
 		{"action switched off", &stubRegistry{plan: switchedOff}, selectBody,
-			wantError{http.StatusNotFound, "NET_ENTITY_NOT_FOUND", testBindingKey + ` does not serve action "select"; it serves status`}},
+			wantError{http.StatusNotFound, "NET_ENTITY_NOT_FOUND", "mausamgram" + ` does not serve action "select"; it serves status`}},
 		{"receiverId missing", &stubRegistry{}, strings.Replace(selectBody, `"receiverId": "oan.test"`, `"bppId": ""`, 1),
 			wantError{http.StatusBadRequest, "CTX_MISSING_FIELD", "context.receiverId is missing"}},
 	}
@@ -172,7 +172,7 @@ func TestRun_MappingFileFailsToLoad_Answers500(t *testing.T) {
 	_, err := runStep(t, step, selectBody)
 
 	requireCallerError(t, err,
-		wantError{http.StatusInternalServerError, "NET_INTERNAL_ERROR", "mausamgram is not configured on this adapter"}, "example.com")
+		wantError{http.StatusInternalServerError, "NET_INTERNAL_ERROR", "mausamgram is not set up correctly on this service"}, "example.com")
 }
 
 func TestRun_MappingRefusal_KeepsItsOwnAnswer(t *testing.T) {
@@ -195,7 +195,7 @@ func TestRun_ResponseHalfProducesNothing_Answers502(t *testing.T) {
 	_, err := runStep(t, step, selectBody)
 
 	requireCallerError(t, err,
-		wantError{http.StatusBadGateway, "SCH_SCHEMA_ADAPTATION_FAILED", "the provider's response could not be converted"})
+		wantError{http.StatusBadGateway, "SCH_SCHEMA_ADAPTATION_FAILED", "mausamgram sent a response that could not be read"})
 }
 
 // A request with a deadline (the adapter sets one just under the server's

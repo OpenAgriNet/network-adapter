@@ -866,9 +866,9 @@ func TestTransformFailureMessagesHideTheMappingDetail(t *testing.T) {
 		wantMessage string
 	}{
 		{definition.DirectionRequest, map[string]any{"beckn": map[string]any{"notANumber": "abc"}},
-			"the request could not be converted for the provider"},
+			"the request could not be prepared for the provider"},
 		{definition.DirectionResponse, map[string]any{"response": map[string]any{"notANumber": "abc"}},
-			"the provider's response could not be converted"},
+			"the provider's response could not be read"},
 	}
 	for _, tt := range tests {
 		_, err := mapper.Transform(context.Background(), ref, tt.direction, tt.input)
