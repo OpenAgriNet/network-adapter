@@ -144,7 +144,7 @@ func TestNewPreProcessorErrorCases(t *testing.T) {
 			},
 			expectedCode: http.StatusBadRequest,
 			expectErr:    false,
-			errMsg:       "context field not found or invalid",
+			errMsg:       "context is missing",
 			wantBeckn:    "SCH_REQUIRED_FIELD_MISSING",
 		},
 		{
@@ -157,7 +157,7 @@ func TestNewPreProcessorErrorCases(t *testing.T) {
 			},
 			expectedCode: http.StatusBadRequest,
 			expectErr:    false,
-			errMsg:       "context field not found or invalid",
+			errMsg:       "context must be an object",
 			wantBeckn:    "SCH_REQUIRED_FIELD_MISSING",
 		},
 		{
@@ -245,8 +245,8 @@ func TestNewPreProcessorErrorCases(t *testing.T) {
 	}
 }
 
-// requireCodedErrorBody confirms rec's body is a JSON model.Error with the
-// given Code, and that Content-Type reflects that.
+// requireCodedErrorBody confirms rec's body is a NACK envelope carrying an
+// error with the given Code, and that Content-Type reflects that.
 func requireCodedErrorBody(t *testing.T, rec *httptest.ResponseRecorder, wantCode string) {
 	t.Helper()
 
@@ -254,12 +254,15 @@ func requireCodedErrorBody(t *testing.T, rec *httptest.ResponseRecorder, wantCod
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
-	var got model.Error
+	var got model.Response
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("response body is not valid JSON model.Error: %v (body: %s)", err, rec.Body.String())
+		t.Fatalf("response body is not a valid NACK envelope: %v (body: %s)", err, rec.Body.String())
 	}
-	if got.Code != wantCode {
-		t.Errorf("response body Code = %s, want %s", got.Code, wantCode)
+	if got.Message.Status != model.StatusNACK {
+		t.Errorf("response body status = %q, want NACK", got.Message.Status)
+	}
+	if got.Message.Error == nil || got.Message.Error.Code != wantCode {
+		t.Errorf("response body error = %+v, want code %s", got.Message.Error, wantCode)
 	}
 }
 
@@ -307,10 +310,31 @@ func (r *failOnceWriteRecorder) Write(b []byte) (int, error) {
 	return r.ResponseRecorder.Write(b)
 }
 
+func TestNewPreProcessor_MissingContext_ReportsDetailsPath(t *testing.T) {
+	middleware, err := NewPreProcessor(&Config{Role: "bap"})
+	if err != nil {
+		t.Fatalf("NewPreProcessor() error = %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/select", strings.NewReader(`{"message":{}}`))
+	rec := httptest.NewRecorder()
+
+	middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler must not be called without a context")
+	})).ServeHTTP(rec, req)
+
+	var got model.Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body %q is not a NACK envelope: %v", rec.Body.String(), err)
+	}
+	if got.Message.Error == nil || got.Message.Error.Details == nil || got.Message.Error.Details.Path != "$.context" {
+		t.Errorf("error = %+v, want details.path $.context", got.Message.Error)
+	}
+}
+
 func TestWriteCodedError_WriteFailureFallsBackToHTTPError(t *testing.T) {
 	rec := &failOnceWriteRecorder{ResponseRecorder: httptest.NewRecorder()}
 
-	writeCodedError(context.Background(), rec, http.StatusBadRequest, "SCH_INVALID_JSON", "failed to decode")
+	writeCodedError(context.Background(), rec, http.StatusBadRequest, model.NewCodedError("SCH_INVALID_JSON", "failed to decode"))
 
 	// The initial WriteHeader(400) already committed the status line before the
 	// write failed; a superfluous second WriteHeader call from http.Error's

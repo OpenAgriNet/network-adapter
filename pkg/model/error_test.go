@@ -312,7 +312,7 @@ func TestCodedErr_NilCause(t *testing.T) {
 		wantMsg  string
 		wantCode string
 	}{
-		{"constructor with a nil cause", NewBadReqErr("", nil), "BAD Request: ", defaultBadReqCode},
+		{"constructor with a nil cause", NewBadReqErr("", nil), "", defaultBadReqCode},
 		{"constructor with a nil cause and a code", NewSignValidationErr("AUT_SIGNATURE_MISSING", nil), "Signature Validation Error: ", "AUT_SIGNATURE_MISSING"},
 		{"bare literal", &CodedErr{}, "", defaultUnclassifiedCode},
 		{"bare literal with only a code", &CodedErr{Code: "POL_GENERIC_ERROR"}, "", "POL_GENERIC_ERROR"},
@@ -373,7 +373,7 @@ func TestBadReqErr_BecknError(t *testing.T) {
 	badReqErr := NewBadReqErr("", errors.New("invalid input"))
 	beErr := badReqErr.BecknError()
 
-	expectedMsg := "BAD Request: invalid input"
+	expectedMsg := "invalid input"
 	if beErr.Message != expectedMsg {
 		t.Errorf("err.Error() = %s, want %s",
 			beErr.Message, expectedMsg)
@@ -390,7 +390,7 @@ func TestBadReqErr_BecknError_WithExplicitCode(t *testing.T) {
 	if beErr.Code != "POL_GEO_RESTRICTED" {
 		t.Errorf("beErr.Code = %s, want POL_GEO_RESTRICTED", beErr.Code)
 	}
-	expectedMsg := "BAD Request: delivery not offered in this region"
+	expectedMsg := "delivery not offered in this region"
 	if beErr.Message != expectedMsg {
 		t.Errorf("beErr.Message = %s, want %s", beErr.Message, expectedMsg)
 	}
@@ -429,7 +429,7 @@ func TestNotFoundErr_BecknError(t *testing.T) {
 	notFoundErr := NewNotFoundErr("", errors.New("resource not found"))
 	beErr := notFoundErr.BecknError()
 
-	expectedMsg := "Endpoint not found: resource not found"
+	expectedMsg := "resource not found"
 	if beErr.Message != expectedMsg {
 		t.Errorf("err.Error() = %s, want %s",
 			beErr.Message, expectedMsg)
@@ -446,7 +446,7 @@ func TestNotFoundErr_BecknError_WithExplicitCode(t *testing.T) {
 	if beErr.Code != "NET_ENTITY_NOT_FOUND" {
 		t.Errorf("beErr.Code = %s, want NET_ENTITY_NOT_FOUND", beErr.Code)
 	}
-	expectedMsg := "Endpoint not found: subscriber not registered"
+	expectedMsg := "subscriber not registered"
 	if beErr.Message != expectedMsg {
 		t.Errorf("beErr.Message = %s, want %s", beErr.Message, expectedMsg)
 	}
@@ -610,5 +610,53 @@ func TestContextKey_UnmarshalYAML_Invalid(t *testing.T) {
 	err := yaml.Unmarshal(yamlData, &key)
 	if err == nil {
 		t.Error("expected error for invalid context key, got nil")
+	}
+}
+
+func TestCodedErr_BecknError_WithPath_ReportsDetailsPath(t *testing.T) {
+	codedErr := NewBadReqErr("SCH_INVALID_FORMAT", errors.New("bad value")).WithPath("$.message.intent")
+
+	beErr := codedErr.BecknError()
+
+	if beErr.Details == nil || beErr.Details.Path != "$.message.intent" {
+		t.Errorf("BecknError().Details = %+v, want path $.message.intent", beErr.Details)
+	}
+}
+
+func TestCodedErr_BecknError_WithoutPath_OmitsDetails(t *testing.T) {
+	beErr := NewBadReqErr("", errors.New("invalid input")).BecknError()
+
+	if beErr.Details != nil {
+		t.Errorf("BecknError().Details = %+v, want nil when no field is at fault", beErr.Details)
+	}
+}
+
+func TestCodedErr_BecknError_WithMessage_HidesWrappedText(t *testing.T) {
+	codedErr := NewCodedErr(502, "NET_DOWNSTREAM_UNAVAILABLE",
+		errors.New("dial tcp 10.0.0.7:443: connection refused")).WithMessage("pocra is not reachable after 3 attempts")
+
+	beErr := codedErr.BecknError()
+
+	if beErr.Message != "pocra is not reachable after 3 attempts" {
+		t.Errorf("BecknError().Message = %q, want the caller-facing message", beErr.Message)
+	}
+	if !strings.Contains(codedErr.Error(), "10.0.0.7") {
+		t.Errorf("Error() = %q, want the wrapped text kept for the log", codedErr.Error())
+	}
+}
+
+func TestNewMissingContextFieldErr_NamesFieldInMessageAndPath(t *testing.T) {
+	codedErr := NewMissingContextFieldErr("action")
+
+	beErr := codedErr.BecknError()
+
+	if codedErr.HTTPStatus() != 400 {
+		t.Errorf("HTTPStatus() = %d, want 400", codedErr.HTTPStatus())
+	}
+	if beErr.Code != "CTX_MISSING_FIELD" || beErr.Message != "context.action is missing" {
+		t.Errorf("BecknError() = %s %q, want CTX_MISSING_FIELD %q", beErr.Code, beErr.Message, "context.action is missing")
+	}
+	if beErr.Details == nil || beErr.Details.Path != "$.context.action" {
+		t.Errorf("BecknError().Details = %+v, want path $.context.action", beErr.Details)
 	}
 }

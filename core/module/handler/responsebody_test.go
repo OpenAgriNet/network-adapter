@@ -287,6 +287,12 @@ func TestServeHTTPNacksAnUnansweredRequestInAProviderModule(t *testing.T) {
 	if got.Message.Status == model.StatusACK {
 		t.Errorf("status = %q, want a NACK", got.Message.Status)
 	}
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", recorder.Code)
+	}
+	if got.Message.Error == nil || got.Message.Error.Message != "no provider serves this request" {
+		t.Errorf("error = %+v, want message %q", got.Message.Error, "no provider serves this request")
+	}
 }
 
 // The guard must not touch a request that was answered.

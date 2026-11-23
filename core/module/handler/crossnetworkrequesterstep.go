@@ -39,8 +39,7 @@ func (s *crossNetworkRequesterStep) Run(ctx *model.StepContext) error {
 	// Refused, not skipped: naming nobody must never read as "allow".
 	caller := model.ResolveCallerID(becknContext, model.RoleBPP)
 	if caller == "" {
-		return model.NewBadReqErr("", fmt.Errorf(
-			"the request names no sender, so there is nobody to judge: set context.senderId"))
+		return model.NewMissingContextFieldErr("senderId")
 	}
 
 	action, _ := becknContext["action"].(string)

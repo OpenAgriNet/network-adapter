@@ -189,7 +189,7 @@ func TestValidate_ActionExtraction(t *testing.T) {
 			name:    "missing action",
 			payload: `{"context":{},"message":{}}`,
 			wantErr: true,
-			errMsg:  "missing field Action",
+			errMsg:  "context.action is missing",
 		},
 		{
 			name:    "unsupported action",
@@ -227,6 +227,48 @@ func TestValidate_ActionExtraction(t *testing.T) {
 				if !contains(err.Error(), tt.errMsg) {
 					t.Errorf("Validate() error = %v, want error containing %v", err, tt.errMsg)
 				}
+			}
+		})
+	}
+}
+
+func TestValidate_ActionProblems_ReportTheirOwnCodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(testSpec))
+	}))
+	defer server.Close()
+	validator, _, err := New(context.Background(), &Config{Type: "url", Location: server.URL, CacheTTL: 3600})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		payload  string
+		wantCode string
+		wantPath string
+	}{
+		{"missing action", `{"context":{},"message":{}}`, "CTX_MISSING_FIELD", "$.context.action"},
+		{"unsupported action", `{"context":{"action":"unknown"},"message":{}}`, "SCH_ACTION_NOT_SUPPORTED", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validator.Validate(context.Background(), nil, []byte(tt.payload))
+
+			var codedErr *model.CodedErr
+			if !errors.As(err, &codedErr) {
+				t.Fatalf("Validate() error = %v, want a *model.CodedErr", err)
+			}
+			wireErr := codedErr.BecknError()
+			if wireErr.Code != tt.wantCode {
+				t.Errorf("code = %s, want %s", wireErr.Code, tt.wantCode)
+			}
+			gotPath := ""
+			if wireErr.Details != nil {
+				gotPath = wireErr.Details.Path
+			}
+			if gotPath != tt.wantPath {
+				t.Errorf("details.path = %q, want %q", gotPath, tt.wantPath)
 			}
 		})
 	}
@@ -477,8 +519,8 @@ func TestExtractSchemaErrors_CompositeOriginParsesNestedFieldPath(t *testing.T) 
 	}
 	got := schemaErrors[0]
 	t.Logf("extracted = %+v", got)
-	if got.Details == nil || got.Details.Path != "nested/name" {
-		t.Errorf("Details = %+v, want Path=nested/name", got.Details)
+	if got.Details == nil || got.Details.Path != "nested.name" {
+		t.Errorf("Details = %+v, want Path=nested.name", got.Details)
 	}
 	// kin-openapi's SchemaError.Error() appends a verbose schema/value dump
 	// after the reason — check the extracted reason is the prefix, not an
@@ -1384,4 +1426,39 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestValidate_SchemaRefusal_PathIsJSONPathFromTheRoot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(testSpec))
+	}))
+	defer server.Close()
+	validator, _, err := New(context.Background(), &Config{Type: "url", Location: server.URL, CacheTTL: 3600})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	err = validator.Validate(context.Background(), nil, []byte(`{"context":{"action":"search"}}`))
+
+	var refusal *model.SchemaValidationErr
+	if !errors.As(err, &refusal) {
+		t.Fatalf("Validate() error = %v, want a *model.SchemaValidationErr", err)
+	}
+	if wireErr := refusal.BecknError(); wireErr.Details == nil || wireErr.Details.Path != "$.message" {
+		t.Errorf("details = %+v, want path $.message", wireErr.Details)
+	}
+}
+
+func TestPathBelowRoot_WritesIndexesInBrackets(t *testing.T) {
+	tests := map[string][]string{
+		"":                             nil,
+		"message":                      {"message"},
+		"message.items[0].id":          {"message", "items", "0", "id"},
+		"message.channels[2][1].value": {"message", "channels", "2", "1", "value"},
+	}
+	for want, segments := range tests {
+		if got := pathBelowRoot(segments); got != want {
+			t.Errorf("pathBelowRoot(%q) = %q, want %q", segments, got, want)
+		}
+	}
 }

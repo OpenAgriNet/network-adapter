@@ -2,6 +2,7 @@ package common_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,13 @@ func (s *networkStub) ProviderRecord(context.Context, string) (*model.ProviderRe
 
 func (s *networkStub) AdmittedNetworks(context.Context) ([]model.AdmittedNetwork, error) {
 	return s.networks, s.err
+}
+
+// recordOnlyRegistry serves call plans but cannot list admitted networks.
+type recordOnlyRegistry struct{}
+
+func (recordOnlyRegistry) ProviderRecord(context.Context, string) (*model.ProviderRecord, error) {
+	return &model.ProviderRecord{BindingKey: sharedBinding}, nil
 }
 
 // agreedPacks is what a direction covers. Any pack will do here; these tests
@@ -273,5 +281,89 @@ func TestForwardingRefusesWhenTheRegistryCannotBeAsked(t *testing.T) {
 		err:  fmt.Errorf("registry unreachable")}).Run(ctx)
 	if err == nil {
 		t.Fatal("a network was forwarded to without checking we admitted them")
+	}
+}
+
+// Each refusal reaches the caller with its own status, code, message and the
+// field at fault, not the operator's explanation.
+func TestCrossNetworkRefusalsAreStandard(t *testing.T) {
+	stranger := "stranger.oan.local"
+	tests := []struct {
+		name        string
+		own         string
+		receiver    string
+		step        func(t *testing.T) definition.Step
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+		wantPath    string
+	}{
+		{
+			name:     "network never admitted",
+			own:      us,
+			receiver: stranger,
+			step: func(t *testing.T) definition.Step {
+				return crossStepWith(t, "http://unused.invalid", &networkStub{plan: &model.ProviderRecord{BindingKey: sharedBinding}})
+			},
+			wantStatus:  http.StatusNotFound,
+			wantCode:    "NET_ENTITY_NOT_FOUND",
+			wantMessage: stranger + " is not a partner network",
+			wantPath:    "$.context.receiverId",
+		},
+		{
+			name:     "network admitted only as a requester",
+			own:      us,
+			receiver: them,
+			step: func(t *testing.T) definition.Step {
+				return admittedAs(t, model.Agreement{Requester: agreedPacks()})
+			},
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "CTX_INVALID_FIELD",
+			wantMessage: them + " is a partner network, but requests to it are not allowed",
+			wantPath:    "$.context.receiverId",
+		},
+		{
+			name:     "module with no subscriberId",
+			receiver: them,
+			step: func(t *testing.T) definition.Step {
+				return crossStep(t, "http://unused.invalid")
+			},
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    "NET_INTERNAL_ERROR",
+			wantMessage: "this service's network ID is not set up",
+		},
+		{
+			name:     "registry that cannot list admitted networks",
+			own:      us,
+			receiver: them,
+			step: func(t *testing.T) definition.Step {
+				return crossStepWith(t, "http://unused.invalid", recordOnlyRegistry{})
+			},
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    "NET_INTERNAL_ERROR",
+			wantMessage: "partner networks are not set up for this service",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &model.StepContext{Context: t.Context(), OwnSubscriberID: tt.own,
+				Body: crossRequest(tt.receiver, "https://"+tt.receiver+"/provider", "select")}
+			var codedErr *model.CodedErr
+			if err := tt.step(t).Run(ctx); !errors.As(err, &codedErr) {
+				t.Fatalf("Run() = %v, want a classified refusal", err)
+			}
+			wireErr := codedErr.BecknError()
+			if codedErr.HTTPStatus() != tt.wantStatus || wireErr.Code != tt.wantCode || wireErr.Message != tt.wantMessage {
+				t.Errorf("refusal = %d %s %q, want %d %s %q", codedErr.HTTPStatus(), wireErr.Code, wireErr.Message,
+					tt.wantStatus, tt.wantCode, tt.wantMessage)
+			}
+			gotPath := ""
+			if wireErr.Details != nil {
+				gotPath = wireErr.Details.Path
+			}
+			if gotPath != tt.wantPath {
+				t.Errorf("details.path = %q, want %q", gotPath, tt.wantPath)
+			}
+		})
 	}
 }

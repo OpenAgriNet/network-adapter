@@ -272,10 +272,12 @@ func (r *Router) Route(ctx context.Context, reqURL *url.URL, body []byte) (*mode
 	route, ok := versionRules[endpoint]
 	if !ok {
 		if domain == "*" {
-			return nil, fmt.Errorf("endpoint '%s' is not supported for version %s in routing config", endpoint, version)
+			return nil, unknownEndpointErr(endpoint, fmt.Errorf(
+				"endpoint '%s' is not supported for version %s in routing config", endpoint, version))
 		}
-		return nil, fmt.Errorf("endpoint '%s' is not supported for domain %s and version %s in routing config",
-			endpoint, domain, version)
+		return nil, unknownEndpointErr(endpoint, fmt.Errorf(
+			"endpoint '%s' is not supported for domain %s and version %s in routing config",
+			endpoint, domain, version))
 	}
 	// Handle BPP/BAP routing with request URIs.
 	// Both legacy ("bpp"/"bap") and new spec v2 ("receiver"/"sender") values are accepted.
@@ -334,7 +336,13 @@ func (r *Router) routeBodyless(endpoint, rawQuery string) (*model.Route, error) 
 		return route, nil
 	}
 
-	return nil, fmt.Errorf("endpoint '%s' is not supported in v2 routing config", endpoint)
+	return nil, unknownEndpointErr(endpoint, fmt.Errorf("endpoint '%s' is not supported in v2 routing config", endpoint))
+}
+
+// unknownEndpointErr is the 404 for a path no routing rule serves. The routing
+// detail goes to the log only.
+func unknownEndpointErr(endpoint string, cause error) error {
+	return model.NewNotFoundErr("", cause).WithMessage("unknown endpoint: " + endpoint)
 }
 
 // canonicalRoleName returns a stable, human-readable role label for use in error

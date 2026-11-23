@@ -101,8 +101,14 @@ func TestARequestNamingNoSenderIsRefused(t *testing.T) {
 		t.Fatalf("building the step: %v", err)
 	}
 
-	if err := step.Run(requestFor("discover", "")); err == nil {
-		t.Fatal("a request naming no sender names nobody to judge, so it must be refused")
+	err = step.Run(requestFor("discover", ""))
+
+	var codedErr *model.CodedErr
+	if !errors.As(err, &codedErr) {
+		t.Fatalf("Run() = %v, want a refusal naming the missing senderId", err)
+	}
+	if wireErr := codedErr.BecknError(); wireErr.Code != "CTX_MISSING_FIELD" || wireErr.Message != "context.senderId is missing" {
+		t.Errorf("refusal = %s %q, want CTX_MISSING_FIELD %q", wireErr.Code, wireErr.Message, "context.senderId is missing")
 	}
 }
 

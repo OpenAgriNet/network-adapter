@@ -260,8 +260,12 @@ func (km *KeyMgr) Keyset(ctx context.Context, keyID string) (*model.Keyset, erro
 	path := km.getSecretPath(keyID)
 
 	secret, err := km.VaultClient.Logical().Read(path)
-	if err != nil || secret == nil {
+	if err != nil {
 		return nil, fmt.Errorf("failed to read secret from Vault: %w", err)
+	}
+	// Vault answers a path with nothing stored as no secret and no error.
+	if secret == nil {
+		return nil, fmt.Errorf("no secret at %s: %w", path, model.ErrKeysetNotFound)
 	}
 
 	var data map[string]interface{}

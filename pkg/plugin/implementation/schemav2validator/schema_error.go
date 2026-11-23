@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/beckn-one/beckn-onix/pkg/model"
@@ -138,7 +139,7 @@ func rankSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError {
 }
 
 func codedSchemaError(se *openapi3.SchemaError) *model.Error {
-	path := strings.Join(se.JSONPointer(), "/")
+	path := pathBelowRoot(se.JSONPointer())
 	if path == "" {
 		path = se.SchemaField
 	}
@@ -350,4 +351,37 @@ func dedupeSchemaLeaves(leaves []*openapi3.SchemaError) []*openapi3.SchemaError 
 		out = append(out, leaf)
 	}
 	return out
+}
+
+// pathBelowRoot writes a JSON pointer's segments in the dotted form every
+// error path uses, without the leading "$": message.items[0].id.
+func pathBelowRoot(segments []string) string {
+	var path strings.Builder
+	for _, segment := range segments {
+		if _, err := strconv.Atoi(segment); err == nil {
+			path.WriteString("[" + segment + "]")
+			continue
+		}
+		if path.Len() > 0 {
+			path.WriteByte('.')
+		}
+		path.WriteString(segment)
+	}
+	return path.String()
+}
+
+// rootErrorPaths makes each path in a schema refusal a JSONPath from the
+// document root ($.message.items[0].id), the form every other error uses.
+func rootErrorPaths(err error) error {
+	var refusal *model.SchemaValidationErr
+	if !errors.As(err, &refusal) {
+		return err
+	}
+	for i := range refusal.Errors {
+		details := refusal.Errors[i].Details
+		if details != nil && details.Path != "" && !strings.HasPrefix(details.Path, "$") {
+			details.Path = "$." + details.Path
+		}
+	}
+	return err
 }

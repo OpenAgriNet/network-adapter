@@ -19,6 +19,10 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 )
 
+// codeActionNotSupported is the adapter's code for an action no loaded spec or
+// pack validates.
+const codeActionNotSupported = "SCH_ACTION_NOT_SUPPORTED"
+
 // payload represents the structure of the data payload with context information.
 type payload struct {
 	Context struct {
@@ -167,7 +171,7 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 	}
 
 	if payloadData.Context.Action == "" {
-		return model.NewBadReqErr("", fmt.Errorf("missing field Action in context"))
+		return model.NewMissingContextFieldErr("action")
 	}
 
 	v.specMutex.RLock()
@@ -184,7 +188,7 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 	// O(1) lookup from merged action index
 	schema := actionSchemas[action]
 	if schema == nil || schema.Value == nil {
-		return model.NewBadReqErr("", fmt.Errorf("unsupported action: %s", action))
+		return model.NewBadReqErr(codeActionNotSupported, fmt.Errorf("unsupported action: %s", action))
 	}
 
 	log.Debugf(ctx, "Validating action: %s", action)
@@ -203,7 +207,7 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 	if err := schema.Value.VisitJSON(jsonData, opts...); err != nil {
 		formatted := v.formatValidationError(err)
 		log.Debugf(ctx, "Schema validation failed: %v", formatted)
-		return formatted
+		return rootErrorPaths(formatted)
 	}
 
 	log.Debugf(ctx, "base schema validation passed for action: %s", action)
@@ -214,7 +218,7 @@ func (v *schemav2Validator) Validate(ctx context.Context, reqURL *url.URL, data 
 		if err := v.validateExtendedSchemas(ctx, jsonData, action); err != nil {
 			// Extended Schema failure - return error
 			log.Debugf(ctx, "Extended Schema validation failed for action %s: %v", action, err)
-			return err
+			return rootErrorPaths(err)
 		}
 		log.Debugf(ctx, "Extended Schema validation passed for action: %s", action)
 	}

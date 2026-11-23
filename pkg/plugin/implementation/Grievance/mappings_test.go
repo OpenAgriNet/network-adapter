@@ -607,13 +607,24 @@ func TestSupport_PortalFails_Returns502WithoutItsText(t *testing.T) {
 	}
 }
 
-// A 4xx from PMFBY is its refusal.
-func TestSupport_PortalAnswers4xx_Returns502(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			h := newHarness(t, &pmfbyStub{statusFor: map[string]int{insertPath: status}}, 0)
+// A 400 or 404 from PMFBY is about the request, so the caller gets the same
+// status; any other 4xx is PMFBY failing.
+func TestSupport_PortalAnswers4xx_ReturnsStandardError(t *testing.T) {
+	tests := []struct {
+		portalStatus int
+		wantStatus   int
+		wantCode     string
+	}{
+		{http.StatusBadRequest, http.StatusBadRequest, util.CodeProviderRefused},
+		{http.StatusNotFound, http.StatusNotFound, util.CodeNotFound},
+		{http.StatusConflict, http.StatusBadGateway, util.CodeUpstreamUnavailable},
+		{http.StatusUnprocessableEntity, http.StatusBadGateway, util.CodeUpstreamUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(http.StatusText(tt.portalStatus), func(t *testing.T) {
+			h := newHarness(t, &pmfbyStub{statusFor: map[string]int{insertPath: tt.portalStatus}}, 0)
 			_, err := h.send(t, support(supportFields()))
-			assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
+			assertCoded(t, err, tt.wantStatus, tt.wantCode)
 			if got := h.pmfby.calls[insertPath]; got != 1 {
 				t.Errorf("the lodge call was made %d times, want 1", got)
 			}
@@ -621,10 +632,10 @@ func TestSupport_PortalAnswers4xx_Returns502(t *testing.T) {
 	}
 }
 
-func TestStatus_PortalAnswers400_Returns502(t *testing.T) {
+func TestStatus_PortalAnswers400_Returns400(t *testing.T) {
 	h := newHarness(t, &pmfbyStub{statusFor: map[string]int{statusPath: http.StatusBadRequest}}, 0)
 	_, err := h.send(t, request("status", statusAttributes()))
-	assertCoded(t, err, http.StatusBadGateway, util.CodeUpstreamUnavailable)
+	assertCoded(t, err, http.StatusBadRequest, util.CodeProviderRefused)
 }
 
 func TestSupport_PortalDown_Returns502AfterOneAttempt(t *testing.T) {
@@ -1022,12 +1033,12 @@ func TestFlow_AnswerNotJSON_ReturnsErrorWithoutMapping(t *testing.T) {
 }
 
 // init included: PMFBY has no OTP, so there is no init.
-func TestFlow_UnservedAction_Returns400WithoutCallingPMFBY(t *testing.T) {
+func TestFlow_UnservedAction_Returns404WithoutCallingPMFBY(t *testing.T) {
 	for _, action := range []string{"init", "select"} {
 		t.Run(action, func(t *testing.T) {
 			h := newHarness(t, &pmfbyStub{}, 0)
 			_, err := h.send(t, request(action, statusAttributes()))
-			assertCoded(t, err, http.StatusBadRequest, "SCH_INVALID_FORMAT")
+			assertCoded(t, err, http.StatusNotFound, util.CodeNotFound)
 			if len(h.pmfby.calls) != 0 {
 				t.Errorf("PMFBY was called %v for an action it does not serve", h.pmfby.calls)
 			}

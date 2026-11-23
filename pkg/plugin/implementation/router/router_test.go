@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"embed"
+	"errors"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -889,8 +891,8 @@ func TestRouteNilContext(t *testing.T) {
 	defer os.RemoveAll(filepath.Dir(rulesFilePath))
 
 	_, err := router.Route(ctx, &url.URL{Path: "select"}, []byte(`{"message": {}}`))
-	if err == nil || !strings.Contains(err.Error(), "context field not found or invalid") {
-		t.Errorf("Route() with missing context = %v, want error containing 'context field not found or invalid'", err)
+	if err == nil || !strings.Contains(err.Error(), "context is missing") {
+		t.Errorf("Route() with missing context = %v, want error containing 'context is missing'", err)
 	}
 	testutil.RequireBadReqCode(t, err, "SCH_REQUIRED_FIELD_MISSING")
 }
@@ -1166,5 +1168,37 @@ func TestRouteBodylessPublisherUnaffectedByQueryParams(t *testing.T) {
 	}
 	if route.URL != nil {
 		t.Errorf("expected route.URL to be nil for publisher route, got %v", route.URL)
+	}
+}
+
+func TestRoute_UnknownEndpoint_Returns404NamingEndpoint(t *testing.T) {
+	tests := []struct {
+		name       string
+		configFile string
+		endpoint   string
+		body       []byte
+	}{
+		{"with a body", "bpp_receiver.yaml", "unsupported", []byte(`{"context": {"domain": "ONDC:TRV11", "version": "1.1.0"}}`)},
+		{"bodyless", "v2_catalog_url.yaml", "catalog/unknown", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router, _, rulesFilePath := setupRouter(t, tt.configFile)
+			defer os.RemoveAll(filepath.Dir(rulesFilePath))
+
+			_, err := router.Route(context.Background(), &url.URL{Path: tt.endpoint}, tt.body)
+
+			var codedErr *model.CodedErr
+			if !errors.As(err, &codedErr) {
+				t.Fatalf("Route() = %v, want a *model.CodedErr", err)
+			}
+			if codedErr.HTTPStatus() != http.StatusNotFound {
+				t.Errorf("status = %d, want 404", codedErr.HTTPStatus())
+			}
+			want := "unknown endpoint: " + tt.endpoint
+			if wireErr := codedErr.BecknError(); wireErr.Code != "NET_ENTITY_NOT_FOUND" || wireErr.Message != want {
+				t.Errorf("error = %s %q, want NET_ENTITY_NOT_FOUND %q", wireErr.Code, wireErr.Message, want)
+			}
+		})
 	}
 }

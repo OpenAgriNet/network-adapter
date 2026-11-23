@@ -34,6 +34,10 @@ const (
 	RetryBackoffMax  = 800 * time.Millisecond
 )
 
+// AnswerMargin is how long before a request's deadline a provider call gives
+// up, leaving time for its answer to travel back through a forwarding hop.
+const AnswerMargin = 2 * time.Second
+
 // How much of a failed response is quoted: enough for the provider's message,
 // not a page of HTML in a log line.
 const ExplainLimit = 300
@@ -86,9 +90,21 @@ const (
 	AuthSchemeTokenHeader = "tokenHeader"
 )
 
-// CodeUpstreamUnavailable: the provider could not be reached or failed. Not
-// this adapter's fault and not the caller's.
-const CodeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
+// Error codes the provider step answers with. All are Beckn codes, except
+// CodeNotFound, which the adapter already used for every 404.
+const (
+	// CodeUpstreamUnavailable: the provider could not be reached or failed.
+	// Not this adapter's fault and not the caller's.
+	CodeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
+	CodeTimeout             = "NET_TIMEOUT"
+	CodeInternalError       = "NET_INTERNAL_ERROR"
+	CodeNotFound            = "NET_ENTITY_NOT_FOUND"
+	// CodeProviderRefused: the provider turned the request down as asked.
+	CodeProviderRefused = "BIZ_GENERIC_ERROR"
+	// CodeUnreadableAnswer: the provider's answer could not be turned into a
+	// Beckn response.
+	CodeUnreadableAnswer = "SCH_SCHEMA_ADAPTATION_FAILED"
+)
 
 // How early an exchanged token stops being trusted. Must exceed the round trip
 // to the provider, so a request that passed the expiry check cannot arrive
