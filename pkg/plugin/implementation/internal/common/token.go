@@ -100,18 +100,17 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 // taken from tokenTtl when it does not -- see AuthProfile.
 func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (string, time.Duration, error) {
 	cfg := auth.cfg
-	user, secret := os.Getenv(cfg.TokenUserEnv), os.Getenv(cfg.TokenSecretEnv)
-	if user == "" || secret == "" {
+	secret := os.Getenv(cfg.TokenSecretEnv)
+	user := ""
+	if cfg.TokenUserEnv != "" {
+		user = os.Getenv(cfg.TokenUserEnv)
+	}
+	if secret == "" || (cfg.TokenUserEnv != "" && user == "") {
 		return "", 0, s.missingCredential(ctx, cfg.Provider, cfg.Scheme,
-			cfg.TokenUserEnv+" and "+cfg.TokenSecretEnv)
+			strings.TrimPrefix(cfg.TokenUserEnv+" and "+cfg.TokenSecretEnv, " and "))
 	}
 
-	// Marshalled rather than concatenated, so a credential containing a quote
-	// or a backslash cannot break out of the JSON it travels in.
-	payload, err := json.Marshal(map[string]string{
-		cfg.TokenUserField:  user,
-		cfg.TokenSecretName: secret,
-	})
+	payload, err := tokenRequestBody(cfg, user, secret)
 	if err != nil {
 		return "", 0, s.permanentTokenErr(
 			fmt.Errorf("token request body could not be built: %w", err))
@@ -150,6 +149,49 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 	// expires_in: a request that passed the expiry check must not arrive after
 	// the token died. validate has already refused a ttl at or below it.
 	return token, cfg.TokenTTL - util.TokenRefreshSkew, nil
+}
+
+// tokenRequestBody builds the login request: the fixed body, with the user and
+// secret set at their (possibly dotted) fields.
+func tokenRequestBody(cfg AuthProfile, user, secret string) ([]byte, error) {
+	body := map[string]any{}
+	if cfg.TokenRequestBody != "" {
+		if err := json.Unmarshal([]byte(cfg.TokenRequestBody), &body); err != nil {
+			return nil, fmt.Errorf("tokenRequestBody is not a JSON object: %w", err)
+		}
+	}
+	if cfg.TokenUserField != "" {
+		if err := setDottedField(body, cfg.TokenUserField, user); err != nil {
+			return nil, err
+		}
+	}
+	if err := setDottedField(body, cfg.TokenSecretName, secret); err != nil {
+		return nil, err
+	}
+	// Marshalled rather than concatenated, so a credential containing a quote
+	// or a backslash cannot break out of the JSON it travels in.
+	return json.Marshal(body)
+}
+
+// setDottedField sets a.b.c in a JSON object, creating the objects on the way.
+func setDottedField(body map[string]any, path, value string) error {
+	parts := strings.Split(path, ".")
+	for _, part := range parts[:len(parts)-1] {
+		next, exists := body[part]
+		if !exists {
+			child := map[string]any{}
+			body[part] = child
+			body = child
+			continue
+		}
+		child, isObject := next.(map[string]any)
+		if !isObject {
+			return fmt.Errorf("token request field %q runs through %q, which is not an object", path, part)
+		}
+		body = child
+	}
+	body[parts[len(parts)-1]] = value
+	return nil
 }
 
 // exchangeOAuth2Token performs the client_credentials grant.

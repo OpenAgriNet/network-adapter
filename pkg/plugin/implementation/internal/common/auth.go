@@ -47,6 +47,9 @@ type AuthProfile struct {
 	ExtraHeaderName     string
 	ExtraHeaderValueEnv string
 
+	// tokenHeader only. Put before the token, joined with a space, e.g. Bearer.
+	TokenHeaderPrefix string
+
 	// The parameter to add, and the variable holding its value.
 	QueryName     string
 	QueryValueEnv string
@@ -77,6 +80,10 @@ type AuthProfile struct {
 	TokenUserEnv    string
 	TokenSecretName string
 	TokenSecretEnv  string
+
+	// The fixed part of the login request, as a JSON object (e.g. a GraphQL
+	// query); the secret is added into it, a dotted field meaning one level down.
+	TokenRequestBody string
 
 	// Where the token sits in the response body, as a dotted path.
 	TokenResponseField string
@@ -144,12 +151,16 @@ func (a *AuthProfile) validate() error {
 		// keys, the response key and the parameter or header name are all this
 		// provider's spelling, and guessing any of them sends a malformed
 		// request whose rejection says nothing about the cause.
-		if a.TokenURL == "" || a.TokenUserField == "" || a.TokenUserEnv == "" ||
-			a.TokenSecretName == "" || a.TokenSecretEnv == "" ||
+		if a.TokenURL == "" || a.TokenSecretName == "" || a.TokenSecretEnv == "" ||
 			a.TokenResponseField == "" {
 			return fmt.Errorf("%s: authScheme %s requires tokenUrl, "+
-				"tokenUserField, tokenUserEnv, tokenSecretField, tokenSecretEnv "+
-				"and tokenResponseField", a.Provider, a.Scheme)
+				"tokenSecretField, tokenSecretEnv and tokenResponseField", a.Provider, a.Scheme)
+		}
+		if err := a.validateTokenUser(); err != nil {
+			return err
+		}
+		if err := a.validateTokenRequestBody(); err != nil {
+			return err
 		}
 		if a.Scheme == util.AuthSchemeTokenQuery && a.QueryName == "" {
 			return fmt.Errorf("%s: authScheme tokenQuery requires queryName", a.Provider)
@@ -236,6 +247,30 @@ func parseAnswerStatuses(provider, raw string) ([]int, error) {
 // isAnswer reports whether this provider uses status for a real answer.
 func (a *AuthProfile) isAnswer(status int) bool {
 	return slices.Contains(a.AnswerStatuses, status)
+}
+
+// validateTokenUser keeps the user optional only for a login with a fixed request
+// body, such as a refresh-token login; a plain login must name its user.
+func (a *AuthProfile) validateTokenUser() error {
+	hasField, hasEnv := a.TokenUserField != "", a.TokenUserEnv != ""
+	if hasField != hasEnv || (!hasField && a.TokenRequestBody == "") {
+		return fmt.Errorf("%s: authScheme %s needs tokenUserField and tokenUserEnv together; "+
+			"only a login with tokenRequestBody may leave both out", a.Provider, a.Scheme)
+	}
+	return nil
+}
+
+// validateTokenRequestBody refuses a body that is not a JSON object, at startup
+// rather than on the first call.
+func (a *AuthProfile) validateTokenRequestBody() error {
+	if a.TokenRequestBody == "" {
+		return nil
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(a.TokenRequestBody), &body); err != nil || body == nil {
+		return fmt.Errorf("%s: tokenRequestBody must be a JSON object", a.Provider)
+	}
+	return nil
 }
 
 // ParseProviderAuth builds one credential profile per provider from a plugin's
@@ -332,8 +367,10 @@ var authFields = map[string]func(*AuthProfile, string){
 	// Kept as written and turned into a duration by validate, so a bad value is
 	// refused at startup naming the provider rather than read as zero -- which
 	// would mean re-exchanging a token on every single call.
-	"tokenTtl":         func(p *AuthProfile, v string) { p.TokenTTLRaw = v },
-	"tokenExpiryField": func(p *AuthProfile, v string) { p.TokenExpiryField = v },
+	"tokenTtl":          func(p *AuthProfile, v string) { p.TokenTTLRaw = v },
+	"tokenExpiryField":  func(p *AuthProfile, v string) { p.TokenExpiryField = v },
+	"tokenRequestBody":  func(p *AuthProfile, v string) { p.TokenRequestBody = v },
+	"tokenHeaderPrefix": func(p *AuthProfile, v string) { p.TokenHeaderPrefix = v },
 }
 
 // providerIDFrom returns the provider half of "<participantId>|<capabilityCode>".
@@ -432,12 +469,12 @@ func (s *Step) authenticate(auth *authenticator, session sessionCredential, req 
 		req.Header.Set("Authorization", "Bearer "+token)
 
 	case util.AuthSchemeTokenHeader:
-		// Exchanged like tokenQuery, sent bare in the header.
+		// Exchanged like tokenQuery, sent in the header behind the optional prefix.
 		token, err := s.providerToken(req.Context(), auth)
 		if err != nil {
 			return err
 		}
-		req.Header.Set(cfg.HeaderName, token)
+		req.Header.Set(cfg.HeaderName, strings.TrimSpace(cfg.TokenHeaderPrefix+" "+token))
 
 	case util.AuthSchemeTokenQuery:
 		// Exchanged like oauth2, placed like query: the same held token, put
