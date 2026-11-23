@@ -127,6 +127,27 @@ func TestAsQueryRendersScalarsWithoutInventingPrecision(t *testing.T) {
 	}
 }
 
+// A mapping that produces a number -- $number(...) in JSONata -- used to reach
+// the provider in exponent form once it passed six significant digits, so an
+// AIF beneficiary id or a ten-digit mobile number arrived as 1.23456789e+08
+// and the upstream answered 401 for an identifier it had never seen.
+func TestAsQueryRendersALongIdentifierInFull(t *testing.T) {
+	t.Parallel()
+
+	got, err := asQuery([]byte(`{"beneficiaryId":123456789,"mobile":9876543210,"small":101}`))
+	if err != nil {
+		t.Fatalf("asQuery() returned an unexpected error: %v", err)
+	}
+	for _, want := range []string{"beneficiaryId=123456789", "mobile=9876543210", "small=101"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("query %q is missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "e+") {
+		t.Errorf("query %q carries an exponent; no upstream parses one", got)
+	}
+}
+
 func TestAsQueryHandlesAnEmptyMapping(t *testing.T) {
 	t.Parallel()
 

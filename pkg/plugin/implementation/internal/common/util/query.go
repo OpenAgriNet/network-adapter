@@ -49,9 +49,10 @@ func asQueryValue(value any) (string, bool) {
 	case bool:
 		return strconv.FormatBool(typed), true
 	case float64:
-		// 'g' with -1 precision round-trips without inventing trailing zeros, so
-		// 19.9975 stays 19.9975 rather than becoming 19.997500.
-		return strconv.FormatFloat(typed, 'g', -1, 64), true
+		// 'f' never switches to an exponent, so a 7-digit identifier stays
+		// 1234567 rather than becoming 1.234567e+06, which no upstream parses.
+		// -1 precision still round-trips, so 19.9975 does not gain zeros.
+		return strconv.FormatFloat(typed, 'f', -1, 64), true
 	default:
 		return "", false
 	}

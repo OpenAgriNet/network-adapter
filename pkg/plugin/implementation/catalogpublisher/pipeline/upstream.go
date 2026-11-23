@@ -347,9 +347,11 @@ func asQuery(mapped []byte) (string, error) {
 		case bool:
 			values.Set(name, strconv.FormatBool(typed))
 		case float64:
-			// 'g' with -1 precision round-trips without inventing trailing
-			// zeros, so 19.9975 stays 19.9975.
-			values.Set(name, strconv.FormatFloat(typed, 'g', -1, 64))
+			// 'f' never switches to an exponent, so a 7-digit identifier stays
+			// 1234567 rather than becoming 1.234567e+06, which no upstream
+			// parses. -1 precision still round-trips, so 19.9975 keeps its
+			// digits and gains no zeros.
+			values.Set(name, strconv.FormatFloat(typed, 'f', -1, 64))
 		default:
 			return "", fmt.Errorf("mapped field %q is not a scalar and cannot become a query parameter", name)
 		}
