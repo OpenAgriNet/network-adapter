@@ -62,6 +62,115 @@ func TestBuildEndpointJoinsWithOneSlash(t *testing.T) {
 	}
 }
 
+// --- the fields a mapping sends to the query string ---------------------------
+
+// A POST whose input the upstream reads from the URL. KHC's check-status is the
+// case: grievanceNo in the body answers 400 "grievanceNo is required", the same
+// value in the query reaches the grievance. The mapping says so, because the
+// mapping is the file that describes this provider's shape.
+func TestAPostCarriesTheMappingsQueryFields(t *testing.T) {
+	t.Parallel()
+
+	mapped := []byte(`{"_query":{"grievanceNo":"BR/100012/12"}}`)
+	call := model.ActionPlan{Method: http.MethodPost, Path: "/v1/state/grievances/check-status"}
+
+	got, err := BuildEndpoint("http://khc:9106", call, mapped)
+	if err != nil {
+		t.Fatalf("BuildEndpoint returned an unexpected error: %v", err)
+	}
+	want := "http://khc:9106/v1/state/grievances/check-status?grievanceNo=BR%2F100012%2F12"
+	if got != want {
+		t.Errorf("BuildEndpoint = %q, want %q", got, want)
+	}
+	if body := RequestBody(http.MethodPost, mapped); body != nil {
+		t.Error("a request that was entirely query parameters was given a body as well")
+	}
+}
+
+// Both halves at once, which is the shape _query exists to allow: the row's
+// method and path do not change, and the mapping places each field.
+func TestAPostCanSendAQueryAndABody(t *testing.T) {
+	t.Parallel()
+
+	mapped := []byte(`{"_query":{"id":"7"},"otp":"123456"}`)
+	call := model.ActionPlan{Method: http.MethodPost, Path: "/verify"}
+
+	got, err := BuildEndpoint("http://khc:9106", call, mapped)
+	if err != nil {
+		t.Fatalf("BuildEndpoint returned an unexpected error: %v", err)
+	}
+	if want := "http://khc:9106/verify?id=7"; got != want {
+		t.Errorf("BuildEndpoint = %q, want %q", got, want)
+	}
+	_, body, err := Split(mapped, true)
+	if err != nil {
+		t.Fatalf("Split returned an unexpected error: %v", err)
+	}
+	if string(body) != `{"otp":"123456"}` {
+		t.Errorf("Split body = %s, want the request without its query fields", body)
+	}
+}
+
+// Every mapping that does not use the key, which is all of them but one. The
+// bytes must pass through untouched: re-marshalling re-orders keys, and a body
+// is not always an object -- a sealed envelope is a string.
+func TestARequestWithoutQueryFieldsIsUntouched(t *testing.T) {
+	t.Parallel()
+
+	for _, mapped := range []string{
+		`{"mobileNumber":"9000000001"}`,
+		`"a sealed envelope"`,
+		`[{"one":1}]`,
+	} {
+		call := model.ActionPlan{Method: http.MethodPost, Path: "/auth/send-otp"}
+		got, err := BuildEndpoint("http://khc:9106", call, []byte(mapped))
+		if err != nil {
+			t.Fatalf("BuildEndpoint(%s) returned an unexpected error: %v", mapped, err)
+		}
+		if want := "http://khc:9106/auth/send-otp"; got != want {
+			t.Errorf("BuildEndpoint(%s) = %q, want %q", mapped, got, want)
+		}
+		_, body, err := Split([]byte(mapped), true)
+		if err != nil || string(body) != mapped {
+			t.Errorf("Split(%s) = %s, %v; want the bytes unchanged", mapped, body, err)
+		}
+	}
+}
+
+// A GET already sends its whole request as the query string, so naming some of
+// it is redundant rather than wrong -- and a mapping moved from POST to GET
+// must not silently drop the half it named.
+func TestAGetSendsNamedAndUnnamedFieldsAlike(t *testing.T) {
+	t.Parallel()
+
+	call := model.ActionPlan{Method: http.MethodGet, Path: "/Status"}
+	got, err := BuildEndpoint("http://aif:9103", call,
+		[]byte(`{"_query":{"applicationNo":"7"},"year":"2026"}`))
+	if err != nil {
+		t.Fatalf("BuildEndpoint returned an unexpected error: %v", err)
+	}
+	if want := "http://aif:9103/Status?applicationNo=7&year=2026"; got != want {
+		t.Errorf("BuildEndpoint = %q, want %q", got, want)
+	}
+}
+
+// The reserved key names the query, so what it holds has to be able to be one.
+// Named here so a mapping writing an object inside it is told which field, not
+// handed a 404 from a provider that never saw the value.
+func TestQueryFieldsMustBeScalars(t *testing.T) {
+	t.Parallel()
+
+	_, err := BuildEndpoint("http://khc:9106",
+		model.ActionPlan{Method: http.MethodPost, Path: "/check"},
+		[]byte(`{"_query":{"grievance":{"no":"BR/1/1"}}}`))
+	if err == nil {
+		t.Fatal("BuildEndpoint accepted an object as a query parameter")
+	}
+	if !strings.Contains(err.Error(), QueryField) || !strings.Contains(err.Error(), "grievance") {
+		t.Errorf("error %q names neither the reserved key nor the field inside it", err)
+	}
+}
+
 // --- where the binding key lives ----------------------------------------------
 //
 // A default, not a setting: every participant must agree where the halves of a

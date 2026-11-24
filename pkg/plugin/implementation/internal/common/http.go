@@ -100,11 +100,17 @@ func (s *Step) attempt(ctx context.Context, auth *authenticator, session session
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, util.RequestBody(method, mapped))
+	// Named apart from the response body read further down, and asked for
+	// once: the header below describes whatever this is.
+	sending := util.RequestBody(method, mapped)
+	req, err := http.NewRequestWithContext(attemptCtx, method, endpoint, sending)
 	if err != nil {
 		return nil, util.DoNotRetry(fmt.Errorf("could not build the request: %w", err))
 	}
-	if util.HasBody(method) {
+	// Described only when one is actually sent. A call whose entire request
+	// went into the query string has no body, and announcing a JSON one it
+	// does not have is a claim some upstreams act on.
+	if sending != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if err := s.authenticate(auth, session, req); err != nil {

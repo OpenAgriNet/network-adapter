@@ -11,8 +11,9 @@ import (
 	"github.com/beckn-one/beckn-onix/pkg/model"
 )
 
-// BuildEndpoint joins the plan's base URL and path, carrying the mapped request
-// as query parameters when the method takes no body.
+// BuildEndpoint joins the plan's base URL and path, carrying as query
+// parameters whatever the request puts there: all of it when the method takes
+// no body, and the mapping's reserved _query object when it does.
 func BuildEndpoint(baseURL string, call model.ActionPlan, mapped []byte) (string, error) {
 	if err := verifyBaseURL(baseURL); err != nil {
 		return "", err
@@ -24,11 +25,8 @@ func BuildEndpoint(baseURL string, call model.ActionPlan, mapped []byte) (string
 	// baseUrl cannot end in a slash and path must begin with one. The trim is
 	// belt and braces, for a row predating that rule.
 	endpoint := strings.TrimSuffix(baseURL, "/") + call.Path
-	if HasBody(call.Method) {
-		return endpoint, nil
-	}
 
-	query, err := asQuery(mapped)
+	query, _, err := Split(mapped, HasBody(call.Method))
 	if err != nil {
 		return "", err
 	}

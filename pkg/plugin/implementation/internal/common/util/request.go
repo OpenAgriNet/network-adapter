@@ -8,12 +8,22 @@ import (
 	"strings"
 )
 
-// RequestBody returns the body to send, which is none for methods that take none.
+// RequestBody returns the body to send: none for a method that takes none,
+// and otherwise the mapped request less the fields the mapping named for the
+// query string. None again when that leaves nothing, so a call whose whole
+// request is a query parameter does not also announce an empty JSON body.
+//
+// A request that cannot be split is reported by BuildEndpoint, which asks the
+// same question first and fails the call before this is reached.
 func RequestBody(method string, mapped []byte) io.Reader {
 	if !HasBody(method) {
 		return nil
 	}
-	return bytes.NewReader(mapped)
+	_, body, err := Split(mapped, true)
+	if err != nil || len(body) == 0 {
+		return nil
+	}
+	return bytes.NewReader(body)
 }
 
 // HasBody reports whether a method carries a request body.
