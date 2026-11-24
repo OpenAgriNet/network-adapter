@@ -85,6 +85,17 @@ type AuthProfile struct {
 	// query); the secret is added into it, a dotted field meaning one level down.
 	TokenRequestBody string
 
+	// How the token request is written: "json" (the default) or "form", for an
+	// issuer that wants application/x-www-form-urlencoded.
+	TokenEncoding string
+
+	// Constant non-secret fields the token endpoint wants beside the user and
+	// the secret, as "name=value,name=value". An issuer that identifies the
+	// KIND of caller as well as the caller needs one; it is config rather than
+	// a variable because it is not a credential.
+	TokenExtraFieldsRaw string
+	TokenExtraFields    map[string]string
+
 	// Where the token sits in the response body, as a dotted path.
 	TokenResponseField string
 
@@ -168,6 +179,25 @@ func (a *AuthProfile) validate() error {
 		if a.Scheme == util.AuthSchemeTokenHeader && a.HeaderName == "" {
 			return fmt.Errorf("%s: authScheme tokenHeader requires headerName", a.Provider)
 		}
+		switch a.TokenEncoding {
+		case "", util.TokenEncodingJSON, util.TokenEncodingForm:
+		default:
+			return fmt.Errorf("%s: tokenEncoding %q must be %s or %s",
+				a.Provider, a.TokenEncoding, util.TokenEncodingJSON, util.TokenEncodingForm)
+		}
+		extra, err := parseTokenExtraFields(a.Provider, a.TokenExtraFieldsRaw)
+		if err != nil {
+			return err
+		}
+		// A constant that collides with the user or the secret would silently
+		// overwrite the credential, and the rejection would not say so.
+		for name := range extra {
+			if name == a.TokenUserField || name == a.TokenSecretName {
+				return fmt.Errorf("%s: tokenExtraFields sets %s, which tokenUserField or "+
+					"tokenSecretField already sends", a.Provider, name)
+			}
+		}
+		a.TokenExtraFields = extra
 		// The lifetime comes from exactly one of the two: a field the provider
 		// sets on each token, or a fixed duration configured here.
 		switch {
@@ -364,6 +394,8 @@ var authFields = map[string]func(*AuthProfile, string){
 	"tokenSecretField":   func(p *AuthProfile, v string) { p.TokenSecretName = v },
 	"tokenSecretEnv":     func(p *AuthProfile, v string) { p.TokenSecretEnv = v },
 	"tokenResponseField": func(p *AuthProfile, v string) { p.TokenResponseField = v },
+	"tokenEncoding":      func(p *AuthProfile, v string) { p.TokenEncoding = v },
+	"tokenExtraFields":   func(p *AuthProfile, v string) { p.TokenExtraFieldsRaw = v },
 	// Kept as written and turned into a duration by validate, so a bad value is
 	// refused at startup naming the provider rather than read as zero -- which
 	// would mean re-exchanging a token on every single call.
@@ -371,6 +403,32 @@ var authFields = map[string]func(*AuthProfile, string){
 	"tokenExpiryField":  func(p *AuthProfile, v string) { p.TokenExpiryField = v },
 	"tokenRequestBody":  func(p *AuthProfile, v string) { p.TokenRequestBody = v },
 	"tokenHeaderPrefix": func(p *AuthProfile, v string) { p.TokenHeaderPrefix = v },
+}
+
+// parseTokenExtraFields reads "name=value,name=value" into a map. Values are
+// constants, never credentials: anything secret belongs in a variable, and
+// this string sits in config that is read by more people than the environment.
+func parseTokenExtraFields(provider, raw string) (map[string]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	fields := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		if strings.TrimSpace(pair) == "" {
+			continue
+		}
+		name, value, found := strings.Cut(pair, "=")
+		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
+		if !found || name == "" || value == "" {
+			return nil, fmt.Errorf("%s: tokenExtraFields %q must be name=value pairs separated by commas",
+				provider, raw)
+		}
+		if _, repeated := fields[name]; repeated {
+			return nil, fmt.Errorf("%s: tokenExtraFields sets %s twice", provider, name)
+		}
+		fields[name] = value
+	}
+	return fields, nil
 }
 
 // providerIDFrom returns the provider half of "<participantId>|<capabilityCode>".

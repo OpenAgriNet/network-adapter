@@ -93,8 +93,9 @@ func (s *Step) exchangeToken(ctx context.Context, auth *authenticator) (string, 
 	return s.exchangeOAuth2Token(ctx, auth)
 }
 
-// exchangeQueryToken POSTs a JSON body of configured field names and reads the
-// token out of a configured response field.
+// exchangeQueryToken POSTs a body of configured field names and reads the
+// token out of a configured response field. The body is JSON, or form-encoded
+// where the issuer wants that -- see AuthProfile.TokenEncoding.
 //
 // The lifetime is read from tokenExpiryField when the endpoint states one, and
 // taken from tokenTtl when it does not -- see AuthProfile.
@@ -110,13 +111,13 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 			strings.TrimPrefix(cfg.TokenUserEnv+" and "+cfg.TokenSecretEnv, " and "))
 	}
 
-	payload, err := tokenRequestBody(cfg, user, secret)
+	payload, contentType, err := tokenRequestBody(cfg, user, secret)
 	if err != nil {
 		return "", 0, s.permanentTokenErr(
 			fmt.Errorf("token request body could not be built: %w", err))
 	}
 
-	body, err := s.postForToken(ctx, cfg, payload, "application/json")
+	body, err := s.postForToken(ctx, cfg, payload, contentType)
 	if err != nil {
 		return "", 0, err
 	}
@@ -151,26 +152,55 @@ func (s *Step) exchangeQueryToken(ctx context.Context, auth *authenticator) (str
 	return token, cfg.TokenTTL - util.TokenRefreshSkew, nil
 }
 
-// tokenRequestBody builds the login request: the fixed body, with the user and
-// secret set at their (possibly dotted) fields.
-func tokenRequestBody(cfg AuthProfile, user, secret string) ([]byte, error) {
+// tokenRequestBody writes the login request in the issuer's encoding: the
+// fixed body with the user and secret set at their (possibly dotted) fields,
+// as JSON, or a flat form where the issuer wants that -- see
+// AuthProfile.TokenEncoding.
+//
+// Both forms escape rather than concatenate, so a credential carrying a quote,
+// a backslash or an ampersand cannot break out of the body it travels in.
+func tokenRequestBody(cfg AuthProfile, user, secret string) ([]byte, string, error) {
+	// Constants beside the credential: which KIND of caller this is, where the
+	// issuer wants that said. validate has refused any that would overwrite
+	// the user or the secret.
+	if cfg.TokenEncoding == util.TokenEncodingForm {
+		// A form carries no nesting, so the names are taken as written.
+		form := url.Values{}
+		if cfg.TokenUserField != "" {
+			form.Set(cfg.TokenUserField, user)
+		}
+		form.Set(cfg.TokenSecretName, secret)
+		for name, value := range cfg.TokenExtraFields {
+			form.Set(name, value)
+		}
+		return []byte(form.Encode()), "application/x-www-form-urlencoded", nil
+	}
+
 	body := map[string]any{}
 	if cfg.TokenRequestBody != "" {
 		if err := json.Unmarshal([]byte(cfg.TokenRequestBody), &body); err != nil {
-			return nil, fmt.Errorf("tokenRequestBody is not a JSON object: %w", err)
+			return nil, "", fmt.Errorf("tokenRequestBody is not a JSON object: %w", err)
 		}
 	}
 	if cfg.TokenUserField != "" {
 		if err := setDottedField(body, cfg.TokenUserField, user); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 	}
 	if err := setDottedField(body, cfg.TokenSecretName, secret); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	// Marshalled rather than concatenated, so a credential containing a quote
-	// or a backslash cannot break out of the JSON it travels in.
-	return json.Marshal(body)
+	for name, value := range cfg.TokenExtraFields {
+		if err := setDottedField(body, name, value); err != nil {
+			return nil, "", err
+		}
+	}
+	// Marshalled rather than concatenated, for the same reason as the form.
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, "", err
+	}
+	return payload, "application/json", nil
 }
 
 // setDottedField sets a.b.c in a JSON object, creating the objects on the way.

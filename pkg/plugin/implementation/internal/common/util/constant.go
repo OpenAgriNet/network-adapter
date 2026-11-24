@@ -101,3 +101,10 @@ const CodeUpstreamUnavailable = "NET_DOWNSTREAM_UNAVAILABLE"
 // Applied to oauth2's expires_in and to tokenQuery's configured tokenTtl
 // alike: both are a claim about a lifetime, and the same race sits under both.
 const TokenRefreshSkew = 60 * time.Second
+
+// How a token request is written. JSON is the default; an issuer that wants
+// application/x-www-form-urlencoded is told so with TokenEncodingForm.
+const (
+	TokenEncodingJSON = "json"
+	TokenEncodingForm = "form"
+)

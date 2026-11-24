@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 const (
 	envelopeAESGCM          = "aesGcm"          // fixed key and nonce
 	envelopeAESCBCKeyInBand = "aesCbcKeyInBand" // fresh key per request, sent as cipher@key
+	envelopeAESCBCFixedKey  = "aesCbcFixedKey"  // fixed key, ciphertext as hex
 )
 
 // codeInternal is returned when the adapter itself is misconfigured.
@@ -37,8 +39,11 @@ var envelopeFields = map[string]func(*envelopeSettings, string){
 	"envelopeNonceEnv":      func(s *envelopeSettings, v string) { s.nonceEnv = v },
 	"envelopeTokenEnv":      func(s *envelopeSettings, v string) { s.tokenEnv = v },
 	"envelopeTokenField":    func(s *envelopeSettings, v string) { s.tokenField = v },
+	"envelopeIvEnv":         func(s *envelopeSettings, v string) { s.ivEnv = v },
 	"envelopeRequestField":  func(s *envelopeSettings, v string) { s.requestField = v },
 	"envelopeResponsePaths": func(s *envelopeSettings, v string) { s.responsePaths = v },
+
+	"envelopeResponseOptional": func(s *envelopeSettings, v string) { s.responseOptional = v },
 
 	"otpEnvelope":        func(s *envelopeSettings, v string) { s.otp.kind = v },
 	"otpBindingKey":      func(s *envelopeSettings, v string) { s.otp.bindingKey = v },
@@ -54,7 +59,10 @@ var envelopeFields = map[string]func(*envelopeSettings, string){
 
 // envelopeSettings is one provider's envelope as written in config.
 type envelopeSettings struct {
-	kind, keyEnv, nonceEnv, tokenEnv, tokenField, requestField, responsePaths string
+	kind, keyEnv, nonceEnv, ivEnv, tokenEnv, tokenField, requestField, responsePaths string
+
+	// responseOptional is parsed late, by the codec that supports it.
+	responseOptional string
 
 	otp             cbcSettings
 	otpActions      string
@@ -212,21 +220,44 @@ func parseBaseCodec(provider string, s envelopeSettings) (codec, error) {
 	switch s.kind {
 	case "":
 		// Without the kind the body would go out unsealed.
-		if s.keyEnv != "" || s.nonceEnv != "" || s.tokenEnv != "" || s.tokenField != "" ||
-			s.requestField != "" || s.responsePaths != "" {
+		if s.keyEnv != "" || s.nonceEnv != "" || s.ivEnv != "" || s.tokenEnv != "" || s.tokenField != "" ||
+			s.requestField != "" || s.responsePaths != "" || s.responseOptional != "" {
 			return nil, fmt.Errorf("%s: envelope settings are present but envelope is not set", provider)
 		}
 		return nil, nil
+	case envelopeAESCBCFixedKey:
+		return newCBCFixedCodec(provider, s)
 	case envelopeAESCBCKeyInBand:
 		if s.keyEnv != "" || s.nonceEnv != "" {
 			return nil, fmt.Errorf("%s: envelope %s carries its key in band; drop envelopeKeyEnv and envelopeNonceEnv",
 				provider, envelopeAESCBCKeyInBand)
 		}
+		if err := onlyFixedKey(provider, s); err != nil {
+			return nil, err
+		}
 		return newCBCCodec(provider, "envelope", cbcSettings{kind: s.kind, tokenEnv: s.tokenEnv,
 			tokenField: s.tokenField, requestField: s.requestField, responsePaths: s.responsePaths})
 	default:
+		if err := onlyFixedKey(provider, s); err != nil {
+			return nil, err
+		}
 		return newGCMCodec(provider, s)
 	}
+}
+
+// onlyFixedKey refuses the settings that only envelope aesCbcFixedKey reads, so
+// setting one on another codec fails at startup rather than being ignored.
+func onlyFixedKey(provider string, s envelopeSettings) error {
+	for setting, value := range map[string]string{
+		"envelopeIvEnv":            s.ivEnv,
+		"envelopeResponseOptional": s.responseOptional,
+	} {
+		if strings.TrimSpace(value) != "" {
+			return fmt.Errorf("%s: %s is only read by envelope %s, and this provider is on %q",
+				provider, setting, envelopeAESCBCFixedKey, s.kind)
+		}
+	}
+	return nil
 }
 
 // parseOTPCodec reads the otp* block: the codec for the OTP service, or nil.
@@ -337,13 +368,14 @@ func parsePaths(provider, setting, raw string) ([][]string, error) {
 	return paths, nil
 }
 
-// sealedIn finds the sealed string at the first of paths that holds one.
-// Not JSON, or no envelope: 502.
-func sealedIn(ctx context.Context, provider string, answer []byte, paths [][]string) (string, error) {
+// sealedAt finds the sealed string at the first of paths that holds one.
+// isJSON separates a body we could not read at all from one that is readable
+// and simply carries no envelope -- only the second is a provider refusal a
+// mapping might be able to explain.
+func sealedAt(answer []byte, paths [][]string) (value string, found, isJSON bool) {
 	var wire any
 	if err := json.Unmarshal(answer, &wire); err != nil {
-		log.Warnf(ctx, "%s answered with a body that is not JSON (%d bytes)", provider, len(answer))
-		return "", refused(fmt.Errorf("%s answered without an envelope", provider))
+		return "", false, false
 	}
 	for _, path := range paths {
 		node := wire
@@ -355,18 +387,50 @@ func sealedIn(ctx context.Context, provider string, answer []byte, paths [][]str
 			}
 			node = fields[key]
 		}
-		if value, ok := node.(string); ok {
-			return strings.TrimSpace(value), nil
+		if sealed, ok := node.(string); ok {
+			return strings.TrimSpace(sealed), true, true
 		}
 	}
-	log.Warnf(ctx, "%s answered with no envelope at any configured path", provider)
-	return "", refused(fmt.Errorf("%s answered without an envelope", provider))
+	return "", false, true
 }
 
-// decodeSealed base64-decodes a sealed string. Plain text there is the
-// provider's rejection: logged redacted, never returned (502).
+// sealedIn is sealedAt for codecs that always expect an envelope.
+// Not JSON, or no envelope: 502.
+func sealedIn(ctx context.Context, provider string, answer []byte, paths [][]string) (string, error) {
+	value, found, isJSON := sealedAt(answer, paths)
+	if !isJSON {
+		log.Warnf(ctx, "%s answered with a body that is not JSON (%d bytes)", provider, len(answer))
+		return "", refused(fmt.Errorf("%s answered without an envelope", provider))
+	}
+	if !found {
+		log.Warnf(ctx, "%s answered with no envelope at any configured path", provider)
+		return "", refused(fmt.Errorf("%s answered without an envelope", provider))
+	}
+	return value, nil
+}
+
+// sealedEncoding is how a provider writes its ciphertext on the wire.
+type sealedEncoding int
+
+const (
+	sealedBase64 sealedEncoding = iota
+	sealedHex
+)
+
+// decodeSealed base64-decodes a sealed string, the convention every provider
+// but KCC follows.
 func decodeSealed(ctx context.Context, provider, tokenEnv, sealed string) ([]byte, error) {
-	raw, err := base64.StdEncoding.DecodeString(sealed)
+	return decodeSealedAs(ctx, provider, tokenEnv, sealed, sealedBase64)
+}
+
+// decodeSealedAs decodes a sealed string in the provider's encoding. Plain text
+// there is the provider's rejection: logged redacted, never returned (502).
+func decodeSealedAs(ctx context.Context, provider, tokenEnv, sealed string, encoding sealedEncoding) ([]byte, error) {
+	decode := base64.StdEncoding.DecodeString
+	if encoding == sealedHex {
+		decode = hex.DecodeString
+	}
+	raw, err := decode(sealed)
 	if err != nil || len(raw) == 0 {
 		log.Warnf(ctx, "%s answered with plain text where its envelope belongs: %s",
 			provider, redactToken(util.Explain([]byte(sealed)), tokenEnv))
@@ -429,6 +493,19 @@ func missingSettings(settings map[string]string) []string {
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// boolSetting reads an explicit true or false. Unset is false.
+func boolSetting(provider, name, value string) (bool, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false, nil
+	}
+	parsed, err := strconv.ParseBool(trimmed)
+	if err != nil {
+		return false, fmt.Errorf("%s: %s must be true or false, got %q", provider, name, value)
+	}
+	return parsed, nil
 }
 
 // timeoutSetting reads a call's own budget in milliseconds. Unset is 0, which
