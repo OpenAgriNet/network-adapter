@@ -64,7 +64,8 @@ type SessionProfile struct {
 	// Optional. A payload value that must not change for the life of the
 	// session -- the beneficiary the OTP was sent to. Checked on every call
 	// that spends the token, so a leaked transaction id alone cannot ask
-	// about somebody else.
+	// about somebody else. Comma-separated paths like KeyAt: the value sits on
+	// a contract for some actions and on a support channel for others.
 	BindAt string
 
 	// Where the token goes on the wire. Defaulted to the Bearer convention.
@@ -349,11 +350,20 @@ func (s *Step) keepSession(ctx context.Context, p *SessionProfile, beckn, answer
 	return nil
 }
 
-// firstValueAt returns the first string the path reaches, or "".
-func firstValueAt(node any, path string) string {
-	for _, value := range ValuesAt(node, path) {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
+// firstValueAt returns the first string any of the comma-separated paths
+// reaches, or "".
+//
+// Several paths, as sessionKeyAt already takes: one capability can be carried
+// on a contract by one action and on support channels by another, and a bind
+// that cannot name both shapes is silently skipped on the action it misses --
+// which on a filing means a transaction id alone is enough to write under
+// another beneficiary's name.
+func firstValueAt(node any, paths string) string {
+	for _, path := range splitList(paths) {
+		for _, value := range ValuesAt(node, path) {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
 		}
 	}
 	return ""

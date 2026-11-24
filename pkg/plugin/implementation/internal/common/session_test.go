@@ -371,3 +371,30 @@ func TestAProviderAnswerIsReadWhateverItsCasing(t *testing.T) {
 		t.Errorf("read %v, want a quoted lifetime read as seconds", got)
 	}
 }
+
+// The beneficiary a session was bought for may be written in one place by the
+// action that buys it and another by the action that spends it -- KHC confirms
+// on a contract and files on a support channel. A bind that reads only the
+// first shape finds nothing on the second and lets the call through unchecked.
+func TestSessionBindReadsEitherShape(t *testing.T) {
+	const bind = "message.contract.commitments[].commitmentAttributes.farmerMobileNumber," +
+		"message.support.channels[].farmerMobileNumber"
+
+	contract := map[string]any{"message": map[string]any{"contract": map[string]any{
+		"commitments": []any{map[string]any{
+			"commitmentAttributes": map[string]any{"farmerMobileNumber": "9876543210"},
+		}},
+	}}}
+	channel := map[string]any{"message": map[string]any{"support": map[string]any{
+		"channels": []any{map[string]any{"farmerMobileNumber": "9876543210"}},
+	}}}
+
+	for name, body := range map[string]map[string]any{"contract": contract, "channel": channel} {
+		if got := firstValueAt(body, bind); got != "9876543210" {
+			t.Errorf("firstValueAt(%s) = %q, want the beneficiary", name, got)
+		}
+	}
+	if got := firstValueAt(map[string]any{"message": map[string]any{}}, bind); got != "" {
+		t.Errorf("firstValueAt(neither shape) = %q, want empty", got)
+	}
+}
