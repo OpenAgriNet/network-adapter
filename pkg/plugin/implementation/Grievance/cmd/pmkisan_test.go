@@ -38,6 +38,10 @@ func bothSchemesConfig() map[string]string {
 		"otpActions-pmkisan":            "init",
 		"otpVerifyPath-pmkisan":         "/ChatbotOTPVerified",
 		"otpVerifyActions-pmkisan":      "support,status",
+		"otpVerifyBodyFields-pmkisan":   "Types, Values, OTP",
+		"otpVerifyIdentityFrom-pmkisan": "enrolmentId=Ben_id, applicant.mobile=Mobile",
+		"otpVerifyOtpFrom-pmkisan":      "challenge.response.value",
+		"otpVerifyMethodFrom-pmkisan":   "challenge.response.method=OTP",
 	} {
 		config[key] = value
 	}

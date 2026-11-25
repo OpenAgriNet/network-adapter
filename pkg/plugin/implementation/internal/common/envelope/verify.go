@@ -15,8 +15,10 @@ import (
 // payload carries the challenge, and what its provider's "yes" looks like.
 type Hooks struct {
 	// Challenge builds the verify request from the payload, or a coded
-	// refusal. Needed only by a provider that verifies.
-	Challenge func(exchange common.Exchange) (map[string]any, error)
+	// refusal. Needed only by a provider that verifies. provider is the
+	// config block the verify belongs to, so one hook can serve the several
+	// providers a capability carries, each with its own field names.
+	Challenge func(provider string, exchange common.Exchange) (map[string]any, error)
 
 	// Succeeded reports whether an opened answer says yes. It must fail
 	// closed: anything it cannot read is a no.
@@ -41,7 +43,7 @@ type verify struct {
 // check verifies the challenge. Unreachable: 502. Not a yes: 400
 // BIZ_GENERIC_ERROR (401 means a bad Beckn signature).
 func (v *verify) check(ctx context.Context, exchange common.Exchange) error {
-	fields, err := v.hooks.Challenge(exchange)
+	fields, err := v.hooks.Challenge(v.provider, exchange)
 	if err != nil {
 		return err
 	}

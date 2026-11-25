@@ -561,6 +561,14 @@ modules:
                 otpVerifyPath: /ChatbotOTPVerified
                 otpVerifyActions: "support,status"
                 otpVerifyTimeoutMs: "10000"
+                # PM-KISAN's own verify body: /ChatbotOTPVerified takes Types,
+                # Values and OTP, and calls a registration number a Ben_id. The
+                # adapter holds none of these names; they are declared here so a
+                # provider's field names never sit in shared Go code.
+                otpVerifyBodyFields: "Types, Values, OTP"
+                otpVerifyIdentityFrom: "enrolmentId=Ben_id, applicant.mobile=Mobile"
+                otpVerifyOtpFrom: challenge.response.value
+                otpVerifyMethodFrom: "challenge.response.method=OTP"
 
               # Application status: the binding's host is the OTP service itself; OTP,
               # the record, then a follow-up read of its blockers (ADR-0005).
@@ -573,6 +581,14 @@ modules:
                 otpVerifyPath: /ChatbotOTPVerified
                 otpVerifyActions: status
                 otpVerifyTimeoutMs: "10000"
+                # PM-KISAN's own verify body: /ChatbotOTPVerified takes Types,
+                # Values and OTP, and calls a registration number a Ben_id. The
+                # adapter holds none of these names; they are declared here so a
+                # provider's field names never sit in shared Go code.
+                otpVerifyBodyFields: "Types, Values, OTP"
+                otpVerifyIdentityFrom: "enrolmentId=Ben_id, applicant.mobile=Mobile"
+                otpVerifyOtpFrom: challenge.response.value
+                otpVerifyMethodFrom: "challenge.response.method=OTP"
                 followUpPath: /ChatbotBeneficiaryStatus
                 followUpField: _beneficiaryStatus
                 followUpActions: status

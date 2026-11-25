@@ -383,6 +383,10 @@ func runPMKISANWith(t *testing.T, p *pkPortal, otp *pkOTPService, request string
 		"otpActions-pmkisan|openagrinet:Grievance":            "init",
 		"otpVerifyPath-pmkisan|openagrinet:Grievance":         "/ChatbotOTPVerified",
 		"otpVerifyActions-pmkisan|openagrinet:Grievance":      "support,status",
+		"otpVerifyBodyFields-pmkisan|openagrinet:Grievance":   "Types, Values, OTP",
+		"otpVerifyIdentityFrom-pmkisan|openagrinet:Grievance": "enrolmentId=Ben_id, applicant.mobile=Mobile",
+		"otpVerifyOtpFrom-pmkisan|openagrinet:Grievance":      "challenge.response.value",
+		"otpVerifyMethodFrom-pmkisan|openagrinet:Grievance":   "challenge.response.method=OTP",
 	})
 	if err != nil {
 		t.Fatalf("ParseEnvelopes() = %v", err)

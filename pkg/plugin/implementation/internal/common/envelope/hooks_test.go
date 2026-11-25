@@ -13,7 +13,7 @@ import (
 // grievance packs put it, and "yes" is a "True" flag. Enough for this
 // package's tests; the real ones are the Grievance package's.
 var testHooks = Hooks{
-	Challenge: func(exchange common.Exchange) (map[string]any, error) {
+	Challenge: func(provider string, exchange common.Exchange) (map[string]any, error) {
 		holder := testHolder(exchange.Beckn)
 		kind, id := "", ""
 		if v, _ := holder["enrolmentId"].(string); v != "" {
