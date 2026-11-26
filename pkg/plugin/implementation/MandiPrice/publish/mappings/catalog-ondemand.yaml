@@ -152,7 +152,7 @@ response: |
           {
             "catalogId": _local.catalogId,
             "catalogType": "REGULAR",
-            "updateMode": "MERGE",
+            "updateMode": "FULL",
             "visibleTo": [
               _local.networkId
             ],

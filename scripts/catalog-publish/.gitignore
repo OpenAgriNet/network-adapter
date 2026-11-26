@@ -1,0 +1,3 @@
+scripts/catalog-publish/bin/
+scripts/catalog-publish/.env
+scripts/catalog-publish/catalogs/

@@ -1,0 +1,78 @@
+# catalog-publish.yaml -- the one-time MandiPrice publish run.
+#
+# NOTHING about a deployment is written in Go. Addresses, identities, the date
+# window and the mode all live here; a second capability is another entry
+# under `pipelines`.
+#
+# ${VAR} reads an environment variable and FAILS if it is unset.
+# ${VAR:-default} supplies a fallback. The strictness is deliberate: an empty
+# participantId or publishUrl publishes something wrong rather than failing.
+#
+# CREDENTIALS ARE NOT IN THIS FILE and cannot be. The publish engine refuses
+# to let a config override an input the pipeline marks `secret`, so those are
+# read from the environment by the names the pipeline file itself declares --
+# for Mandi, MANDI_TOKEN_USER and MANDI_TOKEN_SECRET. See .env.example.
+
+# output -- the one real decision a run makes.
+#
+#   files  write one JSON document per state to `dir`, and publish NOTHING.
+#   api    publish to discovery, and keep no files.
+#   both   write the documents AND publish them.
+#
+# `files` is the default because building is observable and reversible and
+# publishing is neither. Under `files` the discovery block below is not used
+# at all, so a documents-only run needs no address and no network.
+output:
+  mode: ${OUTPUT_MODE:-files}
+  dir: ${CATALOG_OUT_DIR:-./catalogs}
+
+discovery:
+  # The BASE address. /publish is appended.
+  #
+  # Post DIRECTLY to discovery, not to the provider adapter: the adapter's
+  # /publish is MERGE-only, and this pipeline publishes FULL so a market the
+  # upstream stops listing is removed rather than lingering for ever.
+  # Not used under output.mode `files`, so it has a default of nothing;
+  # `api` and `both` refuse to run without it.
+  publishUrl: ${DISCOVERY_URL:-}
+
+  # Stamped on every catalog as visibleTo, and the scope a consumer must ask
+  # under. A catalog published to the wrong network is invisible rather than
+  # wrong, which is why this has no default -- and why a /discover whose
+  # context omits networkId returns nothing at all.
+  #
+  # Required in EVERY mode, not only when publishing: it is stamped into the
+  # documents themselves, so a files-only run without it writes catalogs that
+  # are visible to no one.
+  networkId: ${NETWORK_ID}
+  timeout: ${DISCOVERY_TIMEOUT:-2m}
+
+defaults:
+  timeout: ${RUN_TIMEOUT:-2h}
+
+pipelines:
+  - name: mandi-price              # must equal the pipeline file's metadata.name
+    capability: openagrinet:MandiPrice
+    participantId: ${MANDI_PARTICIPANT_ID}
+    dir: ${MANDI_PIPELINE_DIR:-pkg/plugin/implementation/MandiPrice/publish}
+    file: agmarknet.yaml
+
+    # The pipeline file's own declared inputs, by its names. The engine
+    # type-checks each against that file, so a key naming no input fails the
+    # run in its first second rather than being silently ignored.
+    inputs:
+      baseUrl: ${MANDI_API_URI}
+
+      # onDemand ONLY. It publishes one resource per market, carrying the
+      # Agmarknet codes a select must send and the commodities that market
+      # deals in. `direct` additionally costs one upstream call per traded
+      # (market, commodity) pair -- thousands of calls -- and is not run here.
+      mode: onDemand
+
+      # A 7-day window, not one day. onDemand describes WHICH COMMODITIES a
+      # market deals in -- a directory, not a price feed. Asked for a single
+      # day it collapses to "what sold yesterday", so every Sunday and public
+      # holiday publishes almost nothing, and a market trading on alternate
+      # days looks as though it trades nothing at all.
+      fromDate: ${MANDI_FROM_DATE:-7 days ago}
+      toDate: ${MANDI_TO_DATE:-yesterday}

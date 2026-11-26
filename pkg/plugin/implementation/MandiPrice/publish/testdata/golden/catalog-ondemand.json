@@ -424,7 +424,7 @@
             "schemaTypes": [
               "https://openagrinet.github.io/network-specs/schema/MandiPrice/v0.1/context.jsonld"
             ],
-            "updateMode": "MERGE",
+            "updateMode": "FULL",
             "visibleTo": [
               "test-network"
             ]
