@@ -31,13 +31,15 @@ response: |
            (additionalProperties: false): marketCode, marketName, district,
            state, location. districtId/districtName are not among them, and
            the publish endpoint rejects the whole catalog over either one --
-           so the district's NAME goes in "district", which the schema
-           documents as "District name or governed code". The id is still
-           carried, as the district-level areaCode below. */
+           so the district's CODE goes in "district", which the schema
+           documents as "District name or governed code". Agmarknet answers a
+           district name with nothing, and the select mapping refuses one, so
+           the code is the only value this capability can use. The name is
+           still carried, as the district-level areaName below. */
         $marketObj := {
           "marketCode": $string($row.marketId),
           "marketName": $trim($row.marketName),
-          "district": $trim($row.districtName),
+          "district": $string($row.districtId),
           "state": $row.stateCode
         };
 
