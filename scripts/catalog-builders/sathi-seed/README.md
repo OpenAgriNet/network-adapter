@@ -25,7 +25,7 @@ Postman variables: `{{$guid}}`, `{{$isoTimestamp}}`, `{{networkId}}`, `{{senderI
 `{{bppId}}`, `{{bppUri}}`, `visibleTo` `["{{networkId}}", "{{otherNetworkId}}"]`, and the
 pack and contract links `{{sathi-resource-context}}`, `{{sathi-stock-operation-ref}}`. Paste it into
 the API collection's publish request, which fills them, and send it from there.
-The current full catalog is kept in helmcharts as `api-collection/catalogs/sathi-catalog-publish.json`;
+The current full catalog is kept in helmcharts as `api-collection/sathi-seed/sathi-catalog-publish.json`;
 replace it there after a rebuild. The output file itself is not committed here.
 
 ## Where the districts come from

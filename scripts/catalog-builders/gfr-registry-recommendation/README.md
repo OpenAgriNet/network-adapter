@@ -28,7 +28,7 @@ Postman variables: `{{$guid}}`, `{{$isoTimestamp}}`, `{{networkId}}`, `{{senderI
 `{{bppId}}`, `{{bppUri}}`, `visibleTo` `["{{networkId}}", "{{otherNetworkId}}"]`, and the
 pack and contract links `{{gfr-advisory-context}}`, `{{gfr-resource-context}}`, `{{gfr-advice-operation-ref}}`, `{{gfr-soil-operation-ref}}`. Paste it into
 the API collection's publish request, which fills them, and send it from there.
-The current full catalog is kept in helmcharts as `api-collection/catalogs/gfr-catalog-publish.json`;
+The current full catalog is kept in helmcharts as `api-collection/gfr-registry-recommendation/gfr-catalog-publish.json`;
 replace it there after a rebuild. The output file itself is not committed here.
 
 ## Settings
