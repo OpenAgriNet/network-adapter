@@ -104,9 +104,8 @@ market trading on alternate days would look as though it trades nothing at all.
 
 ## Building the Postman collection
 
-`build-postman.py` turns the documents a `files` run wrote into per-state
-Postman requests — one publish request per catalog, one discover per state that
-asserts the expected count.
+`build-postman.py` turns the documents a `files` run wrote into Postman
+requests and a directory of per-state publish bodies.
 
 ```sh
 cd scripts/catalog-publish
@@ -114,24 +113,45 @@ cd scripts/catalog-publish
 OUTPUT_MODE=files CATALOG_OUT_DIR=/tmp/mandi-states NETWORK_ID=oan.dev \
   ./bin/catalog-publish -config catalog-publish.yaml
 
-NETWORK_ID=oan.dev DISCOVERY_URL=http://localhost:8090 \
+NETWORK_ID=oan.dev DISCOVERY_URL=http://127.0.0.1:8090 \
 SENDER_ID=provider.oan.dev RECEIVER_ID=discovery.oan.dev \
 python3 build-postman.py \
   --catalogs /tmp/mandi-states/openagrinet-MandiPrice \
+  --inline-state KK \
+  --states-dir ../../../helmcharts/api-collection/mandi-states \
   --merge-into ../../../helmcharts/api-collection/OpenAgriNet.api-collection.json
 ```
 
-It **replaces** the existing MandiPrice folder in place rather than appending,
-so regenerating never leaves a stale copy that looks as authoritative as the
-new one. Every deployment-specific value becomes a `{{variable}}`, and those
-variables' defaults come from the arguments above — so a collection built for
-one environment cannot silently carry another's address.
+**The collection stays light.** Only `--inline-state` keeps its publish body
+in the collection — three requests, about 150 KiB. All 27 states inline made a
+6.5 MiB file nobody could review or diff.
 
-`--out FILE` writes a standalone collection instead of merging.
+The other states' publish bodies go to `--states-dir` as 29 documents, with a
+`publish-states.sh` that sends any or all of them:
 
-The merged collection is ~6.5 MiB, because it carries all 2,240 markets as
-request bodies. That is the point of it; if it becomes unwieldy, use `--out`
-and keep the states in a collection of their own.
+```sh
+cd helmcharts/api-collection/mandi-states
+NETWORK_ID=oan.dev DISCOVERY_URL=http://127.0.0.1:8090 ./publish-states.sh
+NETWORK_ID=oan.dev DISCOVERY_URL=http://127.0.0.1:8090 ./publish-states.sh MH GJ
+```
+
+Naming a state sends **all** of its documents — `MH` sends `MH` and `MH-2` —
+because under `FULL` each replaces only its own catalogId, and sending one
+without the other would leave half the state stale.
+
+Discover is different: its bodies are tiny, so the collection carries one
+`Discover - any state` request that reaches all 27 through a
+`{{mandiStateCode}}` variable. The folder description lists the count each
+should return.
+
+Every deployment-specific value is a `{{variable}}` in both the collection and
+the documents, and their defaults come from the arguments above — so one set of
+files serves local, dev and staging, and a collection built for one cannot
+silently carry another's address.
+
+`--merge-into` **replaces** the existing MandiPrice folder in place rather than
+appending, so regenerating never leaves a stale copy. `--out FILE` writes a
+standalone collection instead.
 
 ## Things worth knowing
 
