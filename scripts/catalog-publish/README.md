@@ -93,10 +93,30 @@ under an empty identity.
 a config override an input the pipeline marks `secret`, so they are read from
 the environment by the names the pipeline itself declares.
 
-### Publish direct to discovery, not through the provider adapter
+### Where to point `DISCOVERY_URL`
 
-The adapter's `/publish` is MERGE-only and would reject `FULL`. Point
-`DISCOVERY_URL` at discovery itself.
+Discovery itself, when you have it: `/publish` there takes the catalogs
+directly.
+
+Most deployments put a **network adapter** in front instead, and three things
+differ there. Each is cheap to handle and expensive to diagnose.
+
+**Identity.** `senderId` and `receiverId` must be the adapter's own
+participant id, normally its host name, and `NETWORK_ID` the same. The adapter
+resolves the sender against its registry; an id it does not hold returns a
+bare `500 NET_INTERNAL_ERROR` naming nothing, which reads as the service being
+down rather than the request being wrong.
+
+**Discover may be signed, publish usually is not.** `/discover` can enforce
+Beckn signature validation and answer `401 AUT_SIGNATURE_MISSING`, while the
+consumer-facing `/consumer/discover` on the same host does not. If a publish
+succeeds and a discover 401s, that asymmetry is why -- verify through the
+consumer path, or sign the call.
+
+**Some adapters are MERGE-only** and reject `FULL`. Publish one small state
+first and confirm `ACCEPTED` before sending the rest: under MERGE a market the
+upstream stops listing stays indexed for ever, which is exactly what `FULL`
+exists to prevent.
 
 ### The date window
 
