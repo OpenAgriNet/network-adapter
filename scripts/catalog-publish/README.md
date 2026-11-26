@@ -67,6 +67,11 @@ id, how many markets and points it carries, and whether it landed.
 A run takes a few minutes: the upstream is called once per state, sequentially,
 because it rate-limits.
 
+**Any working directory works.** A relative `dir:` in the config resolves
+against the config file, not against where you happen to be standing, so these
+commands are the same from the repo root, from `scripts/catalog-publish`, or
+from an absolute path.
+
 ## Configuration
 
 Everything is in `catalog-publish.yaml`, which reads its values from the

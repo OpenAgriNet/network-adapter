@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,13 @@ type Config struct {
 	Defaults PipelineConfig `yaml:"defaults"`
 
 	Pipelines []PipelineConfig `yaml:"pipelines"`
+
+	// baseDir is the directory the config file was read from. A relative
+	// `dir` resolves against it rather than against the working directory,
+	// so the same command works from the repo root and from beside the
+	// config -- resolving against the cwd meant a documented command that
+	// failed depending on where it was typed.
+	baseDir string
 }
 
 // Output modes. Building is observable and reversible; publishing is neither,
@@ -155,10 +163,21 @@ func Load(path string) (*Config, error) {
 	if len(cfg.Pipelines) == 0 {
 		return nil, fmt.Errorf("config %s declares no pipelines", path)
 	}
+	cfg.baseDir = filepath.Dir(path)
 	for i := range cfg.Pipelines {
 		cfg.Pipelines[i] = merge(cfg.Defaults, cfg.Pipelines[i])
 	}
 	return &cfg, nil
+}
+
+// PipelineDir is where this pipeline's YAML and mappings live, resolved. An
+// absolute `dir` is taken as given; a relative one is relative to the config
+// file.
+func (c *Config) PipelineDir(p PipelineConfig) string {
+	if p.Dir == "" || filepath.IsAbs(p.Dir) {
+		return p.Dir
+	}
+	return filepath.Clean(filepath.Join(c.baseDir, p.Dir))
 }
 
 // expandTree rewrites every string in a parsed document, keys included.
@@ -270,8 +289,10 @@ func (c *Config) Validate(p PipelineConfig) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("config is incomplete: %s", strings.Join(missing, ", "))
 	}
-	if _, err := os.Stat(p.Dir); err != nil {
-		return fmt.Errorf("pipeline dir %q: %w", p.Dir, err)
+	dir := c.PipelineDir(p)
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("pipeline dir %q (from `dir: %s`, resolved against %s): %w",
+			dir, p.Dir, c.baseDir, err)
 	}
 	if _, err := c.Timeout(p); err != nil {
 		return err

@@ -88,9 +88,10 @@ func run(configPath, name string, showConfig bool, log *slog.Logger) error {
 		"output", cfg.Output.Describe())
 
 	// 1. Serve the pipeline folder the way the registry would host it.
-	base, stop, err := pipeline.ServeMappings(os.DirFS(p.Dir), ".")
+	pipelineDir := cfg.PipelineDir(p)
+	base, stop, err := pipeline.ServeMappings(os.DirFS(pipelineDir), ".")
 	if err != nil {
-		return fmt.Errorf("serving %s: %w", p.Dir, err)
+		return fmt.Errorf("serving %s: %w", pipelineDir, err)
 	}
 	defer stop()
 	url := base + "/" + p.File
@@ -152,7 +153,7 @@ func printConfig(path string, cfg *Config, p PipelineConfig, overrides map[strin
 	} else {
 		fmt.Printf("publishUrl:       (not used; this mode publishes nothing)\n")
 	}
-	fmt.Printf("pipeline file:    %s\n", filepath.Join(p.Dir, p.File))
+	fmt.Printf("pipeline file:    %s\n", filepath.Join(cfg.PipelineDir(p), p.File))
 	fmt.Printf("output mode:      %s\n", cfg.Output.Describe())
 	fmt.Printf("output dir:       %s\n", orNone(cfg.OutDir(p)))
 	fmt.Printf("run timeout:      %s\n", runTimeout)

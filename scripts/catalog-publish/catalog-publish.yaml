@@ -54,7 +54,7 @@ pipelines:
   - name: mandi-price              # must equal the pipeline file's metadata.name
     capability: openagrinet:MandiPrice
     participantId: ${MANDI_PARTICIPANT_ID}
-    dir: ${MANDI_PIPELINE_DIR:-pkg/plugin/implementation/MandiPrice/publish}
+    dir: ${MANDI_PIPELINE_DIR:-../../pkg/plugin/implementation/MandiPrice/publish}
     file: agmarknet.yaml
 
     # The pipeline file's own declared inputs, by its names. The engine
